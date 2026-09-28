@@ -17,8 +17,8 @@ type groupsJSON struct {
 	Groups []groupJSON `json:"groups"`
 	Models []modelRef  `json:"models"`
 	Pools  []poolJSON  `json:"pools"`
-	// Deciders: the decision providers' models (Jev), which may only be a
-	// group's classifier
+	// Deciders are the decision providers' models, which may only be a
+	// group's classifier.
 	Deciders []modelRef `json:"deciders"`
 }
 

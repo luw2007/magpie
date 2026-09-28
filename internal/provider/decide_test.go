@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// A decision provider (TypeSafe's Jev) is only ever a group's classifier:
-// its models aren't in the catalog nor a group's members, and a group's
-// effort is picked only by it.
+// A decision provider is only ever a group's classifier: its models aren't
+// in the catalog nor a group's members, and a group's effort is picked only
+// by it.
 func TestDecider(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -77,7 +77,7 @@ func TestDecideGateways(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	for id, want := range map[string][2]string{"typesafe": {ViaSystemOne, "jev-latest"}, "vercel-jev": {ViaVercel, "typesafe-ai/jev"}, "cloudflare-jev": {ViaCloudflare, "typesafe/jev"}} {
+	for id, want := range map[string][2]string{"typesafe": {ViaSystemOne, "jev-latest"}, "bjev": {ViaSystemOne, "bjev"}, "vercel-jev": {ViaVercel, "typesafe-ai/jev"}, "cloudflare-jev": {ViaCloudflare, "typesafe/jev"}} {
 		p, err := FromPreset(id)
 		if err != nil || !p.Decides() || p.DecideVia() != want[0] || p.Jev() != want[1] || p.decideModels()[0].ID != want[1] {
 			t.Errorf("%s: %+v %v", id, p, err)
@@ -115,5 +115,36 @@ func TestDecideGateways(t *testing.T) {
 	p := Provider{ID: "g", Name: "G", Key: "good", Decide: up.URL + "/client/v4"}
 	if u, err := p.DecideURL(context.Background()); err != nil || u != up.URL+"/client/v4/accounts/acc9/ai/run" {
 		t.Fatalf("%s %v", u, err)
+	}
+}
+
+// bjev is a keyless System One service with an OpenAI-compatible model list.
+func TestBjev(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("unexpected authorization %q", auth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"object":"list","data":[{"id":"bjev","object":"model","owned_by":"rayless"}]}`))
+	}))
+	defer up.Close()
+	p, err := FromPreset("bjev")
+	if err != nil || !p.Ready() || p.Jev() != "bjev" {
+		t.Fatalf("preset %+v %v", p, err)
+	}
+	p.Decide = up.URL + "/v1"
+	ms, err := p.Fetch(context.Background())
+	if err != nil || len(ms) != 1 || ms[0].ID != "bjev" {
+		t.Fatalf("models %+v %v", ms, err)
+	}
+	if u, err := p.DecideURL(context.Background()); err != nil || u != up.URL+"/v1/systemone" {
+		t.Fatalf("url %q %v", u, err)
 	}
 }

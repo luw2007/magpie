@@ -13,21 +13,22 @@ const (
 
 // PresetDef describes one preset.
 type PresetDef struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Icon      string   `json:"icon"`
-	Kind      Kind     `json:"kind"`
-	Chat      string   `json:"chat,omitempty"`
-	Responses string   `json:"responses,omitempty"`
-	Anthropic string   `json:"anthropic,omitempty"`
-	Decide    string   `json:"decide,omitempty"` // a decision API: the provider only routes (see decide.go)
-	Catalog   string   `json:"catalog,omitempty"`
-	Website   string   `json:"website,omitempty"`
-	KeysURL   string   `json:"keysUrl,omitempty"`
-	NoKey     bool     `json:"noKey,omitempty"`     // local servers: a key is optional
-	Sponsored bool     `json:"sponsored,omitempty"` // shown first, with a tag
-	Note      string   `json:"note,omitempty"`      // one line under the name
-	Regions   []Region `json:"regions,omitempty"`   // base-URL choices (a relay's regional endpoints, a vendor's plans)
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Icon        string   `json:"icon"`
+	Kind        Kind     `json:"kind"`
+	Chat        string   `json:"chat,omitempty"`
+	Responses   string   `json:"responses,omitempty"`
+	Anthropic   string   `json:"anthropic,omitempty"`
+	Decide      string   `json:"decide,omitempty"`      // a decision API: the provider only routes (see decide.go)
+	DecideModel string   `json:"decideModel,omitempty"` // the decision API's default model; empty means Jev
+	Catalog     string   `json:"catalog,omitempty"`
+	Website     string   `json:"website,omitempty"`
+	KeysURL     string   `json:"keysUrl,omitempty"`
+	NoKey       bool     `json:"noKey,omitempty"`     // local servers: a key is optional
+	Sponsored   bool     `json:"sponsored,omitempty"` // shown first, with a tag
+	Note        string   `json:"note,omitempty"`      // one line under the name
+	Regions     []Region `json:"regions,omitempty"`   // base-URL choices (a relay's regional endpoints, a vendor's plans)
 	// RegionLabel names what the Regions choose between, "Region" if unset.
 	RegionLabel string `json:"regionLabel,omitempty"`
 	// HeaderHints name optional request headers the vendor documents, which
@@ -204,6 +205,9 @@ var presets = []PresetDef{
 		Decide:  "https://api.typesafe.ai/v1",
 		Note:    "routes groups · picks model and effort",
 		Website: "https://typesafe.ai", KeysURL: "https://console.typesafe.ai/keys"},
+	{ID: "bjev", Name: "bjev", Icon: "generic", Kind: KindVendor, NoKey: true,
+		Decide: "https://bjev.bytedance.net/v1", DecideModel: "bjev",
+		Note: "ByteDance internal · routes groups", Website: "https://bjev.bytedance.net/playground"},
 	// Jev as the gateways serve it, to a key made there
 	{ID: "vercel-jev", Name: "Jev · Vercel AI Gateway", Icon: "vercel", Kind: KindRelay,
 		Decide:  "https://ai-gateway.vercel.sh/v4/ai",
@@ -255,7 +259,7 @@ func FromPreset(id string) (Provider, error) {
 	}
 	return Provider{
 		ID: pr.ID, Name: pr.Name, Icon: pr.Icon, Preset: pr.ID,
-		Chat: pr.Chat, Responses: pr.Responses, Anthropic: pr.Anthropic, Decide: pr.Decide,
+		Chat: pr.Chat, Responses: pr.Responses, Anthropic: pr.Anthropic, Decide: pr.Decide, DecideModel: pr.DecideModel,
 		Catalog: pr.Catalog, Website: pr.Website, KeysURL: pr.KeysURL,
 	}, nil
 }

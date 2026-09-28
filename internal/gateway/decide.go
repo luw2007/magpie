@@ -1,7 +1,7 @@
 package gateway
 
-// A group whose classifier is a decision provider's model (Jev, from
-// TypeSafe) asks it in one call, as a user's turn begins, what the
+// A group whose classifier is a decision provider's model (such as Jev or
+// bjev) asks it in one call, as a user's turn begins, what the
 // classifier model would be asked — which of the rules' intents the
 // message is — and, for a group with Effort "auto", how hard the turn is
 // to think about. Jev answers each with how likely every option was

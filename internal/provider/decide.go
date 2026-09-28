@@ -53,9 +53,12 @@ func (p Provider) DecideVia() string {
 	return ViaSystemOne
 }
 
-// Jev is the model a decision provider is asked with when the user picked
-// none: TypeSafe's latest stable one, or the one Jev a gateway serves.
+// Jev is the default model a decision provider is asked with: an explicit
+// provider model, TypeSafe's latest stable Jev, or the Jev a gateway serves.
 func (p Provider) Jev() string {
+	if p.DecideModel != "" {
+		return p.DecideModel
+	}
 	switch p.DecideVia() {
 	case ViaVercel:
 		return "typesafe-ai/jev"
@@ -66,13 +69,14 @@ func (p Provider) Jev() string {
 }
 
 // decideModels are the models a decision provider offers: the vendor's
-// list when fetched, else Jev's aliases (a gateway's one Jev).
+// list when fetched, else its explicit model, Jev's aliases, or a gateway's
+// one Jev.
 func (p Provider) decideModels() []catalog.Model {
 	if live, _, ok := catalog.Live(p.ID); ok && len(live) > 0 {
 		return live
 	}
-	if p.DecideVia() != ViaSystemOne {
-		return []catalog.Model{{ID: p.Jev(), Name: "Jev"}}
+	if p.DecideModel != "" || p.DecideVia() != ViaSystemOne {
+		return []catalog.Model{{ID: p.Jev(), Name: p.Jev()}}
 	}
 	return []catalog.Model{{ID: JevLatest, Name: "Jev"}, {ID: "jev-preview", Name: "Jev (preview)"}}
 }
@@ -163,10 +167,10 @@ func IsDecider(id string) bool {
 	return ok && p.Decides()
 }
 
-// fetchDecide lists the models a decision provider's key can use:
-// {"models":[{"name":…,"description":…}]}. A gateway lists Jev among
-// every other model, so its key is checked instead (Vercel's by its
-// credits, Cloudflare's by finding its account) and Jev is the model.
+// fetchDecide lists the models a decision provider's key can use. System
+// One servers may return TypeSafe's {"models":[{"name":…}]} or an
+// OpenAI-compatible {"data":[{"id":…}]}; gateways are checked by their
+// own free call and expose their one Jev.
 func (p Provider) fetchDecide(ctx context.Context) ([]catalog.Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -200,9 +204,11 @@ func (p Provider) fetchDecide(ctx context.Context) ([]catalog.Model, error) {
 	}
 	var out struct {
 		Models []struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name string `json:"name"`
 		} `json:"models"`
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, fmt.Errorf("%s: not a model list", p.Name)
@@ -211,6 +217,11 @@ func (p Provider) fetchDecide(ctx context.Context) ([]catalog.Model, error) {
 	for _, m := range out.Models {
 		if m.Name != "" {
 			ms = append(ms, catalog.Model{ID: m.Name, Name: m.Name})
+		}
+	}
+	for _, m := range out.Data {
+		if m.ID != "" {
+			ms = append(ms, catalog.Model{ID: m.ID, Name: m.ID})
 		}
 	}
 	if len(ms) == 0 {

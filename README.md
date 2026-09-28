@@ -119,6 +119,32 @@ separate Responses endpoint, `catalog=` to borrow a models.dev list, and
 `models=` to name the models to expose. Anything a preset does not know can
 be overridden the same way.
 
+ByteDance's internal `bjev` decision service is built in and needs no key.
+It is reachable only on a network that resolves the internal service:
+
+```sh
+magpie provider add bjev
+magpie group set <group> classifier=bjev/bjev effort=auto
+```
+
+`bjev` is a routing-group classifier, not a conversation model. Magpie sends
+System One `choice`, `noul`, and `score` questions to
+`https://bjev.bytedance.net/v1/systemone`; agents do not see it in their
+model picker.
+
+### Local sub2api quotas
+
+When `SUB2API_BASE_URL` and `SUB2API_ADMIN_API_KEY` are set, Magpie asks the
+sub2api admin API directly for Claude and GPT, preserving every allowance
+window it reports, including five-hour and seven-day windows. With
+`CPAMC_BASE_URL`, `CPAMC_TOKEN`, `CPAMC_GOOGLE_AUTH_INDEX`, `ZHIPU_API_KEY`,
+and `DEEPSEEK_API_KEY`, it also asks Google/GCloud, GLM, and DeepSeek directly.
+The first provider mapping intentionally covers IDs containing
+`claude-sub2api`, `codex-gpt`, `gcloud`, `glm`, or `deepseek`. Their allowance
+or balance appears in the Usage page, `magpie quota`, and
+`GET /v1/magpie/quotas`. Unrelated pools are not matched merely because they
+expose a model with the same family name.
+
 ### Routing groups
 
 A routing group is several models, from one provider or many, that an agent

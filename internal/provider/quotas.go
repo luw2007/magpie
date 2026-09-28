@@ -97,7 +97,11 @@ func QuotaReport(ctx context.Context, now time.Time) []Quota {
 		qs   []SubscriptionQuota
 	}{{"subscription", subs}, {"plan", plans}, {"balance", balances}} {
 		for _, q := range g.qs {
-			r := Quota{Provider: q.Provider, Name: q.Name, Kind: g.kind, Plan: q.Plan, User: q.User,
+			kind := g.kind
+			if kind == "subscription" && q.Balance != "" && len(q.Windows) == 0 {
+				kind = "balance"
+			}
+			r := Quota{Provider: q.Provider, Name: q.Name, Kind: kind, Plan: q.Plan, User: q.User,
 				Windows: []QuotaSpan{}, Balance: q.Balance, Error: q.Error, Until: q.Until, Renew: q.Renew}
 			for _, w := range q.Windows {
 				s := QuotaSpan{Name: w.Name, Used: w.Used, Remaining: max(0, 100-w.Used), ResetsAt: w.ResetsAt, Display: w.Display}

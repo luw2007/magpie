@@ -771,7 +771,7 @@ const I18N = {
     ", {n} sure": "，把握 {n}",
     "Decided by": "决策模型",
     "Agents never see them: a routing group picks one as its classifier.": "agent 看不到它们：只有路由组把其中一个选作判断模型。",
-    "Jev's names · Refresh asks the vendor": "Jev 的名字 · 刷新会向厂商获取",
+    "Decision models · Refresh asks the vendor": "决策模型 · 刷新会向服务获取",
     "Routing groups name its models as {id} for their classifier": "路由组以 {id} 把它的模型选作判断模型",
     "Jev's decision API (TypeSafe's, or a gateway's) — what a routing group asks as a turn begins": "Jev 的决策 API（TypeSafe 或网关提供）——每轮开始时路由组询问它",
     "at {level} reasoning": "以 {level} 推理强度",

@@ -125,6 +125,31 @@ func TestJevPicksTheIntent(t *testing.T) {
 	}
 }
 
+// A System One provider can name a non-Jev model; it is sent unchanged and
+// remains a routing-only classifier.
+func TestDecisionProviderModel(t *testing.T) {
+	s, _, _, j := jevved(t, "", provider.Rule{Use: "b/big", Intent: "debugging"})
+	p, err := provider.Find("ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.DecideModel = "bjev"
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	g, _, _ := provider.FindGroup("group/r")
+	g.Classifier = "ts/bjev"
+	if err := provider.SaveGroup(g); err != nil {
+		t.Fatal(err)
+	}
+	j.choice, j.sure = "debugging", 0.9
+	_, r := postOK(t, s, "s1", chat("why does this crash?", nil, 0, ""))
+	asked := j.turns()[0]
+	if asked["model"] != "bjev" || r.Rule.Classified.Intent != "debugging" {
+		t.Fatalf("asked %v, classified %+v", asked, r.Rule.Classified)
+	}
+}
+
 // Intents that are levels (how hard a request is) leave no message out:
 // Jev's answer without "none of these" counts for them, and whether they
 // are is asked once for the set.

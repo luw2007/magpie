@@ -159,7 +159,8 @@ func chosenWindows(ws []QuotaWindow, chosen map[string]bool) []QuotaWindow {
 	return out
 }
 
-// fetchSubscriptionUsage asks every signed-in vendor at once.
+// fetchSubscriptionUsage asks every signed-in vendor and the optional local
+// sub2api usage adapter at once.
 func fetchSubscriptionUsage() []SubscriptionQuota {
 	ctx, cancel := context.WithTimeout(context.Background(), subscriptionTimeout)
 	defer cancel()
@@ -216,6 +217,9 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 			fetches = append(fetches, func() SubscriptionQuota { return l.acct.quota(ctx, l.Plan) })
 		}
 	}
+	providers := All()
+	fetched := make(chan []SubscriptionQuota, 1)
+	go func() { fetched <- fetchSub2APIUsage(ctx, providers) }()
 	out := make([]SubscriptionQuota, len(fetches))
 	var wg sync.WaitGroup
 	for i, f := range fetches {
@@ -223,7 +227,7 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 		go func() { defer wg.Done(); out[i] = f() }()
 	}
 	wg.Wait()
-	return out
+	return append(out, <-fetched...)
 }
 
 // accountsOf is every account magpie remembers for agent, the one it is

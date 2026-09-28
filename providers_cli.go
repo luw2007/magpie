@@ -498,7 +498,7 @@ func announce(id string) error {
 	}
 	n := len(saved.Exposed())
 	if saved.Decides() {
-		fmt.Println("  it routes groups: magpie group set <id> effort=auto classifier="+saved.ID+"/"+provider.JevLatest,
+		fmt.Println("  it routes groups: magpie group set <id> effort=auto classifier="+saved.ID+"/"+saved.Jev(),
 			muted.Render("· or a rule's intent=…"))
 		return nil
 	}
@@ -524,6 +524,7 @@ func showProvider(p provider.Provider) error {
 	kv("chat", p.Chat)
 	kv("responses", p.Responses)
 	kv("anthropic", p.Anthropic)
+	kv("decide", p.Decide)
 	switch {
 	case p.Account != nil:
 		who := p.Account.User

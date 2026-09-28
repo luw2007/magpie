@@ -63,6 +63,9 @@ type Provider struct {
 	// Jev answers): a provider with it serves no conversation, only the
 	// routing groups' choices of model and effort (see decide.go).
 	Decide string `json:"decide,omitempty"`
+	// DecideModel is the default model of a decision API when it is not
+	// Jev. Empty keeps the model implied by DecideVia.
+	DecideModel string `json:"decideModel,omitempty"`
 
 	// Fallback is where a request goes when this provider can't take it —
 	// out of quota, rate limited, overloaded or down — before any of the
@@ -464,6 +467,7 @@ func normalize(p Provider) Provider {
 			*u = "https://" + *u
 		}
 	}
+	p.DecideModel = strings.TrimSpace(p.DecideModel)
 	// the Anthropic base is the root /v1/messages is asked at: one given as
 	// .../v1 or .../v1/messages, as vendors' docs often show it, would have
 	// the version sent twice and every message turned away (404) while the
