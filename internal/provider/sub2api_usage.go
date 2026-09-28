@@ -17,6 +17,7 @@ import (
 
 type sub2APIAccount struct {
 	ID       int            `json:"id"`
+	Name     string         `json:"name"`
 	Platform string         `json:"platform"`
 	Type     string         `json:"type"`
 	Extra    map[string]any `json:"extra"`
@@ -49,6 +50,12 @@ var (
 	deepseekAPIKey     = func() string { return os.Getenv("DEEPSEEK_API_KEY") }
 	glmQuotaURL        = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
 	deepseekBalanceURL = "https://api.deepseek.com/user/balance"
+	sub2APIGPTAccount  = func() string {
+		if name := strings.TrimSpace(os.Getenv("SUB2API_GPT_ACCOUNT")); name != "" {
+			return name
+		}
+		return "pro more"
+	}
 )
 
 // sub2APIAccountOf maps the first simple set of local provider lanes to the
@@ -77,7 +84,7 @@ func fetchSub2APIUsage(ctx context.Context, providers []Provider) []Subscription
 		usage   map[string]sub2APIUsage
 		balance *SubscriptionQuota
 	}
-	results := make(chan result, 4)
+	results := make(chan result, 3)
 	go func() { results <- result{usage: fetchSub2APIAccounts(ctx)} }()
 	go func() {
 		u, err := fetchGoogleQuota(ctx)
@@ -95,34 +102,17 @@ func fetchSub2APIUsage(ctx context.Context, providers []Provider) []Subscription
 		}
 		results <- result{usage: map[string]sub2APIUsage{"glm": u}}
 	}()
-	go func() {
-		q, ok := fetchDeepSeekBalance(ctx, providers)
-		if !ok {
-			results <- result{}
-			return
-		}
-		results <- result{balance: &q}
-	}()
 	usage := map[string]sub2APIUsage{}
-	var balance *SubscriptionQuota
-	for range 4 {
+	for range 3 {
 		r := <-results
-		if r.balance != nil {
-			balance = r.balance
-		}
 		for kind, u := range r.usage {
 			if u.FiveHour != nil || u.SevenDay != nil || len(u.Windows) > 0 {
 				usage[kind] = u
 			}
 		}
 	}
-	quotas := sub2APIQuotas(providers, usage)
-	if balance != nil {
-		quotas = append(quotas, *balance)
-	}
-	return quotas
+	return sub2APIQuotas(providers, usage)
 }
-
 func fetchSub2APIAccounts(ctx context.Context) map[string]sub2APIUsage {
 	base, key := sub2APIBaseURL(), sub2APIKey()
 	usage := map[string]sub2APIUsage{}
@@ -134,8 +124,9 @@ func fetchSub2APIAccounts(ctx context.Context) map[string]sub2APIUsage {
 		return usage
 	}
 	ids := map[string]int{}
+	gptName := sub2APIGPTAccount()
 	for _, account := range listed.Items {
-		if account.Platform == "openai" && account.Type == "oauth" && ids["gpt"] == 0 {
+		if account.Platform == "openai" && account.Type == "oauth" && strings.EqualFold(strings.TrimSpace(account.Name), gptName) {
 			ids["gpt"] = account.ID
 		}
 		if account.Platform == "anthropic" && ids["claude"] == 0 {
@@ -265,7 +256,6 @@ func fetchGLMQuota(ctx context.Context) (sub2APIUsage, error) {
 	}
 	return out, nil
 }
-
 func fetchDeepSeekBalance(ctx context.Context, providers []Provider) (SubscriptionQuota, bool) {
 	var payload struct {
 		BalanceInfos []struct {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -34,9 +33,9 @@ func TestSub2APIQuotasPreserveFiveHourAndSevenDay(t *testing.T) {
 }
 
 func TestFetchSub2APIUsageUsesAdminAPI(t *testing.T) {
-	var paths []string
+	paths := make(chan string, 8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
+		paths <- r.URL.Path
 		if r.Header.Get("x-api-key") != "secret" {
 			t.Errorf("key %q", r.Header.Get("x-api-key"))
 		}
@@ -44,7 +43,7 @@ func TestFetchSub2APIUsageUsesAdminAPI(t *testing.T) {
 		var data any
 		switch r.URL.Path {
 		case "/api/v1/admin/accounts":
-			data = sub2APIAccounts{Items: []sub2APIAccount{{ID: 2, Platform: "openai", Type: "oauth"}, {ID: 6, Platform: "anthropic", Type: "setup-token"}}}
+			data = sub2APIAccounts{Items: []sub2APIAccount{{ID: 8, Name: "pro", Platform: "openai", Type: "oauth"}, {ID: 2, Name: "pro more", Platform: "openai", Type: "oauth"}, {ID: 6, Name: "claude", Platform: "anthropic", Type: "setup-token"}}}
 		case "/api/v1/admin/accounts/2/usage":
 			data = map[string]any{"five_hour": map[string]any{"utilization": 4, "resets_at": "2026-09-28T18:20:00+08:00"}, "seven_day": map[string]any{"utilization": 16, "resets_at": "2026-10-04T00:58:40+08:00"}}
 		case "/api/v1/admin/accounts/6/usage":
@@ -57,15 +56,22 @@ func TestFetchSub2APIUsageUsesAdminAPI(t *testing.T) {
 		w.Write(b)
 	}))
 	defer srv.Close()
-	oldBase, oldKey := sub2APIBaseURL, sub2APIKey
+	oldBase, oldKey, oldName := sub2APIBaseURL, sub2APIKey, sub2APIGPTAccount
 	sub2APIBaseURL, sub2APIKey = func() string { return srv.URL }, func() string { return "secret" }
-	t.Cleanup(func() { sub2APIBaseURL, sub2APIKey = oldBase, oldKey })
+	sub2APIGPTAccount = func() string { return "pro more" }
+	t.Cleanup(func() { sub2APIBaseURL, sub2APIKey, sub2APIGPTAccount = oldBase, oldKey, oldName })
 	got := fetchSub2APIUsage(context.Background(), []Provider{{ID: "local-codex-gpt"}, {ID: "local-claude-sub2api"}})
 	if len(got) != 2 || len(got[0].Windows) != 2 || len(got[1].Windows) != 1 {
 		t.Fatalf("fetched %+v", got)
 	}
-	if strings.Join(paths, ",") != "/api/v1/admin/accounts,/api/v1/admin/accounts/2/usage,/api/v1/admin/accounts/6/usage" {
-		t.Fatalf("paths %v", paths)
+	seen := map[string]bool{}
+	for len(paths) > 0 {
+		seen[<-paths] = true
+	}
+	for _, path := range []string{"/api/v1/admin/accounts", "/api/v1/admin/accounts/2/usage", "/api/v1/admin/accounts/6/usage"} {
+		if !seen[path] {
+			t.Errorf("missing request path %s (seen %v)", path, seen)
+		}
 	}
 }
 
