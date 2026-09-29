@@ -42,9 +42,13 @@ func (p Provider) Available() []catalog.Model {
 	if live, _, ok := catalog.Live(p.ID); ok {
 		switch p.ID {
 		case "cursor":
-			live = withCursorContexts(live)
+			live = collapseCursorModels(withCursorContexts(live))
 		case "devin":
 			live = withDevinContexts(live)
+		case "antigravity":
+			// after its names are filled in, and so that a family's
+			// levels aren't taken off by a known model of its id
+			return collapseAntigravityModels(catalog.Decorate(live, known))
 		}
 		return catalog.Decorate(live, known)
 	}
@@ -87,6 +91,16 @@ func (p Provider) Fetch(ctx context.Context) ([]catalog.Model, error) {
 	if p.Account != nil && p.Account.fetch != nil {
 		return p.Account.fetch(ctx)
 	}
+	if p.Account != nil && p.Account.models != nil {
+		// a plan with no list to ask (ZCode's, WorkBuddy's): its models
+		// are the ones it has, and its endpoint's /models isn't one
+		return p.Account.models(), nil
+	}
+	// a vendor with no list to ask (Bedrock's runtime): the preset's
+	// models are it, unless the user said where one is
+	if pr := Preset(p.Preset); pr != nil && pr.NoList && strings.TrimSpace(p.ModelsURL) == "" {
+		return catalog.Chat(p.planModels(nil)), nil
+	}
 	// Only keys in use. An off key is not asked, and its list does not
 	// join the catalog or take capabilities off a key that is on.
 	if keys := p.KeysOn(); len(keys) > 1 {
@@ -96,7 +110,7 @@ func (p Provider) Fetch(ctx context.Context) ([]catalog.Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ms, catalog.SaveLive(p.ID, base, ms)
+	return catalog.Chat(ms), catalog.SaveLive(p.ID, base, ms)
 }
 
 // fetchOne asks the first endpoint that answers, with p's key.
@@ -108,9 +122,9 @@ func (p Provider) fetchOne(ctx context.Context) ([]catalog.Model, string, error)
 		if err != nil {
 			return nil, u, err
 		}
-		return p.planModels(ms), u, nil
+		return catalog.WithDrawers(p.planModels(ms), catalog.PublicDrawers(ctx, u)), u, nil
 	}
-	var lastErr error
+	var errs []string
 	for _, proto := range p.Speaks() {
 		base := p.Base(proto)
 		ms, at, err := catalog.FetchAt(ctx, base, p.Key, proto == Anthropic, p.Headers)
@@ -118,22 +132,29 @@ func (p Provider) fetchOne(ctx context.Context) ([]catalog.Model, string, error)
 			if proto != Anthropic {
 				base = p.fixV1(base, at)
 			}
-			return p.planModels(ms), base, nil
+			// the image models its list leaves out (AIHubMix's gpt-image-2)
+			return catalog.WithDrawers(p.planModels(ms), catalog.PublicDrawers(ctx, base)), base, nil
 		}
-		lastErr = err
+		// Chat and Responses at one base say the same thing
+		if !slices.Contains(errs, err.Error()) {
+			errs = append(errs, err.Error())
+		}
 	}
-	if lastErr == nil {
-		lastErr = errorf("%s has no endpoint to ask", p.Name)
+	if len(errs) == 0 {
+		return nil, "", errorf("%s has no endpoint to ask", p.Name)
 	}
-	return nil, "", lastErr
+	// the endpoints are kept as they were: a vendor with no list (or one
+	// that wants what the key can't give) still serves the models typed in
+	return nil, "", errorf("%s — type its model ids in by hand, or give the URL its list is at", strings.Join(errs, "; "))
 }
 
 // planModels keeps a plan's own models of a vendor's list (PresetDef.Only),
-// or gives the plan's when the list has none; any other provider's list is
+// or gives the plan's when the list has none; a plan with models but no
+// Only gives them only when there is no list. Any other provider's list is
 // as it came.
 func (p Provider) planModels(ms []catalog.Model) []catalog.Model {
 	pr := Preset(p.Preset)
-	if pr == nil || pr.Only == "" {
+	if pr == nil || pr.Only == "" && (len(pr.Models) == 0 || len(ms) > 0) {
 		return ms
 	}
 	var out []catalog.Model
@@ -164,10 +185,13 @@ func (p Provider) planModels(ms []catalog.Model) []catalog.Model {
 // base/v1/models did. The list is asked for at both, but a request goes
 // to the base as written, so base/chat/completions would miss what
 // base/v1/chat/completions serves. Both OpenAI URLs that were base are
-// set right, and the base the models are at is returned.
+// set right, and the base the models are at is returned. A base with a
+// version in its path (Ark's …/api/plan/v3, Zhipu's …/api/paas/v4) is
+// the vendor's API as written and is never given a /v1: no list is asked
+// for under one there (catalog.FetchAt), and none is added here.
 func (p Provider) fixV1(base, at string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
-	if base == "" || at != base+"/v1/models" {
+	if base == "" || at != base+"/v1/models" || catalog.Versioned(base) {
 		return base
 	}
 	fixed := base + "/v1"
@@ -199,6 +223,7 @@ func (p Provider) fixV1(base, at string) string {
 // key that can't be asked now keeps the models it saw last time.
 func (p Provider) fetchPerKey(ctx context.Context, keys []KeyAccount) ([]catalog.Model, error) {
 	old, _, _ := catalog.Live(p.ID)
+	old = append(old, catalog.LiveDrawers(p.ID)...)
 	var out []catalog.Model
 	at := map[string]int{}
 	add := func(m catalog.Model, id string) {
@@ -240,7 +265,7 @@ func (p Provider) fetchPerKey(ctx context.Context, keys []KeyAccount) ([]catalog
 	if len(out) == 0 {
 		return nil, lastErr
 	}
-	return out, catalog.SaveLive(p.ID, base, out)
+	return catalog.Chat(out), catalog.SaveLive(p.ID, base, out)
 }
 
 // An explicit text-only answer wins. Without one, an unknown answer stays
@@ -384,10 +409,12 @@ type Entry struct {
 	Output int `json:"output,omitempty"`
 	// Family is the provider's or group's tag (see Visible).
 	Family string `json:"family,omitempty"`
+	// Free is set on a model its subscription serves at no cost to it.
+	Free bool `json:"free,omitempty"`
 }
 
 // Catalog lists the routing groups, then every exposed model of every ready
-// provider not kept unlisted.
+// provider not kept unlisted. A provider switched off has none in it.
 func Catalog() []Entry {
 	entries := providerEntries()
 	out := groupEntries(entries)
@@ -411,7 +438,7 @@ func providerEntries() []Entry {
 	var out []Entry
 	s := settings.Load()
 	for _, p := range All() {
-		if !p.Ready() || p.Decides() { // a decision API only routes
+		if !p.On() || p.Decides() { // a decision API only routes
 			continue
 		}
 		for _, m := range p.Exposed() {
@@ -433,7 +460,7 @@ func providerEntries() []Entry {
 				images = *m.ImageInput
 			}
 			e := Entry{ID: p.ID + "/" + m.ID, Model: m.ID, Family: p.Family, Name: m.Name, Efforts: effortsOf(m), Provider: p,
-				Images: images, ImageInput: m.ImageInput, Context: ctx, Output: output}
+				Images: images, ImageInput: m.ImageInput, Context: ctx, Output: output, Free: m.Free}
 			if n, ok := modelNameIn(s.ModelNames, p.ID, m.ID); ok {
 				e.Name, e.Default = n, m.Name
 			}
@@ -470,7 +497,7 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
 		}
 	}
 	if pid, model, ok := strings.Cut(id, "/"); ok {
-		if p, err := Find(pid); err == nil && p.Ready() {
+		if p, err := Find(pid); err == nil && p.On() {
 			return *p, model, true
 		}
 	}
@@ -486,7 +513,7 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
 	// not exposed, but some provider lists it
 	var found []Provider
 	for _, p := range All() {
-		if !p.Ready() || p.Decides() {
+		if !p.On() || p.Decides() {
 			continue
 		}
 		for _, m := range p.Available() {

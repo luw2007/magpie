@@ -114,11 +114,12 @@ func TestNamespacedCallStreamed(t *testing.T) {
 	for _, it := range done {
 		switch it["call_id"] {
 		case "c1":
-			if it["name"] != "spawn_agent" || it["namespace"] != "collaboration" {
+			if enc, ok := it["encrypted_function_args"].([]any); !ok || len(enc) != 0 || it["name"] != "spawn_agent" || it["namespace"] != "collaboration" {
 				t.Fatalf("namespaced call = %v", it)
 			}
 		case "c2":
-			if _, has := it["namespace"]; has || it["name"] != "exec_command" {
+			_, sealed := it["encrypted_function_args"]
+			if _, has := it["namespace"]; has || sealed || it["name"] != "exec_command" {
 				t.Fatalf("top-level call = %v", it)
 			}
 		}

@@ -811,7 +811,11 @@ func RemoveSkill(name string) (*Result, error) {
 			delete(p.Skills, name)
 		}
 		p := skillDir(name)
-		if fi, err := os.Lstat(p); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		fi, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // its folder is gone already: only the entry goes
+		}
+		if err == nil && fi.Mode()&fs.ModeSymlink != 0 {
 			return os.Remove(p) // a folder of the user's: only the link goes
 		}
 		aside := filepath.Join(BackupDir(), time.Now().Format("2006-01-02_15-04-05.000"), "skills", name)

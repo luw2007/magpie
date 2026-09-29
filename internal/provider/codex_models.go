@@ -202,6 +202,23 @@ func CodexListed() []catalog.Model {
 	})
 }
 
+// CodexNativePicked is the set of the ChatGPT account's own model slugs the
+// user kept, and whether they narrowed that list at all. The backend lists
+// every model the account can reach; when the user has picked among them on
+// the codex provider, the gateway keeps its /models answer to those (see
+// codexModels). Not narrowed — the account's list is left whole.
+func CodexNativePicked() (map[string]bool, bool) {
+	p, ok := find(All(), "codex")
+	if !ok || len(p.Models) == 0 {
+		return nil, false
+	}
+	keep := make(map[string]bool, len(p.Models))
+	for _, id := range p.Models {
+		keep[id] = true
+	}
+	return keep, true
+}
+
 // codexListed marks a group Fast when a ChatGPT account's GPT model is in
 // it, so Codex offers /fast there too; the tier goes out only to that
 // account (buildResponses).

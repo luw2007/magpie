@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // ---- Anthropic Messages -----------------------------------------------------
@@ -34,7 +36,12 @@ type aBlock struct {
 	// thinking
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
+	// a prompt-cache breakpoint: the prompt up to here is cached
+	CacheControl map[string]string `json:"cache_control,omitempty"`
 }
+
+// ephemeral marks a prompt-cache breakpoint.
+var ephemeral = map[string]string{"type": "ephemeral"}
 
 type aRequest struct {
 	Model    string          `json:"model"`
@@ -98,7 +105,8 @@ func parseAnthropic(body []byte) (*Request, error) {
 				case "tool_use":
 					msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: b.ID, Name: b.Name, Args: b.Input})
 				case "tool_result":
-					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: b.ToolUseID, Text: stringOrText(b.Content), IsError: b.IsError})
+					out, images := toolOutput(b.Content)
+					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: b.ToolUseID, Text: out, Images: images, IsError: b.IsError})
 				case "thinking":
 					msg.Parts = append(msg.Parts, Part{Kind: Thinking, Text: b.Thinking, Signature: b.Signature})
 				}
@@ -183,7 +191,6 @@ func withoutThinkingOff(body []byte) ([]byte, bool) {
 	return out, err == nil
 }
 
-// buildAnthropic renders a request for an Anthropic-style upstream.
 // claudeVersion finds the family's version in a Claude model id however a
 // relay spells it: claude-opus-4-6, claude-opus-5, anthropic.claude-sonnet-4.6-v1.
 var claudeVersion = regexp.MustCompile(`claude-(?:opus|sonnet|haiku)-(\d+)(?:[-.](\d{1,2}))?(?:[^0-9]|$)`)
@@ -201,6 +208,52 @@ func adaptiveOnly(model string) bool {
 	return major > 4 || major == 4 && minor >= 6
 }
 
+// AdaptiveThinking is adaptiveOnly for agents told how to ask a model: a
+// Claude that takes thinking.type=adaptive and an effort, never a budget.
+func AdaptiveThinking(model string) bool { return adaptiveOnly(model) }
+
+// effortInOutputConfig is a model that takes how hard it thinks from
+// output_config.effort, beside thinking turned on, as ZCode asks it: Z.ai's
+// GLM-5.2 and GLM-5.3 on their Anthropic endpoints. A budget alone leaves
+// them at their own default.
+var effortInOutputConfig = regexp.MustCompile(`(?i)glm-5\.[23](?:$|[-.:/\[])`)
+
+// withOutputEffort is body asking, in output_config.effort, for the level
+// of levels nearest the reasoning it asks for; body when it asks for none.
+func withOutputEffort(body []byte, levels []string) []byte {
+	e := requestEffort(provider.Anthropic, body)
+	var v struct {
+		OutputConfig map[string]any `json:"output_config"`
+	}
+	if e == "" || json.Unmarshal(body, &v) != nil {
+		return body
+	}
+	oc := v.OutputConfig
+	if oc == nil {
+		oc = map[string]any{}
+	}
+	oc["effort"] = fitEffort(e, levels)
+	return withFields(body, map[string]any{"output_config": oc})
+}
+
+// imageBlock is an image as an Anthropic block: inline, or by its URL.
+func imageBlock(p Part) aBlock {
+	b := aBlock{Type: "image"}
+	b.Source = &struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+		URL       string `json:"url"`
+	}{}
+	if p.URL != "" && p.Data == "" {
+		b.Source.Type, b.Source.URL = "url", p.URL
+	} else {
+		b.Source.Type, b.Source.MediaType, b.Source.Data = "base64", p.MediaType, p.Data
+	}
+	return b
+}
+
+// buildAnthropic renders a request for an Anthropic-style upstream.
 func buildAnthropic(r *Request, model string) []byte {
 	type msg struct {
 		Role    string   `json:"role"`
@@ -228,23 +281,22 @@ func buildAnthropic(r *Request, model string) []byte {
 			case File:
 				rest = append(rest, aBlock{Type: "text", Text: attachmentText(p)})
 			case Image:
-				b := aBlock{Type: "image"}
-				b.Source = &struct {
-					Type      string `json:"type"`
-					MediaType string `json:"media_type"`
-					Data      string `json:"data"`
-					URL       string `json:"url"`
-				}{}
-				if p.URL != "" && p.Data == "" {
-					b.Source.Type, b.Source.URL = "url", p.URL
-				} else {
-					b.Source.Type, b.Source.MediaType, b.Source.Data = "base64", p.MediaType, p.Data
-				}
-				rest = append(rest, b)
+				rest = append(rest, imageBlock(p))
 			case ToolCall:
 				rest = append(rest, aBlock{Type: "tool_use", ID: p.ID, Name: p.Name, Input: argsOf(p)})
 			case ToolResult:
 				c, _ := json.Marshal(p.Text)
+				if len(p.Images) > 0 {
+					// a tool_result holds images beside its text
+					var blocks []aBlock
+					if strings.TrimSpace(p.Text) != "" {
+						blocks = append(blocks, aBlock{Type: "text", Text: p.Text})
+					}
+					for _, im := range p.Images {
+						blocks = append(blocks, imageBlock(im))
+					}
+					c, _ = json.Marshal(blocks)
+				}
 				results = append(results, aBlock{Type: "tool_result", ToolUseID: p.CallID, Content: c, IsError: p.IsError})
 			case Thinking:
 				if p.Signature != "" {
@@ -258,10 +310,27 @@ func buildAnthropic(r *Request, model string) []byte {
 		}
 		push(role, append(results, rest...))
 	}
+	// Anthropic caches a prompt only up to a block marked for it, which a
+	// request from another API (Codex's, a Chat client's) never has: the
+	// conversation so far is marked at its last block, so the next turn,
+	// which only adds to it, reads it from the cache; thinking can't be
+	// marked. Two marks at most, with the one Claude's sign-in adds kept
+	// within Anthropic's four.
+	if n := len(msgs); n > 0 {
+		c := msgs[n-1].Content
+		for i := len(c) - 1; i >= 0; i-- {
+			if c[i].Type != "thinking" {
+				c[i].CacheControl = ephemeral
+				break
+			}
+		}
+	}
 	// an assistant turn made only of unsigned thinking is nothing to Anthropic
 	out := map[string]any{"model": model, "messages": msgs, "stream": r.Stream}
 	if r.System != "" {
-		out["system"] = r.System
+		// the tools and system prompt, the same every turn, are cached
+		// apart from the conversation
+		out["system"] = []aBlock{{Type: "text", Text: r.System, CacheControl: ephemeral}}
 	}
 	maxTokens := r.MaxTokens
 	if maxTokens <= 0 {
@@ -275,12 +344,20 @@ func buildAnthropic(r *Request, model string) []byte {
 			}
 			out["output_config"] = map[string]any{"effort": e}
 		}
-	} else if r.Thinking || r.Effort != "" {
-		budget := budgetOf(r.Effort)
-		if maxTokens < budget+4096 {
+	} else if think, budget := r.Thinking || r.Effort != "", budgetOf(r.Effort); think && (r.MaxTokens <= 0 || r.MaxTokens > 2048) {
+		if r.MaxTokens > 0 {
+			// the client's cap is what the model can write (Pi sends the
+			// model's own output limit): the budget fits under it, leaving
+			// room for the answer, as a raised max_tokens past what the
+			// model takes is refused with a 400
+			budget = min(budget, maxTokens-1024)
+		} else if maxTokens < budget+4096 {
 			maxTokens = budget + 4096
 		}
 		out["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
+		if r.Effort != "" && effortInOutputConfig.MatchString(model) {
+			out["output_config"] = map[string]any{"effort": r.Effort}
+		}
 	} else if r.Temp != nil {
 		out["temperature"] = *r.Temp
 	} else if r.TopP != nil {
@@ -298,6 +375,9 @@ func buildAnthropic(r *Request, model string) []byte {
 				schema = json.RawMessage(`{"type":"object","properties":{}}`)
 			}
 			tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "input_schema": schema})
+		}
+		if r.System == "" && len(tools) > 0 {
+			tools[len(tools)-1]["cache_control"] = ephemeral
 		}
 		if r.WebSearch {
 			tools = append(tools, map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": 5})

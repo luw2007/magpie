@@ -96,12 +96,26 @@ func TestSubscriptionUsageServesStale(t *testing.T) {
 
 func TestChosenWindows(t *testing.T) {
 	ws := []QuotaWindow{{Name: "Gemini 3.8 Flash (High)", Model: "gemini-3.8-flash-high"}, {Name: "Gemini 3 Flash", Model: "gemini-3-flash"}, {Name: "Weekly"}}
-	got := chosenWindows(ws, map[string]bool{"gemini-3.8-flash-high": true})
+	got := chosenWindows(ws, map[string]bool{"gemini-3.8-flash-high": true}, nil)
 	if len(got) != 2 || got[0].Model != "gemini-3.8-flash-high" || got[1].Name != "Weekly" {
 		t.Fatalf("got %+v", got)
 	}
 	// ids the quota names that none of the enabled ones match: keep them all
-	if got := chosenWindows(ws[:2], map[string]bool{"gemini-pro-agent": true}); len(got) != 2 {
+	if got := chosenWindows(ws[:2], map[string]bool{"gemini-pro-agent": true}, nil); len(got) != 2 {
 		t.Fatalf("kept %d of 2", len(got))
+	}
+	// Antigravity's levels of a model enabled as one (#150): each level's
+	// window is kept for the family picked, and only those
+	ag := []QuotaWindow{{Model: "gemini-3.7-flash-high"}, {Model: "gemini-3.7-flash-low"}, {Model: "gemini-3.1-pro-high"},
+		{Model: "claude-opus-4-6-thinking"}, {Model: "gemini-3.5-flash-lite"}}
+	base := func(id string) string {
+		if b, _, ok := antigravityBaseIn(antigravityListed, id); ok {
+			return b
+		}
+		return id
+	}
+	got = chosenWindows(ag, map[string]bool{"gemini-3.7-flash": true, "claude-opus-4-6-thinking": true}, base)
+	if len(got) != 3 || got[0].Model != "gemini-3.7-flash-high" || got[1].Model != "gemini-3.7-flash-low" || got[2].Model != "claude-opus-4-6-thinking" {
+		t.Fatalf("antigravity: %+v", got)
 	}
 }

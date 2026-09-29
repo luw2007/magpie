@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -30,24 +31,30 @@ const JevLatest = "jev-latest"
 func (p Provider) Decides() bool { return p.Decide != "" }
 
 // The ways a decision API is asked, by where it is (DecideVia): TypeSafe's
-// own System One, Vercel's AI Gateway (its evaluation models, with a
-// boolean for a noul and probabilities for a confidence), or Workers AI
-// (System One's questions and answers, in Cloudflare's envelope and at an
-// account's address).
+// own System One; Vercel's AI Gateway, at its TypeSafe API (System One's
+// questions and answers, with its own name for Jev) or, where an older
+// setup points, at the AI SDK's evaluation models (a boolean for a noul
+// and probabilities for a confidence); or Workers AI (System One's
+// questions and answers, in Cloudflare's envelope and at an account's
+// address).
 const (
 	ViaSystemOne  = "systemone"
 	ViaVercel     = "vercel"
+	ViaVercelEval = "vercel-eval"
 	ViaCloudflare = "cloudflare"
 )
 
 // DecideVia is the way p's decision API is asked, known by its host or by
-// the gateway's own path (Vercel's /v4/ai, Cloudflare's /client/v4).
+// the gateway's own path (Vercel's /typesafe or /v4/ai, Cloudflare's
+// /client/v4).
 func (p Provider) DecideVia() string {
 	base := strings.TrimRight(p.Decide, "/")
 	switch h := HostOf(base); {
-	case h == "ai-gateway.vercel.sh" || strings.HasSuffix(base, "/v4/ai"):
+	case strings.HasSuffix(base, "/v4/ai"):
+		return ViaVercelEval
+	case h == "ai-gateway.vercel.sh" || strings.HasSuffix(base, "/typesafe") || strings.Contains(base, "/typesafe/v1"):
 		return ViaVercel
-	case h == "api.cloudflare.com" || strings.HasSuffix(base, "/client/v4"):
+	case h == "api.cloudflare.com" || strings.Contains(base+"/", "/client/v4/"):
 		return ViaCloudflare
 	}
 	return ViaSystemOne
@@ -60,7 +67,7 @@ func (p Provider) Jev() string {
 		return p.DecideModel
 	}
 	switch p.DecideVia() {
-	case ViaVercel:
+	case ViaVercel, ViaVercelEval:
 		return "typesafe-ai/jev"
 	case ViaCloudflare:
 		return "typesafe/jev"
@@ -81,20 +88,61 @@ func (p Provider) decideModels() []catalog.Model {
 	return []catalog.Model{{ID: JevLatest, Name: "Jev"}, {ID: "jev-preview", Name: "Jev (preview)"}}
 }
 
+// vercelTypeSafe is the root of Vercel's TypeSafe API that p's base names,
+// as its docs give it (…/typesafe) or with /v1 or /v1/systemone after it;
+// the gateway's bare host, or its OpenAI /v1, is taken for its /typesafe.
+func (p Provider) vercelTypeSafe() string {
+	base := strings.TrimRight(p.Decide, "/")
+	for _, s := range []string{"/systemone", "/models", "/v1"} {
+		base = strings.TrimSuffix(base, s)
+	}
+	if u, err := url.Parse(base); err == nil && strings.Trim(u.Path, "/") == "" {
+		base = strings.TrimRight(base, "/") + "/typesafe"
+	}
+	return base
+}
+
 // DecideURL is where a question for p's decision API is posted. Workers
-// AI's is under the account the token belongs to, looked up once.
+// AI's is under an account: the one its base names, else the one the
+// token belongs to, looked up once.
 func (p Provider) DecideURL(ctx context.Context) (string, error) {
 	switch p.DecideVia() {
 	case ViaVercel:
+		return p.vercelTypeSafe() + "/v1/systemone", nil
+	case ViaVercelEval:
 		return strings.TrimRight(p.Decide, "/") + "/evaluation-model", nil
 	case ViaCloudflare:
-		acct, err := p.cloudflareAccount(ctx)
-		if err != nil {
-			return "", err
+		api, acct := p.cloudflareBase()
+		if acct == "" {
+			var err error
+			if acct, err = p.cloudflareAccount(ctx); err != nil {
+				return "", err
+			}
 		}
-		return strings.TrimRight(p.Decide, "/") + "/accounts/" + acct + "/ai/run", nil
+		return api + "/accounts/" + acct + "/ai/run", nil
 	}
 	return p.Decide + "/systemone", nil
+}
+
+// cloudflareBase splits p's Workers AI base into Cloudflare's API
+// (…/client/v4) and the account it names, if any. Cloudflare's docs give
+// …/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai/run, and a token made
+// for Workers AI alone may not list /accounts, so a base with an account
+// in it, /ai/run after it or not, is asked there as it is. A placeholder
+// left in ($CLOUDFLARE_ACCOUNT_ID, {account_id}, <id>, :id) names none.
+func (p Provider) cloudflareBase() (api, account string) {
+	base := strings.TrimRight(p.Decide, "/")
+	i := strings.Index(base, "/accounts")
+	if i < 0 {
+		return base, ""
+	}
+	api = base[:i]
+	rest := strings.TrimPrefix(strings.TrimPrefix(base[i:], "/accounts"), "/")
+	account, _, _ = strings.Cut(rest, "/")
+	if account == "" || strings.ContainsAny(account[:1], "$:{<") {
+		return api, ""
+	}
+	return api, account
 }
 
 // cfAccounts are the Cloudflare accounts found for each token.
@@ -102,6 +150,9 @@ var cfAccounts = struct {
 	sync.Mutex
 	m map[string]string
 }{m: map[string]string{}}
+
+// cfNoAccount says how to name the account when the token can't list it.
+const cfNoAccount = "put your account ID in the endpoint: https://api.cloudflare.com/client/v4/accounts/<account ID>/ai/run"
 
 // cloudflareAccount is the account p's API token works in: the first it
 // can see, which for a token made for one account is that one.
@@ -114,7 +165,8 @@ func (p Provider) cloudflareAccount(ctx context.Context) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(p.Decide, "/")+"/accounts", nil)
+	api, _ := p.cloudflareBase()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api+"/accounts", nil)
 	if err != nil {
 		return "", err
 	}
@@ -127,6 +179,10 @@ func (p Provider) cloudflareAccount(ctx context.Context) (string, error) {
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode == http.StatusForbidden {
+		// a token that may not list accounts, as one for Workers AI alone
+		return "", fmt.Errorf("%s: %s; for a token only for Workers AI, %s", p.Name, APIError(b, res.Status), cfNoAccount)
+	}
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("%s: %s", p.Name, APIError(b, res.Status))
 	}
@@ -136,7 +192,7 @@ func (p Provider) cloudflareAccount(ctx context.Context) (string, error) {
 		} `json:"result"`
 	}
 	if json.Unmarshal(b, &out) != nil || len(out.Result) == 0 || out.Result[0].ID == "" {
-		return "", fmt.Errorf("%s: the API token reaches no account; make one with Workers AI access", p.Name)
+		return "", fmt.Errorf("%s: the API token lists no account; make one with Workers AI access, or %s", p.Name, cfNoAccount)
 	}
 	id = out.Result[0].ID
 	cfAccounts.Lock()
@@ -150,7 +206,7 @@ func (p Provider) cloudflareAccount(ctx context.Context) (string, error) {
 func Deciders() []Entry {
 	var out []Entry
 	for _, p := range All() {
-		if !p.Decides() || !p.Ready() {
+		if !p.Decides() || !p.On() {
 			continue
 		}
 		for _, m := range p.Exposed() {
@@ -169,19 +225,29 @@ func IsDecider(id string) bool {
 
 // fetchDecide lists the models a decision provider's key can use. System
 // One servers may return TypeSafe's {"models":[{"name":…}]} or an
-// OpenAI-compatible {"data":[{"id":…}]}; gateways are checked by their
-// own free call and expose their one Jev.
+// OpenAI-compatible {"data":[{"id":…}]}. A gateway checks its key via
+// its own free call (Vercel's TypeSafe models or credits, Cloudflare's
+// Workers AI models or account lookup), then exposes its one Jev.
 func (p Provider) fetchDecide(ctx context.Context) ([]catalog.Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	switch p.DecideVia() {
 	case ViaVercel:
+		if err := p.checkKey(ctx, p.vercelTypeSafe()+"/v1/models"); err != nil {
+			return nil, err
+		}
+		return p.decideModels(), nil
+	case ViaVercelEval:
 		if err := p.checkKey(ctx, strings.TrimSuffix(strings.TrimRight(p.Decide, "/"), "/v4/ai")+"/v1/credits"); err != nil {
 			return nil, err
 		}
 		return p.decideModels(), nil
 	case ViaCloudflare:
-		if _, err := p.cloudflareAccount(ctx); err != nil {
+		if api, acct := p.cloudflareBase(); acct != "" {
+			if err := p.checkKey(ctx, api+"/accounts/"+acct+"/ai/models/search?per_page=1"); err != nil {
+				return nil, err
+			}
+		} else if _, err := p.cloudflareAccount(ctx); err != nil {
 			return nil, err
 		}
 		return p.decideModels(), nil

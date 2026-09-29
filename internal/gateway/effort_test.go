@@ -2,13 +2,16 @@ package gateway
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 func TestFitEffort(t *testing.T) {
@@ -64,6 +67,77 @@ func TestResponsesEffortReachesChatVendor(t *testing.T) {
 		json.Unmarshal(f.got, &got)
 		if got["reasoning_effort"] != c.sent || !strings.HasSuffix(f.path, "/chat/completions") {
 			t.Errorf("%s at %s: sent %s", c.model, c.effort, f.got)
+		}
+	}
+}
+
+// Each request's route keeps the reasoning the agent asked for, and each
+// try the reasoning its model was sent at, fitted to the model's levels;
+// the usage keeps what the model was sent at, by session.
+func TestTraceRecordsTheEffortSent(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"id":"c1","model":"glm-5.3-flash","choices":[{"delta":{"role":"assistant","content":"hi"}}]}`,
+		`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`,
+		`data: [DONE]`)}
+	up := setup(t, provider.Chat, f)
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{"zai":{"models":{"glm-5.3-flash":{"id":"glm-5.3-flash","reasoning_options":[{"type":"effort","values":["low","high","max"]}]}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	if err := provider.Save(provider.Provider{ID: "volc", Name: "Volc", Key: "k", Chat: up.URL + "/v1", Models: []string{"glm-5.3-flash", "other"}}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	for _, c := range []struct{ path, body, asked, sent string }{
+		{"/v1/responses", `{"model":"volc/glm-5.3-flash","stream":true,"input":"hi","reasoning":{"effort":"medium"}}`, "medium", "high"},
+		{"/v1/chat/completions", `{"model":"volc/other","stream":true,"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`, "xhigh", "xhigh"},
+		{"/v1/messages", `{"model":"volc/glm-5.3-flash","stream":true,"max_tokens":32000,"thinking":{"type":"enabled","budget_tokens":20000},"messages":[{"role":"user","content":"hi"}]}`, "high", "high"},
+		{"/v1/messages", `{"model":"volc/other","stream":true,"max_tokens":32000,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"},"messages":[{"role":"user","content":"hi"}]}`, "max", "max"},
+		{"/v1/chat/completions", `{"model":"volc/other","stream":true,"messages":[{"role":"user","content":"hi"}]}`, "", ""},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", c.path, strings.NewReader(c.body))
+		req.Header.Set(SessionHeader, "sess-1")
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", c.body, rec.Code, rec.Body)
+		}
+		r := lastRoute(s)
+		if r.Effort != c.asked || len(r.Tries) != 1 || r.Tries[0].Effort != c.sent || r.Tries[0].Picked {
+			t.Errorf("%s: route at %q, tries %+v; want asked %q, sent %q", c.body, r.Effort, r.Tries, c.asked, c.sent)
+		}
+	}
+	var got []string
+	for _, rec := range usage.Load(time.Time{}) {
+		got = append(got, rec.Effort)
+	}
+	if strings.Join(got, ",") != "high,xhigh,high,max," {
+		t.Errorf("usage efforts %q", got)
+	}
+	vs := usage.Vias(time.Time{})[usage.AgentOf("")+"|sess-1"]
+	if len(vs) != 4 || vs[0].Model != "glm-5.3-flash" || vs[0].Effort != "high" || vs[0].Calls != 2 {
+		t.Errorf("vias %+v", vs)
+	}
+}
+
+// requestEffort reads the reasoning a request asks for in each API's words.
+func TestRequestEffort(t *testing.T) {
+	for _, c := range []struct {
+		proto provider.Protocol
+		body  string
+		want  string
+	}{
+		{provider.Chat, `{"reasoning_effort":"low"}`, "low"},
+		{provider.Chat, `{"model":"m"}`, ""},
+		{provider.Responses, `{"reasoning":{"effort":"xhigh","summary":"auto"}}`, "xhigh"},
+		{provider.Responses, `{"reasoning":{"summary":"auto"}}`, ""},
+		{provider.Anthropic, `{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}`, "medium"},
+		{provider.Anthropic, `{"thinking":{"type":"enabled","budget_tokens":4096}}`, "low"},
+		{provider.Anthropic, `{"thinking":{"type":"disabled"},"output_config":{"effort":"high"}}`, ""},
+		{provider.Anthropic, `{"output_config":{"effort":"high"}}`, ""},
+	} {
+		if got := requestEffort(c.proto, []byte(c.body)); got != c.want {
+			t.Errorf("%s %s: %q, want %q", c.proto, c.body, got, c.want)
 		}
 	}
 }

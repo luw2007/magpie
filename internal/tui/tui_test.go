@@ -23,7 +23,8 @@ func home(t *testing.T) string {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
 	t.Setenv("PATH", "")
-	for _, k := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "APPDATA", "VISUAL", "EDITOR"} {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(h, ".local", "share"))
+	for _, k := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "APPDATA", "VISUAL", "EDITOR", "OPENCODE_DB", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR"} {
 		t.Setenv(k, "")
 	}
 	for _, f := range []string{".claude/settings.json", ".codex/config.toml"} {
@@ -235,7 +236,7 @@ func TestPutRule(t *testing.T) {
 
 func TestLibraryPage(t *testing.T) {
 	h := home(t)
-	m := press(t, model{w: 120, h: 40}, "5")
+	m := press(t, model{w: 120, h: 40}, "6")
 	if m.page != pageLibrary || m.libErr != "" {
 		t.Fatalf("page %d: %s", m.page, m.libErr)
 	}

@@ -2,10 +2,14 @@ package provider
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/catalog"
 )
 
 func TestParseCursorModels(t *testing.T) {
@@ -19,6 +23,114 @@ func TestParseCursorModels(t *testing.T) {
 		if ms[i].ID != w[0] || ms[i].Name != w[1] {
 			t.Errorf("model %d = %q %q, want %q %q", i, ms[i].ID, ms[i].Name, w[0], w[1])
 		}
+	}
+}
+
+// cursorListed is some of `cursor-agent models`, as it prints it.
+const cursorListed = "Available models\n\nauto - Auto (default)\n" +
+	"gpt-5.3-codex-low - Codex 5.3 Low\ngpt-5.3-codex - Codex 5.3\ngpt-5.3-codex-high - Codex 5.3 High\ngpt-5.3-codex-high-fast - Codex 5.3 High Fast\n" +
+	"grok-4.7-low - Grok 4.7  Low\ngrok-4.7-low-fast - Grok 4.7  Low Fast​​\ngrok-4.7-medium - Grok 4.7  Medium\ngrok-4.7-medium-fast - Grok 4.7  Medium Fast​​\n" +
+	"grok-4.7-xhigh - Grok 4.7  Extra High\ngrok-4.7-xhigh-fast - Grok 4.7  Extra High Fast​​\n" +
+	"claude-opus-4-7-low - Claude Opus 4.7 1M Low\nclaude-opus-4-7-xhigh - Claude Opus 4.7 1M\nclaude-opus-4-7-max - Claude Opus 4.7 1M Max\n" +
+	"claude-opus-4-7-thinking-low - Claude Opus 4.7 1M Low Thinking\nclaude-opus-4-7-thinking-xhigh - Claude Opus 4.7 1M Thinking\n" +
+	"claude-4.6-opus-high-thinking - Claude Opus 4.6 1M Thinking\nclaude-4.6-opus-max-thinking - Claude Opus 4.6 1M Max Thinking\n" +
+	"gpt-5.5-none - GPT-5.5 1M None\ngpt-5.5-medium - GPT-5.5 1M\ngpt-5.5-extra-high - GPT-5.5 1M Extra High\n" +
+	"gpt-5.5-medium-fast - GPT-5.5 Fast\ngpt-5.5-extra-high-fast - GPT-5.5 Extra High Fast\n" +
+	"claude-4.6-sonnet-medium-thinking - Claude Sonnet 4.6 1M Thinking\ncomposer-2.5 - Composer 2.5\n\nTip: use --model <id>\n"
+
+// Each family of Cursor's ids is one model, with the efforts it has; fast
+// and thinking are families of their own, and a family of one keeps its id.
+func TestCollapseCursorModels(t *testing.T) {
+	raw := withCursorContexts(parseCursorModels(cursorListed))
+	if raw[5].Name != "Grok 4.7 Low" || raw[6].Name != "Grok 4.7 Low Fast" {
+		t.Fatalf("%q %q", raw[5].Name, raw[6].Name)
+	}
+	var got []string
+	for _, m := range collapseCursorModels(raw) {
+		got = append(got, fmt.Sprintf("%s|%s|%d|%s", m.ID, m.Name, m.Context, strings.Join(m.Efforts, ",")))
+	}
+	want := []string{
+		"auto|Auto|200000|",
+		"gpt-5.3-codex|Codex 5.3|200000|low,high",
+		"gpt-5.3-codex-high-fast|Codex 5.3 High Fast|200000|",
+		"grok-4.7|Grok 4.7|200000|low,medium,xhigh",
+		"grok-4.7-fast|Grok 4.7 Fast|200000|low,medium,xhigh",
+		"claude-opus-4-7|Claude Opus 4.7 1M|1000000|low,xhigh,max",
+		"claude-opus-4-7-thinking|Claude Opus 4.7 1M Thinking|1000000|low,xhigh",
+		"claude-4.6-opus-thinking|Claude Opus 4.6 1M Thinking|1000000|high,max",
+		"gpt-5.5|GPT-5.5 1M|1000000|none,medium,xhigh",
+		"gpt-5.5-fast|GPT-5.5 Fast|200000|medium,xhigh", // Cursor doesn't say 1M of it
+		"claude-4.6-sonnet-medium-thinking|Claude Sonnet 4.6 1M Thinking|1000000|",
+		"composer-2.5|Composer 2.5|200000|",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, c := range []struct{ model, effort, want string }{
+		{"gpt-5.3-codex", "", "gpt-5.3-codex"},
+		{"grok-4.7", "", "grok-4.7-medium"},
+		{"claude-opus-4-7", "", "claude-opus-4-7-xhigh"}, // its name doesn't say its effort
+		{"claude-opus-4-7-thinking", "low", "claude-opus-4-7-thinking-low"},
+		{"claude-4.6-opus-thinking", "max", "claude-4.6-opus-max-thinking"},
+		{"gpt-5.5", "xhigh", "gpt-5.5-extra-high"},
+		{"gpt-5.5-fast", "", "gpt-5.5-medium-fast"},
+	} {
+		vs, ok := cursorVariantsIn(raw, c.model)
+		if !ok || vs[c.effort] != c.want {
+			t.Errorf("%s at %q: %v", c.model, c.effort, vs)
+		}
+	}
+	for _, id := range []string{"composer-2.5", "gpt-5.3-codex-high-fast", "grok-4.7-low", "nope"} {
+		if _, ok := cursorVariantsIn(raw, id); ok {
+			t.Errorf("%s stands for a family", id)
+		}
+	}
+}
+
+// Picks saved before Cursor's efforts were one model name Cursor's own
+// ids: each is the model magpie offers for it now, once, where it was,
+// with its efforts; ids of a family of one, or none, stay.
+func TestCursorLegacyPicks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	was := cursorStatus
+	defer func() { cursorStatus = was }()
+	cursorStatus = &cliIdentity{name: "cursor-test", exe: func() string { return "/bin/sh" }, ask: func() (string, string, bool, error) { return "me@example.com", "Pro", true, nil }}
+	raw := withCursorContexts(parseCursorModels(cursorListed))
+	if err := catalog.SaveLive("cursor", "", raw); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{"grok-4.7-low": "grok-4.7|low", "grok-4.7-xhigh-fast": "grok-4.7-fast|xhigh",
+		"claude-4.6-opus-high-thinking": "claude-4.6-opus-thinking|high", "gpt-5.5-extra-high": "gpt-5.5|xhigh"} {
+		if b, e, ok := cursorBaseIn(raw, id); !ok || b+"|"+e != want {
+			t.Errorf("%s: %s|%s %v, want %s", id, b, e, ok, want)
+		}
+	}
+	for _, id := range []string{"grok-4.7", "gpt-5.3-codex-high-fast", "composer-2.5", "claude-4.6-sonnet-medium-thinking", "grok-4.7-high", "nope-low"} {
+		if b, _, ok := cursorBaseIn(raw, id); ok {
+			t.Errorf("%s taken for %s", id, b)
+		}
+	}
+	legacy := []string{"grok-4.7-low", "composer-2.5", "grok-4.7-medium", "grok-4.7-low-fast", "grok-4.7-xhigh", "grok-4.7-xhigh-fast", "gpt-5.3-codex-high-fast", "gone-model"}
+	if err := Save(Provider{ID: "cursor", Models: legacy}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Find("cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"grok-4.7", "composer-2.5", "grok-4.7-fast", "gpt-5.3-codex-high-fast", "gone-model"}
+	if strings.Join(p.Models, ",") != strings.Join(want, ",") {
+		t.Fatalf("picks %v, want %v", p.Models, want)
+	}
+	var got []string
+	for _, m := range p.Exposed() {
+		got = append(got, m.ID+"|"+strings.Join(m.Efforts, ","))
+	}
+	if strings.Join(got, " ") != "grok-4.7|low,medium,xhigh composer-2.5| grok-4.7-fast|low,medium,xhigh gpt-5.3-codex-high-fast| gone-model|" {
+		t.Fatalf("exposed %v", got)
 	}
 }
 

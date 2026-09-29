@@ -14,12 +14,15 @@ import (
 // accounts, so after the first answer a stale one is served while a fresh
 // one is fetched behind it. The answer is kept on disk too: a magpie just
 // started serves the last one at once rather than holding everything for
-// the CLIs (#123), and asks them again behind it.
+// the CLIs (#123), and asks them again behind it. An ask that couldn't tell
+// (the CLI failed, ran out of time or printed something else) leaves what
+// was served as it was: taken for nobody signed in, it dropped the account
+// from the Providers page and from routing until the next ask (#154).
 type cliIdentity struct {
 	sync.Mutex
 	name       string
 	exe        func() string
-	ask        func() (user, plan string, ok bool)
+	ask        func() (user, plan string, ok bool, err error) // err: couldn't tell
 	at         time.Time
 	refreshing bool
 	done       chan struct{} // closed when the ask under way has answered
@@ -110,15 +113,18 @@ func (c *cliIdentity) refresh() chan struct{} {
 	c.refreshing, c.done = true, make(chan struct{})
 	gen, done := c.gen, c.done
 	go func() {
-		u, p, ok := c.ask()
+		u, p, ok, err := c.ask()
 		c.Lock()
 		defer c.Unlock()
 		defer close(done)
 		if gen != c.gen {
 			return
 		}
-		c.user, c.plan, c.ok = u, p, ok
 		c.at, c.refreshing = time.Now(), false
+		if err != nil {
+			return // asked again in a minute; what was served stays
+		}
+		c.user, c.plan, c.ok = u, p, ok
 		c.keep()
 	}()
 	return done

@@ -47,6 +47,9 @@ func StatsFor(days int) Stats {
 	return statsAt(days, time.Now())
 }
 
+// StatsAt is StatsFor as if it were now.
+func StatsAt(days int, now time.Time) Stats { return statsAt(days, now) }
+
 func statsAt(days int, now time.Time) Stats {
 	now = now.In(time.Local)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
@@ -61,7 +64,8 @@ func statsAt(days int, now time.Time) Stats {
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	files := append(claudeFiles(), codexFiles()...)
+	defer closeDBs()
+	files := allFiles()
 	var want []file
 	for _, f := range files {
 		if !f.mod.Before(since) {

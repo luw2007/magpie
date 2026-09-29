@@ -30,7 +30,8 @@ type modelJSON struct {
 	Given   bool     `json:"given,omitempty"` // its levels aren't known: Efforts are those it can be given, Kept those it was
 	On      bool     `json:"on"`              // exposed to agents
 	Context int      `json:"context,omitempty"`
-	Max     int      `json:"max,omitempty"` // the most its context may be set to, above Context
+	Max     int      `json:"max,omitempty"`  // the most its context may be set to, above Context
+	Free    bool     `json:"free,omitempty"` // costs the subscription nothing
 }
 
 type providerJSON struct {
@@ -69,7 +70,10 @@ type providerJSON struct {
 	Affinity  string             `json:"affinity"`           // how long a conversation stays with who answered it
 	Models    []modelJSON        `json:"models"`             // everything the vendor lists, exposed ones flagged
 	Exposed   int                `json:"exposed"`            // how many reach the agents
+	Draws     int                `json:"draws,omitempty"`    // how many of its models draw images (gateway.Drawers)
+	DrawIDs   []string           `json:"drawIds,omitempty"`  // those models' ids, listed apart in its editor
 	Unlisted  bool               `json:"unlisted"`           // its models serve only through routing groups
+	Off       bool               `json:"off"`                // switched off: kept, but agents get none of its models
 	Contexts  map[string]int     `json:"contexts,omitempty"` // the windows the user set, "*" for all its models
 	Fetched   string             `json:"fetched"`            // "3h ago" when the list came from the vendor
 	Agents    []providerAgent    `json:"agents"`             // detected agents, current ones flagged
@@ -109,7 +113,6 @@ type gatewayJSON struct {
 	Models  int            `json:"models"`
 	Calls   []gateway.Call `json:"calls"`
 	Groups  []gwGroupJSON  `json:"groups"` // the catalog's routing groups, listed before the models
-	Cindy   string         `json:"cindy"`  // the link that adds the gateway to Cindy
 }
 
 // gwGroupJSON is a routing group as the Gateway view lists it.
@@ -175,7 +178,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Headers: p.Headers, BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Models, Models: []modelJSON{}, Agents: []providerAgent{},
-		Fallback: p.Fallback, Routing: p.Routing, Affinity: p.Affinity, Unlisted: p.Unlisted, Contexts: p.Contexts,
+		Fallback: p.Fallback, Routing: p.Routing, Affinity: p.Affinity, Unlisted: p.Unlisted, Off: p.Off, Contexts: p.Contexts,
 	}
 	if out.Fallback == nil {
 		out.Fallback = []string{}
@@ -209,6 +212,12 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 			out.Account.Name, out.Account.Icon = "Kiro", "kiro-color"
 		} else if a.Agent == "antigravity" {
 			out.Account.Name, out.Account.Icon = "Antigravity", "antigravity-color"
+		} else if a.Agent == provider.WorkBuddyAIID {
+			// WorkBuddy AI, the international build, isn't an agent magpie configures
+			out.Account.Name, out.Account.Icon = "WorkBuddy AI", "workbuddy-color"
+		} else if a.Agent == provider.CommandCodePlanID {
+			// Command Code's CLI keeps the key its sign-in made
+			out.Account.Name, out.Account.Icon = "Command Code", "commandcode"
 		}
 		out.Account.Logins = provider.Logins(a.Agent)
 	}
@@ -225,7 +234,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		most = catalog.Codex()
 	}
 	named := func(m catalog.Model, on bool) modelJSON {
-		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: m.Context, Max: m.MaxContext}
+		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: m.Context, Max: m.MaxContext, Free: m.Free}
 		if i := slices.IndexFunc(most, func(c catalog.Model) bool { return c.ID == m.ID }); j.Max == 0 && i >= 0 {
 			j.Max = most[i].MaxContext
 		}
@@ -252,6 +261,12 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		}
 	}
 	out.Exposed = len(exposed)
+	// its image models aren't among those agents chat with; the editor
+	// lists them apart, as Settings → Images is where one is picked
+	for _, m := range gateway.Drawers(p) {
+		out.DrawIDs = append(out.DrawIDs, m.ID)
+	}
+	out.Draws = len(out.DrawIDs)
 	if t, ok := p.Fetched(); ok {
 		out.Fetched = ago(t)
 	}
@@ -292,7 +307,7 @@ func providersState() providersJSON {
 		s.Presets = append(s.Presets, presetJSON{PresetDef: pr, Added: have[pr.ID]})
 	}
 	cat := provider.Catalog()
-	s.Gateway = gatewayJSON{URL: gateway.URL(), Cindy: CindyLink(gateway.URL()), Models: len(cat), Calls: []gateway.Call{}, Groups: []gwGroupJSON{}}
+	s.Gateway = gatewayJSON{URL: gateway.URL(), Models: len(cat), Calls: []gateway.Call{}, Groups: []gwGroupJSON{}}
 	for _, e := range cat {
 		if e.Group == "" {
 			continue
@@ -442,6 +457,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if in.ID != "" {
 					pr.ID = in.ID
 				}
+				// a decision API's address the user gave, such as the
+				// Cloudflare one naming the account
+				if d := strings.TrimSpace(in.Decide); d != "" && pr.Decide != "" {
+					pr.Decide = d
+				}
 				in = pr
 			}
 			var old *provider.Provider
@@ -476,6 +496,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					// the other keys are kept apart, in the Accounts list
 					in.Keys = old.Keys
 					in.Routing = old.Routing // set on its own, with route
+					in.Off = old.Off         // and this with off and on
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say
 					}
@@ -531,6 +552,15 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
+		case "off", "on":
+			// switched off, it stays with its keys, but agents are given
+			// none of its models; the files they keep them in follow,
+			// through catalog.Changed
+			if err := provider.SetOff(in.ID, r.PathValue("action") == "off"); err != nil {
+				fail(rw, err)
+				return
+			}
+			provider.ForgetBalances()
 		case "affinity":
 			if err := provider.SetAffinity(in.ID, in.Affinity); err != nil {
 				fail(rw, err)
@@ -702,6 +732,31 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		provider.CancelSignIn(r.PathValue("id"))
 		rw.WriteHeader(http.StatusNoContent)
 	})
+	// Accounts brought in from another tool's export (Antigravity's, from
+	// Antigravity Cockpit, Antigravity Manager, CLIProxyAPI), each file's
+	// text as it is; each checked with the vendor before it is kept.
+	mux.HandleFunc("POST /api/signin/import", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent string
+			Files []string
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		res, err := provider.ImportGoogleAccounts(ctx, in.Agent, in.Files)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		agent.SyncCatalog()
+		writeJSON(rw, struct {
+			Results   []provider.ImportedAccount `json:"results"`
+			Providers providersJSON              `json:"providers"`
+		}{res, providersState()})
+	})
 	// the page copies through here first: in the app's window the
 	// clipboard API is refused or missing, depending on the system
 	mux.HandleFunc("POST /api/copy", func(rw http.ResponseWriter, r *http.Request) {
@@ -716,7 +771,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("POST /api/open", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ URL string }
 		_ = json.NewDecoder(r.Body).Decode(&in)
-		if strings.HasPrefix(in.URL, "https://") || strings.HasPrefix(in.URL, "http://") || strings.HasPrefix(in.URL, CindyScheme) {
+		if strings.HasPrefix(in.URL, "https://") || strings.HasPrefix(in.URL, "http://") || strings.HasPrefix(in.URL, agent.CindyScheme) {
 			w.OpenURL(in.URL)
 		}
 		rw.WriteHeader(http.StatusNoContent)

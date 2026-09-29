@@ -38,6 +38,10 @@ func LoginUsage(ctx context.Context, agent string) map[string]SubscriptionQuota 
 		logins = copilotLoginList()
 	case "zcode":
 		logins = zcodeLoginList()
+	case "workbuddy", WorkBuddyAIID:
+		logins = wbLoginList(wbSiteOf(agent))
+	case CommandCodePlanID:
+		logins = cmdLoginList()
 	case "gemini", "antigravity":
 		logins = googleLoginList(agent)
 	case "cursor": // one account, the one cursor-agent is signed in to
@@ -64,7 +68,7 @@ func LoginUsage(ctx context.Context, agent string) map[string]SubscriptionQuota 
 		wg.Add(1)
 		go func(l Login) {
 			defer wg.Done()
-			q := loginQuota(ctx, l)
+			q := keepLast(loginQuota(ctx, l), l.User)
 			if q.Error != "" && ok {
 				q = e.q // a hiccup keeps what was known
 			}
@@ -80,6 +84,7 @@ func LoginUsage(ctx context.Context, agent string) map[string]SubscriptionQuota 
 		}(l)
 	}
 	wg.Wait()
+	usageRead(agent, out) // a window not started: the warm-up looks now
 	return out
 }
 
@@ -92,6 +97,12 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	}
 	if l.Agent == "zcode" {
 		return zcodeLoginQuota(ctx, l)
+	}
+	if w := wbSiteOf(l.Agent); w != nil {
+		return wbLoginQuota(ctx, w, l)
+	}
+	if l.Agent == CommandCodePlanID {
+		return cmdLoginQuota(ctx, l)
 	}
 	if l.Agent == "copilot" {
 		for _, c := range copilotLogins(copilotConfigDir()) {
@@ -117,7 +128,7 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 			q.Windows, err = claudeWindows(ctx, l.User, tok)
 		} else {
 			var plan string
-			if plan, q.Windows, err = codexWindows(ctx, tok, accountID); plan != "" {
+			if plan, q.Windows, q.Resets, err = codexWindows(ctx, tok, accountID); plan != "" {
 				q.Plan = plan
 			}
 			q.Until = codexUntil(codexLoginAuth(l), time.Now())

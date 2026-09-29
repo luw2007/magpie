@@ -7,16 +7,50 @@
 # (internal/gui/app.go, dev_on.go) restarts the windows too. Quitting magpie
 # from the tray, or Ctrl-C, ends it all.
 #
+# A restart is a handover, so an agent streaming through the dev gateway
+# isn't cut off: the new backend listens on the same ports beside the old
+# one, which is then told (USR2) to stop taking requests, finish those it
+# has and exit. A backend that builds but never comes up leaves the old one
+# serving.
+#
 # make passes MAGPIE_ADDR, MAGPIE_DEV_UI, MAGPIE_DEV_BACKEND and
 # MAGPIE_DEV_CONTROL.
 set -u
 cd "$(dirname "$0")/.."
 
-shell='' backend='' watch='' fsw=''
+shell='' backend='' watch='' fsw='' draining=''
 
 stop() { [ -n "$1" ] && kill "$1" 2>/dev/null && wait "$1" 2>/dev/null; }
 
 start_backend() { MAGPIE_DEV_ROLE=backend ./magpie-dev-backend app & backend=$!; }
+
+# listening waits (up to 30s) for backend $1 to listen on the gateway's
+# port and the backend's; no, once it has exited
+listening() {
+	local i
+	for ((i = 0; i < 150; i++)); do
+		kill -0 "$1" 2>/dev/null || return 1
+		listens "$1" "${MAGPIE_ADDR##*:}" && listens "$1" "${MAGPIE_DEV_BACKEND##*:}" && return 0
+		sleep 0.2
+	done
+	return 1
+}
+listens() { lsof -nP -a -p "$1" -iTCP:"$2" -sTCP:LISTEN >/dev/null 2>&1; }
+
+# handover starts a new backend and, once it listens, lets the old one go
+handover() {
+	local old=$backend
+	start_backend
+	if listening "$backend"; then
+		kill -USR2 "$old" 2>/dev/null
+		draining="$draining $old"
+		return
+	fi
+	echo "  the new backend didn't come up · the one before it keeps running"
+	kill "$backend" 2>/dev/null
+	wait "$backend" 2>/dev/null
+	backend=$old
+}
 
 # the shell, and a watcher that ends everything once it is quit
 start_shell() {
@@ -31,7 +65,7 @@ stop_shell() {
 
 cleanup() {
 	trap - INT TERM
-	stop_shell; stop "$backend"; kill "$fsw" 2>/dev/null
+	stop_shell; stop "$backend"; kill "$fsw" $draining 2>/dev/null
 	exit 0
 }
 trap cleanup INT TERM
@@ -66,8 +100,7 @@ while read -r -u 3 path; do
 		echo "  build failed · the backend before it keeps running"
 		continue
 	fi
-	stop "$backend"
-	start_backend
+	handover
 	case $changed in
 	*/internal/gui/app.go* | */internal/gui/dev_on.go*)
 		echo "  window code changed · reopening the windows"

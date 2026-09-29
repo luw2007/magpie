@@ -4,8 +4,9 @@ package gui
 
 import (
 	"crypto/sha256"
-	_ "embed"
+	"embed"
 	"encoding/hex"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -20,11 +21,19 @@ import (
 
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/shortcut"
+	"github.com/yetone/magpie/internal/stats"
 	"github.com/yetone/magpie/internal/update"
 )
 
 //go:embed tray.png
 var trayIcon []byte // black glyph, tinted by the macOS menu bar
+
+// trayFlap is the bird beating its wing and flicking its tail, played on
+// the tray icon when it is clicked (build/icon/gen.go tray-flap).
+//
+//go:embed trayflap/*.png
+var trayFlap embed.FS
 
 //go:embed icon.png
 var appIcon []byte // coloured, for other trays
@@ -56,6 +65,9 @@ type host struct {
 	panel *application.WebviewWindow
 	main  *application.WebviewWindow
 	tray  *application.SystemTray
+	// flapping is set while the tray bird plays its flap, so a second
+	// click in it doesn't start another over it
+	flapping atomic.Bool
 
 	panelHeight int
 	glides      atomic.Int64 // the newest panel glide; older ones stop
@@ -111,7 +123,9 @@ func (h *host) ChooseFolder(title string) (string, error) {
 		SetTitle(title).AttachToWindow(h.main).PromptForSingleSelection()
 }
 
-const panelWidth, panelMin, panelMax = 440, 220, 720
+// panelMax keeps the panel a drop-down, not most of the screen: longer
+// content (the usage of many accounts) scrolls in it (#124)
+const panelWidth, panelMin, panelMax = 440, 220, 560
 
 // FitPanel grows or shrinks the panel to its content and keeps it anchored
 // under the tray icon; a shown panel glides there when g says how.
@@ -149,6 +163,8 @@ func Run(version string, showMain bool, link string) error {
 		if err := registerScheme(); err != nil {
 			log.Println("magpie:// links:", err)
 		}
+		// Windows has no installer to put magpie in the Start menu
+		shortcut.Ensure()
 	}()
 	// MAGPIE_THEME=light|dark forces the palette; handy for screenshots.
 	theme := ""
@@ -156,6 +172,7 @@ func Run(version string, showMain bool, link string) error {
 		theme = "&theme=" + t
 	}
 	h := &host{query: theme, ready: make(chan struct{})}
+	go stats.Run(version, "app")
 	handler := devShell(h)
 	if handler == nil {
 		handler = Handler(h, startBackend())
@@ -302,6 +319,9 @@ func Run(version string, showMain bool, link string) error {
 	// the quick panel by the icon, or the main window if the user would
 	// rather (Settings → Tray icon)
 	h.tray.OnClick(func() {
+		if runtime.GOOS == "darwin" {
+			go h.flap()
+		}
 		if settings.Load().Tray == "window" {
 			h.ShowMain("")
 			return
@@ -374,4 +394,23 @@ func abs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// flap plays trayFlap on the tray icon, a frame every 30ms as they were
+// drawn — the .9s of the header logo's flap — and ends on the still bird.
+func (h *host) flap() {
+	if !h.flapping.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.flapping.Store(false)
+	names, _ := fs.Glob(trayFlap, "trayflap/*.png")
+	for _, n := range names {
+		b, err := trayFlap.ReadFile(n)
+		if err != nil {
+			break
+		}
+		h.tray.SetTemplateIcon(b)
+		time.Sleep(30 * time.Millisecond)
+	}
+	h.tray.SetTemplateIcon(trayIcon)
 }

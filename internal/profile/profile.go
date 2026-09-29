@@ -220,10 +220,12 @@ func ApplyFields(p map[string]string) (int, error) {
 	})
 	changed := 0
 	for _, k := range keys {
-		id, field, ok := strings.Cut(k, ".")
-		if !ok {
+		// the last dot: a WSL distro's name may have one (codex@wsl:Ubuntu-24.04)
+		i := strings.LastIndex(k, ".")
+		if i < 0 {
 			continue
 		}
+		id, field := k[:i], k[i+1:]
 		a := agents[id]
 		if a == nil {
 			continue

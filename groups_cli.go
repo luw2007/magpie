@@ -28,7 +28,7 @@ const groupUsage = `usage:
                                           id (what agents pick it as: id=gpt-6-astra drops auto-; the groups
                                           it is in follow; an agent set to the old id needs setting again),
                                           effort=auto (the classifier picks each turn's reasoning; needs classifier=),
-                                          effort=agent (the agent's again), classifier=<provider/model>
+                                          effort=agent (the agent's again), classifier=<provider/model>|group/<id>
   magpie group rm <id>                    remove a group (one magpie found is hidden instead)
   magpie group restore <id>               bring back a group magpie found that you removed
   magpie group rule add|rm|mv <id> …      rules: which model a turn goes to first, by its length, an image,

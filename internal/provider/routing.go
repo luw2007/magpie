@@ -157,6 +157,29 @@ func Allowances(agent string) map[string]Allowance {
 	return c.m[agent]
 }
 
+// OnRenewed has f told when an account's usage windows were started again
+// (a Codex reset spent), so what sat out waiting for them can come back.
+func OnRenewed(f func(agent, user string)) {
+	renewedHooks.Lock()
+	renewedHooks.fs = append(renewedHooks.fs, f)
+	renewedHooks.Unlock()
+}
+
+var renewedHooks struct {
+	sync.Mutex
+	fs []func(agent, user string)
+}
+
+// renewedNow tells those OnRenewed asked.
+func renewedNow(agent, user string) {
+	renewedHooks.Lock()
+	fs := renewedHooks.fs
+	renewedHooks.Unlock()
+	for _, f := range fs {
+		f(agent, user)
+	}
+}
+
 // StaleAllowance makes the next Allowances ask the vendor again for user's
 // allowance rather than trust what it last said: the account just
 // answered that it has run out.

@@ -48,7 +48,7 @@ func isCursorAgent(path string) bool {
 	return err == nil && strings.Contains(real, "cursor-agent")
 }
 
-var cursorStatus = &cliIdentity{name: "cursor", exe: func() string { return CursorExecutable() }, ask: func() (string, string, bool) { return askCursorIdentity() }}
+var cursorStatus = &cliIdentity{name: "cursor", exe: func() string { return CursorExecutable() }, ask: askCursorStatus}
 
 // cursorIdentity is who Cursor's CLI says is signed in; see cliIdentity.
 func cursorIdentity() (user, plan string, ok bool) { return cursorStatus.get() }
@@ -56,22 +56,55 @@ func cursorIdentity() (user, plan string, ok bool) { return cursorStatus.get() }
 func forgetCursorStatus() { cursorStatus.forget() }
 
 func askCursorIdentity() (user, plan string, ok bool) {
+	user, plan, ok, _ = askCursorStatus()
+	return user, plan, ok
+}
+
+// askCursorStatus asks `cursor-agent about` who is signed in. It is sure of
+// nobody only when the CLI says so or keeps no token: an about that fails,
+// runs out of time (it asks Cursor's servers) or prints something other
+// than its JSON couldn't tell, and the account stays as it was (#154).
+func askCursorStatus() (user, plan string, ok bool, err error) {
 	path := CursorExecutable()
 	if path == "" {
-		return "", "", false
+		return "", "", false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, _ := agentCommand(ctx, path, "about", "--format", "json").Output()
+	out, err := agentCommand(ctx, path, "about", "--format", "json").Output()
+	user, plan, said := parseCursorAbout(out)
+	switch {
+	case user != "":
+		return user, plan, true, nil
+	case said && err == nil, cursorSignedOut():
+		return "", "", false, nil
+	case err == nil:
+		err = errors.New("cursor-agent about printed no account")
+	}
+	return "", "", false, err
+}
+
+// parseCursorAbout reads `cursor-agent about --format json`: the email and
+// plan, and whether it printed that JSON at all — after a line of its own
+// (an update notice), too.
+func parseCursorAbout(out []byte) (user, plan string, said bool) {
+	s := strings.TrimSpace(ansi.ReplaceAllString(string(out), ""))
+	if i := strings.Index(s, "{"); i > 0 {
+		s = s[i:]
+	}
 	var about struct {
 		SubscriptionTier string `json:"subscriptionTier"`
 		UserEmail        string `json:"userEmail"`
 	}
-	if json.Unmarshal(out, &about) != nil || strings.TrimSpace(about.UserEmail) == "" {
+	if json.Unmarshal([]byte(s), &about) != nil {
 		return "", "", false
 	}
 	return strings.TrimSpace(about.UserEmail), strings.TrimSpace(about.SubscriptionTier), true
 }
+
+// cursorSignedOut is cursor-agent keeping no token, which is signed out
+// whatever about said; a var so tests can fake it.
+var cursorSignedOut = func() bool { return readCursorToken() == "" }
 
 func cursorAccount() (Provider, bool) {
 	user, plan, ok := cursorIdentity()
@@ -119,7 +152,9 @@ func parseCursorModels(out string) []catalog.Model {
 		if m == nil {
 			continue
 		}
-		name := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(m[2]), "(default)"))
+		// some names come with zero-width spaces and doubled ones
+		name := strings.Join(strings.Fields(strings.ReplaceAll(m[2], "\u200b", "")), " ")
+		name = strings.TrimSpace(strings.TrimSuffix(name, "(default)"))
 		name = strings.TrimSpace(strings.TrimSuffix(name, "(current)"))
 		ms = append(ms, catalog.Model{ID: m[1], Name: name, Context: cursorContext(m[1], name)})
 	}

@@ -63,18 +63,31 @@
   const steps = el("ol", "rt-steps");
   log.append(logHead, steps);
   const off = el("div", "none rt-off");
-  box.append(top, stage, foot, log, off);
+  // over the stage while a replay plays: the time it is replaying, which
+  // requests are in flight then, and where it is among them
+  const rbar = el("div", "rt-replay");
+  const rTop = el("div", "rp-top"), rClock = el("b", "rp-clock"), rDay = el("small", "rp-day"), rSkip = el("span", "rp-skip");
+  const rSpeed = el("button", "text"), rStop = el("button", "text");
+  rTop.append(el("span", "rp-tag"), rClock, rDay, rSkip, el("span", "grow"), rSpeed, rStop);
+  const rWhat = el("div", "rp-what");
+  const rTrack = el("div", "rp-track"), rHead = el("i", "rp-head");
+  rTrack.append(rHead);
+  rbar.append(rTop, rWhat, rTrack);
+  rbar.hidden = true;
+  box.append(top, rbar, stage, foot, log, off);
 
   // under the stage: every request the gateway keeps, and each account or
   // key as those requests found it
   const more = $("#rtMore");
   const reqHead = el("div", "row-head"), reqNote = el("span", "note");
   const reqs = el("div", "list rt-reqs");
+  // the days the history keeps on disk, to look back at one: see listed
+  const dayBar = el("div", "rt-days");
   const actHead = el("div", "row-head"), actNote = el("span", "note");
   const acts = el("div", "list rt-acts");
   const hist = el("div", "rt-cols");
   const colA = el("div", "rt-col"), colB = el("div", "rt-col");
-  colA.append(reqHead, reqs);
+  colA.append(reqHead, dayBar, reqs);
   colB.append(actHead, acts);
   hist.append(colA, colB);
   more.append(hist);
@@ -85,7 +98,8 @@
   // ---------- words ----------
 
   let skew = 0; // the gateway's clock less this page's
-  const now = () => Date.now() + skew;
+  // now is the gateway's time — or, in a replay, the time it is replaying
+  const now = () => rp ? rp.real : Date.now() + skew;
   const at = (s) => new Date(s).getTime();
   const known0 = (s) => s && !s.startsWith("0001-");
   function dur(ms) {
@@ -106,7 +120,7 @@
   }
   const tokens = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(Math.round(n));
   const pct = (n) => Math.round(n) + "%";
-  const FAIL = { rate: "rate limited", credit: "out of credit", quota: "quota used up", other: "failed", canceled: "canceled", foreign: "another account's reasoning", floor: "reply too short" };
+  const FAIL = { rate: "rate limited", credit: "out of credit", quota: "quota used up", other: "failed", canceled: "canceled", foreign: "another account's reasoning", floor: "reply too short", verify: "needs verification" };
   const failWord = (why) => t(FAIL[why] || "failed");
   const API = { anthropic: "Anthropic", chat: "OpenAI", responses: "OpenAI Responses", gemini: "Gemini" };
   const MODES = {
@@ -146,7 +160,7 @@
   // decided for the story of a request
   function restWhen(rest, from = now()) {
     const left = at(rest.until) - from;
-    return left < 3600e3 ? t("back in {d}", { d: dur(left) }) : t("back at {time}", { time: clock(rest.until) });
+    return left < 3600e3 ? t("back in {d}", { d: dur(left) }) : t("back at {time} · in {d}", { time: clock(rest.until), d: dur(left) });
   }
   // restHow says how long a failed account sits out, and what said so.
   function restHow(rest, from) {
@@ -155,8 +169,9 @@
       case "retry-after": return t("It rests {d}, as the vendor's Retry-After says", { d });
       case "credit": return t("It sits out half an hour, until someone tops it up");
       case "window": return t("Its allowance is used up: it rests until that renews, at {time}", { time });
-      case "resets": return t("It rests until {time}, when Claude Code says the limit resets", { time });
+      case "resets": return t("It rests until {time}, when the vendor says the limit resets", { time });
       case "quota": return t("It rests 15 minutes: out of quota, with no word of when it resets");
+      case "verify": return t("The vendor wants the account verified first: it rests half an hour, or until you say it's verified");
       case "backoff": return rest.failures > 1
         ? t("It has failed {n} times in a row: it rests {d}, longer each time", { n: rest.failures, d })
         : t("It rests {d}, longer if it fails again", { d });
@@ -372,7 +387,28 @@
     return c;
   }
 
+  // how the reasoning a try was sent at came to be
+  function effortNote(r, tr) {
+    const agent = agentName(r.agent);
+    if (tr.picked) return r.effort && r.effort !== tr.effort
+      ? t("{level} reasoning, picked for the turn; {agent} asked for {asked}", { level: tr.effort, agent, asked: r.effort })
+      : t("{level} reasoning, picked for the turn", { level: tr.effort });
+    return r.effort && r.effort !== tr.effort
+      ? t("{level} reasoning: the model's nearest to the {asked} {agent} asked for", { level: tr.effort, agent, asked: r.effort })
+      : t("{level} reasoning, as {agent} asked", { level: tr.effort, agent });
+  }
+
+  // a try in words, and how its reasoning came to differ from the agent's
   function tryWhy(r, i) {
+    const tr = r.tries[i], said = trySaid(r, i);
+    if (!tr.effort || !r.effort || r.effort === tr.effort) return said;
+    const agent = agentName(r.agent);
+    return said + (/[。！？]$/.test(said) ? "" : " ") + (tr.picked
+      ? t("The turn's pick replaced the {asked} {agent} asked for.", { asked: r.effort, agent })
+      : t("{level} is the model's nearest to the {asked} {agent} asked for.", { level: tr.effort, asked: r.effort, agent }));
+  }
+
+  function trySaid(r, i) {
     const tr = r.tries[i], w = tried(r, tr), agent = agentName(r.agent);
     let name = w ? `${who(w)} (${w.model})` : tr.id;
     if (tr.effort) name += " " + t("at {level} reasoning", { level: tr.effort });
@@ -389,6 +425,8 @@
       return t("{who} couldn't read the reasoning another account wrote earlier in this conversation, so it is asked again without it, before any of the reply reaches {agent}.", { who: name, agent });
     if (tr.fail === "floor")
       return t("{who} takes no request for a reply as short as this one asked for, so it is asked again for the shortest it gives, before any of the reply reaches {agent}.", { who: name, agent });
+    if (tr.fail === "verify" && !r.tries[i + 1])
+      return t("{who} answered {status}: the vendor wants the account verified before it serves it again, and nobody is left to try, so {agent} gets the error with how to verify it. For a minute {agent}'s retries get the same answer without asking the vendor.", { who: name, status: tr.status, agent });
     if (tr.again)
       return t("{who} answered {status} · {fail}, and nobody else is left to ask — a failure that may pass, so it is tried again in {d}, before any of the reply reaches {agent}.",
         { who: name, status: tr.status, fail: failWord(tr.fail), d: took(tr.again), agent });
@@ -406,14 +444,17 @@
   // ---------- state ----------
 
   const routes = new Map(); // id → the latest of each route
-  let seq = 0, mine = true, loaded = false;
+  let seq = 0, mine = true, loaded = false, daysAt = 0;
   let cur = null;           // the route the header and the log tell of: the newest played
   let pinned = null;        // a past route picked from the strip
   let rows = new Map();     // id → { li, wire, st, bi, tg, w, rid, up }
   const subs = new Map();   // a group in the group's way down → its heading { li, wire, key, up }
   const agents = new Map(); // agent → { node, ic, name, sub, wire }
   let sets = [];            // the account sets on the stage, in the order they came
-  const playing = new Set(); // the routes being played
+  const playing = new Map(); // the routes being played → the gen playing each
+  let rp = null;            // a replay playing: see replay
+  let day = "", days = [], past = [], pastCut = false; // a kept day looked at ("" for live), the days kept, its routes
+  const src = () => rp ? rp.routes : routes; // the routes the stage plays from
   const LINGER = 12e3;      // how long an agent's last request stays on the stage
   let gen = 0, trips = [], waiters = [];
   let capQ = [], capAt = -1e9, capLo = false, flipUntil = 0;
@@ -545,11 +586,11 @@
   // playing, and each agent's latest while it lingers, a few agents at most
   function staged() {
     if (pinned) return [pinned];
-    const n = now(), last = new Map();
-    const rs = [...routes.values()].sort((a, b) => a.id - b.id);
+    const n = now(), last = new Map(), map = src();
+    const rs = [...map.values()].sort((a, b) => a.id - b.id);
     for (const r of rs) last.set(r.agent, r);
     const out = rs.filter((r) => playing.has(r.id) || (last.get(r.agent) === r && (!r.done || at(r.time) + (r.ms || 0) > n - LINGER)));
-    const c = cur && routes.get(cur.id);
+    const c = cur && map.get(cur.id);
     if (c && !out.includes(c)) out.push(c);
     const ags = [...new Set(out.map((r) => r.agent))].slice(-4);
     return out.filter((r) => ags.includes(r.agent)).sort((a, b) => a.id - b.id);
@@ -635,7 +676,7 @@
     rebuild(rs, false);
   }
   function rebuild(rs, force) {
-    cur = routes.get((pinned || rs[rs.length - 1]).id) || pinned || rs[rs.length - 1];
+    cur = src().get((pinned || rs[rs.length - 1]).id) || pinned || rs[rs.length - 1];
     if (force) {
       for (const row of rows.values()) row.wire.remove();
       rows = new Map();
@@ -752,7 +793,7 @@
     for (const f of flying.values()) { onWire.add(f.id); busy.add(f.agent); }
     for (const [id, row] of rows) {
       // each row as the latest staged request that weighed it found it
-      const r = routes.get(row.rid) || pinned || cur, answered = new Set(), rests = new Map(), gave = new Map();
+      const r = src().get(row.rid) || pinned || cur, answered = new Set(), rests = new Map(), gave = new Map();
       for (const w of r.order) if (w.rest) rests.set(w.id, w.rest);
       for (const tr of r.tries) {
         if (tr.done && tr.status < 400) answered.add(seat(tr));
@@ -764,7 +805,9 @@
       let s;
       if (w.unlisted) s = unlistedWord(w);
       else if (resting) s = `${failWord(rest.why)} · ${restWhen(rest)}`;
-      else if (trying.has(id)) s = t("answering…");
+      // a row another request weighed, answering that one: the header
+      // tells of this request, so it says the answer is not this one's
+      else if (trying.has(id)) s = r.id !== cur.id && agents.size <= 1 ? t("answering another request…") : t("answering…");
       else if (answered.has(id)) s = agents.size > 1 ? t("answered {agent}", { agent: agentName(r.agent) }) : t("answered this request");
       else if (gave.has(id)) s = t("{status} · {fail} · passed to {agent}", { status: gave.get(id).status, fail: failWord(gave.get(id).fail), agent: agentName(r.agent) });
       else if (w.kind === "account" && w.known) {
@@ -806,11 +849,24 @@
     log.hidden = !r;
     if (!r) return;
     logHead.replaceChildren(
-      el("span", "", pinned ? t("How the request at {time} was routed", { time: clock(r.time) }) : t("How the last request was routed")),
+      el("span", "", rp ? t("How the request at {time} was routed", { time: clock(r.time) })
+        : pinned ? t("How the request at {time} was routed", { time: clock(r.time) }) : t("How the last request was routed")),
       el("span", "grow"));
-    if (pinned) {
+    if (!rp && r.done) {
+      const again = el("button", "text", t("Replay"));
+      again.onclick = () => replay([r], pinned);
+      logHead.append(again);
+      // and on from it: the requests listed after it, as they came
+      const on = listed().filter((x) => x.id >= r.id);
+      if (pinned && on.length > 1) {
+        const from = el("button", "text", t("Replay from here"));
+        from.onclick = () => replay(on, pinned);
+        logHead.append(from);
+      }
+    }
+    if (pinned && !rp) {
       const live = el("button", "text", t("Back to live"));
-      live.onclick = () => { pinned = null; cur = newest(); sync(true); renderAll(); };
+      live.onclick = () => { if (day) lookAt(""); else { pinned = null; cur = newest(); sync(true); renderAll(); } };
       logHead.append(live);
     }
     const items = [];
@@ -831,8 +887,8 @@
   // pick sets the stage to a past request, or back to live with the newest
   function pick(r) {
     pinned = r.id === newest()?.id ? null : r;
-    gen++; trips = []; flying.clear(); playing.clear();
-    for (const p of sky.querySelectorAll(".pkt, .rt-flier")) p.remove();
+    if (rp) { rp = null; rbar.hidden = true; }
+    stopPlays();
     cur = r;
     sync(true); renderAll();
     say(affWhy(r, true) || ruleWhy(r, true) || firstWhy(r));
@@ -843,22 +899,70 @@
   function outcome(r) {
     if (!r.done) {
       const tr = r.tries[r.tries.length - 1], w = tr && tried(r, tr);
-      return [w ? t("{who} is answering…", { who: `${who(w)} · ${w.model}` }) : t("routing…"), "wait"];
+      return [w ? t("{who} is answering…", { who: `${who(w)} · ${w.model}` }) : t("routing…"), "wait", tr];
     }
     const ok = r.tries.find((tr) => tr.done && tr.status < 400), w = ok && tried(r, ok);
-    if (r.status < 400) return [w ? `${who(w)} · ${w.model}` : r.provider, r.tries.length > 1 ? "moved" : "ok"];
+    if (r.status < 400) return [w ? `${who(w)} · ${w.model}` : r.provider, r.tries.length > 1 ? "moved" : "ok", ok];
     const last = r.tries[r.tries.length - 1];
     return [last ? `${r.status} · ${failWord(last.fail)}` : `${r.status || ""} ${r.error || ""}`.trim(), "bad"];
   }
 
   // the requests the gateway keeps, newest first: pick one to see how it was routed
+  // listed: the requests the list shows, newest first — the gateway's last
+  // few, or a day the history keeps
+  const listed = () => (day ? past : [...routes.values()]).slice().sort((a, b) => b.id - a.id);
+  const dayName = (d) => {
+    const x = new Date(d + "T12:00:00"), n = new Date(), y = new Date(n.getTime() - 864e5);
+    return x.toDateString() === n.toDateString() ? t("today") : x.toDateString() === y.toDateString() ? t("yesterday")
+      : x.toLocaleDateString([], { month: "short", day: "numeric", weekday: "short" });
+  };
+  async function loadDays(d) {
+    try {
+      const res = await (await fetch("/api/gateway/history?day=" + encodeURIComponent(d || ""))).json();
+      days = res.days || [];
+      if (d && d === day) { past = res.routes || []; pastCut = !!res.cut; }
+    } catch {}
+    renderDays();
+  }
+  async function lookAt(d) {
+    if (rp) endReplay(true);
+    day = d;
+    past = [];
+    if (d) await loadDays(d);
+    pinned = null;
+    const r = d ? listed()[0] : newest();
+    if (r && d) pick(r);
+    else if (r) { stopPlays(); cur = r; sync(true); say(affWhy(r, true) || ruleWhy(r, true) || firstWhy(r)); }
+    renderAll();
+  }
+  function renderDays() {
+    const b = (d, label, n) => {
+      const x = el("button", "rt-day" + (d === day ? " on" : ""));
+      x.append(el("span", "", label), ...(n != null ? [el("small", "", String(n))] : []));
+      x.setAttribute("aria-pressed", String(d === day));
+      x.onclick = () => { if (d !== day) lookAt(d); };
+      return x;
+    };
+    const key = day + "|" + days.map((d) => d.day + ":" + d.requests).join(",");
+    if (dayBar.dataset.key === key) return;
+    dayBar.dataset.key = key;
+    dayBar.replaceChildren(b("", t("Live")), ...days.map((d) => b(d.day, dayName(d.day), d.requests)));
+    dayBar.hidden = !days.length && !day;
+  }
   function renderHist() {
-    const rs = [...routes.values()].sort((a, b) => b.id - a.id);
-    hist.hidden = !rs.length;
+    const rs = listed();
+    hist.hidden = !rs.length && !day && !days.length;
     reqHead.replaceChildren(el("span", "label", t("Requests")), el("span", "grow"), reqNote);
-    reqNote.textContent = t("the last {n} the gateway keeps", { n: rs.length });
+    if (rs.filter((r) => r.done).length > 1 && !rp) {
+      const all = el("button", "text", t("Replay them all"));
+      all.onclick = () => replay(rs, pinned);
+      reqHead.append(all);
+    }
+    reqNote.textContent = day ? t(pastCut ? "the last {n} of {day}" : "{n} on {day}", { n: rs.length, day: dayName(day) })
+      : t("the last {n} the gateway keeps", { n: rs.length });
+    renderDays();
     reqs.replaceChildren(...rs.map((r) => {
-      const [said, how] = outcome(r);
+      const [said, how, tr] = outcome(r);
       const b = el("button", "rt-req " + how);
       const sel = pinned ? pinned.id === r.id : cur?.id === r.id;
       b.setAttribute("aria-pressed", String(sel));
@@ -868,8 +972,16 @@
       const sw = el("i", "ag");
       sw.style.setProperty("--agent", hueOf(r.agent));
       asked.append(sw, icon(ag?.icon || "generic"), el("span", "m", r.model));
+      // the reasoning the model was sent at — the turn's pick, or the
+      // agent's fitted to the model's levels; what the agent asked for is
+      // in its title and the request's story
       const to = el("span", "to");
       to.append(el("i"), el("span", "", said));
+      if (tr?.effort) {
+        const ef = el("span", "ef" + (tr.picked ? " picked" : ""), tr.effort);
+        ef.title = effortNote(r, tr);
+        to.append(ef);
+      }
       const meta = [];
       if (r.tries.length > 1) meta.push(t("{n} tries", { n: r.tries.length }));
       if (r.done && r.ms) meta.push(took(r.ms));
@@ -942,6 +1054,18 @@
         ...(a.last ? [el("span", "", t("last answered {time}", { time: clock(a.last) }))] : []),
         ...[...a.models].map((m) => el("code", "mdl", m)));
       row.append(name, el("div", "st " + cls, st), tally);
+      if (resting && a.rest.why === "verify") {
+        // the vendor wants the account verified (#152): where, and a way to
+        // stop its rest once it is
+        const fix = el("div", "fix"), rest = a.rest;
+        if (rest.link) { const b = el("button", "link", t("Verify the account ↗")); b.onclick = () => api("open", { url: rest.link }).catch(() => {}); fix.append(b); }
+        const go = el("button", "link", t("It's verified — try it again"));
+        go.onclick = async () => {
+          try { await api("gateway/unrest", { key: rest.key }); rest.until = new Date().toISOString(); render(); } catch (e) { go.textContent = e.message; }
+        };
+        fix.append(go);
+        row.append(fix);
+      }
       if (w.kind === "account" && w.known) {
         const bar = el("div", "bar"), bi = el("i");
         bi.style.width = Math.min(100, w.used) + "%";
@@ -1002,9 +1126,10 @@
   // picks up the answer and brings it back — a failure only as far as
   // magpie, where the first takes the request on to the next.
   async function play(id) {
+    const routes = src(); // a replay's, if it is one
     let r = routes.get(id);
     const g = gen;
-    playing.add(id);
+    playing.set(id, g);
     cur = r;
     sync();
     say(affWhy(r, true) || ruleWhy(r, true) || firstWhy(r));
@@ -1096,7 +1221,7 @@
       away(back);
       flying.delete(dot);
       dot.remove();
-      playing.delete(id);
+      if (playing.get(id) === g) playing.delete(id);
       renderAll();
     }
   }
@@ -1106,6 +1231,157 @@
     const ws = wiresTo(row);
     return [...[...ws].reverse().map((p) => ({ p, rev: true })), via(tip(ws[0], false, true), tip(A.wire, true, true)), { p: A.wire, rev: true }];
   };
+
+  // stopPlays ends whatever is flying: each play sees its gen gone and
+  // clears up after itself
+  function stopPlays() {
+    gen++; flying.clear(); playing.clear();
+    for (const p of sky.querySelectorAll(".pkt, .rt-flier")) p.remove();
+    wake();
+  }
+
+  // ---------- replay ----------
+
+  // replay plays kept requests again as they happened, from the trace the
+  // gateway kept: each at its time, each try as long as it took, and the
+  // stage — every agent, account, rest and sentence — as it was then. A
+  // wait longer than GAP is cut to GAP, so a minute's answer or a quiet
+  // hour doesn't hold it up; the clock over the stage still tells the time
+  // it is replaying, running fast through what was cut.
+  const GAP = 1800, LEAD = 500;
+  const ends = (r) => Math.max(at(r.time) + (r.ms || 0), ...r.tries.map((tr) => at(tr.start) + (tr.ms || 0)));
+  function replay(list, back) {
+    list = list.filter((r) => r.done).sort((a, b) => a.id - b.id);
+    if (!list.length) return;
+    const all = [];
+    for (const r of list) { all.push(at(r.time), ends(r)); for (const tr of r.tries) all.push(at(tr.start), at(tr.start) + (tr.ms || 0)); }
+    const ts = [...new Set(all)].sort((a, b) => a - b), vs = [];
+    let v = 0;
+    ts.forEach((x, i) => { if (i) v += Math.min(x - ts[i - 1], GAP); vs.push(v); });
+    const vOf = (x) => vs[ts.indexOf(x)];
+    const plan = list.map((r, i) => ({ r, n: i + 1, s: vOf(at(r.time)), e: vOf(ends(r)),
+      tries: r.tries.map((tr) => ({ s: vOf(at(tr.start)), e: vOf(at(tr.start) + (tr.ms || 0)) })) }));
+    const speed = rp?.speed || 1;
+    rp = null; // the old one, if one was playing, stops here
+    stopPlays();
+    pinned = null;
+    rp = { routes: new Map(), plan, ts, vs, v: -LEAD, total: v, speed, back: back || null, t: performance.now(), real: ts[0] - LEAD };
+    rTrack.replaceChildren(rHead, ...plan.map((g) => {
+      const m = el("i", "rp-mark");
+      m.style.left = (g.s / (v || 1)) * 100 + "%";
+      m.style.setProperty("--agent", hueOf(g.r.agent));
+      m.title = `${clock(g.r.time)} · ${agentName(g.r.agent)} · ${g.r.model}`;
+      g.mark = m;
+      return m;
+    }));
+    rbar.hidden = false;
+    renderAll();
+    requestAnimationFrame(step);
+  }
+  // ghost is a request as it was v into the replay
+  function ghost(g, v) {
+    const tries = [];
+    g.r.tries.forEach((tr, i) => {
+      const x = g.tries[i];
+      if (x.s <= v) tries.push(x.e <= v ? tr : { ...tr, done: false, status: 0, rest: null, again: false });
+    });
+    return { ...g.r, tries, done: g.e <= v };
+  }
+  // realAt is the time it was v into the replay, and how much faster than
+  // time it runs there
+  function realAt(p, v) {
+    const { ts, vs } = p;
+    if (v <= 0) return [ts[0] + v, 1];
+    for (let k = 1; k < ts.length; k++) {
+      if (v > vs[k]) continue;
+      const dv = vs[k] - vs[k - 1], dt = ts[k] - ts[k - 1];
+      return [dv ? ts[k - 1] + (v - vs[k - 1]) * dt / dv : ts[k], dv ? dt / dv : 1];
+    }
+    return [ts[ts.length - 1], 1];
+  }
+  const same = (a, b) => a.done === b.done && a.tries.length === b.tries.length && a.tries.every((x, i) => x.done === b.tries[i].done);
+  function step(ts) {
+    const p = rp;
+    if (!p) return;
+    p.v += (ts - p.t) * p.speed;
+    p.t = ts;
+    let fast;
+    [p.real, fast] = realAt(p, p.v);
+    let moved = false;
+    for (const g of p.plan) {
+      if (g.s > p.v) continue;
+      const was = p.routes.get(g.r.id), is = ghost(g, p.v);
+      if (was && same(was, is)) continue;
+      p.routes.set(g.r.id, is);
+      moved = true;
+      if (!was) play(g.r.id);
+    }
+    wake();
+    // as the gateway's own trace would: a try begun or ended shows at once
+    if (moved) { if (cur && p.routes.has(cur.id)) cur = p.routes.get(cur.id); renderAll(); }
+    replayBar(p, fast);
+    if (p.v > p.total && !playing.size) { endReplay(); return; }
+    requestAnimationFrame(step);
+  }
+  function replayBar(p, fast) {
+    const d = new Date(p.real);
+    rClock.textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) + "." + Math.floor(d.getMilliseconds() / 100);
+    const day = d.toDateString() === new Date().toDateString() ? t("today") : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    if (rDay.textContent !== day) rDay.textContent = day;
+    const skip = fast > 1.5 ? t("fast-forwarding · {n}×", { n: Math.round(fast) }) : "";
+    if (rSkip.textContent !== skip) rSkip.textContent = skip;
+    rSpeed.textContent = t("{n}× speed", { n: p.speed });
+    rStop.textContent = t("Stop replay");
+    rTop.firstChild.textContent = t("Replaying");
+    rHead.style.left = Math.max(0, Math.min(100, (p.v / (p.total || 1)) * 100)) + "%";
+    // the requests in flight at this moment of the replay, else the last one
+    const on = p.plan.filter((g) => playing.has(g.r.id) || (p.routes.has(g.r.id) && !p.routes.get(g.r.id).done));
+    const shown_ = on.length ? on : p.plan.filter((g) => p.routes.has(g.r.id)).slice(-1);
+    for (const g of p.plan) g.mark.classList.toggle("on", on.includes(g));
+    const key = shown_.map((g) => g.r.id + ":" + p.routes.get(g.r.id)?.tries.length + ":" + p.routes.get(g.r.id)?.done).join(",") + (shown_.length ? "" : "-");
+    if (rWhat.dataset.key === key) return;
+    rWhat.dataset.key = key;
+    rWhat.replaceChildren(...(shown_.length ? shown_.map((g) => {
+      const r = p.routes.get(g.r.id) || g.r, row = el("div", "rp-req" + (on.includes(g) ? " on" : ""));
+      const sw = el("i", "ag");
+      sw.style.setProperty("--agent", hueOf(r.agent));
+      const [said] = outcome(r);
+      row.append(el("span", "rp-n", t("request {i} of {n}", { i: g.n, n: p.plan.length })), sw,
+        el("b", "", agentName(r.agent)), el("code", "mdl", r.model), el("span", "rp-to", "→ " + said),
+        el("span", "rp-at", t("sent {time}", { time: new Date(r.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) })));
+      row.onclick = () => { cur = r; renderLog(); };
+      return row;
+    }) : [el("span", "rp-wait", t("starting…"))]));
+  }
+  // seek plays the replay on from where on its track was clicked
+  function seek(frac) {
+    const p = rp;
+    if (!p) return;
+    const v = Math.max(0, Math.min(1, frac)) * p.total;
+    stopPlays(); // the flights end; the replay goes on
+    p.v = v; p.t = performance.now(); p.routes.clear();
+    for (const g of p.plan) if (g.s <= v) p.routes.set(g.r.id, ghost(g, v));
+    // one in flight there flies on from where it was; the rest are done
+    for (const g of p.plan) if (p.routes.has(g.r.id) && !p.routes.get(g.r.id).done) play(g.r.id);
+    const last = [...p.routes.values()].pop();
+    if (last) { cur = last; sync(true); }
+    rWhat.dataset.key = "";
+    renderAll();
+  }
+  function endReplay(stop) {
+    const p = rp;
+    if (!p) return;
+    rp = null;
+    rbar.hidden = true;
+    if (stop) stopPlays();
+    const b = p.back && (routes.get(p.back.id) || (day && past.find((x) => x.id === p.back.id)));
+    pinned = b || null;
+    cur = b || newest();
+    if (cur) { sync(true); renderAll(); }
+  }
+  rSpeed.onclick = () => { if (rp) { rp.speed = rp.speed >= 8 ? 1 : rp.speed * 2; replayBar(rp, 1); } };
+  rStop.onclick = () => endReplay(true);
+  rTrack.onclick = (e) => { const b = rTrack.getBoundingClientRect(); seek((e.clientX - b.left) / b.width); };
 
   // ---------- the loop ----------
 
@@ -1162,7 +1438,7 @@
     requestAnimationFrame(frame);
   }
   // countdowns tick once a second
-  setInterval(() => { if (shown()) { if (!pinned && loaded && cur) sync(); render(); renderActs([...routes.values()].sort((a, b) => b.id - a.id)); } }, 1000);
+  setInterval(() => { if (shown()) { if (!pinned && loaded && cur) sync(); render(); renderActs(listed()); } }, 1000);
 
   function offline(msg) {
     off.textContent = msg;
@@ -1225,6 +1501,8 @@
         }
         for (const id of [...routes.keys()].sort((a, b) => a - b).slice(0, -60)) routes.delete(id);
         loaded = true;
+        // a request done is a day's count grown: heard of now and then
+        if (first || (d.routes.some((r) => r.done) && performance.now() - daysAt > 15e3)) { daysAt = performance.now(); loadDays(); }
         if (first) {
           offline("");
           // the agents' names come with the app's state, which may not be here yet
@@ -1232,9 +1510,9 @@
           const r = newest();
           if (r) { cur = r; sync(true); say(affWhy(r, true) || ruleWhy(r, true) || firstWhy(r)); renderAll(); } else empty();
         } else {
-          if (cur && routes.has(cur.id)) cur = routes.get(cur.id);
+          if (cur && routes.has(cur.id) && !rp) cur = routes.get(cur.id);
           if (pinned && routes.has(pinned.id)) pinned = routes.get(pinned.id);
-          for (const id of fresh) if (!pinned) play(id);
+          for (const id of fresh) if (!pinned && !rp) play(id);
           wake();
           renderAll();
         }
@@ -1562,14 +1840,21 @@
       if (!on) return;
       const intents = d.rules.some((r) => r.intent?.trim());
       clabel.textContent = t(auto && !intents ? "Decided by" : "Intent told by");
-      const m = [...deciders, ...groups.models].find((x) => x.id === d.classifier);
+      // a model, or another group: its models are asked in turn, failing
+      // over as any request to it does (never this group: it would ask
+      // itself)
+      const m = [...deciders, ...groups.models].find((x) => x.id === d.classifier), sg = subOf(d.classifier);
       const cb = el("button", "rt-cond" + (d.classifier ? " on" : ""));
-      if (d.classifier) cb.append(icon(m?.icon || "generic"), el("span", "", m ? `${m.name || m.id} · ${m.providerName}` : d.classifier));
+      if (sg) cb.append(stackIcon(groupIcons(sg)), el("span", "", `${sg.name} · ${t("routing group")}`));
+      else if (d.classifier) cb.append(icon(m?.icon || "generic"), el("span", "", m ? `${m.name || m.id} · ${m.providerName}` : d.classifier));
       else cb.append(el("span", "", t("choose a model")));
       const opt = (x) => ({ value: x.id, label: x.name || x.id, note: x.providerName, icon: x.icon, group: x.providerName, ref: x.id });
-      cb.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "classifier", label: "model", value: d.classifier, options: [...deciders.map(opt), ...groups.models.map(opt)],
+      const subs = groups.groups.filter((x) => !x.hidden && x.id !== g?.id)
+        .map((x) => ({ value: "group/" + x.id, label: x.name, note: "group/" + x.id, icons: groupIcons(x), group: ROUTING_GROUPS, ref: "group/" + x.id }));
+      cb.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "classifier", label: "model", value: d.classifier, options: [...deciders.map(opt), ...subs, ...groups.models.map(opt)],
         onPick: (id) => { if (id) d.classifier = id; drawClassifier(); } }, cb, ev);
       cls.replaceChildren(cb,
+        ...(sg ? [el("div", "hint", t("A routing group classifies as any request to it goes: if its first model fails, the next is asked."))] : []),
         el("div", "hint", t(isJev(d.classifier) && !intents
           ? "Jev is asked once as each turn begins, with the message and what it said of the turn before. Its calls show in the usage as magpie’s own."
           : isJev(d.classifier)

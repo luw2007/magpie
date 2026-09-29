@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -208,6 +209,72 @@ func TestRTKRemove(t *testing.T) {
 	}
 }
 
+// TestRTKOpenCode2: rtk's OpenCode plugin is written for OpenCode 1, and
+// OpenCode 2 refuses to load it (rtk-ai/rtk#4311), so with an OpenCode 2
+// here rtk isn't given to OpenCode; one given before can still be taken out.
+// An OpenCode 1 still gets it.
+func TestRTKOpenCode2(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fakes are shell scripts")
+	}
+	h := sandbox(t)
+	bin := filepath.Join(h, "bin")
+	write(t, filepath.Join(bin, "rtk"), fakeRTK)
+	opencode := func(version string) {
+		t.Helper()
+		write(t, filepath.Join(bin, "opencode"), "#!/bin/sh\necho "+version+"\n")
+		for _, f := range []string{"rtk", "opencode"} {
+			if err := os.Chmod(filepath.Join(bin, f), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Setenv("PATH", bin)
+	plugin := filepath.Join(h, ".config", "opencode", "plugins", "rtk.ts")
+	blocked := func() string {
+		t.Helper()
+		for _, a := range ReadRTK().Agents {
+			if a.ID == "opencode" {
+				return a.Blocked
+			}
+		}
+		t.Fatal("opencode isn't listed")
+		return ""
+	}
+
+	// what each prints for --version
+	opencode("opencode v2.0.18")
+	if b := blocked(); !strings.Contains(b, "OpenCode 2.0.18") {
+		t.Fatalf("blocked: %q", b)
+	}
+	_, err := SetRTK("opencode", true)
+	if err == nil || !strings.Contains(err.Error(), "doesn't support OpenCode 2") {
+		t.Fatalf("switched on for OpenCode 2: %v", err)
+	}
+	if exists(plugin) {
+		t.Fatal("rtk's plugin was written for OpenCode 2")
+	}
+	// one written before (by an older magpie, or rtk init by hand) goes
+	write(t, plugin, "x")
+	if _, err := SetRTK("opencode", false); err != nil {
+		t.Fatal(err)
+	}
+	if exists(plugin) {
+		t.Fatal("rtk's plugin is still there")
+	}
+
+	opencode("1.18.32")
+	if b := blocked(); b != "" {
+		t.Fatalf("OpenCode 1 blocked: %q", b)
+	}
+	if _, err := SetRTK("opencode", true); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(plugin) {
+		t.Fatal("OpenCode 1 didn't get rtk's plugin")
+	}
+}
+
 func TestDropHermesPlugin(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	for in, want := range map[string]string{
@@ -220,6 +287,61 @@ func TestDropHermesPlugin(t *testing.T) {
 		}
 		if got := read(t, p); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestRTKCodexOld: rtk has a hook for Codex from 0.50 on; an older one's
+// rtk init --codex only puts @RTK.md in AGENTS.md, so it isn't run for
+// Codex, and the Library says to update it. A newer one is.
+func TestRTKCodexOld(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake rtk is a shell script")
+	}
+	h := sandbox(t)
+	codex := filepath.Join(h, ".codex")
+	bin := filepath.Join(h, "bin")
+	rtk := func(version, init string) {
+		t.Helper()
+		write(t, filepath.Join(bin, "rtk"), "#!/bin/sh\ncase \"$1\" in\n--version) echo \"rtk "+version+"\"; exit 0 ;;\ngain) exit 1 ;;\nesac\n"+init+"\n")
+		if err := os.Chmod(filepath.Join(bin, "rtk"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	write(t, filepath.Join(codex, "config.toml"), "")
+	blocked := func() string {
+		t.Helper()
+		for _, a := range ReadRTK().Agents {
+			if a.ID == "codex" {
+				return a.Blocked
+			}
+		}
+		t.Fatal("codex isn't listed")
+		return ""
+	}
+
+	rtk("0.49.0", `echo "@$CODEX_HOME/RTK.md" > "$HOME/.codex/AGENTS.md"`)
+	if b := blocked(); !strings.Contains(b, "0.49.0") {
+		t.Fatalf("blocked: %q", b)
+	}
+	if _, err := SetRTK("codex", true); err == nil || !strings.Contains(err.Error(), "RTK 0.50 or newer") {
+		t.Fatalf("switched on with rtk 0.49: %v", err)
+	}
+	if exists(filepath.Join(codex, "AGENTS.md")) {
+		t.Fatal("rtk 0.49's installer was run")
+	}
+
+	rtk("0.50.0", `echo '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook codex"}]}]}}' > "$HOME/.codex/hooks.json"`)
+	if b := blocked(); b != "" {
+		t.Fatalf("rtk 0.50 blocked: %q", b)
+	}
+	if _, err := SetRTK("codex", true); err != nil {
+		t.Fatal(err)
+	}
+	for v, want := range map[string]bool{"0.49.9": true, "0.28.2": true, "0.50.0": false, "0.51.0-rc.473": false, "1.0.0": false, "x": false} {
+		if older(v, 0, 50) != want {
+			t.Errorf("older(%q) = %v", v, !want)
 		}
 	}
 }

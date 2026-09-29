@@ -15,6 +15,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/stats"
 )
 
 var amber = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#F2B544"})
@@ -32,6 +33,7 @@ const providerUsage = `usage:
   magpie provider fallback <id> <provider/model>…   where requests go when it's out of quota or down (none clears)
   magpie provider models <id> [ids…]      fetch the vendor's model list, or choose which models to expose
   magpie provider listed <id> yes|no      no: its models serve only through routing groups, not in the list
+  magpie provider off|on <id>             switch it off (kept, but no agent or request uses it), or on again
   magpie provider test <id> [model…]      send a tiny request through each endpoint, or to each model
   magpie provider rm <id>                 remove a provider
 
@@ -71,6 +73,8 @@ func providers() error {
 			r.name += " " + faint.Render("custom")
 		}
 		switch {
+		case p.Off:
+			r.key = faint.Render("○ switched off")
 		case p.Account != nil:
 			r.key = green.Render("●") + " " + muted.Render("signed in as "+p.Account.User)
 		case p.Key != "":
@@ -399,6 +403,25 @@ func providerCmd(args []string) error {
 			fmt.Println(green.Render("✓"), p.Name, muted.Render("its models are listed"))
 		}
 		return nil
+	case "off", "on":
+		// off: kept with its keys, but agents are given none of its
+		// models and no request goes to it
+		if len(rest) != 1 {
+			return fmt.Errorf("magpie provider %s <id>", verb)
+		}
+		p, err := provider.Find(rest[0])
+		if err != nil {
+			return err
+		}
+		if err := provider.SetOff(p.ID, verb == "off"); err != nil {
+			return err
+		}
+		if verb == "off" {
+			fmt.Println(green.Render("✓"), p.Name, muted.Render("is switched off: agents are given none of its models"))
+		} else {
+			fmt.Println(green.Render("✓"), p.Name, muted.Render("is switched on"))
+		}
+		return nil
 	case "models":
 		if len(rest) < 1 {
 			return fmt.Errorf("magpie provider models <id> [model ids to expose…]")
@@ -495,6 +518,9 @@ func announce(id string) error {
 	defer cancel()
 	if ms, err := saved.Fetch(ctx); err == nil {
 		fmt.Println(green.Render("✓"), len(ms), "models from", fetchedFrom(*saved))
+	} else if !saved.Decides() {
+		// the URLs asked and what they said; the base stays as given
+		fmt.Println(amber.Render("!"), muted.Render(err.Error()))
 	}
 	n := len(saved.Exposed())
 	if saved.Decides() {
@@ -727,6 +753,7 @@ func refreshLive(ctx context.Context) {
 // serve: `magpie serve` — the gateway alone, in the foreground.
 func serve() error {
 	s := gateway.New()
+	go stats.Run(version, "serve")
 	fmt.Println(green.Render("●"), "magpie gateway on", bold.Render(gateway.URL()))
 	fmt.Println(muted.Render("  OpenAI  "), gateway.URL()+"/v1/chat/completions", muted.Render("·"), gateway.URL()+"/v1/responses")
 	fmt.Println(muted.Render("  Anthropic"), gateway.URL()+"/v1/messages")

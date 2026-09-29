@@ -29,7 +29,11 @@ func sandbox(t *testing.T) string {
 	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("PATH", "")
-	for _, k := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "COPILOT_HOME", "APPDATA", "DSH_HOME"} {
+	// never the machine's global node_modules
+	roots := piGlobalRoots
+	piGlobalRoots = func() []string { return nil }
+	t.Cleanup(func() { piGlobalRoots = roots })
+	for _, k := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "COPILOT_HOME", "APPDATA", "LOCALAPPDATA", "DSH_HOME"} {
 		t.Setenv(k, "")
 	}
 	for _, f := range []string{
@@ -90,6 +94,24 @@ func TestTargets(t *testing.T) {
 		if !slices.Contains(got, id) {
 			t.Errorf("%s not a target: %v", id, got)
 		}
+	}
+}
+
+// On Windows Crush's crush.json is in %LOCALAPPDATA%\crush, but its CRUSH.md
+// is read from ~/.config/crush, as everywhere else; one beside crush.json is
+// never read.
+func TestCrushInstructionsWhereCrushReadsThem(t *testing.T) {
+	h := sandbox(t)
+	app := filepath.Join(h, "AppData", "Local")
+	t.Setenv("LOCALAPPDATA", app)
+	write(t, filepath.Join(app, "crush", "crush.json"), "")
+	shared := "Use tabs."
+	ok(t)(SaveInstructions(InstructionsChange{Shared: &shared, Agents: []string{"crush"}}))
+	if s := read(t, filepath.Join(h, ".config", "crush", "CRUSH.md")); s != blockBegin+"\nUse tabs.\n"+blockEnd+"\n" {
+		t.Errorf("~/.config/crush/CRUSH.md:\n%q", s)
+	}
+	if _, err := os.Stat(filepath.Join(app, "crush", "CRUSH.md")); !os.IsNotExist(err) {
+		t.Error("a CRUSH.md Crush doesn't read was written beside crush.json")
 	}
 }
 

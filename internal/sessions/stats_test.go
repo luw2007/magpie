@@ -133,3 +133,41 @@ func TestStatsMidnight(t *testing.T) {
 	// and read again unchanged, nothing counts twice
 	check("again", after20, after21, 180, 240)
 }
+
+// Sum rolls the days up as the app's Sessions view does: a date for every
+// day of the range, totals under a model or a folder, and no active time
+// under a model, as it isn't kept by model.
+func TestSum(t *testing.T) {
+	inZone(t, 0)
+	setup(t)
+	r := statsAt(7, statsNow).Sum("", "")
+	if len(r.Days) != 7 || r.Days[0].Date != "2026-09-22" || r.Days[6].Date != "2026-09-28" {
+		t.Fatalf("days %+v", r.Days)
+	}
+	// only Codex's pick-up on the 23rd is in the last 7 days
+	if r.Tokens != (Tokens{2000, 100, 6000, 0}) || r.DaysUsed != 1 || r.Days[1].Spent() != 2100 {
+		t.Fatalf("%+v", r)
+	}
+	if len(r.Models) != 1 || r.Models[0].Name != "gpt-6-astra" || len(r.Folders) != 1 || r.Folders[0].Name != "/work/it's" {
+		t.Fatalf("models %+v folders %+v", r.Models, r.Folders)
+	}
+
+	all := statsAt(0, statsNow)
+	app := all.Sum("", "/work/app")
+	if app.Tokens != (Tokens{1110, 170, 5200, 1000}) || app.Active != 300 || len(app.Folders) != 2 {
+		t.Fatalf("app: %+v", app)
+	}
+	opus := all.Sum("claude-opus-5-5", "")
+	if opus.Active != -1 || opus.Days[0].Active != -1 || len(opus.Folders) != 1 || opus.Folders[0].Name != "/work/app" {
+		t.Fatalf("opus: %+v", opus)
+	}
+	if opus.Cost == 0 || !near(opus.Cost, opus.Folders[0].Cost) {
+		t.Fatalf("opus cost %v, its folder's %v", opus.Cost, opus.Folders[0].Cost)
+	}
+	if none := all.Sum("no-such-model", ""); none.Spent() != 0 || none.DaysUsed != 0 {
+		t.Fatalf("none: %+v", none)
+	}
+	if Duration(-1) != "—" || Duration(20) != "<1m" || Duration(300) != "5m" || Duration(3*3600+12*60) != "3h 12m" {
+		t.Fatal(Duration(20), Duration(300))
+	}
+}

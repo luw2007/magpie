@@ -13,6 +13,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // sessionJSON is a session with what the UI needs to draw its agent.
@@ -20,6 +21,9 @@ type sessionJSON struct {
 	sessions.Session
 	Name string `json:"name"`
 	Icon string `json:"icon"`
+	// Via: the models the gateway sent its calls to, at the reasoning
+	// each was asked for, when it went through magpie
+	Via []usage.Via `json:"via,omitempty"`
 }
 
 type sessionsJSON struct {
@@ -38,9 +42,20 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			agents[a.ID] = a
 		}
 		out := sessionsJSON{Sessions: []sessionJSON{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
-			Dirs: []string{tilde(sessions.ClaudeDir()), tilde(sessions.CodexDir())}}
-		for _, s := range sessions.List(n) {
-			j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic"}
+			Dirs: []string{}}
+		for _, d := range sessions.Dirs() {
+			out.Dirs = append(out.Dirs, tilde(d))
+		}
+		list := sessions.List(n)
+		since := time.Now()
+		for _, s := range list {
+			if !s.Start.IsZero() && s.Start.Before(since) {
+				since = s.Start
+			}
+		}
+		vias := usage.Vias(since.Add(-time.Minute))
+		for _, s := range list {
+			j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic", Via: vias[s.Agent+"|"+s.ID]}
 			if a := agents[s.Agent]; a != nil {
 				j.Name, j.Icon = a.Name, a.Icon
 			}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -54,6 +55,9 @@ type rtkSpec struct {
 	// withClaude: the installer gives it to Claude Code too, which is
 	// pointed at a folder thrown away after
 	withClaude bool
+	// blocked says why rtk's installer mustn't be run for the agent as it
+	// is on this machine, "" when it can be
+	blocked func() string
 }
 
 func contains(path, s string) bool {
@@ -93,8 +97,9 @@ var rtkSpecs = map[string]rtkSpec{
 		dir: func(*agent.Agent) string { return claudeDir() },
 	},
 	"codex": {
-		flags: []string{"--codex"},
-		has:   func(*agent.Agent) bool { return contains(filepath.Join(codexDir(), "hooks.json"), "rtk hook codex") },
+		flags:   []string{"--codex"},
+		blocked: codexBlocked,
+		has:     func(*agent.Agent) bool { return contains(filepath.Join(codexDir(), "hooks.json"), "rtk hook codex") },
 		files: func(*agent.Agent) []string {
 			d := codexDir()
 			return []string{filepath.Join(d, "hooks.json"), filepath.Join(d, "AGENTS.md"), filepath.Join(d, "RTK.md")}
@@ -130,7 +135,7 @@ var rtkSpecs = map[string]rtkSpec{
 		dir: func(*agent.Agent) string { return filepath.Join(home(), ".gemini") },
 	},
 	"opencode": {
-		flags: []string{"--opencode"}, patch: true, withClaude: true,
+		flags: []string{"--opencode"}, patch: true, withClaude: true, blocked: openCodeBlocked,
 		has:    func(a *agent.Agent) bool { return exists(opencodePlugin(a)) },
 		files:  func(a *agent.Agent) []string { return []string{opencodePlugin(a)} },
 		remove: func(a *agent.Agent) error { return rm(opencodePlugin(a)) },
@@ -179,6 +184,94 @@ var rtkSpecs = map[string]rtkSpec{
 
 func opencodePlugin(a *agent.Agent) string {
 	return filepath.Join(filepath.Dir(a.Path), "plugins", "rtk.ts")
+}
+
+// openCodeBlocked: rtk's OpenCode plugin (hooks/opencode/rtk.ts, which
+// rtk init --opencode writes to plugins/rtk.ts, up to rtk 0.50 and its
+// develop branch) is written for OpenCode 1's plugin API — a named export
+// of a function. OpenCode 2 reads the same plugins folder but takes only a
+// default export of {id, setup|effect}, and turns rtk's away: "Plugin must
+// export a default definition with an id and an effect or setup function"
+// (rtk-ai/rtk#4311, #3898; the fix, #4187, isn't merged). So with an
+// OpenCode 2 here, rtk isn't given to OpenCode: it would only add a plugin
+// that fails to load.
+func openCodeBlocked() string {
+	v := openCodeVersion()
+	if major, _, _ := strings.Cut(v, "."); major != "" && major != "0" && major != "1" {
+		return fmt.Sprintf("RTK doesn't support OpenCode 2 yet: its plugin is written for OpenCode 1, and OpenCode %s refuses to load it (\"Plugin must export a default definition with an id and an effect or setup function\", github.com/rtk-ai/rtk/issues/4311)", v)
+	}
+	return ""
+}
+
+// codexBlocked: rtk has a hook for Codex from 0.50.0 on (rtk hook codex in
+// hooks.json); before that rtk init --codex only puts @RTK.md in AGENTS.md,
+// which rewrites no command, so an older rtk isn't run for Codex.
+func codexBlocked() string {
+	v := rtkVersion()
+	if v == "" || !older(v, 0, 50) {
+		return ""
+	}
+	return fmt.Sprintf("Codex's hook needs RTK 0.50 or newer, and this RTK is %s: older ones only add @RTK.md to AGENTS.md, which rewrites no command. Update RTK (brew upgrade rtk, or its installer again), then switch it on", v)
+}
+
+// older says whether version v is before major.minor.
+func older(v string, major, minor int) bool {
+	var a, b int
+	if n, _ := fmt.Sscanf(v, "%d.%d", &a, &b); n < 2 {
+		return false
+	}
+	return a < major || a == major && b < minor
+}
+
+// rtkVersion is the version the rtk here says it is, "" when there's none
+// or it doesn't say; a test sets it.
+var rtkVersion = func() string {
+	bin := rtkPath()
+	if bin == "" {
+		return ""
+	}
+	out, err := rtkRun(bin, "--version")
+	if err != nil {
+		return ""
+	}
+	if m := semver.FindStringSubmatch(out); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// semver finds the version in what opencode --version prints: OpenCode 1
+// prints "1.18.32", OpenCode 2 "opencode v2.0.18".
+var semver = regexp.MustCompile(`(?:^|[^\w.])v?(\d+\.\d+\.\d+\S*)`)
+
+// openCodeVersion is the version the opencode on this machine says it is,
+// "" when there's none or it doesn't say; a test sets it. OpenCode 2's
+// installer puts it in ~/.opencode/bin as opencode, with opencode2 beside
+// it running it.
+var openCodeVersion = func() string {
+	name := "opencode"
+	if runtime.GOOS == "windows" {
+		name = "opencode.exe"
+	}
+	bin, err := exec.LookPath("opencode")
+	if err != nil {
+		bin = filepath.Join(home(), ".opencode", "bin", name)
+		if !exists(bin) {
+			return ""
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := proc.CommandContext(ctx, bin, "--version")
+	cmd.Stdin = nil
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	if m := semver.FindStringSubmatch(string(out)); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 func hermesPlugin() string { return filepath.Join(home(), ".hermes", "plugins", "rtk-rewrite") }
@@ -355,6 +448,9 @@ type RTKAgent struct {
 	Name string `json:"name"`
 	Icon string `json:"icon"`
 	On   bool   `json:"on"`
+	// Blocked says why rtk can't be switched on for it here (OpenCode 2);
+	// one that has it can still be switched off
+	Blocked string `json:"blocked,omitempty"`
 }
 
 // RTKGain is what rtk says it saved, over every command it has recorded.
@@ -365,11 +461,30 @@ type RTKGain struct {
 	Pct      float64 `json:"pct"`
 }
 
+// RTKDay is what rtk saved on one day it ran commands.
+type RTKDay struct {
+	Date     string  `json:"date"` // 2006-01-02, local
+	Commands int     `json:"commands"`
+	Input    int64   `json:"input"`
+	Saved    int64   `json:"saved"`
+	Pct      float64 `json:"pct"`
+}
+
 // RTKView is the RTK part of the Library page.
 type RTKView struct {
-	Path    string     `json:"path,omitempty"` // "" when rtk isn't installed
-	Version string     `json:"version,omitempty"`
-	Gain    *RTKGain   `json:"gain,omitempty"`
+	Path    string   `json:"path,omitempty"` // "" when rtk isn't installed
+	Version string   `json:"version,omitempty"`
+	Gain    *RTKGain `json:"gain,omitempty"`
+	// Days are what it saved each day it ran commands, oldest first
+	Days []RTKDay `json:"days,omitempty"`
+	// Latest is rtk's latest release, "" when it isn't known (see
+	// CheckLatest); Upgrade the command Upgrade RTK runs, "" when magpie
+	// doesn't know how this rtk was installed
+	Latest  string `json:"latest,omitempty"`
+	Upgrade string `json:"upgrade,omitempty"`
+	// Note is what an upgrade left to say: Homebrew's rtk behind rtk's
+	// own release
+	Note    string     `json:"note,omitempty"`
 	Agents  []RTKAgent `json:"agents"`
 	URL     string     `json:"url"`
 	// Install is the command Install RTK runs, shown before it is clicked
@@ -447,14 +562,16 @@ func ReadRTK() *RTKView {
 	v := &RTKView{Agents: []RTKAgent{}, URL: RTKURL, Path: rtkPath()}
 	if v.Path == "" {
 		if c := rtkInstaller(); c != nil {
-			v.Install = strings.Join(c, " ")
-			if c[0] == "sh" {
-				v.Install = c[2]
-			}
+			v.Install = shown(c)
 		}
 	}
 	for _, a := range rtkAgents() {
-		v.Agents = append(v.Agents, RTKAgent{ID: a.ID, Name: a.Name, Icon: a.Icon, On: rtkSpecs[a.ID].has(a)})
+		sp := rtkSpecs[a.ID]
+		ra := RTKAgent{ID: a.ID, Name: a.Name, Icon: a.Icon, On: sp.has(a)}
+		if sp.blocked != nil {
+			ra.Blocked = sp.blocked()
+		}
+		v.Agents = append(v.Agents, ra)
 	}
 	if v.Path == "" {
 		return v
@@ -462,7 +579,11 @@ func ReadRTK() *RTKView {
 	if out, err := rtkRun(v.Path, "--version"); err == nil {
 		v.Version = strings.TrimSpace(strings.TrimPrefix(out, "rtk"))
 	}
-	if out, err := rtkRun(v.Path, "gain", "--format", "json"); err == nil {
+	if c := rtkUpgrader(v.Path); c != nil {
+		v.Upgrade = shown(c)
+	}
+	// --daily adds the days to the summary (rtk 0.28 on)
+	if out, err := rtkRun(v.Path, "gain", "--daily", "--format", "json"); err == nil {
 		var g struct {
 			Summary struct {
 				Commands int     `json:"total_commands"`
@@ -470,13 +591,32 @@ func ReadRTK() *RTKView {
 				Saved    int64   `json:"total_saved"`
 				Pct      float64 `json:"avg_savings_pct"`
 			} `json:"summary"`
+			Daily []struct {
+				Date     string  `json:"date"`
+				Commands int     `json:"commands"`
+				Input    int64   `json:"input_tokens"`
+				Saved    int64   `json:"saved_tokens"`
+				Pct      float64 `json:"savings_pct"`
+			} `json:"daily"`
 		}
 		if json.Unmarshal([]byte(out), &g) == nil && g.Summary.Commands > 0 {
 			s := g.Summary
 			v.Gain = &RTKGain{Commands: s.Commands, Input: s.Input, Saved: s.Saved, Pct: s.Pct}
+			for _, d := range g.Daily {
+				v.Days = append(v.Days, RTKDay{Date: d.Date, Commands: d.Commands, Input: d.Input, Saved: d.Saved, Pct: d.Pct})
+			}
+			slices.SortFunc(v.Days, func(a, b RTKDay) int { return strings.Compare(a.Date, b.Date) })
 		}
 	}
 	return v
+}
+
+// shown is a command as the page shows it: a script's own line.
+func shown(c []string) string {
+	if c[0] == "sh" {
+		return c[2]
+	}
+	return strings.Join(c, " ")
 }
 
 // SetRTK gives rtk to an agent with rtk's own installer, or takes it away
@@ -499,6 +639,11 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 		return nil, fmt.Errorf("%s isn't installed", id)
 	case sp.has(a) == on:
 		return ReadRTK(), nil
+	}
+	if on && sp.blocked != nil {
+		if why := sp.blocked(); why != "" {
+			return nil, errors.New(why)
+		}
 	}
 	bin := rtkPath()
 	if on && bin == "" {
@@ -590,18 +735,9 @@ func InstallRTK() (*RTKView, error) {
 	if c == nil {
 		return nil, fmt.Errorf("no way to install rtk here — get it from %s", RTKURL)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	cmd := proc.CommandContext(ctx, c[0], c[1:]...)
-	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1", "NONINTERACTIVE=1")
-	out, err := cmd.CombinedOutput()
+	out, err := runInstaller(c, 5*time.Minute, "HOMEBREW_NO_AUTO_UPDATE=1")
 	if err != nil {
-		text := strings.TrimSpace(string(out))
-		if text == "" {
-			text = err.Error()
-		}
-		return nil, fmt.Errorf("%s: %s", strings.Join(c, " "), lastLines(text, 4))
+		return nil, err
 	}
 	v := ReadRTK()
 	if v.Path == "" {

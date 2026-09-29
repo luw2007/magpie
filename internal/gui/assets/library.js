@@ -93,6 +93,100 @@
     return s;
   }
 
+  // An agent's icon, made once and copied: a list of hundreds of skills has
+  // a chip for each agent on every row, and making each icon afresh (its
+  // image, and a probe of whether it loads) was most of drawing the list.
+  const icons = new Map();
+  function agentIcon(name) {
+    let i = icons.get(name);
+    if (!i) { icons.set(name, (i = icon(name))); greyIcon(i); }
+    return i.cloneNode(true);
+  }
+
+  // A chip's icon is grey while its agent hasn't the item. A filter made it
+  // so on every paint of every chip — most of what a scroll through
+  // hundreds of skills painted — so it's made grey once instead: a picture
+  // gets a grey copy (by the filter's own sum), which stands in for
+  // it once ready, and an icon drawn in the text's colour takes that colour
+  // grey (library.css). Until then, or if it can't be, the filter does it.
+  function greyIcon(i) {
+    if (i.querySelector(":scope > .mask, :scope > svg")) { i.classList.add("flat"); return; }
+    const src = i.querySelector(":scope > img")?.getAttribute("src");
+    if (!src) return;
+    greyCopy(src).then((url) => {
+      if (!url) return;
+      const add = (ic) => {
+        if (ic.classList.contains("baked")) return;
+        const g = el("img", "grey");
+        g.src = url;
+        g.alt = "";
+        g.draggable = false;
+        ic.append(g);
+        ic.classList.add("baked");
+      };
+      add(i);
+      for (const x of document.querySelectorAll(".lib-ag > .ic:not(.baked) > img")) if (x.getAttribute("src") === src) add(x.parentElement);
+    }, () => {});
+  }
+  // grayscale(1)'s own sum: each colour's red, green and blue become this
+  const lum = (r, g, b) => Math.round(r * .2126 + g * .7152 + b * .0722);
+  let tint;
+  function greyColour(v) {
+    tint ||= document.createElement("canvas").getContext("2d");
+    // a colour in any spelling, read back as #rrggbb or rgba(…); anything
+    // else (none, url(#…), currentColor) is left as it is
+    if (/^\s*(none|currentcolor|inherit|transparent|url\()/i.test(v)) return v;
+    tint.fillStyle = "#010203";
+    tint.fillStyle = v;
+    const c = tint.fillStyle;
+    let m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c);
+    if (m) {
+      if (c === "#010203" && !/010203/.test(v)) return v;
+      const y = lum(parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)).toString(16).padStart(2, "0");
+      return "#" + y + y + y;
+    }
+    m = /^rgba?\(\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\s*\)$/.exec(c);
+    if (!m) return v;
+    const y = lum(+m[1], +m[2], +m[3]);
+    return `rgba(${y}, ${y}, ${y}, ${m[4] ?? 1})`;
+  }
+  async function greyCopy(src) {
+    const r = await fetch(src);
+    if (!r.ok) return null;
+    let blob;
+    if (/svg/.test(r.headers.get("content-type") || "") || /\.svg$/.test(src)) {
+      // the drawing with each of its colours made grey — the same as the
+      // filter, which is a sum over each colour (blending and gradients
+      // mix colours in sRGB, as the filter does, so they come out the same)
+      // and drawn as sharp as the drawing itself
+      const s = (await r.text()).replace(/(?<![\w-])(fill|stroke|stop-color|flood-color|lighting-color|color)(\s*=\s*)(["'])([^"']*)\3/g, (_, k, eq, q, v) => k + eq + q + greyColour(v) + q)
+        .replace(/(?<![\w-])(fill|stroke|stop-color|flood-color|lighting-color|color)(\s*:\s*)([^;"'}]+)/g, (_, k, eq, v) => k + eq + greyColour(v));
+      if (/<(image|feColorMatrix|feComponentTransfer|feTurbulence)\b/.test(s)) return null; // a colour the sum can't reach
+      blob = new Blob([s], { type: "image/svg+xml" });
+    } else {
+      // a picture made grey pixel by pixel
+      const im = new Image();
+      im.src = URL.createObjectURL(await r.blob());
+      await im.decode();
+      const c = document.createElement("canvas");
+      c.width = im.naturalWidth;
+      c.height = im.naturalHeight;
+      const x = c.getContext("2d");
+      x.drawImage(im, 0, 0);
+      URL.revokeObjectURL(im.src);
+      const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+      for (let k = 0; k < p.length; k += 4) p[k] = p[k + 1] = p[k + 2] = p[k] * .2126 + p[k + 1] * .7152 + p[k + 2] * .0722;
+      x.putImageData(d, 0, 0);
+      blob = await new Promise((done) => c.toBlob(done));
+      if (!blob) return null;
+    }
+    const url = URL.createObjectURL(blob);
+    const t = new Image();
+    t.src = url;
+    await t.decode(); // ready before it stands in, so nothing blinks
+    return url;
+  }
+
   // Agent chips for a server or a skill: each agent that could have it, lit
   // when it does. A chip whose agent couldn't be given it says why.
   function agentChips(all, on, onChange, opts = {}) {
@@ -102,7 +196,7 @@
       const has = on.includes(a.id);
       const c = el("button", "lib-ag" + (has ? " on" : ""));
       c.dataset.agent = a.id;
-      c.append(icon(a.icon));
+      c.append(agentIcon(a.icon));
       if (opts.names) c.append(el("span", "n", a.name));
       const problem = opts.problems?.[a.id];
       const blocked = opts.blocked?.(a);
@@ -275,7 +369,7 @@
       ["mcp", t("MCP servers") + (counts.mcp ? " · " + counts.mcp : "")],
       ["skills", t("Skills") + (counts.skills ? " · " + counts.skills : "")],
       ["rtk", "RTK"],
-    ], tab, (id) => { tab = id; try { localStorage.setItem("magpie.libTab", id); } catch {} render(); page.scrollTop = 0; });
+    ], tab, (id) => { tab = id; try { localStorage.setItem("magpie.libTab", id); } catch {} render(); page.scrollTop = 0; syncLists(); });
     tabs.classList.add("lib-tabs");
     head.append(tabs, el("span", "grow"));
     const more = button("", "lib-more", () => reveal(lib.dir));
@@ -306,6 +400,7 @@
     page.append(foot);
     for (const f of fits.splice(0)) f();
     page.scrollTop = top;
+    syncLists(); // a long list's rows where the view is, before it's painted
     if (focus) {
       const e = page.querySelector(`[data-lib="${CSS.escape(focus)}"]`);
       if (e) { e.focus({ preventScroll: true }); if (caret && e.setSelectionRange) e.setSelectionRange(caret[0], caret[1]); }
@@ -358,11 +453,24 @@
     ttl.append(logo, el("b", "", "RTK"), el("span", "grow"));
     if (rtk.path) {
       ttl.append(el("span", "note mono", rtk.version ? "v" + rtk.version : tilde(rtk.path)));
+      // a newer release: upgraded the way this rtk was installed
+      const behind = rtk.latest && rtk.version && vNewer(rtk.latest, rtk.version);
+      if (rtkUpgrading) ttl.append(tag(t("Upgrading…"), "lib-new"));
+      else if (behind) ttl.append(tag(t("v{v} is out", { v: rtk.latest }), "lib-new", t("RTK {v} is the latest release; this one is {have}", { v: rtk.latest, have: rtk.version })));
+      else if (rtk.latest && rtk.version) ttl.append(tag(t("Up to date"), "", t("RTK {v} is the latest release", { v: rtk.latest })));
+      if (behind || rtkUpgrading) {
+        const ub = button(rtkUpgrading ? t("Upgrading…") : t("Upgrade"), "action", upgradeRTK);
+        ub.disabled = rtkUpgrading || !rtk.upgrade;
+        ub.title = rtk.upgrade ? t("Runs {cmd}", { cmd: rtk.upgrade }) : t("magpie can't tell how this RTK was installed — update it the way you installed it");
+        ttl.append(ub);
+      }
       card.append(ttl);
+      if (rtk.note) card.append(el("p", "lib-rtk-note", rtk.note));
       const g = rtk.gain;
       card.append(el("p", "lib-rtk-gain", g
         ? t("{saved} tokens saved over {n} commands — {pct}% on average", { saved: tokens(g.saved), n: g.commands.toLocaleString(), pct: Math.round(g.pct) })
         : t("Nothing saved yet: the agents' commands go through RTK once it's switched on and the agent is restarted.")));
+      if (rtk.days?.length) card.append(rtkChart(rtk.days));
     } else {
       card.append(ttl);
       card.append(el("p", "lib-rtk-gain", rtkInstalling
@@ -391,8 +499,14 @@
       row.append(icon(a.icon), who, el("span", "grow"));
       // its hook calls an rtk that isn't there: switching it off still works
       if (a.on && !rtk.path) row.append(tag(t("RTK missing"), "warn", t("{agent}'s hook calls rtk, which isn't installed, so its shell commands fail. Install RTK, or switch this off.", { agent: a.name })));
+      // OpenCode 2 won't load rtk's plugin (written for OpenCode 1): it can't
+      // be switched on, and one already there can be switched off
+      if (a.blocked && a.id !== "opencode") row.append(tag(t("Update RTK"), "warn", t("{agent}'s hook needs RTK 0.50 or newer: older ones only add @RTK.md to AGENTS.md, which rewrites no command. Update RTK (brew upgrade rtk, or its installer again), then switch it on.", { agent: a.name })));
+      else if (a.blocked) row.append(tag(t("Not for OpenCode 2"), "warn", a.on
+        ? t("RTK's plugin is written for OpenCode 1, and OpenCode 2 refuses to load it. Switch this off until RTK supports OpenCode 2.")
+        : t("RTK's plugin is written for OpenCode 1, and OpenCode 2 refuses to load it. It can be switched on once RTK supports OpenCode 2.")));
       const sw = toggle(a.on, t("{agent} runs its commands through RTK", { agent: a.name }), (on) => setRTK(a, on));
-      if ((!rtk.path && !a.on) || rtkBusy.has(a.id) || rtkInstalling) sw.disabled = true;
+      if ((!rtk.path && !a.on) || (a.blocked && !a.on) || rtkBusy.has(a.id) || rtkInstalling || rtkUpgrading) sw.disabled = true;
       row.append(sw);
       list.append(row);
     }
@@ -410,6 +524,89 @@
       status(e.message, "err", 8000);
     }
     rtkBusy.delete(a.id);
+    render();
+  }
+  // what rtk saved day by day (week by week past 92 days), over the last
+  // 30 or 90 days or since it first ran: each bar the commands' whole
+  // output, the part RTK kept from the model on top of what still went
+  let rtkRange = 0; // days; 0 all
+  try { rtkRange = +(localStorage.getItem("magpie.rtkRange") ?? 0) || 0; } catch {}
+  const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const dayOf = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+  function rtkChart(days) {
+    const chart = el("div", "chart lib-rtk-chart");
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    let first = dayOf(days[0].date);
+    if (rtkRange) { first = new Date(today); first.setDate(first.getDate() - rtkRange + 1); }
+    if (first > today) first = new Date(today);
+    const n = Math.round((today - first) / 864e5) + 1;
+    const step = n > 92 ? 7 : 1;
+    const buckets = [], at = new Map();
+    for (let d = new Date(first); d <= today; d.setDate(d.getDate() + step)) {
+      const b = { day: new Date(d), commands: 0, input: 0, saved: 0 };
+      for (let i = 0; i < step; i++) { const x = new Date(d); x.setDate(x.getDate() + i); at.set(isoDay(x), b); }
+      buckets.push(b);
+    }
+    const sum = { commands: 0, input: 0, saved: 0 };
+    for (const r of days) {
+      const b = at.get(r.date);
+      if (!b) continue;
+      b.commands += r.commands; b.input += r.input; b.saved += r.saved;
+      sum.commands += r.commands; sum.input += r.input; sum.saved += r.saved;
+    }
+    const peak = Math.max(1, ...buckets.map((b) => b.input));
+    const head = el("div", "sess-chart-head");
+    const seg = segs([[30, t("30 days")], [90, t("90 days")], [0, t("All")]], rtkRange, (r) => {
+      rtkRange = r;
+      try { localStorage.setItem("magpie.rtkRange", String(r)); } catch {}
+      chart.replaceWith(rtkChart(days));
+    });
+    head.append(el("span", "label", t(step === 7 ? "Saved by week" : "Saved by day")), seg, el("span", "grow"), el("span", "peak", tokens(peak)));
+    const bars = el("div", "bars"), labels = el("div", "labels");
+    const k = buckets.length;
+    const every = k <= 8 ? 1 : k <= 31 ? Math.ceil(k / 6) : Math.ceil(k / 5);
+    const short = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+    buckets.forEach((b, i) => {
+      const bar = el("div", "bar");
+      const saved = el("i", "out"), kept = el("i", "in");
+      saved.style.height = (100 * b.saved / peak).toFixed(1) + "%";
+      kept.style.height = (100 * Math.max(0, b.input - b.saved) / peak).toFixed(1) + "%";
+      bar.append(saved, kept);
+      const when = step === 7 ? t("week of {label}", { label: short(b.day) }) : short(b.day);
+      bar.title = b.commands
+        ? t("{when} · {saved} tokens saved over {n} commands — {pct}%", { when, saved: tokens(b.saved), n: b.commands.toLocaleString(), pct: b.input ? Math.round(100 * b.saved / b.input) : 0 })
+        : t("{when} · nothing", { when });
+      bars.append(bar);
+      const end = i === k - 1 && (k - 1) % every >= every / 2;
+      labels.append(el("span", "", i % every === 0 || end ? short(b.day) : ""));
+    });
+    const foot = el("div", "lib-rtk-foot");
+    const key = (cls, text) => { const x = el("span", "lib-rtk-key"); x.append(el("i", cls), el("span", "", text)); return x; };
+    foot.append(key("out", t("saved")), key("in", t("still sent")), el("span", "grow"),
+      el("span", "", sum.commands
+        ? t("{saved} tokens saved over {n} commands — {pct}%", { saved: tokens(sum.saved), n: sum.commands.toLocaleString(), pct: sum.input ? Math.round(100 * sum.saved / sum.input) : 0 })
+        : t("Nothing run through RTK in this time")));
+    chart.append(head, bars, labels, foot);
+    return chart;
+  }
+  // vNewer: version a is after b
+  function vNewer(a, b) {
+    const x = a.split(/[.-]/).map((n) => parseInt(n, 10) || 0), y = b.split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+    return false;
+  }
+  let rtkUpgrading = false;
+  async function upgradeRTK() {
+    rtkUpgrading = true;
+    render();
+    try {
+      rtk = await api("library/rtk/upgrade", {});
+      if (rtk.note) status(rtk.note, "", 10000);
+      else status(t("RTK is now {v}", { v: rtk.version }), "ok", 6000);
+    } catch (e) {
+      status(e.message, "err", 10000);
+    }
+    rtkUpgrading = false;
     render();
   }
   let rtkInstalling = false;
@@ -704,7 +901,9 @@
       after.append(button(t("＋ Add server"), "", () => editServer(null)));
       body.append(after);
     }
-    const found = lib.foundServers.filter((f) => !f.own), own = lib.foundServers.filter((f) => f.own);
+    // an agent's own servers (Codex's node_repl, added each time it starts)
+    // aren't listed: magpie leaves them as they are
+    const found = lib.foundServers.filter((f) => !f.own);
     if (found.length) {
       const rh = el("div", "row-head");
       rh.append(el("span", "label", t("In your agents")), el("span", "grow"), el("span", "note", t("not in the library — bring one in to manage it here")));
@@ -712,12 +911,6 @@
       const list = el("div", "list lib-list");
       for (const f of found) list.append(foundServerRow(f));
       body.append(list);
-    }
-    if (own.length) {
-      const by = [...new Set(own.flatMap((f) => f.server.agents))].map(nameOf).join(", ");
-      const p = el("p", "lib-aside", t("{agents} adds these itself, each time it starts, and magpie leaves them as they are: {names}", { agents: by, names: own.map((f) => f.server.name).join(", ") }));
-      p.title = own.map((f) => f.server.name + ": " + serverLine(f.server)).join("\n");
-      body.append(p);
     }
     const skip = shownAgents().filter((a) => !a.mcp);
     if (skip.length) body.append(el("p", "lib-aside", t("{agents} has no MCP servers magpie can write.", { agents: skip.map((a) => a.name).join(", ") })));
@@ -997,8 +1190,10 @@
     if (lib.skills.length) {
       const rh = el("div", "row-head");
       rh.append(el("span", "label", t("In the library")));
+      const box = el("div", "lib-groups");
+      if (lib.skills.length > 8) rh.append(skillFilter(box, all));
       const fresh = lib.skills.filter((s) => s.kind === "github" || s.origin);
-      if (fresh.length) rh.append(el("span", "grow"));
+      rh.append(el("span", "grow"));
       if (lib.skills.some((s) => s.kind === "github")) {
         const c = button(checking ? t("Checking…") : t("Check for updates"), "lib-updall", () => checkSkills());
         c.title = t("Ask GitHub which skills changed since they were installed");
@@ -1029,9 +1224,8 @@
         rh.append(u);
       }
       body.append(rh);
-      const list = el("div", "list lib-list");
-      for (const s of lib.skills) list.append(skillRow(s, all));
-      body.append(list);
+      drawSkills(box, all);
+      body.append(box);
     }
     if (lib.foundSkills.length) {
       const rh = el("div", "row-head");
@@ -1045,6 +1239,396 @@
     const skip = shownAgents().filter((a) => !a.skills);
     if (skip.length) body.append(el("p", "lib-aside", t("{agents} has no skills folder.", { agents: skip.map((a) => a.name).join(", ") })));
     body.append(discover("skills"));
+  }
+
+  // ---------- the library's skills, by where they came from ----------
+
+  // Hundreds of skills were one list of rows, every one of them drawn with
+  // a chip for each agent — thousands of icons laid out and painted on each
+  // redraw, scroll and hover. They're grouped by the GitHub repository they
+  // came from (the ones on this computer together), a big group again by
+  // the folder they sit in there (or the start of their names), and a
+  // group's rows are a window on its list: only those near the view are
+  // drawn, the rest is room kept for them, so a scroll through a thousand
+  // skills draws a few rows now and then instead of laying out and painting
+  // each as it comes into view.
+  let skillQuery = "";         // what the filter over the skills holds
+  let skillTimer = 0;          // the filter's redraw, waiting for typing to pause
+  const unfiltered = new Set(); // groups folded while filtering, till the filter changes
+  let folds = {};              // group → true when folded, false when opened by hand
+  try { folds = JSON.parse(localStorage.getItem("magpie.libSkillFolds") || "{}") || {}; } catch {}
+  function saveFolds() { try { localStorage.setItem("magpie.libSkillFolds", JSON.stringify(folds)); } catch {} }
+  const repoOf = (u) => (u || "").replace(/^https:\/\/github\.com\//, "").split("/").slice(0, 2).join("/");
+  const MANY = 40;   // a group bigger than this starts folded, and so do its parts
+  const SPLIT = 8;   // a group bigger than this is split by folder, or by name
+  // Heights the rows are held to (library.css): a list's room is known
+  // without drawing it.
+  const ROW_H = 51, ROW_SRC_H = 67, SUB_H = 36;
+
+  // the groups, and each skill's text to filter by, worked out once for
+  // each answer from magpie
+  let grouped = null;
+  function skillGroups() {
+    if (grouped?.lib === lib) return grouped.groups;
+    const by = new Map();
+    for (const s of lib.skills) {
+      const repo = s.kind === "github" ? repoOf(s.source) : s.origin ? repoOf(s.origin) : "";
+      const key = repo ? "gh:" + repo.toLowerCase() : "local";
+      let g = by.get(key);
+      if (!g) by.set(key, (g = { key, repo, skills: [] }));
+      g.skills.push(s);
+    }
+    const groups = [...by.values()].sort((a, b) => (a.key === "local") - (b.key === "local") || a.repo.localeCompare(b.repo));
+    for (const g of groups) {
+      g.skills.sort((a, b) => a.name.localeCompare(b.name));
+      g.text = new Map(g.skills.map((s) => [s, (s.name + " " + (s.description || "") + " " + g.repo).toLowerCase()]));
+      g.parts = partsOf(g);
+    }
+    grouped = { lib, groups };
+    return groups;
+  }
+
+  // A big group's parts: by the folder its skills sit in — in the
+  // repository, or on this computer — when they sit in more than one;
+  // else by the start their names share ("gh-review", "gh-triage" → gh),
+  // a start three or more share being a part and the rest one more.
+  // Nothing is fetched: it's all in where each skill came from.
+  function partsOf(g) {
+    if (g.skills.length <= SPLIT) return null;
+    const split = (keyOf) => {
+      const m = new Map();
+      for (const s of g.skills) {
+        const k = keyOf(s);
+        if (!m.has(k)) m.set(k, []);
+        m.get(k).push(s);
+      }
+      return m.size > 1 ? m : null;
+    };
+    const folderIn = (s) => {
+      if (s.kind === "github") {
+        // …/tree/<ref>/<path to the folder>/<skill>
+        const m = /^https:\/\/github\.com\/[^/]+\/[^/]+\/tree\/[^/]+\/(.+)$/.exec(s.source || "");
+        return m ? m[1].split("/").slice(0, -1).join("/") : "";
+      }
+      if (s.kind === "folder") return tilde((s.source || "").replace(/[\\/][^\\/]+[\\/]?$/, ""));
+      return "";
+    };
+    let m = split(folderIn), mono = true;
+    if (!m) {
+      mono = false;
+      const segs = (s) => s.name.toLowerCase().split(/[-_:.\s]+/).filter(Boolean);
+      // a start every name has says nothing: the part after it does
+      const all = g.skills.map(segs);
+      let skip = 0;
+      while (all.every((x) => x.length > skip + 1 && x[skip] === all[0][skip])) skip++;
+      const lead = new Map();
+      for (const x of all) if (x.length > skip + 1) lead.set(x[skip], (lead.get(x[skip]) || 0) + 1);
+      m = split((s) => { const x = segs(s); const k = x.length > skip + 1 ? x[skip] : ""; return lead.get(k) >= 3 ? k : ""; });
+      if (m && m.size === 2 && m.has("") && m.get("").length > g.skills.length * 0.8) m = null; // one small part and the rest
+    }
+    if (!m) return null;
+    return [...m].map(([key, skills]) => ({ key, skills, mono,
+      label: key || (mono ? (g.repo ? t("At the top of the repository") : t("Kept in the library")) : t("Others")) }))
+      .sort((a, b) => (!a.key) - (!b.key) || a.key.localeCompare(b.key));
+  }
+
+  function skillFilter(box, all) {
+    const f = el("input", "lib-filter lib-skillq");
+    f.type = "search";
+    f.dataset.lib = "skillq";
+    f.placeholder = t("Filter {n} skills…", { n: lib.skills.length });
+    f.spellcheck = false;
+    f.autocomplete = "off";
+    f.value = skillQuery;
+    // what's typed is kept at once (a redraw of the page shows it), the
+    // rows drawn again once typing pauses
+    const redraw = () => { clearTimeout(skillTimer); unfiltered.clear(); if (box.isConnected) drawSkills(box, all); };
+    f.oninput = () => { skillQuery = f.value; clearTimeout(skillTimer); skillTimer = setTimeout(redraw, 120); };
+    f.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape" && f.value) { e.preventDefault(); f.value = ""; skillQuery = ""; redraw(); }
+    };
+    return f;
+  }
+
+  // The skills' lists as last drawn into a box: a group's list keeps its
+  // rows through a filter or a fold, and draws only those it hasn't.
+  let drawn = null; // { box, lists: Map group → window }
+  function drawSkills(box, all) {
+    const groups = skillGroups();
+    const q = skillQuery.trim().toLowerCase();
+    if (drawn?.box !== box) drawn = { box, lists: new Map() };
+    const hitsOf = (g) => (q ? g.skills.filter((s) => g.text.get(s).includes(q)) : g.skills);
+    const cards = [];
+    const single = groups.length === 1;
+    const many = lib.skills.length > MANY;
+    const redraw = () => { drawSkills(box, all); };
+    for (const g of groups) {
+      const hits = hitsOf(g);
+      if (!hits.length) continue;
+      const folded = !single && (q ? unfiltered.has(g.key) : folds[g.key] ?? many);
+      let w = drawn.lists.get(g.key);
+      if (!folded) {
+        if (!w) drawn.lists.set(g.key, (w = windowed()));
+        w.set(groupItems(g, hits, all, !!q, redraw));
+      }
+      // from one place only: its list with no heading over it
+      if (single) {
+        const card = el("div", "list lib-list lib-vcard");
+        w.el.classList.add("bare");
+        card.append(w.el);
+        cards.push(card);
+      } else cards.push(groupCard(g, hits, all, folded, !!q, w, redraw));
+    }
+    if (!cards.length) cards.push(el("div", "list lib-none", t("No skill matches “{q}”.", { q: skillQuery.trim() })));
+    box.replaceChildren(...cards);
+    if (box.isConnected) syncLists();
+  }
+
+  // A group's list: its skills, or its parts, each a heading over its own.
+  function groupItems(g, hits, all, filtering, redraw) {
+    const row = (s) => ({ key: "s\n" + s.name, h: s.source ? ROW_SRC_H : ROW_H, make: () => skillRow(skillNamed(s.name) || s, all) });
+    if (!g.parts) return hits.map(row);
+    const hit = hits.length === g.skills.length ? null : new Set(hits);
+    const items = [];
+    for (const p of g.parts) {
+      const ph = hit ? p.skills.filter((s) => hit.has(s)) : p.skills;
+      if (!ph.length) continue;
+      const fk = g.key + "\n" + p.key;
+      const folded = filtering ? unfiltered.has(fk) : folds[fk] ?? g.skills.length > MANY;
+      items.push({ key: ["p", p.key, folded, filtering, ph.length].join("\n"), h: SUB_H, make: () => partHead(g, p, ph, folded, filtering, fk, redraw) });
+      if (!folded) for (const s of ph) items.push(row(s));
+    }
+    return items;
+  }
+
+  function partHead(g, p, hits, folded, filtering, fk, redraw) {
+    const head = el("div", "row lib-row click lib-subhead" + (folded ? "" : " open"));
+    const chev = el("span", "chev");
+    chev.append(svg(CHEV_R, 10, 1.7));
+    const n = p.skills.length;
+    head.append(chev, el("span", "name" + (p.mono && p.key ? " mono" : ""), p.label),
+      el("span", "sub", filtering && hits.length !== n ? t("{n} of {total}", { n: hits.length, total: n }) : String(n)));
+    // a dot when GitHub changed some of its skills
+    const stale = p.skills.filter((s) => s.check?.status === "update").length;
+    if (stale) {
+      const dot = el("span", "lib-dot");
+      dot.title = stale === 1 ? t("1 skill has an update") : t("{n} skills have updates", { n: stale });
+      head.append(dot);
+    }
+    head.title = folded ? t("Show its skills") : t("Hide its skills");
+    head.onclick = () => {
+      if (filtering) { if (folded) unfiltered.delete(fk); else unfiltered.add(fk); }
+      else { folds[fk] = !folded; saveFolds(); }
+      redraw();
+    };
+    return head;
+  }
+
+  // the skill as magpie last said, for a row drawn after the list was:
+  // a row scrolled away and back is drawn from what the page has now
+  let named = null;
+  function skillNamed(name) {
+    if (named?.lib !== lib) named = { lib, by: new Map(lib.skills.map((s) => [s.name, s])) };
+    return named.by.get(name);
+  }
+
+  function groupCard(g, hits, all, folded, filtering, w, redraw) {
+    const card = el("div", "list lib-card lib-group");
+    card.dataset.group = g.key;
+    const head = el("div", "row lib-row click lib-grouphead" + (folded ? "" : " open"));
+    const who = el("div", "who");
+    who.append(el("div", "name" + (g.repo ? " mono" : ""), g.repo || t("On this computer")));
+    const n = g.skills.length;
+    who.append(el("div", "sub", filtering && hits.length !== n ? t("{n} of {total} skills", { n: hits.length, total: n })
+      : n === 1 ? t("1 skill") : t("{n} skills", { n })));
+    const tags = el("div", "lib-tags");
+    const stale = g.skills.filter((s) => s.check?.status === "update");
+    if (stale.length) {
+      const u = button(t("Update {n}", { n: stale.length }), "action lib-updall", async (e, b) => {
+        b.classList.add("busy");
+        b.textContent = t("Updating…");
+        await updateAllSkills(stale.map((s) => s.name));
+      });
+      u.title = stale.length === 1 ? t("Fetch {name} from GitHub again", { name: stale[0].name }) : t("Fetch the {n} skills GitHub changed again", { n: stale.length });
+      tags.append(u);
+    }
+    // which agents have its skills, all of them or some
+    const have = el("div", "lib-have");
+    for (const a of all) {
+      const k = g.skills.filter((s) => s.agents.includes(a.id)).length;
+      if (!k) continue;
+      const i = agentIcon(a.icon);
+      i.title = k === n ? t("{agent} has all of them", { agent: a.name }) : t("{agent} has {n} of them", { agent: a.name, n: k });
+      if (k < n) i.classList.add("some");
+      have.append(i);
+    }
+    const acts = el("div", "lib-rowacts");
+    if (g.repo) {
+      const o = button("", "lib-icon", () => browse("https://github.com/" + g.repo));
+      o.append(svg(GLYPH.out, 13, 1.4));
+      o.title = t("Open {repo} on GitHub", { repo: g.repo });
+      acts.append(o);
+    }
+    const chev = el("span", "chev");
+    chev.append(svg(CHEV_R, 11, 1.7));
+    const pic = g.repo ? mark(g.skills.find((s) => s.icon)?.icon, GLYPH.skill) : glyph(GLYPH.folder);
+    head.append(pic, who, tags, have, acts, chev);
+    head.title = folded ? t("Show its skills") : t("Hide its skills");
+    head.onclick = () => {
+      if (filtering) { if (folded) unfiltered.delete(g.key); else unfiltered.add(g.key); }
+      else { folds[g.key] = !folded; saveFolds(); }
+      redraw();
+    };
+    card.append(head);
+    if (!folded) card.append(w.el);
+    return card;
+  }
+
+  // ---------- a long list, drawn near the view first ----------
+
+  // A list of items of known heights ({ key, h, make }) drawn in two goes:
+  // the rows near the page's view at once, with room kept above and below
+  // for the rest, and then the rest while the page is idle, a few rows at
+  // a time, each kept once drawn. A scroll builds nothing and takes nothing
+  // away, so it only paints what's there — unless it outruns the filling,
+  // when what's left is drawn at once rather than a view a frame. A row
+  // still wanted after a change (a filter, a fold) is kept as it is.
+  const lists = new Set();
+  let listFrame = 0;
+  function syncLists() {
+    cancelAnimationFrame(listFrame);
+    listFrame = 0;
+    if (page.hidden) return;
+    let vp = null;
+    for (const w of lists) {
+      if (!w.el.isConnected) { if (w.shown) lists.delete(w); continue; } // its page is gone; one drawn again comes back
+      if (!w.full()) w.sync(vp ||= page.getBoundingClientRect());
+    }
+  }
+  const queueLists = () => { if (!listFrame) listFrame = requestAnimationFrame(syncLists); };
+  // and while the page scrolls, its lists say so (library.css, .scrolling)
+  let still = 0;
+  const settled = () => { still = 0; for (const w of lists) w.el.classList.remove("scrolling"); };
+  page.addEventListener("scroll", () => {
+    queueLists();
+    if (!still) for (const w of lists) w.el.classList.add("scrolling");
+    clearTimeout(still);
+    still = setTimeout(settled, 150);
+  }, { passive: true });
+  window.addEventListener("resize", queueLists);
+
+  // The filling: one list's next few rows per idle moment, the lists in turn.
+  const FILL = 20;
+  const filling = new Set();
+  let fillTask = 0;
+  const idle = window.requestIdleCallback
+    ? (f) => requestIdleCallback(f, { timeout: 200 })
+    : (f) => setTimeout(f, 24);
+  function queueFill(w) {
+    filling.add(w);
+    if (!fillTask) fillTask = idle(fillSome);
+  }
+  function fillSome() {
+    fillTask = 0;
+    for (const w of filling) {
+      if (!w.el.isConnected || w.full()) { filling.delete(w); continue; }
+      w.grow(FILL);
+      if (w.full()) filling.delete(w);
+      break;
+    }
+    if (filling.size) fillTask = idle(fillSome);
+  }
+
+  function windowed() {
+    const box = el("div", "lib-vl");
+    const above = el("div", "lib-vpad"), below = el("div", "lib-vpad");
+    box.append(above, below);
+    let items = [], tops = [0], from = 0, to = 0;
+    let live = new Map(); // key → its row, for the items from…to
+    const w = { el: box, shown: false };
+    // the first item whose bottom is below y
+    const at = (y) => {
+      let lo = 0, hi = items.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (tops[mid + 1] > y) hi = mid; else lo = mid + 1; }
+      return lo;
+    };
+    const node = (i) => {
+      const it = items[i];
+      let n = live.get(it.key);
+      if (!n) n = it.make();
+      n.classList.toggle("first", i === 0);
+      return n;
+    };
+    const pads = () => {
+      above.style.height = tops[from] + "px";
+      below.style.height = tops[items.length] - tops[to] + "px";
+    };
+    // draw items a…b around those drawn (a ≤ from, b ≥ to), or afresh,
+    // keeping the rows of those already drawn
+    function show(a, b, fresh) {
+      if (!fresh && a === from && b === to) return;
+      if (!fresh && a <= from && b >= to && from < to) {
+        if (a < from) {
+          const f = document.createDocumentFragment();
+          const made = [];
+          for (let i = a; i < from; i++) { const n = node(i); made.push([items[i].key, n]); f.append(n); }
+          above.after(f);
+          for (const [k, n] of made) live.set(k, n);
+        }
+        if (b > to) {
+          const f = document.createDocumentFragment();
+          for (let i = to; i < b; i++) { const n = node(i); live.set(items[i].key, n); f.append(n); }
+          below.before(f);
+        }
+      } else {
+        const next = new Map(), rows = [];
+        for (let i = a; i < b; i++) { const n = node(i); next.set(items[i].key, n); rows.push(n); }
+        for (const [k, n] of live) if (next.get(k) !== n) n.remove();
+        live = next;
+        // rows kept stay where they are; the others go in between them
+        let prev = above;
+        for (const n of rows) {
+          if (prev.nextSibling !== n) prev.after(n);
+          prev = n;
+        }
+      }
+      from = a; to = b;
+      pads();
+    }
+    w.full = () => from === 0 && to === items.length;
+    // n more rows, below what's drawn first, then above it
+    w.grow = (n) => {
+      const b = Math.min(items.length, to + n);
+      show(Math.max(0, from - (n - (b - to))), b);
+    };
+    w.set = (next) => {
+      items = next;
+      tops = [0];
+      for (const it of items) tops.push(tops[tops.length - 1] + it.h);
+      // placed, what's near the view; until then the first rows, enough for one
+      if (box.isConnected && !page.hidden) w.sync(page.getBoundingClientRect(), true);
+      else show(0, Math.min(items.length, 12), true);
+      if (!w.full()) queueFill(w);
+    };
+    w.sync = (vp, fresh) => {
+      w.shown = true;
+      lists.add(w);
+      const r = box.getBoundingClientRect();
+      const total = tops[items.length];
+      if (!total) { show(0, 0, fresh); return; }
+      const k = r.height ? r.height / total : 1; // the page may be zoomed
+      const view = vp.height / k;
+      const top = (vp.top - r.top) / k, bottom = (vp.bottom - r.top) / k;
+      // the rows in view and half a view about it
+      const a = top - view / 2 > total ? items.length : at(Math.max(0, top - view / 2));
+      const b = bottom + view / 2 < 0 ? 0 : Math.min(items.length, at(bottom + view / 2) + 1);
+      if (fresh) { show(a, Math.max(a, b), true); return; }
+      // a scroll past what's filled in: the rest, now
+      if (from === to || (a < b && (a < from || b > to))) show(0, items.length, from === to);
+    };
+    lists.add(w);
+    return w;
   }
 
   // ---------- projects ----------
@@ -1371,7 +1955,7 @@
   }
 
   function skillRow(s, all) {
-    const row = el("div", "row lib-row click lib-skill" + (s.missing ? " missing" : ""));
+    const row = el("div", "row lib-row click lib-skill" + (s.missing ? " missing" : "") + (s.source ? " src" : ""));
     const who = el("div", "who");
     const nm = el("div", "name", s.name);
     const c = s.check;
@@ -1468,7 +2052,7 @@
     who.append(sub);
     if (f.link) { const src = el("div", "lib-src"); src.append(el("span", "", t("linked from")), pathLink(f.link)); who.append(src); }
     const have = el("div", "lib-have");
-    for (const id of f.agents) { const a = agentOf(id); if (a) { const i = icon(a.icon); i.title = a.name; have.append(i); } }
+    for (const id of f.agents) { const a = agentOf(id); if (a) { const i = agentIcon(a.icon); i.title = a.name; have.append(i); } }
     row.append(glyph(GLYPH.skill), who, have);
     if (f.others?.length) row.append(tag(t("differs in {agents}", { agents: f.others.map(nameOf).join(", ") }), "warn", t("{agents} has another skill by this name; bringing this one in leaves that one as it is", { agents: f.others.map(nameOf).join(", ") })));
     const b = button(t("Bring in"), "action", () => change("skills/import", { name: f.name }, t("{name} is in the library now", { name: f.name })));
@@ -1664,7 +2248,7 @@
     const d = el("p", "mk-desc", about(x));
     d.title = about(x);
     const foot = el("div", "mk-foot");
-    foot.append(el("span", "mk-id mono", x.name), el("span", "grow"), needsKey(x) && !x.have ? button(t("Add…"), "action mk-add", () => serverSheet(x)) : addButton(x, () => addServer(x, {}, null)));
+    foot.append(el("span", "mk-id mono", x.name), el("span", "grow"), (needsKey(x) || x.optIn) && !x.have ? button(t("Add…"), "action mk-add", () => serverSheet(x)) : addButton(x, () => addServer(x, {}, null)));
     c.append(top, d, foot);
     c.onclick = () => serverSheet(x);
     c.title = t("About {name}", { name: x.title || x.name });
@@ -1682,7 +2266,9 @@
   // A market server up close: what it is, what it needs, and who gets it.
   function serverSheet(x) {
     const all = mcpAgents();
-    let agents = all.filter(reaches(x)).map((a) => a.id);
+    // an opt-in one (magpie's image generation costs what its model does)
+    // goes only to the agents picked for it
+    let agents = x.optIn ? [] : all.filter(reaches(x)).map((a) => a.id);
     const values = {};
     const ed = el("div", "editor lib-editor mk-sheet");
     const head = el("div", "mk-sheethead");
@@ -1697,6 +2283,7 @@
     ed.append(head);
     if (x.description) ed.append(el("p", "mk-about", about(x)));
     if (x.signIn) ed.append(el("p", "mk-hint", t("Each agent asks you to sign in, in the browser, the first time it uses it.")));
+    if (x.optIn) ed.append(el("p", "mk-hint", t("Pick the agents that may generate images: each image costs what the model set in Settings → Images charges.")));
     const firsts = [];
     for (const i of x.inputs || []) {
       const f = field2("", i.placeholder || (i.where === "env" ? i.key : ""), (v) => { values[i.key] = v.trim(); });

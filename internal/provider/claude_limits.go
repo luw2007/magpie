@@ -12,7 +12,8 @@ import (
 // known all the same once it has answered.
 
 // ClaudeLimit is one allowance window as Claude Code tells it: its kind
-// (five_hour, seven_day, seven_day_opus, seven_day_sonnet), the share used,
+// (five_hour, seven_day, seven_day_opus, seven_day_sonnet,
+// seven_day_overage_included), the share used,
 // 0–1, and when it renews, in Unix seconds (0 when not said).
 type ClaudeLimit struct {
 	Kind     string
@@ -30,6 +31,10 @@ var claudeKinds = []struct {
 	{"seven_day", "7 days", "", 7 * 24 * time.Hour},
 	{"seven_day_opus", "7 days · Opus", "opus", 7 * 24 * time.Hour},
 	{"seven_day_sonnet", "7 days · Sonnet", "sonnet", 7 * 24 * time.Hour},
+	// the week's allowance of the models Claude Code lists as taking
+	// usage credits past it ("Fable", "Fable 5", "Fable 5.1"), which it
+	// calls the Fable limit: the usage endpoint's weekly_scoped Fable
+	{"seven_day_overage_included", "7 days · Fable", "fable", 7 * 24 * time.Hour},
 }
 
 // claudeHeard is how long what Claude Code said as it answered stands in

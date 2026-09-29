@@ -4,6 +4,7 @@ package gui
 
 import (
 	"context"
+	"runtime"
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -35,6 +36,10 @@ func (h *host) watchTrayUsage() {
 				}
 			}
 			cancel()
+			if label != "" && runtime.GOOS == "darwin" {
+				// the menu bar sets the text hard against the icon
+				label = "\u2009" + label
+			}
 			if label+"\x00"+tip != shown {
 				shown = label + "\x00" + tip
 				h.tray.SetLabel(label)

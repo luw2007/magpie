@@ -357,6 +357,44 @@ func TestCodexModelList(t *testing.T) {
 	}
 }
 
+// The user's model picks on the ChatGPT account narrow the backend's own
+// list too: Codex is shown only the native models kept, not every one the
+// account can reach.
+func TestCodexModelListNarrowedByPicks(t *testing.T) {
+	codexSignedIn(t)
+	if err := provider.Save(provider.Provider{ID: "codex", Models: []string{"gpt-6-sol"}}); err != nil {
+		t.Fatal(err)
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"models":[{"slug":"gpt-6-sol","priority":1},{"slug":"gpt-5.5","priority":2},{"slug":"gpt-5-codex","priority":3}]}`)
+	}))
+	defer up.Close()
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", CodexPath+"/models", nil)
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	New().Handler().ServeHTTP(rec, req)
+	var list struct {
+		Models []map[string]any `json:"models"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	var native []string
+	for _, m := range list.Models {
+		slug, _ := m["slug"].(string)
+		// the backend's own models are the gpt-* ones; magpie's added
+		// entries carry their own slugs and stay
+		if strings.HasPrefix(slug, "gpt-") {
+			native = append(native, slug)
+		}
+	}
+	if rec.Code != 200 || len(native) != 1 || native[0] != "gpt-6-sol" {
+		t.Errorf("native models after picks = %v (want just gpt-6-sol); code %d", native, rec.Code)
+	}
+}
+
 // A reply's X-Models-Etag carries magpie's list too: Codex refetches its
 // model list on a new one, and only on the backend's it never would when a
 // provider was added.

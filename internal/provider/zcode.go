@@ -12,8 +12,8 @@ package provider
 // accounts are signed in by magpie with ZCode's own polling sign-in
 // (zcode.z.ai/api/v1/oauth/cli/…), and their key is kept in logins.json.
 //
-// The plan has no model list to ask; the models are ZCode's, as its
-// built-in config lists them for the coding plan.
+// The plan's models are ZCode's, as its built-in config lists them for the
+// coding plan (zcode_models.go); zcodeModels are them before that is read.
 
 import (
 	"bytes"
@@ -54,10 +54,10 @@ var (
 const zcodeAppVersion = "3.14.3"
 
 var zcodeModels = []catalog.Model{
-	{ID: "GLM-5.3", Name: "GLM-5.3", Context: 1_000_000},
-	{ID: "GLM-5.3-Flash", Name: "GLM-5.3-Flash", Context: 1_000_000},
-	{ID: "GLM-5.2", Name: "GLM-5.2", Context: 1_000_000},
-	{ID: "GLM-5-Turbo", Name: "GLM-5-Turbo", Context: 200_000},
+	{ID: "GLM-5.3", Name: "GLM-5.3", Context: 1_000_000, Efforts: []string{"low", "high", "max"}},
+	{ID: "GLM-5.3-Flash", Name: "GLM-5.3-Flash", Context: 1_000_000, Efforts: []string{"low", "high", "max"}},
+	{ID: "GLM-5.2", Name: "GLM-5.2", Context: 1_000_000, Efforts: []string{"none", "high", "max"}},
+	{ID: "GLM-5-Turbo", Name: "GLM-5-Turbo", Context: 200_000, Efforts: []string{"none", "high"}},
 }
 
 // zcodeKey is a coding plan's key and where it is served.
@@ -268,6 +268,13 @@ func zcodeProvider(who, plan string, k zcodeKey) Provider {
 		return nil
 	}
 	acct.models = func() []catalog.Model { return zcodeModels }
+	acct.fetch = func(ctx context.Context) ([]catalog.Model, error) {
+		ms, err := zcodeFetchModels(ctx, k.Base)
+		if err != nil {
+			return nil, err
+		}
+		return ms, catalog.SaveLive("zcode", k.Base, ms)
+	}
 	return Provider{ID: "zcode", Name: "ZCode", Icon: "zcode", Anthropic: k.Base, Website: "https://zcode.z.ai", Account: acct}
 }
 
@@ -582,11 +589,14 @@ func startZCodeSignIn(s *signInFlow) error {
 				return
 			}
 			auth, _ := json.Marshal(k)
-			if err := addSideLogin(savedLogin{Agent: "zcode", User: who, Plan: plan, Auth: auth}, func(savedLogin) {}); err != nil {
+			ownUser, _, ok := zcodeOwn()
+			if !ok {
+				ownUser = ""
+			}
+			if err := addSideLogin(savedLogin{Agent: "zcode", User: who, Plan: plan, Auth: auth}, ownUser, func(savedLogin) {}); err != nil {
 				fail(err.Error())
 				return
 			}
-			ownUser, _, ok := zcodeOwn()
 			s.finish(SignInState{State: "done", User: who, Plan: plan, Using: ok && strings.EqualFold(ownUser, who)})
 			return
 		}

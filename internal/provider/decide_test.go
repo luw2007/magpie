@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,14 +96,23 @@ func TestDecideGateways(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/credits":
 			w.Write([]byte(`{"balance":"5.00","total_used":"0.00"}`))
+		case "/typesafe/v1/models":
+			w.Write([]byte(`{"models":[{"name":"typesafe-ai/jev"}]}`))
 		case "/client/v4/accounts":
 			w.Write([]byte(`{"success":true,"result":[{"id":"acc9"}]}`))
+		case "/client/v4/accounts/acc7/ai/models/search":
+			w.Write([]byte(`{"success":true,"result":[{"name":"typesafe/jev"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer up.Close()
-	for _, c := range []struct{ decide, bad string }{{up.URL + "/v4/ai", "Invalid API key"}, {up.URL + "/client/v4/", "Authentication error"}} {
+	for _, c := range []struct{ decide, bad string }{
+		{up.URL + "/typesafe", "Invalid API key"},
+		{up.URL + "/v4/ai", "Invalid API key"},
+		{up.URL + "/client/v4/", "Authentication error"},
+		{up.URL + "/client/v4/accounts/acc7/ai/run", "Authentication error"},
+	} {
 		p := Provider{ID: "g", Name: "G", Key: "good", Decide: c.decide}
 		if r := p.Test(context.Background()); len(r) != 1 || !r[0].OK || r[0].Model != p.Jev() {
 			t.Errorf("%s: %+v", c.decide, r)
@@ -112,9 +122,74 @@ func TestDecideGateways(t *testing.T) {
 			t.Errorf("%s bad key: %+v", c.decide, r)
 		}
 	}
-	p := Provider{ID: "g", Name: "G", Key: "good", Decide: up.URL + "/client/v4"}
-	if u, err := p.DecideURL(context.Background()); err != nil || u != up.URL+"/client/v4/accounts/acc9/ai/run" {
-		t.Fatalf("%s %v", u, err)
+	for decide, want := range map[string]string{
+		// Vercel's TypeSafe API as its docs give it, or near it; /v4/ai as before
+		"https://ai-gateway.vercel.sh/typesafe":              "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+		"https://ai-gateway.vercel.sh/typesafe/v1/":          "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+		"https://ai-gateway.vercel.sh/typesafe/v1/systemone": "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+		"https://ai-gateway.vercel.sh/v1":                    "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+		"https://ai-gateway.vercel.sh":                       "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+		"https://ai-gateway.vercel.sh/v4/ai":                 "https://ai-gateway.vercel.sh/v4/ai/evaluation-model",
+		// Workers AI with the account in it, as Cloudflare's docs give it
+		"https://api.cloudflare.com/client/v4/accounts/acc7/ai/run": "https://api.cloudflare.com/client/v4/accounts/acc7/ai/run",
+		"https://api.cloudflare.com/client/v4/accounts/acc7/":       "https://api.cloudflare.com/client/v4/accounts/acc7/ai/run",
+		up.URL + "/client/v4": up.URL + "/client/v4/accounts/acc9/ai/run",
+		up.URL + "/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/ai/run": up.URL + "/client/v4/accounts/acc9/ai/run",
+	} {
+		p := Provider{ID: "g", Name: "G", Key: "good", Decide: decide}
+		if u, err := p.DecideURL(context.Background()); err != nil || u != want {
+			t.Errorf("%s: %s %v", decide, u, err)
+		}
+	}
+}
+
+// A token Cloudflare won't list accounts for is told to name its account
+// in the endpoint.
+func TestCloudflareNoAccount(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"success":false,"errors":[{"code":9109,"message":"Unauthorized to access requested resource"}]}`, 403)
+	}))
+	defer up.Close()
+	p := Provider{ID: "g", Name: "G", Key: "workers-ai-only", Decide: up.URL + "/client/v4"}
+	if _, err := p.DecideURL(context.Background()); err == nil || !strings.Contains(err.Error(), "/accounts/<account ID>/ai/run") {
+		t.Fatal(err)
+	}
+}
+
+// A vendor's words are shown whatever shape they come in: Tencent's
+// {code, msg}, and a long body in no shape known cut short, not dropped.
+func TestAPIErrorShapes(t *testing.T) {
+	if got := APIError([]byte(`{"code":11001,"msg":"model not supported"}`), "400 Bad Request"); got != "model not supported" {
+		t.Fatal(got)
+	}
+	long := `{"code":400,"data":null,"trace":"` + strings.Repeat("x", 400) + `"}`
+	got := APIError([]byte(long), "400 Bad Request")
+	if !strings.HasPrefix(got, `400 Bad Request: {"code":400`) || !strings.HasSuffix(got, "…") || len([]rune(got)) > 320 {
+		t.Fatal(got)
+	}
+	if got := APIError([]byte("<html><body>bad</body></html>"), "400 Bad Request"); got != "400 Bad Request" {
+		t.Fatal(got)
+	}
+	if got := APIError(nil, "400 Bad Request"); got != "400 Bad Request" {
+		t.Fatal(got)
+	}
+}
+
+// A backend that only streams is tested with a streamed request: WorkBuddy
+// refuses any other with 400 (#124).
+func TestTinyStreamsStreamOnly(t *testing.T) {
+	p := Provider{Chat: "https://x/v1", Responses: "https://x/v1", Anthropic: "https://x"}
+	for _, proto := range []Protocol{Chat, Responses, Anthropic} {
+		if _, b := tiny(p, proto, "m"); strings.Contains(b, "stream") {
+			t.Errorf("%s: %s", proto, b)
+		}
+		p.Account = &Account{Stream: true}
+		_, b := tiny(p, proto, "m")
+		var v map[string]any
+		if err := json.Unmarshal([]byte(b), &v); err != nil || v["stream"] != true || v["model"] != "m" {
+			t.Errorf("%s: %s", proto, b)
+		}
+		p.Account = nil
 	}
 }
 

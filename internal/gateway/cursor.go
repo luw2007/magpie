@@ -26,8 +26,10 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -37,12 +39,156 @@ import (
 )
 
 // cursorToken and cursorVersion are the sign-in and the CLI version the
-// API is told of; vars so tests can stand in for them.
+// API is told of, cursorAPI the API that says where a team's agent API is,
+// cursorAgent the one used when it can't say, and cursorVariants the ids a
+// model magpie offers stands for, cursorBaseOf the other way round; vars
+// so tests can stand in for them.
 var (
-	cursorToken   = provider.CursorToken
-	cursorVersion = provider.CursorClientVersion
-	cursorAgent   = "https://agentn.global.api5.cursor.sh"
+	cursorToken    = provider.CursorToken
+	cursorVersion  = provider.CursorClientVersion
+	cursorAPI      = "https://api2.cursor.sh"
+	cursorAgent    = "https://agentn.global.api5.cursor.sh"
+	cursorVariants = provider.CursorVariants
+	cursorBaseOf   = provider.CursorBase
 )
+
+// cursorEndpoint is the agent API last picked, for the token (by its
+// hash) it was picked for.
+var cursorEndpoint struct {
+	sync.Mutex
+	key    string
+	url    string
+	at     time.Time
+	listed bool // the server config named it; else it is cursorAgent
+}
+
+// cursorAgentURL is the agent API to run on with this token. As
+// cursor-agent does, it is what ServerConfigService/GetServerConfig names
+// in its agentUrlConfig — a team may be served in one region only, and
+// the global API turns it away — asked once a token, and again when fresh
+// is set; the global one while it can't be had.
+func (s *Server) cursorAgentURL(ctx context.Context, tok string, fresh bool) string {
+	h := sha256.Sum256([]byte(tok))
+	key := hex.EncodeToString(h[:])
+	c := &cursorEndpoint
+	c.Lock()
+	defer c.Unlock()
+	if !fresh && c.key == key && (c.listed || time.Since(c.at) < time.Minute) {
+		return c.url
+	}
+	u, err := s.cursorServerAgent(ctx, tok)
+	if err != nil {
+		if ctx.Err() != nil { // the caller gone: nothing learned
+			return cursorAgent
+		}
+		u = cursorAgent
+	}
+	c.key, c.url, c.at, c.listed = key, u, time.Now(), err == nil
+	return u
+}
+
+// cursorServerAgent is the agent API Cursor's server config names. The CLI
+// takes agentUrl in privacy mode, which the Run always asks for, and
+// agentnUrl otherwise.
+func (s *Server) cursorServerAgent(ctx context.Context, tok string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorAPI+"/aiserver.v1.ServerConfigService/GetServerConfig", strings.NewReader("{}"))
+	if err != nil {
+		return "", err
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	hr.Header.Set("Connect-Protocol-Version", "1")
+	hr.Header.Set("Authorization", "Bearer "+tok)
+	hr.Header.Set("x-cursor-client-version", cursorVersion())
+	hr.Header.Set("x-cursor-client-type", "cli")
+	hr.Header.Set("x-ghost-mode", "true")
+	res, err := s.client.Do(hr)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode/100 != 2 {
+		return "", errors.New(res.Status)
+	}
+	var cfg struct {
+		AgentURLConfig struct {
+			AgentURL  string `json:"agentUrl"`
+			AgentnURL string `json:"agentnUrl"`
+		} `json:"agentUrlConfig"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return "", err
+	}
+	for _, raw := range []string{cfg.AgentURLConfig.AgentURL, cfg.AgentURLConfig.AgentnURL} {
+		if u, err := url.Parse(raw); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
+			return strings.TrimRight(raw, "/"), nil
+		}
+	}
+	return "", errors.New("no agent URL in the server config")
+}
+
+// cursorRegional tells an error of the region a team may be served in:
+// "This region is not yet available for your team".
+func cursorRegional(msg string) bool {
+	return strings.Contains(strings.ToLower(msg), "region")
+}
+
+// cursorModelID is Cursor's id for a model magpie offers, at the effort
+// asked for: the family's variant at it; else, for an effort between the
+// ones it has, the one Cursor picks by default (gpt-5.2 is low, high and
+// one without an effort); else the nearest. Fast, when asked, is from the
+// family's fast one. An id of Cursor's own at an effort (grok-4.7-low, one
+// an agent was set to before) is at the effort asked for, and fast, where
+// Cursor has that id; else it goes as it is.
+func cursorModelID(model, effort string, fast bool) string {
+	if base, at, ok := cursorBaseOf(model); ok {
+		if effort == "" {
+			effort = at
+		}
+		if fast && !strings.HasSuffix(base, "-fast") {
+			if _, ok := cursorVariants(base + "-fast"); ok {
+				base += "-fast"
+			}
+		}
+		if vs, ok := cursorVariants(base); ok && vs[effort] != "" && effort != "" {
+			return vs[effort]
+		}
+		return model
+	}
+	if fast && !strings.HasSuffix(model, "-fast") {
+		if _, ok := cursorVariants(model + "-fast"); ok {
+			model += "-fast"
+		}
+	}
+	vs, ok := cursorVariants(model)
+	if !ok {
+		return model
+	}
+	if effort == "" {
+		return vs[""]
+	}
+	if id := vs[effort]; id != "" {
+		return id
+	}
+	var levels []string
+	unnamed := true // the default has no effort of its own
+	for _, l := range effortRank {
+		if id := vs[l]; id != "" {
+			levels = append(levels, l)
+			unnamed = unnamed && id != vs[""]
+		}
+	}
+	if len(levels) == 0 {
+		return vs[""]
+	}
+	at := slices.Index(effortRank, effort)
+	if unnamed && at > slices.Index(effortRank, levels[0]) && at < slices.Index(effortRank, levels[len(levels)-1]) {
+		return vs[""]
+	}
+	return vs[fitEffort(effort, levels)]
+}
 
 // cursorCall is how the model calls an MCP tool.
 const cursorCall = "CallDynamicTool"
@@ -76,94 +222,108 @@ func (s *Server) askCursor(model string) round {
 		if err != nil {
 			return nil, 401, "Cursor: " + err.Error()
 		}
-		id := model
+		id := cursorModelID(model, req.Effort, req.Fast)
 		if id == "auto" { // Cursor's pick, which its API calls default
 			id = "default"
 		}
-		tools := bridgeTools(req)
-		msgs := cursorMessages(req, tools)
-		run, blobs := buildCursorRun(msgs, cursorLastUser(req), tools, id)
+		base := s.cursorAgentURL(ctx, tok, false)
+		events, status, msg := s.cursorRun(ctx, req, model, id, tok, base)
+		if events == nil && cursorRegional(msg) {
+			// the team moved, or the config was kept from before: once more
+			// with what the config says now
+			if fresh := s.cursorAgentURL(ctx, tok, true); fresh != base {
+				events, status, msg = s.cursorRun(ctx, req, model, id, tok, fresh)
+			}
+		}
+		return events, status, msg
+	}
+}
 
-		// the Run ends with the turn, or once the calls are made
-		rctx, cancel := context.WithCancel(ctx)
-		pr, pw := io.Pipe()
-		st := &cursorStream{pw: pw, blobs: blobs}
-		hr, err := http.NewRequestWithContext(rctx, http.MethodPost, cursorAgent+"/agent.v1.AgentService/Run", pr)
-		if err != nil {
-			cancel()
-			return nil, 500, "Cursor: " + err.Error()
+// cursorRun is one Run of the request on the agent API at base.
+func (s *Server) cursorRun(ctx context.Context, req *Request, model, id, tok, base string) (<-chan Event, int, string) {
+	tools := bridgeTools(req)
+	msgs := cursorMessages(req, tools)
+	run, blobs := buildCursorRun(msgs, cursorLastUser(req), tools, id)
+
+	// the Run ends with the turn, or once the calls are made
+	rctx, cancel := context.WithCancel(ctx)
+	pr, pw := io.Pipe()
+	st := &cursorStream{pw: pw, blobs: blobs}
+	hr, err := http.NewRequestWithContext(rctx, http.MethodPost, base+"/agent.v1.AgentService/Run", pr)
+	if err != nil {
+		cancel()
+		return nil, 500, "Cursor: " + err.Error()
+	}
+	hr.Header.Set("Content-Type", "application/connect+proto")
+	hr.Header.Set("Connect-Protocol-Version", "1")
+	hr.Header.Set("Authorization", "Bearer "+tok)
+	hr.Header.Set("x-cursor-client-version", cursorVersion())
+	hr.Header.Set("x-cursor-client-type", "cli") // else Cursor adds a prompt of its own
+	hr.Header.Set("x-ghost-mode", "true")        // privacy mode: nothing kept for training
+	hr.Header.Set("x-request-id", cursorUUID())
+	// none of Cursor's own tools, only the caller's
+	hr.Header.Set("x-cursor-agent-allowed-tools", "mcp_tool_call,get_mcp_tools_tool_call")
+	go st.send(run)
+	go st.heartbeat(rctx)
+	res, err := s.client.Do(hr)
+	if err != nil {
+		cancel()
+		pw.Close()
+		return nil, 502, "Cursor: " + err.Error()
+	}
+	if res.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		res.Body.Close()
+		cancel()
+		pw.Close()
+		status, msg := cursorFailure(res.StatusCode, b)
+		return nil, status, "Cursor: " + msg
+	}
+	raw := make(chan Event, 16)
+	go func() {
+		defer res.Body.Close()
+		defer pw.Close()
+		defer cancel()
+		st.decode(rctx, bufio.NewReaderSize(res.Body, 64<<10), raw, tools)
+	}()
+	// an error comes before anything of the answer: out of quota, a
+	// model the plan doesn't have — answered with its own status
+	first, ok := <-raw
+	if !ok {
+		return nil, 502, "Cursor: an empty reply"
+	}
+	if first.Kind == KError {
+		cancel()
+		status := st.status
+		if status == 0 {
+			status = 502
 		}
-		hr.Header.Set("Content-Type", "application/connect+proto")
-		hr.Header.Set("Connect-Protocol-Version", "1")
-		hr.Header.Set("Authorization", "Bearer "+tok)
-		hr.Header.Set("x-cursor-client-version", cursorVersion())
-		hr.Header.Set("x-cursor-client-type", "cli") // else Cursor adds a prompt of its own
-		hr.Header.Set("x-ghost-mode", "true")        // privacy mode: nothing kept for training
-		hr.Header.Set("x-request-id", cursorUUID())
-		// none of Cursor's own tools, only the caller's
-		hr.Header.Set("x-cursor-agent-allowed-tools", "mcp_tool_call,get_mcp_tools_tool_call")
-		go st.send(run)
-		go st.heartbeat(rctx)
-		res, err := s.client.Do(hr)
-		if err != nil {
-			cancel()
-			pw.Close()
-			return nil, 502, "Cursor: " + err.Error()
-		}
-		if res.StatusCode/100 != 2 {
-			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-			res.Body.Close()
-			cancel()
-			pw.Close()
-			status, msg := cursorFailure(res.StatusCode, b)
-			return nil, status, "Cursor: " + msg
-		}
-		raw := make(chan Event, 16)
-		go func() {
-			defer res.Body.Close()
-			defer pw.Close()
-			defer cancel()
-			st.decode(rctx, bufio.NewReaderSize(res.Body, 64<<10), raw, tools)
-		}()
-		// an error comes before anything of the answer: out of quota, a
-		// model the plan doesn't have — answered with its own status
-		first, ok := <-raw
-		if !ok {
-			return nil, 502, "Cursor: an empty reply"
-		}
-		if first.Kind == KError {
-			cancel()
-			status := st.status
-			if status == 0 {
-				status = 502
+		return nil, status, "Cursor: " + first.Text
+	}
+	out := make(chan Event, 16)
+	go func() {
+		defer close(out)
+		send := func(ev Event) bool {
+			select {
+			case out <- ev:
+				return true
+			case <-ctx.Done():
+				return false
 			}
-			return nil, status, "Cursor: " + first.Text
 		}
-		out := make(chan Event, 16)
-		go func() {
-			defer close(out)
-			send := func(ev Event) bool {
-				select {
-				case out <- ev:
-					return true
-				case <-ctx.Done():
-					return false
-				}
+		if !send(Event{Kind: KStart, MsgID: "msg_" + randomToken()[:24], Model: model}) || !send(first) {
+			return
+		}
+		for ev := range raw {
+			if ev.Kind == KUsage && ev.Usage.Input == 0 {
+				ev.Usage.Input = estimate(req)
 			}
-			if !send(Event{Kind: KStart, MsgID: "msg_" + randomToken()[:24], Model: model}) || !send(first) {
+			if !send(ev) {
 				return
 			}
-			for ev := range raw {
-				if ev.Kind == KUsage && ev.Usage.Input == 0 {
-					ev.Usage.Input = estimate(req)
-				}
-				if !send(ev) {
-					return
-				}
-			}
-		}()
-		return out, 0, ""
-	}
+		}
+	}()
+	return out, 0, ""
 }
 
 // cursorFailure is the status and message for Cursor's Connect error,
@@ -189,7 +349,7 @@ func cursorFailure(status int, body []byte) (int, string) {
 		Error *failure `json:"error"`
 	}
 	if json.Unmarshal(body, &e) != nil {
-		return devinFailure(status, body)
+		return cursorStatus(status, "", strings.TrimSpace(string(body)))
 	}
 	f := e.failure
 	if e.Error != nil {
@@ -204,11 +364,39 @@ func cursorFailure(status int, body []byte) (int, string) {
 	if msg == "" || msg == "Error" {
 		msg = f.Code
 	}
-	b, _ := json.Marshal(map[string]any{"code": f.Code, "message": msg})
-	if f.Code == "" {
+	if f.Code == "" && status/100 == 2 { // a stream that ended well
 		return status, msg
 	}
-	return devinFailure(status, b)
+	return cursorStatus(status, f.Code, msg)
+}
+
+// cursorStatus is the status and words for Cursor's error of this code and
+// message. A region the team isn't served in says so, not to sign in: a
+// sign-in doesn't change it.
+func cursorStatus(status int, code, msg string) (int, string) {
+	if msg == "" {
+		msg = http.StatusText(status)
+	}
+	lower := strings.ToLower(msg)
+	switch {
+	case cursorRegional(msg):
+		return 403, msg + " — Cursor serves your team only in some regions and turned this request away; signing in again won't change that"
+	case code == "permission_denied":
+		return 403, msg
+	case code == "unauthenticated" || status == 401 || strings.Contains(lower, "expired"):
+		return 401, msg + " — sign in to Cursor again in magpie"
+	case code == "resource_exhausted" || strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "usage limit"):
+		return 429, "usage limit reached: " + msg
+	case strings.Contains(lower, "too long") || strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens"):
+		return 400, "input is too long for the model's context: " + msg
+	case code == "invalid_argument":
+		return 400, msg
+	case code == "unavailable":
+		return 503, msg
+	case code != "":
+		return 502, msg
+	}
+	return status, msg
 }
 
 // ---- the conversation ----------------------------------------------------

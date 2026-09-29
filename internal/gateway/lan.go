@@ -94,9 +94,9 @@ func (s *Server) Relisten() error {
 	was := s.ln.Addr().String()
 	// the port is the same, so the old one goes first
 	s.ln.Close()
-	ln, err := net.Listen("tcp", to)
+	ln, err := Listen(to)
 	if err != nil {
-		if ln, _ = net.Listen("tcp", was); ln == nil {
+		if ln, _ = Listen(was); ln == nil {
 			return err
 		}
 		s.ln = ln

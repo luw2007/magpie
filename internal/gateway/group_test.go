@@ -75,6 +75,121 @@ func postAs(t *testing.T, s *Server, session, body string) (int, string) {
 	return rec.Code, rec.Body.String()
 }
 
+// openRouterFreeLimit answers one free model with an OpenRouter limit and its
+// sibling successfully.
+type openRouterFreeLimit struct {
+	tried []string
+	body  string
+}
+
+func (f *openRouterFreeLimit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	model := modelOf(body)
+	f.tried = append(f.tried, model)
+	w.Header().Set("Content-Type", "application/json")
+	if model == "x/a:free" {
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, f.body)
+		return
+	}
+	io.WriteString(w, `{"id":"ok","choices":[{"message":{"role":"assistant","content":"from b"}}]}`)
+}
+
+// A shared upstream pool limit on one OpenRouter free model rests it alone:
+// the next group request starts with its sibling, even after that sibling's
+// successful answer cleared the provider-level rest.
+func TestOpenRouterSharedPoolRateLimitRestsOneModel(t *testing.T) {
+	fresh(t)
+	f := &openRouterFreeLimit{body: `{"error":{"message":"Provider returned error","code":429,"metadata":{"limit_source":"upstream_provider_shared_pool"}}}`}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{
+		ID: "orf", Name: "OpenRouter Free", Preset: "openrouter", Key: "k",
+		Models: []string{"x/a:free", "x/b:free"}, Chat: up.URL + "/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{
+		Name: "Free", Members: []string{"orf/x/a:free", "orf/x/b:free"}, Routing: provider.Ordered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	body := `{"model":"group/free","messages":[{"role":"user","content":"hi"}]}`
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "from b") {
+		t.Fatalf("group reply: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Magpie-OpenRouter-Limit-Source") != "" {
+		t.Fatal("internal OpenRouter routing detail reached the client")
+	}
+	if first := s.trace.routes[len(s.trace.routes)-1].Tries[0]; first.Rest == nil || first.Rest.Key != "orf/x/a:free" {
+		t.Fatalf("shared-pool rest key: %+v", first)
+	}
+	if code, reply := postAs(t, s, "", body); code != http.StatusOK || !strings.Contains(reply, "from b") {
+		t.Fatalf("second group reply: %d %s", code, reply)
+	}
+	if got := strings.Join(f.tried, " "); got != "x/a:free x/b:free x/b:free" {
+		t.Fatalf("models tried %q, want a b b", got)
+	}
+	if !s.Unrest("orf/x/a:free") || s.resting("orf/x/a:free") {
+		t.Fatal("model rest was not lifted by its key")
+	}
+}
+
+// The routing hint is internal even when this is the only candidate, so the
+// gateway passes the upstream error through to the client.
+func TestOpenRouterSharedPoolDirectReplyHidesRoutingHeader(t *testing.T) {
+	fresh(t)
+	f := &openRouterFreeLimit{body: `{"error":{"message":"Provider returned error","code":429,"metadata":{"limit_source":"upstream_provider_shared_pool"}}}`}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{
+		ID: "orf", Name: "OpenRouter Free", Preset: "openrouter", Key: "k",
+		Models: []string{"x/a:free"}, Chat: up.URL + "/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"orf/x/a:free","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("direct reply: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Magpie-OpenRouter-Limit-Source"); got != "" {
+		t.Fatalf("internal routing header leaked: %q", got)
+	}
+}
+
+// OpenRouter's free-models-per-min limit is account-wide. It must retain the
+// provider rest key, rather than suggesting that another free model is ready.
+func TestOpenRouterFreeAccountRateLimitKeepsProviderRest(t *testing.T) {
+	fresh(t)
+	f := &openRouterFreeLimit{body: `{"error":{"message":"Rate limit exceeded: free-models-per-min"}}`}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{
+		ID: "orf", Name: "OpenRouter Free", Preset: "openrouter", Key: "k",
+		Models: []string{"x/a:free", "x/b:free"}, Chat: up.URL + "/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{
+		Name: "Free", Members: []string{"orf/x/a:free", "orf/x/b:free"}, Routing: provider.Ordered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	if code, body := postAs(t, s, "", `{"model":"group/free","messages":[{"role":"user","content":"hi"}]}`); code != http.StatusOK || !strings.Contains(body, "from b") {
+		t.Fatalf("group reply: %d %s", code, body)
+	}
+	first := s.trace.routes[len(s.trace.routes)-1].Tries[0]
+	if first.Fail != failRate || first.Rest == nil || first.Rest.Key != "orf" {
+		t.Fatalf("account rate limit rest: %+v", first)
+	}
+}
+
 // A model two providers serve is a group magpie finds; a group the user
 // makes routes over its members in the order it names them, the next one
 // taking a request the one before can't.
@@ -261,4 +376,48 @@ func TestKeyPoolsByProtocol(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "from k2") {
 		t.Fatalf("aside key: %d %s, tried %v", code, body, v.tried)
 	}
+}
+
+// A Gemini client without a recognized session header keeps its provider key
+// across turns even when the request's contents, model and instructions grow.
+func TestGeminiFallbackSessionAffinity(t *testing.T) {
+	fresh(t)
+	v := &geminiKeyed{}
+	serveOn(t, "aff", "k1", []string{"m"}, v, "k2")
+	provider.SetAffinity("aff", provider.AffinitySession)
+	s := New()
+	for _, body := range []string{
+		`{"contents":[{"role":"user","parts":[{"text":"fix the bug"}]}]}`,
+		`{"systemInstruction":{"parts":[{"text":"help"}]},"contents":[{"role":"user","parts":[{"text":"fix the bug"}]},{"role":"model","parts":[{"text":"done"}]},{"role":"user","parts":[{"text":"thanks"}]}]}`,
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1beta/models/aff/m:generateContent", strings.NewReader(body))
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Gemini request: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	if len(v.tried) != 2 || v.tried[0] != v.tried[1] {
+		t.Fatalf("Gemini turns changed key: %v", v.tried)
+	}
+	r := s.trace.routes[len(s.trace.routes)-1]
+	if r.Affinity == nil || !r.Affinity.Kept || r.Affinity.Why != "session" {
+		t.Fatalf("Gemini turn did not keep session affinity: %+v", r.Affinity)
+	}
+}
+
+// Gemini is translated to a streamed Chat response by the gateway.
+type geminiKeyed struct{ tried []string }
+
+func (k *geminiKeyed) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	io.Copy(io.Discard, r.Body)
+	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	k.tried = append(k.tried, key)
+	w.Header().Set("Content-Type", "text/event-stream")
+	io.WriteString(w, sse(
+		`data: {"id":"x","choices":[{"delta":{"content":"from `+key+`"}}]}`,
+		`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: {"id":"x","choices":[],"usage":{"prompt_tokens":3000,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2500}}}`,
+		`data: [DONE]`,
+	))
 }

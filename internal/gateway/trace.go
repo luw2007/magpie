@@ -26,10 +26,11 @@ type Route struct {
 	ID       int64     `json:"id"`
 	Time     time.Time `json:"time"`
 	Agent    string    `json:"agent"`
-	Model    string    `json:"model"`           // as the agent asked
-	Provider string    `json:"provider"`        // the provider the model resolved to
-	Group    *GroupRef `json:"group,omitempty"` // the routing group the agent asked for
-	Rule     *RuleHit  `json:"rule,omitempty"`  // the group's rules for it, when it has any
+	Model    string    `json:"model"`            // as the agent asked
+	Effort   string    `json:"effort,omitempty"` // the reasoning the agent asked for; "" for none
+	Provider string    `json:"provider"`         // the provider the model resolved to
+	Group    *GroupRef `json:"group,omitempty"`  // the routing group the agent asked for
+	Rule     *RuleHit  `json:"rule,omitempty"`   // the group's rules for it, when it has any
 	// Nested: the rules of the groups in the group, down the way to the
 	// one that went first, each as it decided
 	Nested   []NestedRule `json:"nested,omitempty"`
@@ -134,7 +135,8 @@ type Weighed struct {
 type Try struct {
 	ID     string    `json:"id"`
 	Model  string    `json:"model,omitempty"`  // the model it was asked for: a group's members may share a provider's keys
-	Effort string    `json:"effort,omitempty"` // the reasoning it was asked for in place of the agent's, as its model takes the turn's pick
+	Effort string    `json:"effort,omitempty"` // the reasoning it was sent at, fitted to its model's levels; "" for none
+	Picked bool      `json:"picked,omitempty"` // Effort is the turn's pick, in place of the agent's
 	Start  time.Time `json:"start"`
 	Done   bool      `json:"done"`
 	Status int       `json:"status,omitempty"`
@@ -210,6 +212,11 @@ func (t *trace) changed() {
 func (t *trace) begin(r Route) *Route {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.ids == 0 {
+		// ids go on from one run to the next, the history keeping them
+		// all: counted on from the time the gateway began
+		t.ids = time.Now().UnixMilli()
+	}
 	t.ids++
 	r.ID = t.ids
 	if r.Tries == nil {
@@ -236,13 +243,20 @@ func (t *trace) update(r *Route, f func(r *Route)) {
 	f(r)
 	if r.Done && !done {
 		t.totals.Requests++
-		for _, try := range r.Tries {
-			if try.Rest != nil {
+		for i, try := range r.Tries {
+			if try.Rest != nil && i < len(r.Tries)-1 { // the last rests with nobody after it (failVerify)
 				t.totals.Rerouted++
 			}
 		}
 		if r.Status >= 400 {
 			t.totals.Errors++
+		}
+		if keepRoutes {
+			c := *r
+			c.Order = append([]Weighed(nil), r.Order...)
+			c.Left = append([]Weighed(nil), r.Left...)
+			c.Tries = append([]Try{}, r.Tries...)
+			go saveRoute(c)
 		}
 	}
 	t.changed()

@@ -8,7 +8,8 @@ package gateway
 // half an hour, out of quota until it says it resets — or, for a
 // subscription, until the window it filled does — rate limited until it
 // says to try again, and otherwise a minute, longer each time it fails
-// again.
+// again. A rest's length and what set it go into the trace as they are, so
+// what the Routing page says is when the account really comes back.
 
 import (
 	"encoding/json"
@@ -55,7 +56,21 @@ func served(rest, key string, tokens int) {
 	routed.used[rest] = tokenUse{routed.used[rest].now(now) + float64(tokens), now}
 	delete(routed.failures, rest)
 	routed.Unlock()
-	// one that answered — tried all the same, or again — rests no longer
+	clearRest(key)
+}
+
+// servedCandidate records an answer and ends both the provider's rest and,
+// when it has one, the candidate's model-specific rest.
+func servedCandidate(c candidate, tokens int) {
+	served(c.rest, c.restKey(), tokens)
+	if id := c.restID(); id != c.restKey() {
+		clearRest(id)
+	}
+}
+
+// clearRest wakes a candidate that just answered, whether it was tried after
+// a provider rest or after a model-specific rest.
+func clearRest(key string) {
 	restingUntil.Lock()
 	delete(restingUntil.m, key)
 	delete(restingUntil.note, key)
@@ -64,10 +79,20 @@ func served(rest, key string, tokens int) {
 
 // How long a candidate sits out, by why it failed.
 const (
-	creditRest   = 30 * time.Minute // out of credit: until someone tops it up
-	quotaRest    = 15 * time.Minute // out of quota, with no word of when it resets
-	longestWait  = time.Hour        // the most a vendor's own "try again at" is trusted
+	creditRest  = 30 * time.Minute // out of credit: until someone tops it up
+	quotaRest   = 15 * time.Minute // out of quota, with no word of when it resets
+	longestWait = time.Hour        // the most a vendor's own "try again at" is trusted
+	// longestQuota is the most an account out of quota sits out, when it
+	// says when it's back: a week's window, and a day over
+	longestQuota = 8 * 24 * time.Hour
 	longestRetry = 10 * time.Minute // failing again and again
+	// verifyRest: an account Google wants verified (#152) is out until
+	// someone does, or lifts its rest in the app
+	verifyRest = 30 * time.Minute
+	// verifyHold is how long the last one left, refused for verification,
+	// is answered that way by magpie without asking again: an agent's
+	// reconnects don't all land on the account Google has stopped
+	verifyHold = time.Minute
 )
 
 var (
@@ -75,6 +100,15 @@ var (
 	creditWords = regexp.MustCompile(`(?i)insufficient.?(balance|credit|fund)|balance|credit|billing|payment|arrear|overdue|suspended|余额|欠费|充值|账户.*(不足|停)`)
 	// quotaWords: it has used up what its plan allows for now.
 	usedUpWords = regexp.MustCompile(`(?i)quota|usage.?limit|limit.?reached|hit your .*limit|limit.{0,24}resets|exceeded.*(plan|limit)|额度|用量|套餐|上限`)
+	// rateWords: a 429 that is a short rate limit — requests or tokens per
+	// minute — which usedUpWords took for a used-up plan ("Rate limit
+	// exceeded", "reached"): as magpie words an upstream error, with
+	// "rate_limit_error" for its type, every such 429 was, and rested a
+	// quarter of an hour rather than a minute (#153).
+	rateWords = regexp.MustCompile(`(?i)rate.?limit|too many requests|per.?(second|sec|minute|min)\b|\b[rt]pm\b|频率|太频繁`)
+	// plannedWords: a 429 that says the plan's own allowance is used, rate
+	// words or not — a day's free requests, say.
+	plannedWords = regexp.MustCompile(`(?i)quota|usage.?limit|hit your .*limit|limit.{0,24}resets|per.?(day|week|month)|daily|weekly|monthly|额度|用量|套餐`)
 	// resetsWords: Claude Code's "usage limit reached|<when it resets>".
 	resetsWords = regexp.MustCompile(`(?i)limit reached\|(\d{10})\b`)
 )
@@ -93,19 +127,40 @@ const (
 	// failFloor: the request asked for a shorter reply than the provider
 	// gives, and is sent again asking for the least it takes
 	failFloor = "floor"
+	// failVerify: the account must be verified with its vendor (Google's
+	// VALIDATION_REQUIRED) before it is served again
+	failVerify = "verify"
 )
 
 // failure says why a reply failed.
 func failure(status int, body []byte) string {
+	if _, ok := provider.Verification(body); ok && (status == 401 || status == 403) {
+		return failVerify
+	}
 	switch {
 	case status == 402, creditWords.Match(body) && status != 429 || strings.Contains(string(body), "insufficient_quota"):
 		return failCredit
-	case usedUpWords.Match(body):
+	case status == 429 && rateWords.Match(body) && !plannedWords.Match(body):
+		return failRate
+	case usedUpWords.Match(body), status == 429 && plannedWords.Match(body):
 		return failQuota
 	case status == 429:
 		return failRate
 	}
 	return failOther
+}
+
+// openRouterSharedPool says an OpenRouter free model was refused by the
+// provider's shared pool, rather than by OpenRouter's account-wide free tier.
+func openRouterSharedPool(body []byte) bool {
+	var reply struct {
+		Error struct {
+			Metadata struct {
+				LimitSource string `json:"limit_source"`
+			} `json:"metadata"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &reply) == nil && reply.Error.Metadata.LimitSource == "upstream_provider_shared_pool"
 }
 
 // Rest is why a candidate sits out after a failure, and until when.
@@ -119,6 +174,51 @@ type Rest struct {
 	// "cooldown" (a minute), "backoff" (longer each time it fails again).
 	By       string `json:"by"`
 	Failures int    `json:"failures,omitempty"` // in a row, for a backoff
+	// Key is what it rests by, for the app to lift the rest (Unrest)
+	Key string `json:"key,omitempty"`
+	// Link: where the vendor said to verify the account, for failVerify
+	Link string `json:"link,omitempty"`
+
+	agent, user string    // the subscription account resting, when it is one
+	said        string    // the error it gave, for a failVerify held
+	hold        time.Time // until when a failVerify is answered without asking
+}
+
+// renewed lifts the rests of a subscription account whose windows were
+// just started again (a Codex reset spent): out of quota no longer.
+func renewed(agent, user string) {
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	for k, r := range restingUntil.note {
+		if r.agent == agent && strings.EqualFold(r.user, user) {
+			delete(restingUntil.m, k)
+			delete(restingUntil.note, k)
+		}
+	}
+}
+
+func init() { provider.OnRenewed(renewed) }
+
+// Unrest lifts the rest of what rests by key — an account just verified
+// with its vendor, say — so the next request asks it again. False when it
+// wasn't resting.
+func (s *Server) Unrest(key string) bool {
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	_, ok := restingUntil.m[key]
+	delete(restingUntil.m, key)
+	delete(restingUntil.note, key)
+	return ok
+}
+
+// verifyHeld is the error to give again, without asking, for a candidate
+// its vendor refused a moment ago until the account is verified.
+func verifyHeld(key string) (string, bool) {
+	r, ok := restOf(key)
+	if !ok || r.Why != failVerify || r.said == "" || !time.Now().Before(r.hold) {
+		return "", false
+	}
+	return r.said, true
 }
 
 // resetsIn is how long until a used-up ChatGPT account is back, as its
@@ -140,8 +240,26 @@ func resetsIn(body []byte, now time.Time) time.Duration {
 	return time.Duration(max(e.Error.In, 0)) * time.Second
 }
 
+// resetsAt is how long until a used-up subscription is back, as its
+// refusal says: Claude Code's "usage limit reached|<unix>", or ChatGPT's
+// resets_at / resets_in_seconds. Zero when it doesn't say.
+func resetsAt(body []byte, now time.Time) time.Duration {
+	if m := resetsWords.FindSubmatch(body); m != nil {
+		if n, _ := strconv.ParseInt(string(m[1]), 10, 64); time.Unix(n, 0).After(now) {
+			return time.Unix(n, 0).Sub(now)
+		}
+	}
+	return resetsIn(body, now)
+}
+
 // restAfter sets a failed candidate aside for as long as its failure says.
 func (s *Server) restAfter(c candidate, status int, header http.Header, body []byte) Rest {
+	return s.restAfterMarked(c, status, header, body, openRouterSharedPool(body))
+}
+
+// restAfterMarked keeps an upstream routing fact through gateway error
+// translation without putting it in the response sent to the client.
+func (s *Server) restAfterMarked(c candidate, status int, header http.Header, body []byte, sharedPool bool) Rest {
 	now := time.Now()
 	d := fallbackCooldown
 	why := failure(status, body)
@@ -150,22 +268,38 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 	case failCredit:
 		d, r.By = creditRest, "credit"
 	case failQuota:
+		// out of quota is out until the quota comes back: when the refusal
+		// says (Claude Code's time, ChatGPT's resets_at — noted by
+		// keepRetry once the error is put in words), else when the window
+		// it filled renews, else as long as the vendor's headers ask — and
+		// only a header is held to the longest wait, as a rate limit's
+		// would be (#147: a ChatGPT account out until 21:34 read as back
+		// "in 59 minutes", the resets_at turned Retry-After and cut to an
+		// hour, then was tried, refused and benched again)
 		d, r.By = quotaRest, "quota"
-		if w := retryAfter(header, now); w > 0 {
-			d, r.By = w, "retry-after"
-		} else if m := resetsWords.FindSubmatch(body); m != nil {
-			if n, _ := strconv.ParseInt(string(m[1]), 10, 64); time.Unix(n, 0).After(now) {
-				d, r.By = time.Unix(n, 0).Sub(now), "resets"
-			}
-		} else if w := resetsIn(body, now); w > 0 {
+		if w := resetsAt(body, now); w > 0 {
+			d, r.By = w, "resets"
+		} else if w := resetsNoted(header, now); w > 0 {
 			d, r.By = w, "resets"
 		} else if t := c.full(now); !t.IsZero() {
 			d, r.By = t.Sub(now), "window"
+		} else if w := retryAfter(header, now); w > 0 {
+			d, r.By = w, "retry-after"
 		}
+		d = min(d, longestQuota)
 	case failRate:
 		if w := retryAfter(header, now); w > 0 {
 			d, r.By = w, "retry-after"
 		}
+	case failVerify:
+		d, r.By = verifyRest, "verify"
+		// the error as the agent was given it, and the link in it
+		r.said, r.hold = provider.APIError(body, ""), now.Add(verifyHold)
+		if !json.Valid(body) {
+			link, _ := provider.Verification(body)
+			r.said = provider.VerifyMessage(string(body), link)
+		}
+		r.Link, _ = provider.Verification([]byte(r.said))
 	default:
 		routed.Lock()
 		routed.failures[c.rest]++
@@ -178,13 +312,23 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 			d, r.By = t.Sub(now), "window"
 		}
 	}
-	if a := c.p.Account; a != nil && why != failOther {
+	if a := c.p.Account; a != nil && why != failOther && why != failVerify {
 		provider.StaleAllowance(a.Agent, a.User) // ask again what it has left
 	}
 	r.Until = now.Add(d)
+	if a := c.p.Account; a != nil {
+		r.agent, r.user = a.Agent, a.User
+	}
+	id := c.restKey()
+	// OpenRouter identifies a provider's shared pool separately from its
+	// account-wide free-tier limit. Only the former leaves sibling models ready.
+	if why == failRate && c.isOpenRouterFree() && sharedPool {
+		id = c.restID()
+	}
+	r.Key = id
 	restingUntil.Lock()
-	restingUntil.m[c.restKey()] = r.Until
-	restingUntil.note[c.restKey()] = r
+	restingUntil.m[id] = r.Until
+	restingUntil.note[id] = r
 	restingUntil.Unlock()
 	return r
 }
@@ -209,11 +353,29 @@ func keepRetry(dst, src http.Header, body []byte) {
 			dst[k] = vs
 		}
 	}
-	if dst.Get("Retry-After") == "" {
-		if d := resetsIn(body, time.Now()); d > 0 {
+	now := time.Now()
+	if d := resetsAt(body, now); d > 0 {
+		// the error the agent gets says it in words, not resets_at: the
+		// time goes on beside it, for restAfter to rest it that long
+		dst.Set(resetsHeader, strconv.FormatInt(now.Add(d).Unix(), 10))
+		if dst.Get("Retry-After") == "" {
 			dst.Set("Retry-After", strconv.Itoa(int(d.Seconds())))
 		}
 	}
+}
+
+// resetsHeader carries, from keepRetry to restAfter, when a subscription
+// out of quota said it's back. A held error that is passed on after all
+// leaves it out; one written straight to the agent carries it, harmlessly.
+const resetsHeader = "X-Magpie-Resets-At"
+
+// resetsNoted is how long until the time keepRetry noted, if it did.
+func resetsNoted(h http.Header, now time.Time) time.Duration {
+	n, err := strconv.ParseInt(h.Get(resetsHeader), 10, 64)
+	if err != nil || !time.Unix(n, 0).After(now) {
+		return 0
+	}
+	return time.Unix(n, 0).Sub(now)
 }
 
 // retryAfter is when a vendor says to try again: Retry-After, in seconds

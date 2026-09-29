@@ -211,3 +211,14 @@ func TestUpdateSkillRefreshesProjects(t *testing.T) {
 		t.Errorf("copy after update all: %q", s)
 	}
 }
+
+func TestRemoveSkillWhoseFolderIsGone(t *testing.T) {
+	projectLib(t)
+	if err := os.RemoveAll(skillDir("pdf")); err != nil {
+		t.Fatal(err)
+	}
+	ok(t)(RemoveSkill("pdf"))
+	if v, _ := Read(nil); slices.ContainsFunc(v.Skills, func(s SkillView) bool { return s.Name == "pdf" }) {
+		t.Error("pdf still listed")
+	}
+}

@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -24,6 +26,7 @@ func TestPlanQuotaSource(t *testing.T) {
 		{Provider{Chat: "https://opencode.ai/zen/v1"}, "", false, false}, // Zen is pay as you go
 		{Provider{Chat: "https://api.kimi.com/coding/v1", Anthropic: "https://api.kimi.com/coding"}, "https://api.kimi.com/coding/v1/usages", true, true},
 		{Provider{Anthropic: "https://api.kimi.ai/coding/"}, "https://api.kimi.ai/coding/v1/usages", true, true},
+		{Provider{Chat: "https://api.commandcode.ai/provider/v1", Anthropic: "https://api.commandcode.ai/provider"}, "https://api.commandcode.ai/alpha/billing/credits", true, false},
 		{Provider{Chat: "https://api.deepseek.com"}, "", false, false},
 	} {
 		src, ok := planQuotaSourceOf(c.p)
@@ -56,6 +59,58 @@ func TestReadZhipuPlan(t *testing.T) {
 	// a pay-as-you-go key: no windows, which PlanQuotas leaves off the page
 	if _, ws, err := readZhipuPlan([]byte(`{"success":true,"data":{"limits":[]}}`)); err != nil || len(ws) != 0 {
 		t.Errorf("no plan: %v %+v", err, ws)
+	}
+}
+
+// cmdCreditsReply is /alpha/billing/credits as command-code 1.66's /usage
+// reads it: the credits, the windows beside them (resetAt in ms), and the
+// sandbox's minutes, which magpie has no use for.
+const cmdCreditsReply = `{"credits":{"planId":"individual-goat-monthly","monthlyCredits":41.2,"purchasedCredits":5,"freeCredits":0},
+	"windowLimits":{"limited":true,"fiveHour":{"used":3,"cap":10,"resetAt":1790000000000},"weekly":{"used":12,"cap":40,"resetAt":1790400000000}},
+	"sandboxMinutes":{"limitMinutes":0,"usedMinutes":0},"sandboxAccess":false}`
+
+func TestReadCommandCodePlan(t *testing.T) {
+	plan, ws, err := readCommandCodePlan([]byte(cmdCreditsReply))
+	if err != nil || plan != "GOAT" || len(ws) != 2 {
+		t.Fatalf("%v %q %+v", err, plan, ws)
+	}
+	if ws[0].Name != "5 hours" || ws[0].Used != 30 || ws[0].Span != 5*time.Hour || !ws[0].ResetsAt.Equal(time.UnixMilli(1790000000000)) {
+		t.Errorf("5h: %+v", ws[0])
+	}
+	if ws[1].Name != "Weekly" || ws[1].Used != 30 || ws[1].Span != 7*24*time.Hour || !ws[1].ResetsAt.Equal(time.UnixMilli(1790400000000)) {
+		t.Errorf("week: %+v", ws[1])
+	}
+	// a pay-as-you-go key: no windows, and so no card
+	if _, ws, err := readCommandCodePlan([]byte(`{"credits":{"purchasedCredits":20},"windowLimits":null}`)); err != nil || len(ws) != 0 {
+		t.Errorf("no plan: %v %+v", err, ws)
+	}
+	// the keyed preset's balance card is the dollars alone
+	if got, err := readCommandCode([]byte(cmdCreditsReply)); err != nil || got != "$46.20" {
+		t.Errorf("balance: %q %v", got, err)
+	}
+}
+
+// TestCommandCodeQuotaShowsWindows: the signed-in plan's card carries its
+// windows and not a Balance, which every view shows in their place.
+func TestCommandCodeQuotaShowsWindows(t *testing.T) {
+	var c cmdCredits
+	if err := json.Unmarshal([]byte(cmdCreditsReply), &c); err != nil {
+		t.Fatal(err)
+	}
+	q := cmdQuotaOf(SubscriptionQuota{}, c)
+	if q.Balance != "" || q.Plan != "GOAT" || len(q.Windows) != 3 {
+		t.Fatalf("%+v", q)
+	}
+	// the CLI's pool: $70 a month, $41.20 of it left, and $5 bought
+	cr := q.Windows[2]
+	if cr.Name != "Credits" || cr.Display != "$28.80 / $75.00" || math.Abs(cr.Used-38.4) > 1e-9 || cr.Span != 0 {
+		t.Errorf("credits: %+v", cr)
+	}
+	// no plan and no windows: what is left is all there is to show
+	var none cmdCredits
+	_ = json.Unmarshal([]byte(`{"credits":{"purchasedCredits":"20","freeCredits":1}}`), &none)
+	if q := cmdQuotaOf(SubscriptionQuota{}, none); q.Balance != "$21.00" || len(q.Windows) != 0 {
+		t.Errorf("no plan: %+v", q)
 	}
 }
 

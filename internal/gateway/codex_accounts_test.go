@@ -74,7 +74,8 @@ func usedUp(t *testing.T, tried, models *[]string) {
 // Codex on one of its own models, signed in to a ChatGPT account that has
 // used its allowance up, with another of its accounts on in magpie: the
 // turn goes on to that one, asked for the model Codex asked for, and the
-// first sits out as long as ChatGPT says, up to the longest wait.
+// first sits out until ChatGPT says it is back — two hours, not an hour
+// at a time (#147).
 func TestCodexOwnModelMovesToNextAccount(t *testing.T) {
 	codexSignedIn(t, "spare@example.com")
 	var tried, models []string
@@ -93,8 +94,8 @@ func TestCodexOwnModelMovesToNextAccount(t *testing.T) {
 		rest = max(rest, time.Until(u))
 	}
 	restingUntil.Unlock()
-	if rest < longestWait-time.Minute || rest > longestWait {
-		t.Errorf("rests %v, not the %v ChatGPT's two hours come to", rest, longestWait)
+	if rest < 2*time.Hour-time.Minute || rest > 2*time.Hour {
+		t.Errorf("rests %v, not ChatGPT's two hours", rest)
 	}
 	tried, models = nil, nil
 	codexPost(t, `{"model":"gpt-5.5","stream":true,"input":"ping"}`)

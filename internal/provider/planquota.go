@@ -1,7 +1,7 @@
 package provider
 
 // A plan bought with an API key — Zhipu's GLM Coding Plan (and Z.ai's),
-// Kimi Code and OpenCode Go — has windows of allowance like a subscription's, which the
+// Kimi Code, OpenCode Go and a Command Code plan — has windows of allowance like a subscription's, which the
 // vendor tells to the key: the Usage page shows them beside the
 // subscriptions'.
 
@@ -40,6 +40,11 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			if strings.Contains(base, "/coding") {
 				return planQuotaSource{strings.TrimSuffix(kimiCodeBase(base), "/") + "/usages", true, readKimiCode, true}, true
 			}
+		case "api.commandcode.ai":
+			// a plan's key, from Studio or its sign-in, works on the keyed
+			// preset too, and is told the plan's 5-hour and weekly windows;
+			// a pay-as-you-go key has none, and no card
+			return planQuotaSource{"https://api.commandcode.ai/alpha/billing/credits", true, readCommandCodePlan, false}, true
 		case "opencode.ai":
 			if u := strings.TrimSuffix(base, "/"); strings.HasSuffix(u, "/zen/go") || strings.Contains(u, "/zen/go/") {
 				return planQuotaSource{"https://opencode.ai/zen/go/v1/usage", true, readOpenCodeGo, true}, true
@@ -107,6 +112,18 @@ func readZhipuPlan(b []byte) (string, []QuotaWindow, error) {
 		out = append(out, w)
 	}
 	return r.Data.Level, out, nil
+}
+
+// readCommandCodePlan reads a Command Code key's /alpha/billing/credits
+// (see cmdCredits) for its plan's 5-hour and weekly windows. The dollars
+// left are the key's balance card's (readCommandCode), so not a window
+// here as on the signed-in subscription's card.
+func readCommandCodePlan(b []byte) (string, []QuotaWindow, error) {
+	var c cmdCredits
+	if err := json.Unmarshal(b, &c); err != nil {
+		return "", nil, err
+	}
+	return cmdPlanName(c.Credits.PlanID), cmdWindows(c), nil
 }
 
 // readOpenCodeGo reads
@@ -304,7 +321,7 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 	}
 	var jobs []job
 	for _, p := range All() {
-		if p.Hidden || p.Account != nil || p.Key == "" {
+		if p.Hidden || p.Off || p.Account != nil || p.Key == "" {
 			continue
 		}
 		src, ok := planQuotaSourceOf(p)

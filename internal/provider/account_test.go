@@ -41,6 +41,7 @@ func signIn(t *testing.T) string {
 	isolate(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir reads this, not HOME
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	exp := float64(time.Now().Add(time.Hour).Unix())

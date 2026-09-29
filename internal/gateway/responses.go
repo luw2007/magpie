@@ -73,6 +73,7 @@ type rRequest struct {
 	Stream            bool            `json:"stream,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	ServiceTier       string          `json:"service_tier,omitempty"`
+	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
 	Reasoning         *struct {
 		Effort  string `json:"effort,omitempty"`
 		Summary string `json:"summary,omitempty"`
@@ -85,7 +86,7 @@ func parseResponses(body []byte) (*Request, error) {
 		return nil, fmt.Errorf("invalid request: %v", err)
 	}
 	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
-		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority"}
+		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority", CacheKey: q.PromptCacheKey}
 	if q.Reasoning != nil {
 		r.Effort = effortOf(q.Reasoning.Effort)
 		r.Thinking = true
@@ -116,6 +117,13 @@ func parseResponses(body []byte) (*Request, error) {
 					continue
 				}
 				r.Messages = append(r.Messages, Message{Role: role, Parts: parts})
+			case it.Type == "agent_message":
+				// MultiAgentV2 hands a subagent its task, and agents their
+				// messages to each other, as this item: what it says is the
+				// user's turn for the agent that receives it.
+				if parts := responsesParts(it.Content); len(parts) > 0 {
+					r.Messages = append(r.Messages, Message{Role: "user", Parts: parts})
+				}
 			case it.Type == "function_call":
 				name := it.Name
 				if it.Namespace != "" {
@@ -123,7 +131,8 @@ func parseResponses(body []byte) (*Request, error) {
 				}
 				r.Messages = append(r.Messages, Message{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: it.CallID, Name: name, Args: parseArgs(it.Arguments)}}})
 			case it.Type == "function_call_output":
-				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: it.CallID, Text: stringOrText(it.Output)}}})
+				out, images := toolOutput(it.Output)
+				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: it.CallID, Text: out, Images: images}}})
 			case it.Type == "reasoning":
 				var b strings.Builder
 				for _, s := range it.Summary {
@@ -164,11 +173,54 @@ func parseResponses(body []byte) (*Request, error) {
 		r.ToolChoice = tc
 	} else {
 		var o struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
+			Type  string `json:"type"`
+			Name  string `json:"name"`
+			Mode  string `json:"mode"`
+			Tools []struct {
+				Type      string `json:"type"`
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+			} `json:"tools"`
 		}
-		if json.Unmarshal(q.ToolChoice, &o) == nil && o.Name != "" {
-			r.ToolChoice = "name:" + o.Name
+		if json.Unmarshal(q.ToolChoice, &o) == nil {
+			switch o.Type {
+			case "allowed_tools":
+				if o.Mode != "auto" && o.Mode != "required" {
+					return nil, fmt.Errorf("invalid allowed_tools mode %q", o.Mode)
+				}
+				r.ToolChoice = o.Mode
+				allowed := make(map[string]bool, len(o.Tools))
+				webSearch := false
+				for _, tool := range o.Tools {
+					switch {
+					case tool.Type == "function" && tool.Name != "":
+						if tool.Namespace != "" {
+							allowed[flatName(tool.Namespace, tool.Name)] = true
+						} else {
+							allowed[tool.Name] = true
+						}
+					case strings.HasPrefix(tool.Type, "web_search"):
+						webSearch = true
+					}
+				}
+				r.WebSearch = r.WebSearch && webSearch
+				var tools []Tool
+				for _, tool := range r.Tools {
+					if allowed[tool.Name] {
+						tools = append(tools, tool)
+					}
+				}
+				r.Tools = tools
+				for name := range r.Namespaced {
+					if !allowed[name] {
+						delete(r.Namespaced, name)
+					}
+				}
+			case "function":
+				if o.Name != "" {
+					r.ToolChoice = "name:" + o.Name
+				}
+			}
 		}
 	}
 	return r, nil
@@ -255,7 +307,19 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 				input = append(input, map[string]any{"type": "function_call", "call_id": id, "name": p.Name, "arguments": argsString(p)})
 			case ToolResult:
 				flushMsg()
-				input = append(input, map[string]any{"type": "function_call_output", "call_id": p.CallID, "output": p.Text})
+				var output any = p.Text
+				if len(p.Images) > 0 {
+					// an output can be a list of text and images
+					var items []map[string]any
+					if strings.TrimSpace(p.Text) != "" {
+						items = append(items, map[string]any{"type": "input_text", "text": p.Text})
+					}
+					for _, im := range p.Images {
+						items = append(items, map[string]any{"type": "input_image", "image_url": dataURL(im)})
+					}
+					output = items
+				}
+				input = append(input, map[string]any{"type": "function_call_output", "call_id": p.CallID, "output": output})
 			}
 		}
 		flushMsg()
@@ -264,6 +328,9 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 		input = []map[string]any{}
 	}
 	out := map[string]any{"model": model, "input": input, "stream": r.Stream, "store": false}
+	if r.CacheKey != "" {
+		out["prompt_cache_key"] = r.CacheKey
+	}
 	if r.System != "" {
 		out["instructions"] = r.System
 	}
@@ -464,6 +531,10 @@ type responsesEncoder struct {
 func callTo(item map[string]any, name string, named map[string]nsTool) map[string]any {
 	if q, ok := named[name]; ok {
 		item["name"], item["namespace"] = q.Name, q.Namespace
+		// Nothing magpie serves seals arguments. Codex reads a namespaced call
+		// without this list as sealed: spawn_agent's message in MultiAgentV2
+		// would reach the subagent as ciphertext, which is really plain text.
+		item["encrypted_function_args"] = []any{}
 	} else {
 		item["name"] = name
 	}

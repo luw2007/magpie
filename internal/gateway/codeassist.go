@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // ---- Google Code Assist (provider side) --------------------------------------
@@ -21,10 +23,58 @@ const skipSignature = "skip_thought_signature_validator"
 
 var unsafeToolID = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
+// antigravityVariants are the ids of Antigravity's a model magpie offers
+// stands for, by level, and antigravityBaseOf the model and level one of
+// those ids is; vars so tests can stand in for them.
+var (
+	antigravityVariants = provider.AntigravityVariants
+	antigravityBaseOf   = provider.AntigravityBase
+)
+
+// antigravityModelID is Antigravity's id for a model magpie offers, at
+// the effort asked for: the family's variant at it, or at the nearest
+// level it has; with none asked, the family's default. One of
+// Antigravity's own ids at a level (gemini-3.7-flash-low, one an agent
+// was set to before) goes as it is when no effort is asked, and else is
+// the family's variant at the effort asked for: the effort the client
+// picks wins, as it does for the family. Any other id goes as it is.
+func antigravityModelID(model, effort string) string {
+	if base, _, ok := antigravityBaseOf(model); ok {
+		if effort == "" {
+			return model
+		}
+		model = base
+	}
+	vs, ok := antigravityVariants(model)
+	if !ok {
+		return model
+	}
+	if effort == "" {
+		return vs[""]
+	}
+	var levels []string
+	for _, l := range effortRank {
+		if vs[l] != "" {
+			levels = append(levels, l)
+		}
+	}
+	if id := vs[fitEffort(effort, levels)]; id != "" {
+		return id
+	}
+	return vs[""]
+}
+
 // buildCodeAssist builds the Code Assist envelope for a request, for the
-// app the account belongs to: "gemini" or "antigravity".
+// app the account belongs to: "gemini" or "antigravity". On Antigravity a
+// model that is a family of levels is asked for as the variant the effort
+// picks (antigravityModelID).
 func buildCodeAssist(r *Request, model, agent string) []byte {
 	ag := agent == "antigravity"
+	fixed := false // the id says the level it thinks at
+	if ag {
+		model = antigravityModelID(model, r.Effort)
+		_, _, fixed = antigravityBaseOf(model)
+	}
 	claude := strings.Contains(strings.ToLower(model), "claude")
 	toolID := func(id string) string {
 		if !ag || id == "" {
@@ -76,6 +126,15 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 					res["id"] = id
 				}
 				parts = append(parts, map[string]any{"functionResponse": res})
+				// the images a tool returned follow its response, as Gemini
+				// CLI sends a file it read
+				for _, im := range p.Images {
+					if im.Data != "" {
+						parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": im.MediaType, "data": im.Data}})
+					} else if im.URL != "" {
+						parts = append(parts, map[string]any{"fileData": map[string]any{"mimeType": im.MediaType, "fileUri": im.URL}})
+					}
+				}
 			}
 			// thinking isn't sent back: its signatures belong to whoever
 			// made them, and Google turns away ones it didn't
@@ -142,7 +201,7 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 	if len(r.Stop) > 0 {
 		gen["stopSequences"] = r.Stop
 	}
-	if tc := thinkingConfig(r, model, claude); tc != nil {
+	if tc := thinkingConfig(r, model, claude, fixed); tc != nil {
 		gen["thinkingConfig"] = tc
 		// Claude's answer has to have room past its thinking
 		if b, ok := tc["thinkingBudget"].(int); ok && claude && gen["maxOutputTokens"] == nil {
@@ -157,8 +216,14 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 }
 
 // thinkingConfig says how hard the model should think: a level for
-// Gemini 3, a budget for the rest. A model that doesn't think gets none.
-func thinkingConfig(r *Request, model string, claude bool) map[string]any {
+// Gemini 3, a budget for the rest. A model that doesn't think gets none,
+// and one whose id already says its level (fixed: Antigravity's
+// gemini-3.7-flash-low) gets no level that could say otherwise — the
+// effort asked for picked that id.
+//
+// Gemini 3's levels: Flash takes minimal, low, medium and high, so medium
+// goes as medium; Pro takes low and high only, so medium goes up to high.
+func thinkingConfig(r *Request, model string, claude, fixed bool) map[string]any {
 	m := strings.ToLower(model)
 	if strings.HasPrefix(m, "gpt-oss") || claude && !strings.Contains(m, "thinking") {
 		return nil
@@ -171,10 +236,13 @@ func thinkingConfig(r *Request, model string, claude bool) map[string]any {
 	}
 	tc := map[string]any{"includeThoughts": true}
 	if strings.HasPrefix(m, "gemini-3") || strings.HasPrefix(m, "gemini-pro-agent") {
-		if r.Effort != "" {
+		if r.Effort != "" && !fixed {
 			level := "high"
-			if r.Effort == "low" {
+			switch {
+			case r.Effort == "low":
 				level = "low"
+			case r.Effort == "medium" && strings.Contains(m, "flash"):
+				level = "medium"
 			}
 			tc["thinkingLevel"] = level
 		}

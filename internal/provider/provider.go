@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -120,6 +121,11 @@ type Provider struct {
 	// it serves only through the routing groups it is in, and by its
 	// "provider/model" ids.
 	Unlisted bool `json:"unlisted,omitempty"`
+	// Off switches the provider off without removing it: its keys and
+	// settings stay, but agents aren't given its models, no request,
+	// routing group or fallback goes to it, and its balance isn't asked,
+	// until it is switched on again (#163) — for a key out of quota.
+	Off bool `json:"off,omitempty"`
 	// Contexts is how long a request the user says a model takes, in
 	// tokens, over what the vendor or models.dev says: by model id, "*"
 	// for all the provider's models. Agents are told it.
@@ -212,7 +218,13 @@ func All() []Provider {
 			continue
 		}
 		pk := picks[a.ID]
-		a.Models, a.Unlisted, a.Fallback, a.Routing, a.Affinity, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Fallback, pk.Routing, pk.Affinity, pk.Contexts, pk.Family
+		a.Models, a.Unlisted, a.Off, a.Fallback, a.Routing, a.Affinity, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Off, pk.Fallback, pk.Routing, pk.Affinity, pk.Contexts, pk.Family
+		if a.ID == "cursor" { // picked before its efforts were one model
+			a.Models = cursorPicks(a.Models)
+		}
+		if a.ID == "antigravity" { // picked before its levels were one model
+			a.Models = antigravityPicks(a.Models)
+		}
 		out = append(out, a)
 	}
 	return out
@@ -294,7 +306,7 @@ func Save(p Provider) error {
 		if p.ID == "kiro" {
 			key = p.Key
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, Unlisted: p.Unlisted, Fallback: p.Fallback, Routing: p.Routing, Affinity: p.Affinity, Contexts: p.Contexts, Family: p.Family, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID)}
+		p = Provider{ID: p.ID, Key: key, Models: p.Models, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Affinity: p.Affinity, Contexts: p.Contexts, Family: p.Family, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID)}
 	} else {
 		if slices.Contains(accountIDs, p.ID) && !stored(p.ID) {
 			// taken, it would hide that subscription once signed in
@@ -331,6 +343,11 @@ func Add(p Provider) (string, error) {
 	if p.ID == "" {
 		p.ID = Slug(p.Name)
 	}
+	if p.ID == "" {
+		// a name with no Latin letters or digits in it (中转站) slugs to
+		// nothing: the id is the site's instead
+		p.ID = hostID(p)
+	}
 	// the same key on the same host with the same headers is the one
 	// already here, not another: adding it twice would only split its usage
 	for _, h := range All() {
@@ -340,6 +357,31 @@ func Add(p Provider) (string, error) {
 	}
 	p.ID, p.Name = freeID(p.ID), freeName(p.Name)
 	return p.ID, Save(p)
+}
+
+// hostID is an id for a provider from the host it is on: api.relay.com is
+// relay, and one on an IP address, or with no address, is custom.
+func hostID(p Provider) string {
+	for _, u := range []string{p.Chat, p.Responses, p.Anthropic} {
+		h := hostOf(u)
+		if host, _, err := net.SplitHostPort(h); err == nil {
+			h = host
+		}
+		if h = strings.Trim(h, "[]"); h == "" || net.ParseIP(h) != nil {
+			continue
+		}
+		labels := strings.Split(h, ".")
+		if len(labels) > 1 {
+			labels = labels[:len(labels)-1] // the .com
+		}
+		for len(labels) > 1 && (labels[0] == "api" || labels[0] == "www") {
+			labels = labels[1:]
+		}
+		if id := Slug(strings.Join(labels, "-")); id != "" {
+			return id
+		}
+	}
+	return "custom"
 }
 
 // freeName is name, or "name 2", "name 3"… whichever no provider is called,
@@ -362,7 +404,7 @@ func freeName(name string) string {
 }
 
 // accountIDs are the ids of the subscriptions magpie can list (account.go).
-var accountIDs = []string{"antigravity", "claude", "codex", "copilot", "cursor", "devin", "gemini", "grok", "kiro", "zcode"}
+var accountIDs = []string{"antigravity", "claude", "codex", CommandCodePlanID, "copilot", "cursor", "devin", "gemini", "grok", "kiro", "workbuddy", WorkBuddyAIID, "zcode"}
 
 func stored(id string) bool {
 	for _, p := range load().Providers {
@@ -580,6 +622,46 @@ func (p Provider) Speaks() []Protocol {
 	return out
 }
 
+// ResponsesFirst: an OpenAI model on OpenAI's API or Copilot's, which is
+// best asked on the Responses API though Chat serves it too.
+func (p Provider) ResponsesFirst(model string) bool {
+	if p.Responses == "" || (p.ID != "copilot" && HostOf(p.Responses) != "api.openai.com") {
+		return false
+	}
+	m := strings.ToLower(model[strings.LastIndex(model, "/")+1:])
+	return strings.HasPrefix(m, "gpt-") || strings.HasPrefix(m, "codex") ||
+		len(m) > 1 && m[0] == 'o' && m[1] >= '0' && m[1] <= '9'
+}
+
+// Native is the API model is best asked on at this provider: one it serves
+// the model on itself, so a request on it is relayed as it is rather than
+// translated — Responses for a ChatGPT sign-in, or an OpenAI model on
+// OpenAI's API or Copilot's; Chat where that is served. "" when every
+// request is translated anyway: a sign-in served through its agent's own
+// API (Claude Code's binary, Cursor, Devin, Kiro, Code Assist).
+func (p Provider) Native(model string) Protocol {
+	if p.Account != nil {
+		switch p.Account.Agent {
+		case "claude", "cursor", "devin", "kiro":
+			return ""
+		}
+	}
+	apis := p.APIs(model)
+	var out []Protocol
+	for _, pr := range p.Speaks() {
+		if slices.Contains(Protocols, pr) && (apis == nil || slices.Contains(apis, pr)) {
+			out = append(out, pr)
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	if p.ResponsesFirst(model) && slices.Contains(out, Responses) {
+		return Responses
+	}
+	return out[0]
+}
+
 // Host is the vendor's API host, for display.
 func (p Provider) Host() string {
 	for _, pr := range p.Speaks() {
@@ -615,6 +697,23 @@ func (p Provider) IsOpenCode() bool {
 	return h == "opencode.ai" || strings.HasSuffix(h, ".opencode.ai")
 }
 
+// IsBedrock reports whether the provider is Amazon Bedrock's runtime: made
+// from its preset, or at its host.
+func (p Provider) IsBedrock() bool {
+	if p.Preset == "bedrock" {
+		return true
+	}
+	h := p.Host()
+	return strings.HasPrefix(h, "bedrock-runtime.") && strings.HasSuffix(h, ".amazonaws.com")
+}
+
+// bedrockClaude is a Bedrock id of a Claude model: a model id
+// (anthropic.claude-opus-4-8) or an inference profile's
+// (apac.anthropic.claude-opus-5-5).
+func bedrockClaude(model string) bool {
+	return strings.Contains(strings.ToLower(model), "anthropic.claude")
+}
+
 // HostOf pulls the host out of a URL, for display.
 func HostOf(u string) string {
 	u = strings.TrimSpace(u)
@@ -638,3 +737,38 @@ func Mask(s string) string {
 // Ready reports whether the provider can be used: it has a key, needs
 // none, or is a signed-in agent.
 func (p Provider) Ready() bool { return p.Account != nil || p.Key != "" || keyOptional(p) }
+
+// On is whether the provider takes requests: ready, and not switched off.
+func (p Provider) On() bool { return p.Ready() && !p.Off }
+
+// SetOff switches a provider off, or on again (see Provider.Off). Saving
+// it brings the model lists written into agents' files up to date.
+func SetOff(id string, off bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.Off = off
+	return Save(*p)
+}
+
+// SwitchedOff is the provider switched off in magpie that a model id
+// names: as "provider/model", or a model only switched-off providers list.
+// A request for it is refused as that, not as a model magpie doesn't know.
+func SwitchedOff(id string) (Provider, bool) {
+	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
+	if pid, _, ok := strings.Cut(id, "/"); ok {
+		if p, err := Find(pid); err == nil && p.Off {
+			return *p, true
+		}
+	}
+	for _, p := range All() {
+		if !p.Off || !p.Ready() {
+			continue
+		}
+		if slices.ContainsFunc(p.Exposed(), func(m catalog.Model) bool { return m.ID == id }) {
+			return p, true
+		}
+	}
+	return Provider{}, false
+}

@@ -15,6 +15,7 @@ package gateway
 // and not yet gone cold.
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"regexp"
@@ -211,10 +212,121 @@ func answered(key string, c candidate, turn, cacheRead int) {
 	}
 }
 
-// foreignReasoning is how OpenAI refuses reasoning another account (or
-// organization) sealed: "The encrypted content for item rs_… could not be
-// verified", invalid_encrypted_content.
-var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|encrypted content.{0,80}could not be (verified|decrypted)`)
+// foreignReasoning is how a vendor refuses reasoning another account (or
+// organization, or vendor) sealed: OpenAI's "The encrypted content for
+// item rs_… could not be verified", invalid_encrypted_content; xAI's
+// (Grok's API and a SuperGrok account alike) "Could not decrypt the
+// provided encrypted_content. Ensure the value is the unmodified
+// encrypted_content from a previous response."
+var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content`)
+
+// refusedSeals remembers, per conversation and the key or account that
+// refused it, the sealed reasoning another one wrote. Codex hands every
+// earlier turn's reasoning back on each request, so once a conversation
+// has moved, what was sealed before it moved is left out of its later
+// requests there up front, rather than refused and asked again each turn.
+// Reasoning the one it moved to sealed itself still goes along, for its
+// cache and its train of thought.
+var refusedSeals = struct {
+	sync.Mutex
+	m map[string]sealsRefused // scope|conversation|who → what it refused
+}{m: map[string]sealsRefused{}}
+
+type sealsRefused struct {
+	at    time.Time
+	seals map[[sha256.Size]byte]bool
+}
+
+// sealedItem is what's read of an input item to tell sealed reasoning.
+type sealedItem struct {
+	Type string `json:"type"`
+	Enc  string `json:"encrypted_content"`
+}
+
+// seals are the sealed reasoning (encrypted_content) in a Responses
+// request's input.
+func seals(body []byte) [][sha256.Size]byte {
+	var q struct {
+		Input []sealedItem `json:"input"`
+	}
+	if json.Unmarshal(body, &q) != nil {
+		return nil
+	}
+	var out [][sha256.Size]byte
+	for _, it := range q.Input {
+		if it.Type == "reasoning" && it.Enc != "" {
+			out = append(out, sha256.Sum256([]byte(it.Enc)))
+		}
+	}
+	return out
+}
+
+// refused notes that who turned away the sealed reasoning in body, in the
+// conversation key names.
+func refused(key, who string, body []byte) {
+	ss := seals(body)
+	if len(ss) == 0 {
+		return
+	}
+	now := time.Now()
+	refusedSeals.Lock()
+	defer refusedSeals.Unlock()
+	k := key + "|" + who
+	r := refusedSeals.m[k]
+	if r.seals == nil {
+		r.seals = map[[sha256.Size]byte]bool{}
+	}
+	for _, s := range ss {
+		r.seals[s] = true
+	}
+	r.at = now
+	refusedSeals.m[k] = r
+	if len(refusedSeals.m) > 4096 {
+		for k, r := range refusedSeals.m {
+			if now.Sub(r.at) > stickKeep {
+				delete(refusedSeals.m, k)
+			}
+		}
+	}
+}
+
+// withoutRefused takes out of a Responses request the sealed reasoning
+// who already refused in this conversation; the rest stays as it is.
+func withoutRefused(key, who string, body []byte) ([]byte, bool) {
+	k := key + "|" + who
+	refusedSeals.Lock()
+	r, ok := refusedSeals.m[k]
+	if ok && time.Since(r.at) > stickKeep {
+		delete(refusedSeals.m, k)
+		ok = false
+	}
+	refusedSeals.Unlock()
+	if !ok {
+		return nil, false
+	}
+	var q map[string]json.RawMessage
+	if json.Unmarshal(body, &q) != nil {
+		return nil, false
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(q["input"], &items) != nil {
+		return nil, false
+	}
+	kept := items[:0:0]
+	for _, it := range items {
+		var t sealedItem
+		if json.Unmarshal(it, &t) == nil && t.Type == "reasoning" && t.Enc != "" && r.seals[sha256.Sum256([]byte(t.Enc))] {
+			continue
+		}
+		kept = append(kept, it)
+	}
+	if len(kept) == len(items) {
+		return nil, false
+	}
+	q["input"], _ = json.Marshal(kept)
+	b, err := json.Marshal(q)
+	return b, err == nil
+}
 
 // withoutReasoning takes the sealed reasoning out of a Responses request's
 // input — what another account wrote and this one can't read. What was

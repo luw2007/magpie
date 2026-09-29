@@ -45,14 +45,8 @@ type copilotLoginApp struct {
 // copilotLogins lists the Copilot accounts, the first in use first, then
 // the rest as they were added.
 func copilotLogins(cfg string) []copilotLoginApp {
-	own, hasOwn := copilotLogin(cfg)
-	ownUser := ""
-	if hasOwn {
-		ownUser = own.User
-		if ownUser == "" {
-			ownUser = "GitHub"
-		}
-	}
+	own, _ := copilotLogin(cfg)
+	ownUser := copilotOwnUser(cfg)
 	var out []copilotLoginApp
 	for _, l := range sideLogins("copilot", ownUser, func(l savedLogin) bool {
 		_, ok := copilotSaved(l)
@@ -66,6 +60,15 @@ func copilotLogins(cfg string) []copilotLoginApp {
 		out = append(out, copilotLoginApp{l.Login, app})
 	}
 	return out
+}
+
+// copilotOwnUser is who the editors' or CLI's Copilot sign-in is, "" for none.
+func copilotOwnUser(cfg string) string {
+	own, ok := copilotLogin(cfg)
+	if !ok {
+		return ""
+	}
+	return firstNonEmpty(own.User, "GitHub")
 }
 
 func copilotSide() []sideLogin {
@@ -93,7 +96,7 @@ func forgetCopilotLogin(user string) error {
 // addCopilotLogin keeps an account magpie just signed in.
 func addCopilotLogin(user, plan, token string) error {
 	auth, _ := json.Marshal(map[string]string{"oauth_token": token})
-	return addSideLogin(savedLogin{Agent: "copilot", User: user, Plan: plan, Auth: auth}, func(savedLogin) {})
+	return addSideLogin(savedLogin{Agent: "copilot", User: user, Plan: plan, Auth: auth}, copilotOwnUser(copilotConfigDir()), func(savedLogin) {})
 }
 
 // copilotAccount is the Copilot account in use first.

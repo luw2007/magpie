@@ -2,6 +2,7 @@ package gui
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -77,5 +78,22 @@ func usageRoutes(mux *http.ServeMux) {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		writeJSON(rw, provider.Quotas(ctx))
+	})
+	// spends one of a Codex account's rate-limit resets, which the page
+	// has asked the user about first; what it did comes back
+	mux.HandleFunc("POST /api/usage/codex-reset", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ User string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		out, err := provider.UseCodexReset(ctx, in.User)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, out)
 	})
 }

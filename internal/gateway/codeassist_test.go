@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/catalog"
 )
 
 func codeAssistRequest(t *testing.T) *Request {
@@ -139,5 +141,54 @@ func TestCodeAssistDecoder(t *testing.T) {
 	(&codeAssistDecoder{}).decode(`{"error":{"code":429,"message":"quota"}}`, func(ev Event) { errs = append(errs, ev) })
 	if len(errs) != 1 || errs[0].Kind != KError || errs[0].Text != "quota" {
 		t.Errorf("error events = %+v", errs)
+	}
+}
+
+// On Antigravity a model that is one of its families of levels is asked
+// for as the variant the effort picks, with no thinking level that could
+// say otherwise; an old variant id moves with an effort asked; Gemini 3
+// Flash takes medium as medium, Pro as high.
+func TestCodeAssistAntigravityLevels(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	var raw []catalog.Model
+	for _, l := range []string{"gemini-3-flash - Gemini 3 Flash", "gemini-3.1-pro-high - Gemini 3.1 Pro (High)", "gemini-3.1-pro-low - Gemini 3.1 Pro (Low)",
+		"gemini-3.7-flash-high - Gemini 3.7 Flash (High)", "gemini-3.7-flash-low - Gemini 3.7 Flash (Low)",
+		"gemini-3.7-flash-medium - Gemini 3.7 Flash (Medium)", "gemini-pro-agent - Gemini 3.1 Pro (High)"} {
+		id, name, _ := strings.Cut(l, " - ")
+		raw = append(raw, catalog.Model{ID: id, Name: name})
+	}
+	if err := catalog.SaveLive("antigravity", "", raw); err != nil {
+		t.Fatal(err)
+	}
+	// level: "" no thinkingConfig, "-" thinking at the level the id says
+	for _, c := range []struct{ model, effort, agent, want, level string }{
+		{"gemini-3.7-flash", "low", "antigravity", "gemini-3.7-flash-low", "-"},
+		{"gemini-3.7-flash", "medium", "antigravity", "gemini-3.7-flash-medium", "-"},
+		{"gemini-3.7-flash", "xhigh", "antigravity", "gemini-3.7-flash-high", "-"},
+		{"gemini-3.7-flash", "", "antigravity", "gemini-3.7-flash-high", ""},
+		{"gemini-3.7-flash-high", "", "antigravity", "gemini-3.7-flash-high", ""},
+		{"gemini-3.7-flash-high", "low", "antigravity", "gemini-3.7-flash-low", "-"},
+		{"gemini-3.1-pro", "medium", "antigravity", "gemini-3.1-pro-high", "-"},
+		{"gemini-3-flash", "medium", "antigravity", "gemini-3-flash", "medium"},
+		{"gemini-pro-agent", "medium", "antigravity", "gemini-pro-agent", "high"},
+		{"gemini-pro-agent", "low", "antigravity", "gemini-pro-agent", "low"},
+		{"gemini-3.7-flash", "low", "gemini", "gemini-3.7-flash", "low"},
+	} {
+		r := codeAssistRequest(t)
+		r.Thinking, r.Effort = false, c.effort
+		var env struct {
+			Model   string         `json:"model"`
+			Request map[string]any `json:"request"`
+		}
+		json.Unmarshal(buildCodeAssist(r, c.model, c.agent), &env)
+		gen, _ := env.Request["generationConfig"].(map[string]any)
+		tc, _ := gen["thinkingConfig"].(map[string]any)
+		level, _ := tc["thinkingLevel"].(string)
+		if tc != nil && level == "" {
+			level = "-"
+		}
+		if env.Model != c.want || level != c.level {
+			t.Errorf("%s at %q on %s: %s at %q, want %s at %q", c.model, c.effort, c.agent, env.Model, level, c.want, c.level)
+		}
 	}
 }

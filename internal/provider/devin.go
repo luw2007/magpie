@@ -54,7 +54,7 @@ func DevinCredentialsPath() string {
 	return filepath.Join(base, "devin", "credentials.toml")
 }
 
-var devinStatus = &cliIdentity{name: "devin", exe: func() string { return DevinExecutable() }, ask: func() (string, string, bool) { return askDevinIdentity() }}
+var devinStatus = &cliIdentity{name: "devin", exe: func() string { return DevinExecutable() }, ask: func() (string, string, bool, error) { u, p, ok := askDevinIdentity(); return u, p, ok, nil }}
 
 // devinIdentity is who Devin's CLI says is signed in; see cliIdentity.
 func devinIdentity() (user, plan string, ok bool) { return devinStatus.get() }
@@ -153,9 +153,18 @@ func devinModelsFlatten(families []DevinFamily) []catalog.Model {
 		if id := strings.ToLower(f.UID); id == "adaptive" || id == "fusion" {
 			continue
 		}
-		// a pinned variant (claude-opus-5-5-high) has its family's window:
-		// without it Claude Code takes a 1M model for 200K (no [1m] mark)
-		window, most := catalog.ContextOf(f.UID), catalog.OutputOf(f.UID)
+		// Devin's own numbers, which its list gives each variant and the family
+		// takes from the one its id follows; models.dev's only for a family
+		// Devin gave none for. A pinned variant (claude-opus-5-5-high) has its
+		// family's window: without it Claude Code takes a 1M model for 200K
+		// (no [1m] mark)
+		window, most := f.window(), f.reply()
+		if window == 0 {
+			window = catalog.ContextOf(f.UID)
+		}
+		if most == 0 {
+			most = catalog.OutputOf(f.UID)
+		}
 		out = append(out, catalog.Model{ID: f.UID, Name: f.Label, Provider: "devin", Context: window, Output: most})
 		for _, m := range f.Models {
 			if m.Context == 0 {
@@ -170,27 +179,103 @@ func devinModelsFlatten(families []DevinFamily) []catalog.Model {
 	return out
 }
 
+// window is how long a prompt a family takes, as its own models give it: the
+// family id follows the family's newest, and its variants carry the numbers
+// (swe-2's 262K, which models.dev doesn't have). 0 when Devin didn't say.
+func (f DevinFamily) window() int {
+	for _, m := range f.Models {
+		if m.Context > 0 {
+			return m.Context
+		}
+	}
+	return 0
+}
+
+// reply is the most tokens a reply from the family may hold, likewise.
+func (f DevinFamily) reply() int {
+	for _, m := range f.Models {
+		if m.Output > 0 {
+			return m.Output
+		}
+	}
+	return 0
+}
+
+// devinDeclared is what Devin's own list gives each model id: how long a prompt
+// it takes and the most tokens its reply may hold. A family id takes the
+// numbers of the variant it follows; a variant without numbers takes its
+// family's, as devinModelsFlatten leaves them. Empty until the CLI list is read.
+func devinDeclared() map[string][2]int {
+	devinFamiliesCache.Lock()
+	families := devinFamiliesCache.families
+	devinFamiliesCache.Unlock()
+	out := map[string][2]int{}
+	for _, f := range families {
+		window, most := f.window(), f.reply()
+		if window > 0 || most > 0 {
+			out[f.UID] = [2]int{window, most}
+			for _, a := range f.Aliases {
+				out[a] = [2]int{window, most}
+			}
+		}
+		for _, m := range f.Models {
+			w, o := m.Context, m.Output
+			if w == 0 {
+				w = window
+			}
+			if o == 0 {
+				o = most
+			}
+			out[m.ID] = [2]int{w, o}
+		}
+	}
+	return out
+}
+
 var devinEffort = regexp.MustCompile(`-(min|low|medium|high|xhigh|max|fast)$`)
 
-// withDevinContexts fills in a saved list's windows, fetched before a
-// variant was given its family's: claude-opus-5-5-high-fast has
-// claude-opus-5-5's.
+// devinKnown is models.dev's window and reply cap for a model id, with the
+// effort suffix taken off: claude-opus-5-5-high-fast has claude-opus-5-5's.
+func devinKnown(id string) (window, most int) {
+	for base := id; ; {
+		if n := catalog.ContextOf(base); n > 0 {
+			return n, catalog.OutputOf(base)
+		}
+		b := devinEffort.ReplaceAllString(base, "")
+		if b == base {
+			return 0, 0
+		}
+		base = b
+	}
+}
+
+// withDevinContexts fills in a saved list's windows and reply caps: Devin's own
+// numbers over what is there, which an older magpie took from models.dev — its
+// glm-5.2 at 1M where Devin gives 200K, its grok at 500K of reply where Devin
+// gives 100K — and models.dev's for what Devin's list doesn't name, or a
+// variant fetched before it was given its family's (claude-opus-5-5-high-fast
+// has claude-opus-5-5's).
 func withDevinContexts(ms []catalog.Model) []catalog.Model {
+	declared := devinDeclared()
 	out := slices.Clone(ms)
 	for i, m := range out {
-		for base := m.ID; m.Context == 0; {
-			if n := catalog.ContextOf(base); n > 0 {
-				out[i].Context = n
-				if m.Output == 0 {
-					out[i].Output = catalog.OutputOf(base)
-				}
-				break
-			}
-			b := devinEffort.ReplaceAllString(base, "")
-			if b == base {
-				break
-			}
-			base = b
+		// Devin's own numbers, over what an older magpie took from models.dev
+		window, most := declared[m.ID][0], declared[m.ID][1]
+		if window > 0 {
+			out[i].Context = window
+		}
+		if most > 0 {
+			out[i].Output = most
+		}
+		if out[i].Context > 0 && out[i].Output > 0 {
+			continue
+		}
+		window, most = devinKnown(m.ID)
+		if out[i].Context == 0 {
+			out[i].Context = window
+		}
+		if out[i].Output == 0 {
+			out[i].Output = most
 		}
 	}
 	return out
@@ -255,6 +340,10 @@ func parseDevinModels(b []byte) []DevinFamily {
 			Variants    []struct {
 				ModelUID string `json:"model_uid"`
 				Label    string `json:"label"`
+				// Devin's own numbers for the variant: how long a prompt it
+				// takes and the most tokens its reply may hold
+				Context int `json:"max_context_tokens"`
+				Output  int `json:"max_output_tokens"`
 			} `json:"variants"`
 		} `json:"families"`
 	}
@@ -278,7 +367,8 @@ func parseDevinModels(b []byte) []DevinFamily {
 			if name == "" {
 				name = v.ModelUID
 			}
-			fam.Models = append(fam.Models, catalog.Model{ID: v.ModelUID, Name: name, Provider: "devin"})
+			fam.Models = append(fam.Models, catalog.Model{ID: v.ModelUID, Name: name, Provider: "devin",
+				Context: v.Context, Output: v.Output})
 		}
 		out = append(out, fam)
 	}

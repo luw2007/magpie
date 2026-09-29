@@ -9,6 +9,7 @@ package provider
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,7 +44,9 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 				}
 			}
 		}
-		if !found {
+		// one of magpie's that is the same account stands for it: it took
+		// the agent's own over while that couldn't be read (addSideLogin)
+		if !found && !slices.ContainsFunc(ls, func(l savedLogin) bool { return l.Agent == agent && strings.EqualFold(l.User, ownUser) }) {
 			ls = append(ls, savedLogin{Agent: agent, User: ownUser, Seen: time.Now().UTC().Truncate(time.Second)})
 			_ = writeLogins(ls)
 		}
@@ -156,21 +159,27 @@ func forgetSideLogin(agent, user, ownHow string, ls []sideLogin, gone func(saved
 // addSideLogin keeps an account magpie just signed in, in use beside the
 // others. Signed in again, an account keeps the newer sign-in; one that is
 // the agent's own already is not kept twice (dup is told of what is let
-// go either way).
-func addSideLogin(l savedLogin, dup func(savedLogin)) error {
+// go either way). ownUser is who the agent is signed in to now, "" for no
+// one it can be read as: the agent's own account remembered from before,
+// while the agent is signed out or keeps its tokens encrypted, takes the
+// new sign-in rather than letting it go — let go, it was listed nowhere
+// (#155).
+func addSideLogin(l savedLogin, ownUser string, dup func(savedLogin)) error {
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
 	ls := readLogins()
 	l.Seen = time.Now().UTC().Truncate(time.Second)
 	for i := range ls {
 		if ls[i].Agent == l.Agent && strings.EqualFold(ls[i].User, l.User) {
-			if ls[i].own() {
+			if ls[i].own() && strings.EqualFold(ownUser, l.User) {
 				dup(l)
 				return nil
 			}
 			old := ls[i]
 			ls[i].Auth, ls[i].Home, ls[i].Plan, ls[i].Seen = l.Auth, l.Home, l.Plan, l.Seen
-			if old.Home != l.Home {
+			if old.own() {
+				ls[i].On = true
+			} else if old.Home != l.Home {
 				dup(old)
 			}
 			return writeLogins(ls)
@@ -184,7 +193,7 @@ func addSideLogin(l savedLogin, dup func(savedLogin)) error {
 // agent's own store as Claude Code's and Codex's are.
 func sideAgent(agent string) bool {
 	switch agent {
-	case "grok", "copilot", "zcode", "gemini", "antigravity":
+	case "grok", "copilot", "zcode", "workbuddy", WorkBuddyAIID, CommandCodePlanID, "gemini", "antigravity":
 		return true
 	}
 	return false

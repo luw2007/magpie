@@ -1,7 +1,7 @@
 // Package tui is magpie in the terminal: one row per agent, arrow keys to pick
 // a field, enter to change it; and pages for providers and usage beside it
-// (pages.go), routing groups (routing.go) and the library (library.go), 1–5
-// to go between them.
+// (pages.go), routing groups (routing.go), sessions (sessions.go) and the
+// library (library.go), 1–6 to go between them.
 package tui
 
 import (
@@ -22,6 +22,7 @@ import (
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/profile"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -114,6 +115,14 @@ type model struct {
 	quotas    []provider.SubscriptionQuota // nil while the vendors are asked
 	qasked    bool                         // quotas were asked for
 	qleft     bool                         // windows read as what is left, not what is used
+	sstats    sessions.Stats               // the sessions' usage in the range picked
+	srange    int                          // in sessRanges
+	smodel    string                       // the model the sessions are narrowed to, "" for all
+	sfolder   string                       // the folder, "" for all
+	scost     bool                         // the chart shows cost, not tokens
+	slist     []sessions.Session           // the latest sessions, the most recently active first
+	ssel      int                          // the session picked among those shown
+	sstat     bool                         // the page shows the range's stats, not its sessions
 	lib       []libRow
 	lrow      int
 	libView   *library.View
@@ -140,8 +149,16 @@ func Run() error {
 
 func newModel() model {
 	// in the order the app lists them, those hidden there last
-	shown, hidden := settings.Arrange(settings.Load(), agent.Detected(), func(a *agent.Agent) string { return a.ID })
-	m := model{agents: append(shown, hidden...), hidden: len(shown), period: usage.Week}
+	// an app magpie has no fields in (Cindy, which takes it by a link) has
+	// nothing to pick here
+	var set []*agent.Agent
+	for _, a := range agent.Detected() {
+		if len(a.Fields) > 0 {
+			set = append(set, a)
+		}
+	}
+	shown, hidden := settings.Arrange(settings.Load(), set, func(a *agent.Agent) string { return a.ID })
+	m := model{agents: append(shown, hidden...), hidden: len(shown), period: usage.Week, srange: 1}
 	m.reload()
 	return m
 }
@@ -164,6 +181,8 @@ func (m *model) reload() {
 		}
 	case pageUsage:
 		m.sum = usage.Summarize(m.period)
+	case pageSessions:
+		m.reloadSessions()
 	case pageLibrary:
 		m.reloadLibrary()
 	}
@@ -218,6 +237,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quotaMsg:
 		m.quotas = msg
 		return m, nil
+	case sessFilterMsg:
+		m.ssel = 0
+		if msg.folder {
+			m.sfolder = msg.value
+		} else {
+			m.smodel = msg.value
+		}
+		return m, nil
 	case askMsg:
 		m.openAsk(msg.a)
 		return m, nil
@@ -260,7 +287,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.goTo(p)
 			}
 			switch m.page {
-			case pageProviders, pageGroups, pageUsage, pageLibrary:
+			case pageProviders, pageGroups, pageUsage, pageSessions, pageLibrary:
 				if s := msg.String(); s == "q" || s == "esc" {
 					return m, tea.Quit
 				}
@@ -283,6 +310,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.updateGroups(msg)
 			case pageUsage:
 				return m.updateUsage(msg)
+			case pageSessions:
+				m.flash = ""
+				return m.updateSessions(msg)
 			case pageLibrary:
 				m.flash = ""
 				return m.updateLibrary(msg)
@@ -302,12 +332,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// pageKey is the page a key goes to: 1–5, or ] and [ for the next and
+// pageKey is the page a key goes to: 1–6, or ] and [ for the next and
 // the one before.
 func (m model) pageKey(k string) (page, bool) {
 	n := page(len(pageNames))
 	switch k {
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		return page(k[0] - '1'), true
 	case "]":
 		return (m.page + 1) % n, true
@@ -633,19 +663,26 @@ func (m model) View() string {
 		switch m.page {
 		case pageProviders:
 			body = m.viewProviders()
-			footer = hints("↑↓", "provider", "↵", "models", "e", "key", "a", "add", "f", "family", "u", "list/groups only", "t", "test", "b", "balances", "d", "remove", "1–5", "pages")
+			footer = hints("↑↓", "provider", "↵", "models", "e", "key", "a", "add", "f", "family", "u", "list/groups only", "o", "on/off", "t", "test", "b", "balances", "d", "remove", "1–6", "pages")
 		case pageGroups:
 			body = m.viewGroups()
-			footer = hints("↑↓", "group", "↵", "open", "n", "new", "o", "routing", "d", "remove", "u", "bring back", "1–5", "pages", "q", "quit")
+			footer = hints("↑↓", "group", "↵", "open", "n", "new", "o", "routing", "d", "remove", "u", "bring back", "1–6", "pages", "q", "quit")
 		case pageLibrary:
 			body = m.viewLibrary()
-			footer = hints("↑↓", "item", "↵", "agents", "a", "add", "e", "edit", "u", "update skill", "i", "bring in", "d", "remove", "s", "sync", "r", "reload", "1–5", "pages", "q", "quit")
+			footer = hints("↑↓", "item", "↵", "agents", "a", "add", "e", "edit", "u", "update skill", "i", "bring in", "d", "remove", "s", "sync", "r", "reload", "1–6", "pages", "q", "quit")
+		case pageSessions:
+			body = m.viewSessions()
+			if m.sstat {
+				footer = hints("←→", "range", "M", "model", "f", "folder", "x", "clear", "c", "tokens / cost", "s", "sessions", "r", "reload", "1–6", "pages", "q", "quit")
+			} else {
+				footer = hints("↑↓", "session", "↵", "resume", "←→", "range", "M", "model", "f", "folder", "x", "clear", "s", "stats", "r", "reload", "1–6", "pages", "q", "quit")
+			}
 		case pageUsage:
 			body = m.viewUsage()
-			footer = hints("←→", "period", "t w m A", "today · 7 days · 30 days · all", "u", "used / left", "r", "reload", "1–5", "pages", "q", "quit")
+			footer = hints("←→", "period", "t w m A", "today · 7 days · 30 days · all", "u", "used / left", "r", "reload", "1–6", "pages", "q", "quit")
 		default:
 			body = m.viewList()
-			footer = hints("↑↓", "agent", "←→", "field", "↵", "change", "s", "save profile", "p", "profiles", "1–5", "pages", "q", "quit")
+			footer = hints("↑↓", "agent", "←→", "field", "↵", "change", "s", "save profile", "p", "profiles", "1–6", "pages", "q", "quit")
 		}
 	case modePick, modeProfiles:
 		body = m.viewPicker()

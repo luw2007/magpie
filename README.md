@@ -45,8 +45,9 @@ and there is a terminal version (`magpie tui`) and a plain CLI.
   use its models through the gateway, with nothing copied and no key to
   paste.
 - **Providers with one field.** Pick a preset (Anthropic, OpenAI, Gemini,
-  DeepSeek, Kimi, GLM, MiniMax, StepFun, Qwen, Mistral, Groq, xAI, OpenRouter,
-  Together, Fireworks, SiliconFlow, AiHubMix, 302.AI, Ollama, LM Studio…),
+  DeepSeek, Kimi, GLM, MiniMax, StepFun, Qwen, Tencent Cloud Token Plan,
+  Huawei Cloud MaaS, Volcengine Ark, Mistral, Groq, xAI, OpenRouter, Together,
+  Fireworks, SiliconFlow, AiHubMix, 302.AI, Ollama, LM Studio…),
   paste a key, done. Custom vendors need a name and a base URL. magpie never
   reads keys from your shell environment.
 - **Real model lists, nothing compiled in.** With a key in hand magpie asks
@@ -66,6 +67,7 @@ and there is a terminal version (`magpie tui`) and a plain CLI.
 | Agent        | File                              | Fields          |
 | ------------ | --------------------------------- | --------------- |
 | Claude Code  | `~/.claude/settings.json`         | provider, model, opus/sonnet/haiku/fable (through magpie) |
+| Claude Desktop | `Claude/` + `Claude-3p/configLibrary/` in `~/Library/Application Support` (`%LOCALAPPDATA%` on Windows, `~/.config` on Linux) | provider (its third-party gateway mode: Code and Cowork on magpie, no Anthropic sign-in; restart Desktop) |
 | Codex        | `~/.codex/config.toml`            | provider, model, effort |
 | Gemini CLI   | `~/.gemini/settings.json`, `~/.gemini/.env` | auth, model |
 | OpenCode     | `~/.config/opencode/opencode.json(c)` | model, small |
@@ -86,6 +88,7 @@ and there is a terminal version (`magpie tui`) and a plain CLI.
 | Qoder CN (CLI) | `~/.qoder-cn/settings.json` (`$QODERCN_CONFIG_DIR`) | model, effort (as Qoder; its own accounts, a Qoder CN plan with BYOK) |
 | Grok Build   | `~/.grok/config.toml` (`$GROK_HOME`) | model, effort |
 | ZCode        | `~/.zcode/v2/config.json`         | provider (magpie's models in ZCode's picker) |
+| WorkBuddy    | `~/.workbuddy/models.json` (`$WORKBUDDY_CONFIG_DIR`) | provider (magpie's models in WorkBuddy's picker) |
 | OpenHanako   | `~/.hanako/provider-catalog.json` + `agents/<id>/config.yaml` (`$HANA_HOME`; its local API while it runs) | model (the primary agent's; magpie's models as a provider) |
 | Alma         | Alma's local API (`localhost:23001`, while Alma runs) | model (Alma's default; magpie's models as a provider) |
 
@@ -461,6 +464,16 @@ stdin.
 - `~/.cache/magpie/models/<provider>.json` — model lists fetched from vendors
 
 `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` are respected.
+
+## Counting users
+
+Once a day, a running magpie (the app, or `magpie serve`) sends one event to
+PostHog so we know how many people use it: a random id made up on your
+computer (`~/.config/magpie/install-id`), magpie's version, and your system
+and architecture. Nothing else goes: no accounts, keys, providers, models,
+prompts or usage. Turn it off in Settings → Privacy → Count me as a user, or
+with `DO_NOT_TRACK=1` or `MAGPIE_NO_STATS=1`. Builds from source never send
+it. The code is [internal/stats](internal/stats/stats.go).
 
 ## Community
 

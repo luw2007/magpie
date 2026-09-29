@@ -15,6 +15,7 @@ import (
 	"github.com/yetone/magpie/internal/claudebridge"
 	"github.com/yetone/magpie/internal/davsync"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/imagemcp"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/profile"
 	"github.com/yetone/magpie/internal/settings"
@@ -69,10 +70,15 @@ const usage = `magpie — one place to pick every agent's model
   magpie accounts add <agent>     sign in to one more Claude, ChatGPT or Google (Gemini CLI, Antigravity) subscription
   magpie accounts switch <agent> <email>   sign the agent in to another of them
   magpie accounts refresh         renew the saved Claude and ChatGPT sign-ins now (the gateway does it daily)
+  magpie accounts checkin         WorkBuddy's daily check-in (签到) for each WorkBuddy account, now (Settings can do it daily)
   magpie accounts project <gemini|antigravity> <email> <project>   the Google Cloud project a Google account's requests go to
 
   magpie serve                    run the gateway alone (the app runs it too)
+  magpie mcp image                the image generation MCP server an agent is given from the library (stdio)
   magpie usage [today|7d|30d|all] tokens and cost per agent and model (30d)
+  magpie sessions [--model <m>] [--folder <f>] [--json]   the latest Claude Code, Codex, OpenCode and Pi sessions, with what each cost
+  magpie sessions --days N|today|all [--model <m>] [--folder <f>] [--json]
+                                  what every session spent, day by day, with the top models and folders (7 days)
   magpie quota [<provider>] [--json]  what is left of every subscription, plan and key balance
   magpie sync                     refresh the model catalog and vendor model lists
   magpie agents                   list every supported agent
@@ -101,6 +107,8 @@ func main() {
 func run(args []string) error {
 	settings.Migrate()
 	agent.RenameLegacy()
+	agent.MoveCursorEfforts()
+	agent.MoveAntigravityEfforts()
 	// a provider added, edited or removed, or a list fetched anew, reaches
 	// the model lists agents keep in files of their own
 	catalog.Changed = agent.SyncCatalog
@@ -181,6 +189,8 @@ func run(args []string) error {
 		return accountsCmd(args)
 	case "usage":
 		return usageCmd(args)
+	case "sessions":
+		return sessionsCmd(args)
 	case "quota", "quotas":
 		return quotaCmd(args)
 	case "update":
@@ -193,6 +203,8 @@ func run(args []string) error {
 		return restoreCmd(args[1:])
 	case "webdav", "dav":
 		return webdavCmd(args[1:])
+	case "mcp":
+		return imagemcp.Run(args[1:])
 	case "claude-mcp-helper": // internal: stdio MCP subprocess spawned by Claude Code
 		return claudebridge.RunMCP(args[1:])
 	}
@@ -200,6 +212,16 @@ func run(args []string) error {
 	a, err := agent.Find(args[0])
 	if err != nil {
 		return err
+	}
+	if len(a.Fields) == 0 && a.Import != nil {
+		// `magpie cindy`: it takes magpie through its own link, confirmed there
+		if len(args) > 1 {
+			link := a.Import()
+			openInBrowser(link)
+			fmt.Println(green.Render("✓"), bold.Render(a.Name), muted.Render("opened to add magpie — confirm it there"))
+			fmt.Println(muted.Render("  " + link))
+			return nil
+		}
 	}
 	switch len(args) {
 	case 1:
@@ -323,6 +345,13 @@ func list(agents []*agent.Agent, detectedOnly bool, dimFrom int) error {
 				r.name = faint.Render(a.Name) + " " + faint.Render("hidden")
 			}
 			r.vals = strings.Join(parts, label.Render("  ·  "))
+			if a.Import != nil {
+				if a.Added != nil && a.Added() {
+					r.vals = value.Render("magpie added")
+				} else {
+					r.vals = label.Render("magpie "+a.ID+" add") + faint.Render("  to add magpie")
+				}
+			}
 		}
 		nameW = max(nameW, lipgloss.Width(r.name))
 		valW = max(valW, lipgloss.Width(r.vals))

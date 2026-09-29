@@ -413,7 +413,10 @@ func TestChatClientAnthropicUpstream(t *testing.T) {
 	}
 	var up map[string]any
 	json.Unmarshal(f.got, &up)
-	if up["system"] != "sys" || up["max_tokens"] != float64(50) || up["temperature"] != 0.2 || up["stream"] != true {
+	// the system prompt and the conversation so far are marked for caching
+	if !strings.Contains(string(f.got), `"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}]`) ||
+		!strings.Contains(string(f.got), `{"type":"text","text":"ls","cache_control":{"type":"ephemeral"}}`) ||
+		up["max_tokens"] != float64(50) || up["temperature"] != 0.2 || up["stream"] != true {
 		t.Errorf("upstream: %s", f.got)
 	}
 	if f.head.Get("x-api-key") != "k" || f.head.Get("anthropic-version") == "" {
@@ -927,6 +930,33 @@ func TestConversationID(t *testing.T) {
 	r2 := conversationID(http.Header{}, []byte(`{"input":[{"role":"user","content":"hi"},{"type":"function_call_output","output":"x"}]}`))
 	if r1 != r2 {
 		t.Errorf("responses ids: %q %q", r1, r2)
+	}
+	// Gemini requests have contents, not messages or input. Later turns repeat
+	// the first user content even as the system instruction and history grow.
+	g1 := conversationID(http.Header{}, []byte(`{"model":"m","contents":[{"role":"user","parts":[{"text":"fix the bug"}]}]}`))
+	g2 := conversationID(http.Header{}, []byte(`{"model":"m","systemInstruction":{"parts":[{"text":"help"}]},"contents":[{"role":"user","parts":[{"text":"fix the bug"}]},{"role":"model","parts":[{"text":"done"}]},{"role":"user","parts":[{"text":"thanks"}]}]}`))
+	gOther := conversationID(http.Header{}, []byte(`{"model":"m","contents":[{"role":"user","parts":[{"text":"write docs"}]}]}`))
+	if g1 != g2 || g1 == gOther || !strings.HasPrefix(g1, "magpie-") {
+		t.Errorf("gemini derived ids: %q %q %q", g1, g2, gOther)
+	}
+	// Gemini accepts an omitted role on a user content. When history adds an
+	// explicit user turn, affinity must still use the first role-less content.
+	rolelessFirst := `{"parts":[{"text":"fix the bug"}]}`
+	gRoleless1 := conversationID(http.Header{}, []byte(`{"contents":[`+rolelessFirst+`]}`))
+	gRoleless2 := conversationID(http.Header{}, []byte(`{"contents":[`+rolelessFirst+`,{"role":"model","parts":[{"text":"done"}]},{"role":"user","parts":[{"text":"thanks"}]}]}`))
+	gRolelessOther := conversationID(http.Header{}, []byte(`{"contents":[{"parts":[{"text":"write docs"}]},{"role":"user","parts":[{"text":"thanks"}]}]}`))
+	if gRoleless1 != gRoleless2 || gRoleless1 == gRolelessOther {
+		t.Errorf("role-less gemini derived ids: %q %q %q", gRoleless1, gRoleless2, gRolelessOther)
+	}
+	// A role-less item is Gemini-specific. Chat and Responses still look for
+	// the first explicitly marked user turn.
+	for name, pair := range map[string][2]string{
+		"chat":      {`{"messages":[{"content":"preface"},{"role":"user","content":"hi"}]}`, `{"messages":[{"role":"user","content":"hi"}]}`},
+		"responses": {`{"input":[{"content":"preface"},{"role":"user","content":"hi"}]}`, `{"input":[{"role":"user","content":"hi"}]}`},
+	} {
+		if got, want := conversationID(http.Header{}, []byte(pair[0])), conversationID(http.Header{}, []byte(pair[1])); got != want {
+			t.Errorf("%s changed explicit-user selection: %q != %q", name, got, want)
+		}
 	}
 }
 

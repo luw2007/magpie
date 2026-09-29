@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -218,11 +219,12 @@ func TestServeCursor(t *testing.T) {
 		w.(http.Flusher).Flush()
 	}))
 	defer up.Close()
-	tok, ver, agent := cursorToken, cursorVersion, cursorAgent
+	tok, ver, agent, api := cursorToken, cursorVersion, cursorAgent, cursorAPI
 	cursorToken = func() (string, error) { return "tok", nil }
 	cursorVersion = func() string { return "cli-test" }
-	cursorAgent = up.URL
-	defer func() { cursorToken, cursorVersion, cursorAgent = tok, ver, agent }()
+	cursorAgent, cursorAPI = up.URL, up.URL // no server config there: the global API
+	defer func() { cursorToken, cursorVersion, cursorAgent, cursorAPI = tok, ver, agent, api }()
+	forgetCursorEndpoint(t)
 
 	serve := func(from provider.Protocol, body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -253,5 +255,223 @@ func TestServeCursor(t *testing.T) {
 	reply = cursorEnd(`{"error":{"code":"resource_exhausted","message":"out of credits"}}`)
 	if w = serve(provider.Chat, `{"model":"x","messages":[{"role":"user","content":"hi"}]}`); w.Code != 429 {
 		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func forgetCursorEndpoint(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		cursorEndpoint.Lock()
+		cursorEndpoint.key, cursorEndpoint.url, cursorEndpoint.listed = "", "", false
+		cursorEndpoint.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
+// cursorConfigServer is Cursor's server config, naming agent as the agent
+// API; it counts how often it is asked.
+func cursorConfigServer(t *testing.T, agent *string, asked *int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/aiserver.v1.ServerConfigService/GetServerConfig" || r.Header.Get("Authorization") == "" ||
+			r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, `{"code":"not_found"}`, 404)
+			return
+		}
+		*asked++
+		if *agent == "" {
+			http.Error(w, `{"code":"internal"}`, 500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"configVersion": "1",
+			"agentUrlConfig": map[string]any{"agentUrl": *agent, "agentnUrl": *agent + "/n"}})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// The agent API is the one the server config names, asked for once a
+// token; the global one when the config can't be had.
+func TestCursorAgentURL(t *testing.T) {
+	forgetCursorEndpoint(t)
+	agent, asked := "https://agent.us.example", 0
+	srv := cursorConfigServer(t, &agent, &asked)
+	api, global := cursorAPI, cursorAgent
+	cursorAPI, cursorAgent = srv.URL, "https://global.example"
+	defer func() { cursorAPI, cursorAgent = api, global }()
+	s, ctx := New(), context.Background()
+
+	if u := s.cursorAgentURL(ctx, "tok-a", false); u != "https://agent.us.example" || asked != 1 {
+		t.Fatal(u, asked) // privacy mode: agentUrl, not agentnUrl
+	}
+	if u := s.cursorAgentURL(ctx, "tok-a", false); u != "https://agent.us.example" || asked != 1 {
+		t.Fatal("not kept:", u, asked)
+	}
+	agent = "https://agent.eu.example"
+	if u := s.cursorAgentURL(ctx, "tok-b", false); u != "https://agent.eu.example" || asked != 2 {
+		t.Fatal("another account, the same endpoint:", u, asked)
+	}
+	agent = "https://agent.ap.example"
+	if u := s.cursorAgentURL(ctx, "tok-b", true); u != "https://agent.ap.example" || asked != 3 {
+		t.Fatal("fresh wasn't asked:", u, asked)
+	}
+	agent = ""
+	if u := s.cursorAgentURL(ctx, "tok-c", false); u != "https://global.example" || asked != 4 {
+		t.Fatal("no config, no global:", u, asked)
+	}
+	if u := s.cursorAgentURL(ctx, "tok-c", false); u != "https://global.example" || asked != 4 {
+		t.Fatal("a failure is asked again at once:", u, asked)
+	}
+}
+
+// A region the team isn't served in is asked of the config once more, and
+// the Run tried again where it now says; still turned away, the error says
+// so, not to sign in.
+func TestServeCursorRegion(t *testing.T) {
+	forgetCursorEndpoint(t)
+	regionErr := `{"code":"unauthenticated","message":"Error","details":[{"debug":{"details":{"title":"Unauthorized request.","detail":"This region is not yet available for your team"}}}]}`
+	var ran []string
+	run := func(name string, ok bool) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ran = append(ran, name)
+			readConnectFrame(bufio.NewReader(r.Body))
+			http.NewResponseController(w).EnableFullDuplex()
+			w.Header().Set("Content-Type", "application/connect+proto")
+			if !ok { // a stream's error comes at its end
+				w.Write(cursorEnd(`{"error":` + regionErr + `}`))
+			} else {
+				w.Write(cursorUpdate(1, pb{}.str(1, "Hello")))
+				w.Write(cursorUpdate(14, pb{}.varint(1, 3).varint(2, 1)))
+			}
+			w.(http.Flusher).Flush()
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	global, us := run("global", false), run("us", true)
+	agent, asked := global.URL, 0
+	srv := cursorConfigServer(t, &agent, &asked)
+	tok, ver, api, glob := cursorToken, cursorVersion, cursorAPI, cursorAgent
+	cursorToken = func() (string, error) { return "tok", nil }
+	cursorVersion = func() string { return "cli-test" }
+	cursorAPI, cursorAgent = srv.URL, global.URL
+	defer func() { cursorToken, cursorVersion, cursorAPI, cursorAgent = tok, ver, api, glob }()
+
+	serve := func() *httptest.ResponseRecorder {
+		body := `{"model":"x","messages":[{"role":"user","content":"hi"}]}`
+		w := httptest.NewRecorder()
+		var u Usage
+		New().serveCursor(w, httptest.NewRequest("POST", "/", strings.NewReader(body)), provider.Chat, "auto", []byte(body), &u)
+		return w
+	}
+	// the config kept from before names global; asked again, it says us
+	s := New()
+	s.cursorAgentURL(context.Background(), "tok", false)
+	agent = us.URL
+	if w := serve(); w.Code != 200 || !strings.Contains(w.Body.String(), "Hello") || strings.Join(ran, ",") != "global,us" || asked != 2 {
+		t.Fatalf("%d %s %v %d", w.Code, w.Body, ran, asked)
+	}
+	// the config still says global: no second Run, and plain words
+	forgetCursorEndpoint(t)
+	agent, ran = global.URL, nil
+	w := serve()
+	if w.Code != 403 || strings.Join(ran, ",") != "global" || !strings.Contains(w.Body.String(), "region is not yet available") ||
+		strings.Contains(strings.ToLower(w.Body.String()), "sign in") || strings.Contains(w.Body.String(), "Devin") {
+		t.Fatalf("%d %s %v", w.Code, w.Body, ran)
+	}
+}
+
+func TestCursorFailureWords(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		body   string
+		code   int
+		has    string
+		not    []string
+	}{
+		{401, `{"code":"unauthenticated","message":"Error","details":[{"debug":{"details":{"title":"Unauthorized request.","detail":"This region is not yet available for your team"}}}]}`,
+			403, "This region is not yet available for your team", []string{"sign in", "Devin"}},
+		{401, `{"code":"unauthenticated","message":"token expired"}`, 401, "token expired — sign in to Cursor again in magpie", []string{"Devin"}},
+		{401, `Unauthorized`, 401, "sign in to Cursor again", []string{"Devin"}},
+		{403, `{"code":"permission_denied","message":"Your team doesn't allow this model"}`, 403, "Your team doesn't allow this model", []string{"sign in"}},
+		{200, `{"error":{"code":"resource_exhausted","message":"out of credits"}}`, 429, "usage limit reached: out of credits", nil},
+	} {
+		status, msg := cursorFailure(c.status, []byte(c.body))
+		if status != c.code || !strings.Contains(msg, c.has) {
+			t.Errorf("%s: %d %q", c.body, status, msg)
+		}
+		for _, n := range c.not {
+			if strings.Contains(strings.ToLower(msg), strings.ToLower(n)) {
+				t.Errorf("%s: %q says %q", c.body, msg, n)
+			}
+		}
+	}
+	if status, msg := cursorFailure(200, []byte(`{}`)); status != 200 || msg != "" {
+		t.Fatal("a stream that ended well:", status, msg)
+	}
+}
+
+// A model magpie offers goes to Cursor as the id its effort picks; one of
+// Cursor's own ids at an effort goes at the effort asked for, where Cursor
+// has that one, else as it is.
+func TestCursorModelID(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	var raw []catalog.Model
+	for _, l := range strings.Split(strings.TrimSpace(`
+grok-4.7-low - Grok 4.7 Low
+grok-4.7-low-fast - Grok 4.7 Low Fast
+grok-4.7-medium - Grok 4.7 Medium
+grok-4.7-medium-fast - Grok 4.7 Medium Fast
+grok-4.7-high - Grok 4.7 High
+grok-4.7-high-fast - Grok 4.7 High Fast
+grok-4.7-xhigh - Grok 4.7 Extra High
+grok-4.7-xhigh-fast - Grok 4.7 Extra High Fast
+gpt-5.2-low - GPT-5.2 Low
+gpt-5.2 - GPT-5.2
+gpt-5.2-high - GPT-5.2 High
+gpt-5.2-xhigh - GPT-5.2 Extra High
+claude-4.6-opus-high - Claude Opus 4.6 1M
+claude-4.6-opus-max - Claude Opus 4.6 1M Max
+claude-4.6-opus-high-thinking - Claude Opus 4.6 1M Thinking
+claude-4.6-opus-max-thinking - Claude Opus 4.6 1M Max Thinking
+gpt-5.5-medium - GPT-5.5 1M
+gpt-5.5-extra-high - GPT-5.5 1M Extra High
+claude-4.5-sonnet - Claude Sonnet 4.5`), "\n") {
+		id, name, _ := strings.Cut(l, " - ")
+		raw = append(raw, catalog.Model{ID: id, Name: name})
+	}
+	if err := catalog.SaveLive("cursor", "", raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		model, effort string
+		fast          bool
+		want          string
+	}{
+		{"grok-4.7", "", false, "grok-4.7-medium"}, // every name says its effort: medium
+		{"grok-4.7", "high", false, "grok-4.7-high"},
+		{"grok-4.7", "max", false, "grok-4.7-xhigh"},
+		{"grok-4.7", "high", true, "grok-4.7-high-fast"},
+		{"grok-4.7-fast", "low", false, "grok-4.7-low-fast"},
+		{"gpt-5.2", "medium", false, "gpt-5.2"}, // between low and high: the unnamed one
+		{"gpt-5.2", "max", false, "gpt-5.2-xhigh"},
+		{"gpt-5.2", "low", true, "gpt-5.2-low"}, // no fast one
+		{"claude-4.6-opus", "medium", false, "claude-4.6-opus-high"},
+		{"claude-4.6-opus-thinking", "xhigh", false, "claude-4.6-opus-max-thinking"},
+		{"gpt-5.5", "xhigh", false, "gpt-5.5-extra-high"},
+		{"grok-4.7-low-fast", "high", false, "grok-4.7-high-fast"}, // Cursor's own id: the effort asked for wins
+		{"grok-4.7-low", "high", false, "grok-4.7-high"},
+		{"grok-4.7-low", "", false, "grok-4.7-low"},
+		{"grok-4.7-low", "", true, "grok-4.7-low-fast"},
+		{"grok-4.7-low", "minimal", false, "grok-4.7-low"}, // Cursor has none at minimal
+		{"gpt-5.2-high", "low", true, "gpt-5.2-low"},       // no fast one
+		{"claude-4.6-opus-high-thinking", "max", false, "claude-4.6-opus-max-thinking"},
+		{"claude-4.5-sonnet", "high", false, "claude-4.5-sonnet"},
+		{"auto", "", false, "auto"},
+	} {
+		if got := cursorModelID(c.model, c.effort, c.fast); got != c.want {
+			t.Errorf("%s at %q fast %v: %s, want %s", c.model, c.effort, c.fast, got, c.want)
+		}
 	}
 }

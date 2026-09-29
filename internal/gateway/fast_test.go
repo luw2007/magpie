@@ -23,3 +23,15 @@ func TestResponsesFastTier(t *testing.T) {
 		t.Error("flex read as fast")
 	}
 }
+
+// Chat Completions says priority the same way (Cursor's fast ids).
+func TestChatFastTier(t *testing.T) {
+	r, err := parseChat([]byte(`{"model":"cursor/grok-4.7","messages":[{"role":"user","content":"hi"}],"service_tier":"priority"}`))
+	if err != nil || !r.Fast {
+		t.Fatalf("fast not read: %v %+v", err, r)
+	}
+	r, _ = parseChat([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"service_tier":"auto"}`))
+	if r.Fast {
+		t.Error("auto read as fast")
+	}
+}

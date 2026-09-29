@@ -1,11 +1,9 @@
 package library
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/yetone/magpie/internal/agent"
@@ -100,9 +98,8 @@ func targetOf(a *agent.Agent) *Target {
 		}
 		t.Instructions = filepath.Join(d, "AGENTS.md")
 		// Pi has no MCP of its own: its extensions for it (pi-mcp-adapter,
-		// pi-mcp-extension) read the agent folder's mcp.json, or
-		// mcp-adapter.json from pi-mcp-adapter 3
-		t.MCP = &mcpFile{Path: piMCP(d), Format: fmtPi}
+		// pi-mcp-extension) each read their own file (pimcp.go)
+		t.MCP = piMCP(h, d)
 		t.MCPVia = "pi-mcp-adapter"
 		t.Skills = filepath.Join(d, "skills")
 	case "dsh":
@@ -134,7 +131,15 @@ func targetOf(a *agent.Agent) *Target {
 		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp-config.json"), Format: fmtCopilot}
 		t.Skills = filepath.Join(d, "skills")
 	case "crush":
-		t.Instructions = filepath.Join(filepath.Dir(a.Path), "CRUSH.md")
+		// Crush reads CRUSH.md from its config folder, ~/.config/crush on
+		// Windows too since Crush 0.14; the crush.json magpie edits there is
+		// %LOCALAPPDATA%\crush's, where Crush keeps its own picks and reads
+		// skills but no CRUSH.md
+		cfg := os.Getenv("XDG_CONFIG_HOME")
+		if cfg == "" {
+			cfg = filepath.Join(h, ".config")
+		}
+		t.Instructions = filepath.Join(cfg, "crush", "CRUSH.md")
 		t.MCP = &mcpFile{Path: a.Path, Format: fmtCrush}
 		t.Skills = filepath.Join(filepath.Dir(a.Path), "skills")
 		t.SkillsAlso = []string{"claude"}
@@ -171,7 +176,21 @@ func apps() []*agent.Agent {
 // three to, in the order the rest of magpie lists them.
 func Targets() []*Target {
 	var out []*Target
-	for _, a := range append(agent.Detected(), apps()...) {
+	own := map[string]bool{}
+	for _, a := range apps() {
+		own[a.ID] = true
+	}
+	for _, a := range agent.Detected() {
+		// an app magpie also sets up as an agent (Claude Desktop) keeps its
+		// MCP servers where apps says, once
+		if own[a.ID] {
+			continue
+		}
+		if t := targetOf(a); t != nil {
+			out = append(out, t)
+		}
+	}
+	for _, a := range apps() {
 		if !a.Detected() {
 			continue
 		}
@@ -225,25 +244,4 @@ func Takes(q, kind string) (string, error) {
 		return "", fmt.Errorf("%s has no user-wide place for %s that magpie knows of", a.Name, what)
 	}
 	return a.ID, nil
-}
-
-// piMCP is the file Pi's MCP servers go in. pi-mcp-adapter 3 reads
-// mcp-adapter.json and no longer mcp.json, which it leaves to the MCP Pi
-// is to have itself; one found there while a 3 is installed is moved
-// over, as the adapter asks, so its servers aren't left unread.
-func piMCP(d string) string {
-	adapter, old := filepath.Join(d, "mcp-adapter.json"), filepath.Join(d, "mcp.json")
-	if exists(adapter) {
-		return adapter
-	}
-	var pkg struct{ Version string }
-	b, _ := os.ReadFile(filepath.Join(d, "npm", "node_modules", "pi-mcp-adapter", "package.json"))
-	json.Unmarshal(b, &pkg)
-	if major, _ := strconv.Atoi(strings.SplitN(pkg.Version, ".", 2)[0]); major < 3 {
-		return old
-	}
-	if exists(old) && os.Rename(old, adapter) != nil {
-		return old
-	}
-	return adapter
 }

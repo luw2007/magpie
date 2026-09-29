@@ -59,6 +59,19 @@ func (c candidate) restKey() string {
 	return c.rest
 }
 
+func (c candidate) isOpenRouterFree() bool {
+	return c.p.Preset == "openrouter" && strings.HasSuffix(c.model, ":free")
+}
+
+// restID is a free OpenRouter model's own rest key. A rate limit on that
+// model is its free-tier limit, while an account-level rest stays on restKey.
+func (c candidate) restID() string {
+	if c.isOpenRouterFree() {
+		return c.restKey() + "/" + c.model
+	}
+	return c.restKey()
+}
+
 // who is the key or account itself, however many the provider has on: a
 // provider's one key rests as the provider, and as itself once another
 // is added, and a conversation it answered stays with it all the same.
@@ -324,13 +337,19 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	if len(out) == 1 {
 		if r, ok := restOf(out[0].restKey()); ok {
 			pl.order[0].Rest = &r // tried all the same: there is no other
+		} else if r, ok := restOf(out[0].restID()); ok {
+			pl.order[0].Rest = &r // tried all the same: there is no other
 		}
 		return out, pl
 	}
 	var ready, resting []candidate
 	var wReady, wResting []Weighed
 	for i, c := range out {
-		if r, ok := restOf(c.restKey()); ok {
+		r, ok := restOf(c.restKey())
+		if !ok && c.restID() != c.restKey() {
+			r, ok = restOf(c.restID())
+		}
+		if ok {
 			pl.order[i].Rest = &r
 			resting, wResting = append(resting, c), append(wResting, pl.order[i])
 		} else {
@@ -430,11 +449,12 @@ type holdWriter struct {
 	passing bool
 	held    bytes.Buffer
 
-	stream  bool      // a stream held until its first content
-	since   time.Time // when it began
-	scanned int       // how much of held has been read as events
-	failure int       // the status the stream's error stands for
-	failMsg string
+	stream     bool      // a stream held until its first content
+	since      time.Time // when it began
+	scanned    int       // how much of held has been read as events
+	failure    int       // the status the stream's error stands for
+	failMsg    string
+	sharedPool bool // an OpenRouter upstream pool rejected this attempt
 
 	ended bool   // the stream's last event was written: the reply is whole
 	tail  []byte // the end of the last write, for a marker split across two
@@ -464,7 +484,9 @@ func (h *holdWriter) WriteHeader(code int) {
 func (h *holdWriter) pass() {
 	dst := h.w.Header()
 	for k, v := range h.header {
-		dst[k] = v
+		if k != resetsHeader { // magpie's own note, for restAfter
+			dst[k] = v
+		}
 	}
 	h.w.WriteHeader(h.status)
 	h.passing = true

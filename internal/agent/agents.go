@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -38,7 +39,14 @@ var others = []*Agent{
 // agent, detected or not, and the others. It is what the Usage and
 // Routing views draw a request's client with.
 func Clients() []*Agent {
-	return append(All(), others...)
+	var out []*Agent
+	for _, a := range All() {
+		// a WSL agent's requests are its Windows twin's by their UA
+		if a.WSL == "" {
+			out = append(out, a)
+		}
+	}
+	return append(out, others...)
 }
 
 // All returns every agent magpie knows about, detected or not.
@@ -48,8 +56,9 @@ func All() []*Agent {
 	if cfg == "" {
 		cfg = filepath.Join(home, ".config")
 	}
-	return []*Agent{
+	return append([]*Agent{
 		claude(home),
+		claudeDesktop(home),
 		codex(home),
 		gemini(home),
 		opencode(home, cfg),
@@ -70,9 +79,11 @@ func All() []*Agent {
 		qoderCN(home),
 		grok(home),
 		zcode(home),
+		workbuddy(home),
 		hanako(home),
 		alma(),
-	}
+		cindy(),
+	}, wslAgents()...)
 }
 
 // ---- accessors -------------------------------------------------------------
@@ -213,6 +224,7 @@ func magpieProviderJSONFor(shape, catalog string) any {
 			if m.Context > 0 {
 				e["limit"] = map[string]any{"context": m.Context, "output": m.Output}
 			}
+			e["variants"] = openCodeVariants(m.Efforts)
 			ms[m.ID] = e
 		}
 		return map[string]any{"npm": "@ai-sdk/openai-compatible", "name": "magpie",
@@ -236,6 +248,24 @@ func magpieProviderJSONFor(shape, catalog string) any {
 		for _, m := range models {
 			// reasoning lets Pi offer its thinking levels for the model
 			e := map[string]any{"id": m.ID, "name": m.Name, "reasoning": len(m.Efforts) > 0}
+			// each model is asked on the API its provider speaks natively,
+			// so the gateway relays what Pi sent as it is instead of
+			// translating Chat. One served on OpenAI's Responses API alone,
+			// or best there (a ChatGPT sign-in, GPT on OpenAI's API or
+			// Copilot's), goes to baseUrl/responses; one on Anthropic's
+			// Messages API alone to the gateway's /v1/messages (Anthropic's
+			// SDK adds the /v1). A Claude that thinks only adaptively is
+			// told so: Pi would otherwise ask it for a thinking budget,
+			// which it turns away.
+			switch {
+			case slices.Contains(m.APIs, string(provider.Responses)):
+				e["api"] = "openai-responses"
+			case slices.Contains(m.APIs, string(provider.Anthropic)):
+				e["api"], e["baseUrl"] = "anthropic-messages", gateway.URL()
+				if gateway.AdaptiveThinking(m.ID) {
+					e["compat"] = map[string]any{"forceAdaptiveThinking": true}
+				}
+			}
 			if m.Images {
 				e["input"] = []string{"text", "image"}
 			}
@@ -260,6 +290,24 @@ func magpieProviderJSONFor(shape, catalog string) any {
 		return map[string]any{"name": "magpie", "baseUrl": gatewayV1(), "api": "openai-completions", "apiKey": gateway.Token, "models": ms}
 	}
 	return nil
+}
+
+// openCodeVariants are the reasoning levels OpenCode offers for a model of
+// magpie's, each asking the gateway for that effort as reasoning_effort
+// (@ai-sdk/openai-compatible's reasoningEffort). OpenCode 1.x offers none
+// for a model the config doesn't mark as reasoning, and adds these. OpenCode
+// 2 makes low, medium and high for every model of an openai-compatible
+// provider whose config names no variants (packages/core/src/variant.ts,
+// config/plugin/provider.ts), so a model whose levels are none/high/max, or
+// go past high to xhigh and max, or that has none, was offered levels it
+// doesn't have and not the ones it has. A model without levels gets an
+// empty set, which OpenCode 2 takes as none rather than guessing.
+func openCodeVariants(efforts []string) map[string]any {
+	out := map[string]any{}
+	for _, e := range efforts {
+		out[e] = map[string]any{"reasoningEffort": e}
+	}
+	return out
 }
 
 // piThinkingLevels is the thinkingLevelMap for a model's efforts. Pi offers
@@ -425,20 +473,28 @@ func pi(home string) *Agent {
 		Fields: []Field{
 			{
 				Key: "model", Label: "model",
-				Get: pairGet(get, "defaultProvider", "defaultModel"),
+				// what a new session starts on, which enabledModels decides
+				Get: func() string { return piStartup(path, pairGet(get, "defaultProvider", "defaultModel")()) },
 				Set: func(v string) error {
 					if v == "" {
 						if err := edit.DelJSON(path, "defaultProvider", "defaultModel"); err != nil {
 							return err
 						}
-						return edit.DelJSON(modelsPath, "providers."+magpieID)
+						if err := edit.DelJSON(modelsPath, "providers."+magpieID); err != nil {
+							return err
+						}
+						return piScopeWithout(path)
 					}
 					if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
 						if err := writeMagpie(); err != nil {
 							return err
 						}
 					}
-					return pair(v)
+					if err := pair(v); err != nil {
+						return err
+					}
+					// a model outside the user's Ctrl+P list would never start
+					return piScopeWith(path, v)
 				},
 				Options: func(cur map[string]string) []Option {
 					return append(ownOptions(auth, cur["model"]), viaMagpie("pi", magpieID+"/")...)

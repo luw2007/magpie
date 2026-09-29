@@ -2,7 +2,8 @@ package tui
 
 // The pages beside the agents: providers (keys, models, balances) and
 // usage — what the app's Providers and Usage views do, in the terminal.
-// Routing is in routing.go, the library in library.go.
+// Routing is in routing.go, sessions in sessions.go, the library in
+// library.go.
 
 import (
 	"context"
@@ -29,10 +30,11 @@ const (
 	pageProviders
 	pageGroups
 	pageUsage
+	pageSessions
 	pageLibrary
 )
 
-var pageNames = []string{"agents", "providers", "routing", "usage", "library"}
+var pageNames = []string{"agents", "providers", "routing", "usage", "sessions", "library"}
 
 // ask is a line to type: a key, a family, a group's name.
 type ask struct {
@@ -148,6 +150,13 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			what = "serves only through routing groups"
 		}
 		return m, saveProvider(p.ID, func(p *provider.Provider) { p.Unlisted = on }, p.Name+" "+what)
+	case "o":
+		off := !p.Off
+		what := "switched on"
+		if off {
+			what = "switched off: agents are given none of its models"
+		}
+		return m, saveProvider(p.ID, func(p *provider.Provider) { p.Off = off }, p.Name+" "+what)
 	case "t":
 		m.flash, m.flashOK = "testing "+p.Name+"…", true
 		return m, testCmd(p)
@@ -360,6 +369,8 @@ func (m model) viewProviders() string {
 	for _, p := range m.provs {
 		r := row{name: p.Name, id: p.ID}
 		switch {
+		case p.Off:
+			r.key = "○ switched off"
 		case p.Account != nil:
 			r.key = "● " + p.Account.User
 		case p.Key != "":
@@ -623,10 +634,24 @@ func quotaLines(qs []provider.SubscriptionQuota, asked, left bool, width int, no
 			out = append(out, line+"  "+sMuted.Render("no usage reported"))
 			continue
 		}
-		// the windows follow the name, those that don't fit on lines below it
-		at := tw
+		// the windows follow the name, those that don't fit on lines below
+		// it, and a Codex account's resets after them
+		var cells []string
 		for _, w := range q.Windows {
-			c := quotaCell(w, left, now)
+			cells = append(cells, quotaCell(w, left, now))
+		}
+		if r := q.Resets; r != nil {
+			c := sText.Render("↺ 1 reset")
+			if r.Count != 1 {
+				c = sText.Render(fmt.Sprintf("↺ %d resets", r.Count))
+			}
+			if r.Until != nil {
+				c += sFaint.Render(" until " + provider.ResetClock(*r.Until, now))
+			}
+			cells = append(cells, c)
+		}
+		at := tw
+		for _, c := range cells {
 			cw := lipgloss.Width(c)
 			if at > tw && width > 0 && at+3+cw > width {
 				out = append(out, line)

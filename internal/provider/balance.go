@@ -214,48 +214,21 @@ func readAiHubMix(b []byte) (string, error) {
 	return money("$", v), nil
 }
 
-// readCommandCode: {"credits":{"monthlyCredits":12.3,…},"windowLimits":
-// {"fiveHour":{"used":4.2,"cap":10},"weekly":{"used":9,"cap":50}}} — how
-// much of each window of the plan is used, then the dollars left on it. A
-// window the account has none of is left out.
+// readCommandCode: the dollars left on a Command Code key's account, the
+// month's credits and the bought and free ones (see cmdCredits), as the
+// CLI's totalRemaining. The plan's 5-hour and weekly windows are a card
+// of their own with meters and resets (readCommandCodePlan), not words
+// squeezed into this amount.
 func readCommandCode(b []byte) (string, error) {
-	type window struct {
-		Used any `json:"used"`
-		Cap  any `json:"cap"`
-	}
-	var r struct {
-		Credits struct {
-			Monthly any `json:"monthlyCredits"`
-		} `json:"credits"`
-		Windows struct {
-			FiveHour *window `json:"fiveHour"`
-			Weekly   *window `json:"weekly"`
-		} `json:"windowLimits"`
-	}
-	if err := json.Unmarshal(b, &r); err != nil {
+	var c cmdCredits
+	if err := json.Unmarshal(b, &c); err != nil {
 		return "", err
 	}
-	var parts []string
-	for _, w := range []struct {
-		label string
-		w     *window
-	}{{"5h", r.Windows.FiveHour}, {"week", r.Windows.Weekly}} {
-		if w.w == nil {
-			continue
-		}
-		used, ok1 := number(w.w.Used)
-		limit, ok2 := number(w.w.Cap)
-		if ok1 && ok2 && limit > 0 {
-			parts = append(parts, w.label+" "+balanceAmount("", used/limit, true))
-		}
-	}
-	if v, ok := number(r.Credits.Monthly); ok {
-		parts = append(parts, money("$", v))
-	}
-	if len(parts) == 0 {
+	_, left, ok := cmdLeft(c)
+	if !ok {
 		return "", errors.New("no balance in the reply")
 	}
-	return strings.Join(parts, " · "), nil
+	return money("$", left), nil
 }
 
 // readAiHubMixAccount: {"success":true,"data":{"quota":2500000,…}}, the
@@ -605,7 +578,7 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 	}
 	var jobs []job
 	for _, p := range All() {
-		if p.Hidden || p.Account != nil || p.Key == "" {
+		if p.Hidden || p.Off || p.Account != nil || p.Key == "" {
 			continue
 		}
 		src, ok := balanceSourceOf(p)

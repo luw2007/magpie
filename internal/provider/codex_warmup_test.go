@@ -52,6 +52,9 @@ func TestWarmDue(t *testing.T) {
 		{"a stale read past its reset", warmWindow{ResetsAt: now.Add(-time.Minute), Used: 50}, true,
 			win("7 days", week, 50, now.Add(-time.Minute)), true},
 		{"a failed warm-up", warmWindow{Pending: true, Failed: 1}, true, running, true},
+		{"still not started, its retry come", warmWindow{Idle: 1, Retry: now}, true, win("7 days", week, 0, time.Time{}), true},
+		{"still not started, before its retry", warmWindow{Idle: 1, Retry: now.Add(time.Minute)}, true, win("7 days", week, 0, time.Time{}), false},
+		{"not started before, running now", warmWindow{Idle: 1}, true, running, false},
 	} {
 		if got := warmDue(c.p, c.seen, asOf(c.cur, now), now); got != c.want {
 			t.Errorf("%s: due %v, want %v", c.name, got, c.want)
@@ -85,7 +88,7 @@ func (f *fakeWarm) warmer(path string) codexWarmer {
 
 func (f *fakeWarm) run(t *testing.T, path, which string) []CodexWarm {
 	t.Helper()
-	return f.warmer(path).warmNow(context.Background(), which)
+	return f.warmer(path).warmNow(context.Background(), which, "")
 }
 
 func TestCodexWarmOncePerReset(t *testing.T) {
@@ -213,7 +216,7 @@ func TestCodexWarmRequest(t *testing.T) {
 	loginUsageCache.m = nil
 	loginUsageCache.Unlock()
 	w := codexWarmer{path: codexWarmPath(), now: time.Now, usage: codexWarmUsage, send: warmCodexLogin}
-	rs := w.warmNow(context.Background(), "week")
+	rs := w.warmNow(context.Background(), "week", "")
 	if len(rs) != 1 || rs[0].User != "me@example.com" || rs[0].Err != "" {
 		t.Fatalf("warm: %+v", rs)
 	}
@@ -234,7 +237,7 @@ func TestCodexWarmRequest(t *testing.T) {
 		t.Fatalf("headers: %v", hdr)
 	}
 	// a second look, the read cached: nothing more is sent
-	if rs := w.warmNow(context.Background(), "week"); len(rs) != 0 || len(got) != 1 {
+	if rs := w.warmNow(context.Background(), "week", ""); len(rs) != 0 || len(got) != 1 {
 		t.Fatalf("again: %+v", rs)
 	}
 	if CodexWarmed()["me@example.com"].IsZero() {

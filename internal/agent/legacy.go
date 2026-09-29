@@ -8,6 +8,7 @@ import (
 
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // legacyID is what agents knew the gateway by before magpie was called magpie.
@@ -56,6 +57,61 @@ func RenameLegacy() {
 		case "claude":
 			if t, _ := edit.GetJSON(a.Path, "env.ANTHROPIC_AUTH_TOKEN"); t == legacyID {
 				_ = edit.SetJSON(a.Path, edit.KV{Path: "env.ANTHROPIC_AUTH_TOKEN", Value: gateway.Token})
+			}
+		}
+	}
+}
+
+// MoveCursorEfforts moves an agent set to one of Cursor's ids at an effort
+// (cursor/grok-4.7-low), from before magpie offered each family as one
+// model, to that model (cursor/grok-4.7) spelled the same way, and — when
+// the agent's effort is unset and it has that one — to the effort the id
+// was at. A model the picker doesn't offer is left: the gateway still takes
+// Cursor's id. It runs at start-up; errors are swallowed as RenameLegacy's.
+func MoveCursorEfforts() { moveEfforts("cursor", provider.CursorBase) }
+
+// MoveAntigravityEfforts does the same for Antigravity's ids at a level
+// (antigravity/gemini-3.7-flash-high → antigravity/gemini-3.7-flash, at
+// high when the agent's effort is unset and it has that one).
+func MoveAntigravityEfforts() { moveEfforts("antigravity", provider.AntigravityBase) }
+
+func moveEfforts(pid string, base func(string) (string, string, bool)) {
+	offers := func(opts []Option, v string) bool {
+		return slices.ContainsFunc(opts, func(o Option) bool { return o.Value == v })
+	}
+	for _, a := range All() {
+		if _, err := os.Stat(a.Path); err != nil {
+			continue
+		}
+		var vals map[string]string
+		for i := range a.Fields {
+			f := &a.Fields[i]
+			if f.Options == nil || f.Key == "effort" {
+				continue
+			}
+			v := f.Get()
+			pre, rest := "", v
+			if r, ok := strings.CutPrefix(v, magpieID+"/"); ok {
+				pre, rest = magpieID+"/", r
+			}
+			id, ok := strings.CutPrefix(rest, pid+"/")
+			if !ok {
+				continue
+			}
+			b, effort, ok := base(id)
+			if !ok {
+				continue
+			}
+			nv := pre + pid + "/" + b
+			if vals == nil {
+				vals = a.Values()
+			}
+			if !offers(f.Options(vals), nv) || f.Set(nv) != nil {
+				continue
+			}
+			vals[f.Key] = nv
+			if e := a.Field("effort"); f.Key == "model" && effort != "" && e != nil && e.Options != nil && e.Get() == "" && offers(e.Options(vals), effort) {
+				_ = e.Set(effort)
 			}
 		}
 	}

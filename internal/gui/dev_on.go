@@ -14,11 +14,14 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yetone/magpie/internal/gateway"
 )
 
 // Development build (`make dev`): the UI is read from internal/gui/assets on
@@ -120,24 +123,58 @@ func devListen(h http.Handler) {
 	if addr == "" {
 		return
 	}
-	go func() {
-		log.Println("dev ui:", "http://"+addr+"/?theme=dark")
-		if err := http.ListenAndServe(addr, h); err != nil {
-			log.Println("dev ui:", err)
-		}
-	}()
+	ln, err := gateway.Listen(addr)
+	if err != nil {
+		log.Println("dev ui:", err)
+		return
+	}
+	log.Println("dev ui:", "http://"+addr+"/?theme=dark")
+	devUI = &http.Server{Handler: h}
+	go devUI.Serve(ln)
 }
+
+// devUI is the page served on MAGPIE_DEV_UI, nil when it isn't.
+var devUI *http.Server
 
 // devRole is this process's half of `make dev`: "backend", "shell", or ""
 // for the whole app in one process.
 func devRole() string { return os.Getenv("MAGPIE_DEV_ROLE") }
 
 // devBackend serves the page and the API on MAGPIE_DEV_BACKEND for the shell.
+//
+// A restart is a handover (build/dev.sh): the new backend listens on the
+// same addresses beside this one, then this one is sent handoverSignal and
+// stops taking requests, finishes those in flight — an agent's stream
+// through the gateway as long as it takes — and exits, so a Go change no
+// longer cuts off the agents using the dev gateway.
 func devBackend(handler func(Windows) http.Handler) error {
+	gateway.Handover = handoverSignal != nil
 	addr := os.Getenv("MAGPIE_DEV_BACKEND")
 	h := handler(remoteWindows(os.Getenv("MAGPIE_DEV_CONTROL")))
+	ln, err := gateway.Listen(addr)
+	if err != nil {
+		return err
+	}
 	log.Println("dev backend:", "http://"+addr)
-	return http.ListenAndServe(addr, h)
+	srv := &http.Server{Handler: h}
+	if handoverSignal == nil {
+		return srv.Serve(ln)
+	}
+	go srv.Serve(ln)
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, handoverSignal)
+	<-sig
+	log.Println("dev backend: handed over · finishing what's in flight")
+	// the page's long polls end within 20s; what the gateway streams, when it ends
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	go srv.Shutdown(ctx)
+	if devUI != nil {
+		go devUI.Shutdown(ctx)
+	}
+	stopServing()
+	srv.Shutdown(ctx)
+	return nil
 }
 
 // remoteWindows are the shell's windows, seen from the backend.
@@ -274,8 +311,15 @@ func devShell(h *host) http.Handler {
 	}()
 	p := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: os.Getenv("MAGPIE_DEV_BACKEND")})
 	p.Transport = backendClient.Transport
-	// a restart cuts off whatever was in flight; the page asks again
+	// A restart cuts off whatever was in flight. A read is asked again, of
+	// the backend that comes up (the dial waits for it), so the page never
+	// sees the cut; a write may have landed, so it fails as it is.
 	p.ErrorHandler = func(rw http.ResponseWriter, r *http.Request, err error) {
+		n, _ := r.Context().Value(retryKey{}).(int)
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && n < 3 && r.Context().Err() == nil {
+			p.ServeHTTP(rw, r.WithContext(context.WithValue(r.Context(), retryKey{}, n+1)))
+			return
+		}
 		rw.WriteHeader(http.StatusBadGateway)
 	}
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -303,3 +347,7 @@ func stash(link string) string {
 	b, _ := io.ReadAll(res.Body)
 	return strings.TrimSpace(string(b))
 }
+
+// retryKey counts how often a read cut off by a backend restart was asked
+// again.
+type retryKey struct{}

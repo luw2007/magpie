@@ -168,7 +168,7 @@ func groupsState() groupsJSON {
 		out.Groups = append(out.Groups, gj)
 	}
 	for _, p := range provider.All() {
-		if !p.Ready() {
+		if !p.On() {
 			continue
 		}
 		if kind, who := onOf(p); kind == "account" && len(who) > 1 {

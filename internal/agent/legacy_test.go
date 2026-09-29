@@ -97,3 +97,49 @@ func TestRenameLegacy(t *testing.T) {
 		}
 	}
 }
+
+// An agent set to one of Cursor's ids at an effort, from before magpie
+// offered the family as one model, is set to that model, at that effort
+// where its own is unset; an id magpie offers no model for is left.
+func TestMoveCursorEfforts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := provider.Save(provider.Provider{ID: "curs", Name: "Curs", Chat: "https://curs.example/v1", Key: "k", Models: []string{"grok-4.7"}}); err != nil {
+		t.Fatal(err)
+	}
+	base := func(id string) (string, string, bool) {
+		if id == "grok-4.7-low" || id == "gone-low" {
+			return strings.TrimSuffix(id, "-low"), "low", true
+		}
+		return "", "", false
+	}
+	pi := filepath.Join(home, ".pi", "agent", "settings.json")
+	write := func(body string) {
+		if err := os.MkdirAll(filepath.Dir(pi), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(pi, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"defaultProvider": "magpie", "defaultModel": "curs/grok-4.7-low", "theme": "dark"}`)
+	moveEfforts("curs", base)
+	for k, want := range map[string]string{"defaultProvider": "magpie", "defaultModel": "curs/grok-4.7", "defaultThinkingLevel": "low", "theme": "dark"} {
+		if v, _ := edit.GetJSON(pi, k); v != want {
+			t.Errorf("%s = %q, want %q", k, v, want)
+		}
+	}
+	// an effort of its own stays; a model the picker doesn't offer stays
+	write(`{"defaultProvider": "magpie", "defaultModel": "curs/grok-4.7-low", "defaultThinkingLevel": "high"}`)
+	moveEfforts("curs", base)
+	if v, _ := edit.GetJSON(pi, "defaultThinkingLevel"); v != "high" {
+		t.Errorf("thinking level %q", v)
+	}
+	write(`{"defaultProvider": "magpie", "defaultModel": "curs/gone-low"}`)
+	moveEfforts("curs", base)
+	if v, _ := edit.GetJSON(pi, "defaultModel"); v != "curs/gone-low" {
+		t.Errorf("model %q", v)
+	}
+}

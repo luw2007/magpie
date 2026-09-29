@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,6 +53,12 @@ type SubscriptionQuota struct {
 	Until *time.Time `json:"until,omitempty"`
 	Renew string     `json:"renew,omitempty"`
 	Error string     `json:"error,omitempty"`
+	// AsOf is when an allowance shown in place of one that couldn't be
+	// read was read (see keepLast); nil for a reading just made.
+	AsOf *time.Time `json:"asOf,omitempty"`
+	// Resets are the rate-limit resets a Codex account holds, nil when
+	// it holds none (codex_resets.go).
+	Resets *ResetCredits `json:"resets,omitempty"`
 }
 
 var subscriptionUsageCache struct {
@@ -110,7 +117,7 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 func visibleQuotas(all []SubscriptionQuota) []SubscriptionQuota {
 	hidden := map[string]bool{}
 	for _, p := range load().Providers {
-		hidden[p.ID] = p.Hidden
+		hidden[p.ID] = p.Hidden || p.Off // switched off: not asked either
 	}
 	var chosen map[string]map[string]bool
 	out := []SubscriptionQuota{}
@@ -122,7 +129,18 @@ func visibleQuotas(all []SubscriptionQuota) []SubscriptionQuota {
 			if chosen == nil {
 				chosen = exposedIDs()
 			}
-			q.Windows = chosenWindows(q.Windows, chosen[q.Provider])
+			var base func(string) string
+			if q.Provider == "antigravity" {
+				// Antigravity's quota names each level's id; magpie offers
+				// the family (gemini-3.7-flash-high is gemini-3.7-flash)
+				base = func(id string) string {
+					if b, _, ok := AntigravityBase(id); ok {
+						return b
+					}
+					return id
+				}
+			}
+			q.Windows = chosenWindows(q.Windows, chosen[q.Provider], base)
 		}
 		out = append(out, q)
 	}
@@ -146,10 +164,15 @@ func exposedIDs() map[string]map[string]bool {
 // enabled: Antigravity reports one for every model it has, a couple of dozen,
 // most of them never used through magpie. When none of them is enabled — the
 // ids a quota names aren't always the ones served — they are all kept.
-func chosenWindows(ws []QuotaWindow, chosen map[string]bool) []QuotaWindow {
+// base, when not nil, is the model magpie offers for an id a quota names.
+func chosenWindows(ws []QuotaWindow, chosen map[string]bool, base func(string) string) []QuotaWindow {
 	var out []QuotaWindow
 	for _, w := range ws {
-		if w.Model == "" || chosen[w.Model] {
+		m := w.Model
+		if base != nil && m != "" {
+			m = base(m)
+		}
+		if w.Model == "" || chosen[m] {
 			out = append(out, w)
 		}
 	}
@@ -166,7 +189,7 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 	defer cancel()
 	hidden := map[string]bool{}
 	for _, p := range load().Providers {
-		hidden[p.ID] = p.Hidden
+		hidden[p.ID] = p.Hidden || p.Off // switched off: not asked either
 	}
 	var fetches []func() SubscriptionQuota
 	if p, ok := claudeAccount(); ok && !hidden["claude"] {
@@ -209,6 +232,14 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 	if !hidden["zcode"] {
 		fetches = append(fetches, perLogin(ctx, zcodeLoginList(), "ZCode", "zcode")...)
 	}
+	for _, w := range []*wbSite{wbCN, wbAI} {
+		if !hidden[w.id] {
+			fetches = append(fetches, perLogin(ctx, wbLoginList(w), w.name, "workbuddy-color")...)
+		}
+	}
+	if !hidden[CommandCodePlanID] {
+		fetches = append(fetches, perLogin(ctx, cmdLoginList(), "Command Code", "commandcode")...)
+	}
 	for _, agent := range []string{"gemini", "antigravity"} {
 		if hidden[agent] {
 			continue
@@ -224,7 +255,7 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 	var wg sync.WaitGroup
 	for i, f := range fetches {
 		wg.Add(1)
-		go func() { defer wg.Done(); out[i] = f() }()
+		go func() { defer wg.Done(); out[i] = keepLast(f(), "") }()
 	}
 	wg.Wait()
 	return append(out, <-fetched...)
@@ -403,6 +434,18 @@ func readClaudeWindows(ctx context.Context, token string) ([]QuotaWindow, error)
 		SevenDay       *quotaWire `json:"seven_day"`
 		SevenDayOpus   *quotaWire `json:"seven_day_opus"`
 		SevenDaySonnet *quotaWire `json:"seven_day_sonnet"`
+		// a week's allowance per model (Fable), which the fields above
+		// don't carry; one with no scope is seven_day again
+		Limits []struct {
+			Kind     string   `json:"kind"`
+			Percent  *float64 `json:"percent"`
+			ResetsAt string   `json:"resets_at"`
+			Scope    *struct {
+				Model *struct {
+					DisplayName string `json:"display_name"`
+				} `json:"model"`
+			} `json:"scope"`
+		} `json:"limits"`
 	}
 	err := accountJSON(ctx, claudeBase+"/api/oauth/usage", token, map[string]string{
 		"anthropic-beta": "oauth-2025-04-20", "user-agent": "magpie",
@@ -424,7 +467,27 @@ func readClaudeWindows(ctx context.Context, token string) ([]QuotaWindow, error)
 			out = append(out, w)
 		}
 	}
+	for _, l := range data.Limits {
+		if l.Kind != "weekly_scoped" || l.Scope == nil || l.Scope.Model == nil || l.Percent == nil {
+			continue
+		}
+		name := strings.TrimSpace(l.Scope.Model.DisplayName)
+		model := claudeScopeModel(name)
+		if model == "" || slices.ContainsFunc(out, func(w QuotaWindow) bool { return w.Model == model }) {
+			continue
+		}
+		w := quotaWire{Utilization: *l.Percent, ResetsAt: l.ResetsAt}.window("7 days · " + name)
+		w.Span, w.Model = week, model
+		out = append(out, w)
+	}
 	return out, nil
+}
+
+// claudeScopeModel is the word a model-scoped window counts models by, from
+// the name Anthropic gives it: "Fable" counts claude-fable-*, "Fable 5.1"
+// claude-fable-5-1.
+func claudeScopeModel(name string) string {
+	return strings.NewReplacer(" ", "-", ".", "-").Replace(strings.ToLower(name))
 }
 
 type quotaWire struct {
@@ -447,7 +510,7 @@ func codexSubscriptionUsage(ctx context.Context, path string) SubscriptionQuota 
 		q.Error = err.Error()
 		return q
 	}
-	q.Plan, q.Windows, err = codexWindows(ctx, token, accountID)
+	q.Plan, q.Windows, q.Resets, err = codexWindows(ctx, token, accountID)
 	if b, rerr := os.ReadFile(path); rerr == nil {
 		q.Until = codexUntil(b, time.Now())
 	}
@@ -473,20 +536,26 @@ func codexUntil(auth []byte, now time.Time) *time.Time {
 	return &t
 }
 
-// codexWindows is the plan and allowance of the ChatGPT account token
-// signs in to.
-func codexWindows(ctx context.Context, token, accountID string) (plan string, out []QuotaWindow, err error) {
+// codexWindows is the plan, allowance and rate-limit resets of the
+// ChatGPT account token signs in to.
+func codexWindows(ctx context.Context, token, accountID string) (plan string, out []QuotaWindow, resets *ResetCredits, err error) {
 	var data struct {
 		PlanType  string `json:"plan_type"`
 		RateLimit struct {
 			Primary   *codexWindow `json:"primary_window"`
 			Secondary *codexWindow `json:"secondary_window"`
 		} `json:"rate_limit"`
+		Resets *struct {
+			Available int `json:"available_count"`
+		} `json:"rate_limit_reset_credits"`
 	}
 	base := strings.TrimSuffix(CodexBase, "/codex")
 	out = []QuotaWindow{}
 	if err = accountJSON(ctx, base+"/wham/usage", token, map[string]string{"chatgpt-account-id": accountID}, &data); err != nil {
-		return "", out, err
+		return "", out, nil, err
+	}
+	if data.Resets != nil {
+		resets = codexResets(ctx, base, token, accountID, data.Resets.Available)
 	}
 	if data.RateLimit.Primary != nil {
 		out = append(out, data.RateLimit.Primary.window())
@@ -494,7 +563,7 @@ func codexWindows(ctx context.Context, token, accountID string) (plan string, ou
 	if data.RateLimit.Secondary != nil {
 		out = append(out, data.RateLimit.Secondary.window())
 	}
-	return data.PlanType, out, nil
+	return data.PlanType, out, resets, nil
 }
 
 type codexWindow struct {

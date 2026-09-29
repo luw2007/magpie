@@ -275,7 +275,7 @@ func Restore(b Bundle, parts Parts) (Result, error) {
 		// one value at a time, so one that fails (a model of a subscription
 		// not signed in here) leaves the rest to go in
 		for _, k := range profileKeys(b.Agents) {
-			id, _, _ := strings.Cut(k, ".")
+			id := k[:max(strings.LastIndex(k, "."), 0)] // codex@wsl:Ubuntu-24.04.model
 			if !here[id] {
 				r.Skipped = append(r.Skipped, k)
 				continue

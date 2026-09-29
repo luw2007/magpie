@@ -3,6 +3,7 @@ package gateway
 import (
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +19,9 @@ import (
 type jevUp struct {
 	mu     sync.Mutex
 	choice string
-	level  string  // its choice without "none of these"; choice when ""
-	levels float64 // whether the intents are levels
+	level  string    // its choice without "none of these"; choice when ""
+	levels float64   // whether the intents are levels
+	work   []float64 // how much work a request at each level is, 0 to 3
 	sure   float64
 	score  float64
 	asked  []map[string]any
@@ -47,6 +49,11 @@ func (u *jevUp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := qs["levels"]; ok {
 		answers["levels"] = map[string]any{"type": "noul", "noul": u.levels}
+	}
+	for i, w := range u.work {
+		if _, ok := qs[fmt.Sprintf("work%d", i)]; ok {
+			answers[fmt.Sprintf("work%d", i)] = map[string]any{"type": "score", "score": w, "confidence": 0.9}
+		}
 	}
 	if _, ok := qs["effort"]; ok {
 		answers["effort"] = map[string]any{"type": "score", "score": u.score, "confidence": 0.8}
@@ -186,6 +193,10 @@ func TestJevPicksTheEffort(t *testing.T) {
 	if !strings.Contains(a.last, `"reasoning_effort":"high"`) {
 		t.Fatalf("sent %s", a.last)
 	}
+	// the route shows both: what the agent asked, what the model was sent
+	if len(r.Tries) != 1 || r.Effort != "low" || r.Tries[0].Effort != "high" || !r.Tries[0].Picked {
+		t.Fatalf("traced at %q: %+v", r.Effort, r.Tries)
+	}
 	if qs := j.turns()[0]["questions"].(map[string]any); qs["intent"] != nil || qs["effort"] == nil {
 		t.Fatalf("questions %v", qs)
 	}
@@ -198,6 +209,9 @@ func TestJevPicksTheEffort(t *testing.T) {
 	_, r = postOK(t, s, "s2", chat("title this", nil, 0, ""))
 	if r.Rule.Pick != "" || r.Rule.Classified != nil || j.n() != 1 || strings.Contains(a.last, "reasoning_effort") {
 		t.Fatalf("no reasoning: %+v %s", r.Rule, a.last)
+	}
+	if r.Effort != "" || r.Tries[0].Effort != "" || r.Tries[0].Picked {
+		t.Fatalf("no reasoning traced at %q: %+v", r.Effort, r.Tries)
 	}
 }
 
@@ -237,7 +251,7 @@ func TestJevIsToldTheTurnBefore(t *testing.T) {
 		} `json:"questions"`
 	}
 	intents := []string{"simple task", "complex task"}
-	if err := json.Unmarshal(jevBody("jev-latest", intents, before{Intent: "complex task", Effort: "xhigh"}, true, "go on"), &got); err != nil {
+	if err := json.Unmarshal(jevBody("jev-latest", intents, nil, before{Intent: "complex task", Effort: "xhigh"}, true, "go on"), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.State["previous_message_kind"] != "complex task" || got.State["previous_message_reasoning"] != "xhigh" {
@@ -250,7 +264,7 @@ func TestJevIsToldTheTurnBefore(t *testing.T) {
 	}
 	// a first turn has nothing of the kind
 	got.State, got.Questions = nil, nil
-	if err := json.Unmarshal(jevBody("jev-latest", intents, before{}, true, "hi"), &got); err != nil {
+	if err := json.Unmarshal(jevBody("jev-latest", intents, nil, before{}, true, "hi"), &got); err != nil {
 		t.Fatal(err)
 	}
 	if len(got.State) != 1 || strings.Contains(got.Questions["intent"].Instructions, "carries on") {
@@ -310,9 +324,59 @@ func jevAt(t *testing.T, decide, classifier string, rules ...provider.Rule) *Ser
 	return s
 }
 
-// Vercel's AI Gateway is asked as the AI SDK asks it — the model in a
-// header, a noul as a boolean — and its probabilities stand for System
-// One's confidence.
+// Vercel's AI Gateway at its TypeSafe API (…/typesafe, its docs' base) is
+// asked as System One is, at /v1/systemone, with Vercel's name for Jev.
+func TestJevOnVercelTypeSafe(t *testing.T) {
+	// an intent of its own: what Jev said of a set of intents is kept
+	j := &jevUp{choice: "crashes", sure: 0.9, score: 2}
+	up := httptest.NewServer(http.StripPrefix("/typesafe", j))
+	defer up.Close()
+	s := jevAt(t, up.URL+"/typesafe", "jv/typesafe-ai/jev", provider.Rule{Use: "b/big", Intent: "crashes"})
+	out, r := postOK(t, s, "s1", chat("why does this crash?", nil, 0, `,"reasoning_effort":"low"`))
+	if c := r.Rule.Classified; !strings.Contains(out, "from kb") || c.Intent != "crashes" || c.Sure != 0.9 || r.Rule.Pick != "high" {
+		t.Fatalf("%s %+v %+v", out, r.Rule, c)
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.asked) != 2 || j.auth != "Bearer kj" || j.asked[1]["model"] != "typesafe-ai/jev" ||
+		j.asked[0]["questions"].(map[string]any)["levels"].(map[string]any)["type"] != "noul" {
+		t.Fatalf("asked %v as %q", j.asked, j.auth)
+	}
+}
+
+// Levels are told what each is for, as Jev rated them: a short message
+// asking for a whole program (写个纸牌游戏) was torn between two bare names
+// and fell back to the turn before's level.
+func TestJevLevelsSayWhatFor(t *testing.T) {
+	s, _, _, j := jevved(t, "", provider.Rule{Use: "a/small", Intent: "简单任务"}, provider.Rule{Use: "b/big", Intent: "复杂任务"})
+	j.choice, j.level, j.sure, j.levels, j.work = noIntent, "复杂任务", 0.99, 0.7, []float64{0.03, 2.7}
+	postOK(t, s, "s1", chat("写个纸牌游戏", nil, 0, ""))
+	lv := j.turns()[0]["questions"].(map[string]any)["level"].(map[string]any)
+	c := lv["criteria"].(map[string]any)
+	easy, hard := fmt.Sprint(c["简单任务"]), fmt.Sprint(c["复杂任务"])
+	if !strings.HasPrefix(easy, "The lowest level: little work") || !strings.Contains(easy, "some work") || strings.Contains(easy, "game") ||
+		!strings.HasPrefix(hard, "The highest level: much work") || !strings.Contains(hard, "game") ||
+		!strings.Contains(lv["instructions"].(string), "not how short it is") {
+		t.Fatalf("level asked as %v", lv)
+	}
+	if q := j.asked[0]["questions"].(map[string]any); q["work0"].(map[string]any)["type"] != "score" || q["work1"] == nil {
+		t.Fatalf("levels asked as %v", q)
+	}
+	// three levels, rated out of order: each gets the work nearest it
+	w := levelsOf([]string{"hard", "easy", "medium"}, []float64{2.66, 0.01, 1.06})
+	if !strings.HasPrefix(w["easy"], "The lowest level: little work") || !strings.HasPrefix(w["medium"], "Level 2 of 3, lowest first: some work") ||
+		!strings.HasPrefix(w["hard"], "The highest level: much work") || !strings.Contains(w["hard"], "the most work") {
+		t.Fatalf("%v", w)
+	}
+	// not rated: bare names, as before
+	if levelsOf([]string{"a", "b"}, []float64{1}) != nil {
+		t.Fatal("unrated levels described")
+	}
+}
+
+// Vercel's AI Gateway at /v4/ai, where the preset once pointed, is asked
+// as the AI SDK asks it — the model in a header, a noul as a boolean — and
+// its probabilities stand for System One's confidence.
 func TestJevOnVercel(t *testing.T) {
 	var mu sync.Mutex
 	var asked []map[string]any
@@ -400,6 +464,37 @@ func TestJevOnCloudflare(t *testing.T) {
 	}
 	if accounts != 1 || j.n() != 3 {
 		t.Fatalf("accounts looked up %d times, Jev asked %d", accounts, j.n())
+	}
+}
+
+// Workers AI at the address Cloudflare's docs give, the account in it, is
+// asked there as it is: a token for Workers AI alone, which may not list
+// accounts, works.
+func TestJevOnCloudflareAccount(t *testing.T) {
+	j := &jevUp{choice: "crashes", sure: 0.9, score: 1}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/v4/accounts/acc7/ai/run" || r.Header.Get("Authorization") != "Bearer kj" {
+			http.Error(w, `{"success":false,"errors":[{"code":9109,"message":"Unauthorized to access requested resource"}]}`, 403)
+			return
+		}
+		var q struct {
+			Model string          `json:"model"`
+			Input json.RawMessage `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&q)
+		if q.Model != "typesafe/jev" {
+			http.Error(w, `{"success":false,"errors":[{"message":"no such model"}]}`, 400)
+			return
+		}
+		rec := httptest.NewRecorder()
+		j.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/systemone", strings.NewReader(string(q.Input))))
+		w.Write([]byte(`{"success":true,"errors":[],"messages":[],"result":` + rec.Body.String() + `}`))
+	}))
+	defer up.Close()
+	s := jevAt(t, up.URL+"/client/v4/accounts/acc7/ai/run", "jv/typesafe/jev", provider.Rule{Use: "b/big", Intent: "crashes"})
+	out, r := postOK(t, s, "s1", chat("why does this crash?", nil, 0, `,"reasoning_effort":"low"`))
+	if c := r.Rule.Classified; !strings.Contains(out, "from kb") || c.Intent != "crashes" || c.Sure != 0.9 || r.Rule.Pick != "medium" {
+		t.Fatalf("%s %+v %+v", out, r.Rule, c)
 	}
 }
 

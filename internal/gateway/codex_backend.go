@@ -417,6 +417,20 @@ func (s *Server) codexModels(w http.ResponseWriter, r *http.Request) {
 			own = append(own, e)
 		}
 	}
+	// The backend lists every model the ChatGPT account can reach. When the
+	// user picked among them on the codex provider, keep the list to those:
+	// their pick governs Codex's own models, not just magpie's added ones.
+	if keep, narrowed := provider.CodexNativePicked(); narrowed {
+		kept := own[:0]
+		for _, m := range own {
+			o, _ := m.(map[string]any)
+			if slug, _ := o["slug"].(string); slug != "" && !keep[slug] {
+				continue
+			}
+			kept = append(kept, m)
+		}
+		own = kept
+	}
 	ms := provider.CodexListed()
 	// the list is the backend's and magpie's, and so is its ETag
 	w.Header().Set("ETag", codexcat.WithTag(etag, codexcat.Tag(ms)))

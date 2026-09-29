@@ -21,7 +21,8 @@ const ruleUsage = `usage:
   magpie group rule rm <group> <n>        remove rule n
   magpie group rule mv <group> <n> <to>   move rule n to place <to>
   magpie group rule classifier <group> <model>
-                                          the model that tells which intent a message is
+                                          the model that tells which intent a message is, or
+                                          group/<id>: another group, its models tried in turn
 
   Rules are looked at top first when you send a message (a new turn); the first that
   matches puts its model first, and the group's others stay behind it if it fails.
@@ -34,7 +35,7 @@ const ruleUsage = `usage:
   agents   it comes from one of these agents (claude, codex, opencode, … as magpie usage names them)
   intent   the user's message is of this kind, in your words ("writing or fixing tests", "a quick
            question"): as the turn begins, the group's classifier — any model magpie has, best a small
-           fast one without reasoning — is asked which of the intents that may match the message is,
+           fast one without reasoning, or another group of them to fail over — is asked which of the intents that may match the message is,
            once; if it fails or can't say, no intent matches. Its call shows in the usage as magpie's own
 
   e.g. magpie group rule add opus-anywhere use=openrouter/google/gemini-3-pro tokens=200k

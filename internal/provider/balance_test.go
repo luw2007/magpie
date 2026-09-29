@@ -20,7 +20,7 @@ func TestBalanceReaders(t *testing.T) {
 		{"deepseek two", readDeepSeek, `{"balance_infos":[{"currency":"CNY","total_balance":"1"},{"currency":"USD","total_balance":"2.5"}]}`, "¥1.00 · $2.50"},
 		{"kimi", readMoonshot("¥"), `{"code":0,"data":{"available_balance":49.58894,"voucher_balance":46.5,"cash_balance":3.0},"status":true}`, "¥49.59"},
 		{"openrouter", readOpenRouter, `{"data":{"total_credits":20,"total_usage":3.5}}`, "$16.50"},
-		{"commandcode", readCommandCode, `{"credits":{"monthlyCredits":12.3},"windowLimits":{"fiveHour":{"used":4.2,"cap":10},"weekly":{"used":9,"cap":50}}}`, "5h 42% · week 18% · $12.30"},
+		{"commandcode", readCommandCode, `{"credits":{"monthlyCredits":12.3,"purchasedCredits":2,"freeCredits":0},"windowLimits":{"limited":true,"fiveHour":{"used":4.2,"cap":10},"weekly":{"used":9,"cap":50}}}`, "$14.30"},
 		{"commandcode credits only", readCommandCode, `{"credits":{"monthlyCredits":"70"},"windowLimits":null}`, "$70.00"},
 		{"siliconflow", readSiliconFlow("¥"), `{"code":20000,"data":{"balance":"0.88","totalBalance":"88.88"}}`, "¥88.88"},
 	} {

@@ -32,8 +32,11 @@ type Record struct {
 	CacheRead  int       `json:"cache_read,omitempty"`
 	CacheWrite int       `json:"cache_write,omitempty"`
 	Reasoning  int       `json:"reasoning,omitempty"`
-	Millis     int64     `json:"ms"`
-	Status     int       `json:"status"`
+	// Effort is the reasoning the model was asked for — a routing group's
+	// pick for the turn, or the agent's own — as it takes it; "" for none
+	Effort string `json:"effort,omitempty"`
+	Millis int64  `json:"ms"`
+	Status int    `json:"status"`
 	// Session is the conversation the call was part of, as its agent names
 	// it (X-Magpie-Session, or the session header Claude Code, Codex or
 	// OpenCode sends): several sessions on one model told apart
@@ -392,6 +395,44 @@ func summarize(p Period, now time.Time, recs []Record) Summary {
 // seen is when each agent's latest request reached the gateway in this
 // process — at its start, where a record is written only once it is answered.
 var seen sync.Map // agent id → time.Time
+
+// Via is where the gateway sent a session's calls: one model at one
+// reasoning effort, how often and how much.
+type Via struct {
+	Provider string    `json:"provider"`
+	Model    string    `json:"model"`
+	Effort   string    `json:"effort,omitempty"`
+	Calls    int       `json:"calls"`
+	Tokens   int       `json:"tokens"` // in and out, as Totals counts them
+	Last     time.Time `json:"last"`
+}
+
+// Vias is what the gateway sent each session's calls to since a time, by
+// agent id and the session's id ("codex|<id>"), the most calls first.
+func Vias(since time.Time) map[string][]Via {
+	out := map[string][]Via{}
+	for _, r := range Load(since) {
+		if r.Session == "" || r.Model == "" {
+			continue
+		}
+		k := AgentOf(r.Agent) + "|" + r.Session
+		vs := out[k]
+		i := slices.IndexFunc(vs, func(v Via) bool { return v.Provider == r.Provider && v.Model == r.Model && v.Effort == r.Effort })
+		if i < 0 {
+			vs, i = append(vs, Via{Provider: r.Provider, Model: r.Model, Effort: r.Effort}), len(vs)
+		}
+		vs[i].Calls++
+		vs[i].Tokens += r.Input + r.Output
+		if r.Time.After(vs[i].Last) {
+			vs[i].Last = r.Time
+		}
+		out[k] = vs
+	}
+	for _, vs := range out {
+		sort.SliceStable(vs, func(i, j int) bool { return vs[i].Calls > vs[j].Calls })
+	}
+	return out
+}
 
 // Saw notes a request from an agent arriving now.
 func Saw(agent string) { seen.Store(agent, time.Now()) }

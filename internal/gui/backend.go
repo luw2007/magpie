@@ -3,6 +3,7 @@ package gui
 import (
 	"context"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,19 @@ import (
 // served is the gateway this process serves, nil while another magpie
 // has it.
 var served atomic.Pointer[gateway.Server]
+
+// backendCtx ends the gateway this process serves (stopServing).
+var backendCtx, endBackend = context.WithCancel(context.Background())
+
+// serving is the gateway this process serves, until it has finished.
+var serving sync.WaitGroup
+
+// stopServing stops this process's gateway taking requests and returns
+// once those in flight have finished.
+func stopServing() {
+	endBackend()
+	serving.Wait()
+}
 
 // startBackend starts what serves the page and the agents: the gateway,
 // unless another magpie has it (then that one serves and this one only
@@ -73,13 +87,17 @@ func watchGateway() {
 // serveGateway starts the gateway here when no magpie has it: the one
 // started, or nil.
 func serveGateway() *gateway.Server {
-	if gateway.Running() {
+	// handing over, the one there is this one's predecessor, which lets go
+	// once this one listens beside it
+	if !gateway.Handover && gateway.Running() {
 		return nil
 	}
 	gw := gateway.New()
 	served.Store(gw)
+	serving.Add(1)
 	go func() {
-		if err := gw.ListenAndServe(context.Background()); err != nil {
+		defer serving.Done()
+		if err := gw.ListenAndServe(backendCtx); err != nil {
 			log.Println("gateway:", err)
 			served.CompareAndSwap(gw, nil) // another took the port first
 		}

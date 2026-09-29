@@ -41,6 +41,16 @@ func TestQuotaLines(t *testing.T) {
 	if n := len(quotaLines(qs[:1], true, false, 60, now)); n != 3 {
 		t.Errorf("narrow: %d lines, want 3 (head, and a window a line)", n)
 	}
+	// a Codex account's rate-limit resets follow its windows, until when
+	// only when they run out
+	expires := now.Add(7 * 24 * time.Hour)
+	held := []provider.SubscriptionQuota{qs[0], qs[0]}
+	held[0].Resets = &provider.ResetCredits{Count: 2, Until: &expires}
+	held[1].Resets = &provider.ResetCredits{Count: 1}
+	got := quotaLines(held, true, false, 200, now)
+	if !strings.HasSuffix(got[1], "↺ 2 resets until "+provider.ResetClock(expires, now)) || !strings.HasSuffix(got[2], "↺ 1 reset") {
+		t.Errorf("resets:\n%s", plain(got))
+	}
 	if quotaLines(nil, false, false, 80, now) != nil {
 		t.Error("not asked yet: want nothing")
 	}

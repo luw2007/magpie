@@ -1,6 +1,9 @@
 // Package sessions lists the agents' recent sessions from their own session
-// files — Claude Code's projects/*/<id>.jsonl, Codex's rollout files — with
-// the tokens each spent, what that cost at list price, and the command that
+// files — Claude Code's projects/*/<id>.jsonl (and Qoder's, the same kind),
+// Codex's rollout files, OpenCode's database (or its older JSON files) and
+// ZCode's, Pi's session files, DeepSeek Harness's, Cline's, Grok Build's and
+// WorkBuddy's — with the
+// tokens each spent, what that cost at list price, and the command that
 // resumes it. It only ever reads the agents' folders.
 //
 // The files grow long (hundreds of MB), so each one's parse is kept by path,
@@ -62,7 +65,7 @@ type Model struct {
 
 // Session is one agent session.
 type Session struct {
-	Agent  string    `json:"agent"` // magpie agent id: claude, codex
+	Agent  string    `json:"agent"` // magpie agent id: claude, codex, opencode, pi, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy
 	ID     string    `json:"id"`
 	Cwd    string    `json:"cwd"`
 	Title  string    `json:"title"` // the first prompt, else the agent's own title
@@ -107,6 +110,9 @@ type state struct {
 	// Codex: the model in use, and its running total (input with cache) last seen
 	Model string  `json:"model,omitempty"`
 	Total *Tokens `json:"total,omitempty"`
+	// Pi: in a forked session, the time it was forked; the lines before
+	// it are the copy of the session it was forked from
+	Since time.Time `json:"since,omitzero"`
 }
 
 // day is one local date's share of a file: tokens by model, and the time
@@ -221,9 +227,15 @@ type file struct {
 	agent string
 	key   string // agent:session id — a session may span files
 	path  string
-	main  bool // Claude Code: the session's own file, not a subagent's
+	main  bool // the session's own file, not a subagent's
 	size  int64
 	mod   time.Time
+	// OpenCode and ZCode: the session, and where it is kept
+	sid string
+	oc  ocStore
+	// Cline: the session's manifest, beside its messages; Grok Build: its
+	// summary.json, beside its updates
+	manifest string
 }
 
 // ClaudeDir is Claude Code's folder: $CLAUDE_CONFIG_DIR, else ~/.claude.
@@ -253,21 +265,59 @@ func stat(f *file) bool {
 	return true
 }
 
-func claudeFiles() []file {
-	projects := filepath.Join(ClaudeDir(), "projects")
+func claudeFiles() []file { return ccFiles("claude", ClaudeDir()) }
+
+// ccFiles are the session files of an agent that keeps them as Claude Code
+// does, under its folder's projects/: a session's own <id>.jsonl in its
+// project's folder, and its subagents' in <id>/subagents/.
+func ccFiles(agent, dir string) []file {
+	projects := filepath.Join(dir, "projects")
 	var out []file
 	mains, _ := filepath.Glob(filepath.Join(projects, "*", "*.jsonl"))
 	for _, p := range mains {
-		f := file{agent: "claude", key: "claude:" + strings.TrimSuffix(filepath.Base(p), ".jsonl"), path: p, main: true}
+		f := file{agent: agent, key: agent + ":" + strings.TrimSuffix(filepath.Base(p), ".jsonl"), path: p, main: true}
 		if stat(&f) {
 			out = append(out, f)
 		}
 	}
 	subs, _ := filepath.Glob(filepath.Join(projects, "*", "*", "subagents", "*.jsonl"))
 	for _, p := range subs {
-		f := file{agent: "claude", key: "claude:" + filepath.Base(filepath.Dir(filepath.Dir(p))), path: p}
+		f := file{agent: agent, key: agent + ":" + filepath.Base(filepath.Dir(filepath.Dir(p))), path: p}
 		if stat(&f) {
 			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// allFiles are every agent's session files.
+func allFiles() []file {
+	var out []file
+	for _, fs := range [][]file{claudeFiles(), codexFiles(), openCodeFiles(), piFiles(),
+		zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
+		grokFiles(), workbuddyFiles()} {
+		out = append(out, fs...)
+	}
+	return out
+}
+
+// Dirs are the folders the sessions are read from: Claude Code's and
+// Codex's, and the other agents' where they keep sessions on this computer.
+func Dirs() []string {
+	out := []string{ClaudeDir(), CodexDir()}
+	for _, d := range []struct{ dir, sessions string }{
+		{OpenCodeDir(), OpenCodeDir()},
+		{PiDir(), PiDir()},
+		{ZCodeDir(), zcodeDB()},
+		{DshDir(), filepath.Join(DshDir(), "sessions")},
+		{ClineSessionDir(), ClineSessionDir()},
+		{QoderDir("qoder"), filepath.Join(QoderDir("qoder"), "projects")},
+		{QoderDir("qoder-cn"), filepath.Join(QoderDir("qoder-cn"), "projects")},
+		{GrokDir(), filepath.Join(GrokDir(), "sessions")},
+		{WorkBuddyDir(), filepath.Join(WorkBuddyDir(), "projects")},
+	} {
+		if _, err := os.Stat(d.sessions); err == nil {
+			out = append(out, d.dir)
 		}
 	}
 	return out
@@ -451,7 +501,8 @@ func List(limit int) []Session {
 	defer mu.Unlock()
 	loadCache()
 
-	files := append(claudeFiles(), codexFiles()...)
+	defer closeDBs()
+	files := allFiles()
 	groups := map[string][]file{}
 	latest := map[string]time.Time{}
 	for _, f := range files {
@@ -521,7 +572,7 @@ func assemble(fs []file, price func(string) *catalog.Price) (Session, bool) {
 			if first == "" {
 				first = st.First
 			}
-			if s.Agent == "codex" && st.ID != "" && f.path == fs[0].path {
+			if (s.Agent == "codex" || s.Agent == "pi" || s.Agent == "dsh" || s.Agent == "grok") && st.ID != "" && f.path == fs[0].path {
 				s.ID = st.ID
 			}
 		}
@@ -575,6 +626,16 @@ func assemble(fs []file, price func(string) *catalog.Price) (Session, bool) {
 
 // parse reads a file on from where old left it, or from the start.
 func parse(f file, old *state) *state {
+	switch f.agent {
+	case "opencode", "zcode":
+		return parseOpenCode(f)
+	case "dsh":
+		return parseDsh(f)
+	case "cline":
+		return parseCline(f)
+	case "grok":
+		return parseGrok(f)
+	}
 	var s *state
 	if old != nil && f.size >= old.Size && old.Off <= f.size {
 		s = old.clone()
@@ -583,12 +644,20 @@ func parse(f file, old *state) *state {
 	}
 	s.Size, s.Mod = f.size, f.mod.UnixNano()
 	line := claudeLine
-	if f.agent == "codex" {
+	switch f.agent {
+	case "codex":
 		line = codexLine
+	case "pi":
+		line = piParse
+	case "workbuddy":
+		line = workbuddyLine
 	}
 	off, err := scan(f.path, s.Off, func(b []byte) { line(s, b, f.main) })
 	if err == nil {
 		s.Off = off
+	}
+	if f.agent == "workbuddy" && s.Cwd == "" {
+		workbuddyMeta(s, f.path)
 	}
 	return s
 }
@@ -747,6 +816,18 @@ func ResumeCommand(agent, id, cwd string) string {
 		run = "claude --resume " + id
 	case "codex":
 		run = "codex resume " + id
+	case "opencode":
+		run = "opencode --session " + id
+	case "pi":
+		run = "pi --session " + id
+	case "cline":
+		run = "cline --id " + id
+	case "qoder":
+		run = "qodercli --resume " + id
+	case "qoder-cn":
+		run = "qoderclicn --resume " + id
+	case "grok":
+		run = "grok --resume " + id
 	default:
 		return ""
 	}

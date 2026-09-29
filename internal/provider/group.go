@@ -58,9 +58,11 @@ type Group struct {
 	// Rules send the requests they match to one member first, in order:
 	// the first that matches decides (see Rule).
 	Rules []Rule `json:"rules,omitempty"`
-	// Classifier is the model ("provider/model", not a group) asked which
-	// of the rules' intents a user's message is. Rules with an intent need
-	// one; a small, fast model without reasoning does.
+	// Classifier is the model ("provider/model") asked which of the rules'
+	// intents a user's message is, or a group ("group/<id>", never this
+	// one) whose models are asked in turn, failing over as for any request.
+	// Rules with an intent need one; a small, fast model without reasoning
+	// does.
 	Classifier string `json:"classifier,omitempty"`
 	// Effort "auto" has the classifier — Jev, from TypeSafe's decision API,
 	// or any model, asked in words — judge how hard each turn is to think
@@ -395,8 +397,8 @@ func SaveGroup(g Group) error {
 	switch {
 	case g.Effort != "" && g.Effort != EffortAuto:
 		return fmt.Errorf("a group's effort is %q or left to the agent, not %q", EffortAuto, g.Effort)
-	case strings.HasPrefix(g.Classifier, GroupPrefix):
-		return fmt.Errorf("the classifier is a model, not a group (%s)", g.Classifier)
+	case g.Classifier == GroupPrefix+g.ID:
+		return fmt.Errorf("%s can't be its own classifier: asking it would ask it again", g.Name)
 	case intents && g.Classifier == "":
 		return errors.New("a rule with an intent needs the group's classifier: the model that tells which intent a message is")
 	case g.Effort == EffortAuto && g.Classifier == "":
@@ -404,7 +406,11 @@ func SaveGroup(g Group) error {
 	case !intents && g.Effort == "":
 		g.Classifier = "" // nothing to ask it
 	}
-	if g.Classifier != "" {
+	if gid, ok := strings.CutPrefix(g.Classifier, GroupPrefix); ok {
+		if _, ok := groupOf(groupsIn(providerEntries()), gid); !ok {
+			return fmt.Errorf("magpie has no group %q to classify with", gid)
+		}
+	} else if g.Classifier != "" {
 		if _, _, ok := Resolve(g.Classifier); !ok {
 			return fmt.Errorf("magpie knows no model %q to classify with", g.Classifier)
 		}
@@ -496,8 +502,8 @@ func GroupsWith(id string) []Group {
 }
 
 // DeleteGroup removes a group of the user's; one magpie found is hidden,
-// to come back with ShowGroup. A group another has in it stays until it is
-// taken out of that one.
+// to come back with ShowGroup. A group another has in it, or classifies
+// with, stays until it is taken out of that one.
 func DeleteGroup(id string) error {
 	if in := GroupsWith(id); len(in) > 0 {
 		var names []string
@@ -505,6 +511,11 @@ func DeleteGroup(id string) error {
 			names = append(names, g.Name)
 		}
 		return fmt.Errorf("%s is in %s: take it out first", id, strings.Join(names, ", "))
+	}
+	for _, g := range groupsIn(providerEntries()) {
+		if !g.Hidden && g.Classifier == GroupPrefix+id {
+			return fmt.Errorf("%s is %s's classifier: choose another first", id, g.Name)
+		}
 	}
 	f := load()
 	found := false
@@ -586,6 +597,9 @@ func RenameGroup(from, to string) error {
 			if r.Use == old {
 				f.Groups[i].Rules[j].Use = now
 			}
+		}
+		if f.Groups[i].Classifier == old {
+			f.Groups[i].Classifier = now
 		}
 	}
 	return store(f)

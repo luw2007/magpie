@@ -36,13 +36,17 @@ import (
 // again without the table ("Model provider `magpie` not found"), whichever
 // way Codex is routed now.
 
-func codex(home string) *Agent {
-	dir := filepath.Join(home, ".codex")
+func codex(home string) *Agent { return codexIn(here(home)) }
+
+// codexIn is Codex as it lives at a place: this machine's home, or a WSL
+// distro's (see wsl.go).
+func codexIn(at place) *Agent {
+	dir := filepath.Join(at.home, ".codex")
 	path := filepath.Join(dir, "config.toml")
 	catalogPath := filepath.Join(dir, "magpie-models.json")
 	get := func(k string) string { v, _ := edit.GetTOMLTop(path, k); return v }
 	asProvider := func() bool { return get("model_provider") == magpieID }
-	viaBase := func() bool { return isCodexGateway(get("openai_base_url")) }
+	viaBase := func() bool { return isCodexGatewayOn(get("openai_base_url"), at.host()) }
 	routed := func() bool { return asProvider() || viaBase() }
 	models := func() []catalog.Model {
 		switch {
@@ -66,7 +70,7 @@ func codex(home string) *Agent {
 	putProvider := func() error {
 		return edit.SetTOMLTable(path, "model_providers."+magpieID,
 			edit.KV{Path: "name", Value: "magpie"},
-			edit.KV{Path: "base_url", Value: gatewayV1()},
+			edit.KV{Path: "base_url", Value: at.v1()},
 			edit.KV{Path: "wire_api", Value: "responses"},
 			edit.KV{Path: "experimental_bearer_token", Value: gateway.Token},
 		)
@@ -89,7 +93,7 @@ func codex(home string) *Agent {
 	}
 	// api: the user wants magpie as Codex's provider even while Codex is
 	// signed in to ChatGPT
-	api := func() bool { return stashLoad()[codexLoginKey] == "api" }
+	api := func() bool { return stashLoad()[at.key("codex.login")] == "api" }
 	dropBase := func() error {
 		if !viaBase() {
 			return nil
@@ -125,7 +129,7 @@ func codex(home string) *Agent {
 		on := codexFailover()
 		switch {
 		case on && !viaBase():
-			return edit.SetTOMLTop(path, edit.KV{Path: "openai_base_url", Value: codexGatewayURL()})
+			return edit.SetTOMLTop(path, edit.KV{Path: "openai_base_url", Value: at.codexURL()})
 		case !on && viaBase():
 			return dropBase()
 		}
@@ -156,13 +160,13 @@ func codex(home string) *Agent {
 				return err
 			}
 			os.Remove(catalogPath)
-			forget("codex.model", "codex.effort", "codex.provider", "codex.catalog")
+			forget(at.key("codex.model"), at.key("codex.effort"), at.key("codex.provider"), at.key("codex.catalog"))
 			return nil
 		}
 		if isMagpie(v) {
 			if !routed() {
-				stash(map[string]string{"codex.model": get("model"), "codex.effort": get("model_reasoning_effort"),
-					"codex.provider": get("model_provider"), "codex.catalog": get("model_catalog_json")})
+				stash(map[string]string{at.key("codex.model"): get("model"), at.key("codex.effort"): get("model_reasoning_effort"),
+					at.key("codex.provider"): get("model_provider"), at.key("codex.catalog"): get("model_catalog_json")})
 			}
 			// a ChatGPT account out of allowance keeps the Codex app from
 			// sending at all, a magpie model's request too; as a provider
@@ -181,7 +185,7 @@ func codex(home string) *Agent {
 					return err
 				}
 				if err := edit.SetTOMLTop(path,
-					edit.KV{Path: "openai_base_url", Value: codexGatewayURL()},
+					edit.KV{Path: "openai_base_url", Value: at.codexURL()},
 					edit.KV{Path: "model", Value: v},
 				); err != nil {
 					return err
@@ -199,7 +203,7 @@ func codex(home string) *Agent {
 			}
 			if err := edit.SetTOMLTop(path,
 				edit.KV{Path: "model_provider", Value: magpieID},
-				edit.KV{Path: "model_catalog_json", Value: catalogPath},
+				edit.KV{Path: "model_catalog_json", Value: at.native(catalogPath)},
 				edit.KV{Path: "model", Value: v},
 			); err != nil {
 				return err
@@ -216,15 +220,15 @@ func codex(home string) *Agent {
 			if err := dropProvider(); err != nil {
 				return err
 			}
-			unstash("codex.model")
+			unstash(at.key("codex.model"))
 			var back []edit.KV
-			if p := unstash("codex.provider"); p != "" && p != magpieID {
+			if p := unstash(at.key("codex.provider")); p != "" && p != magpieID {
 				back = append(back, edit.KV{Path: "model_provider", Value: p})
 			}
-			if c := unstash("codex.catalog"); c != "" && c != catalogPath {
+			if c := unstash(at.key("codex.catalog")); c != "" && c != at.native(catalogPath) {
 				back = append(back, edit.KV{Path: "model_catalog_json", Value: c})
 			}
-			if e := unstash("codex.effort"); e != "" {
+			if e := unstash(at.key("codex.effort")); e != "" {
 				back = append(back, edit.KV{Path: "model_reasoning_effort", Value: e})
 			}
 			if len(back) > 0 {
@@ -257,7 +261,7 @@ func codex(home string) *Agent {
 				}
 			}
 			switch {
-			case asProvider() && get("model_catalog_json") == catalogPath:
+			case asProvider() && get("model_catalog_json") == at.native(catalogPath):
 				b := codexcat.Catalog(magpieModels("codex"))
 				if cur, _ := edit.Read(catalogPath); string(cur) != string(b) {
 					if err := edit.WriteAtomic(catalogPath, b); err != nil {
@@ -300,18 +304,18 @@ func codex(home string) *Agent {
 				if err != nil {
 					return err.Error()
 				}
-				if t["base_url"] != gatewayV1() || t["experimental_bearer_token"] != gateway.Token || t["wire_api"] != "responses" {
-					return "Codex's [model_providers.magpie] no longer points at magpie's gateway (" + gatewayV1() + ")"
+				if t["base_url"] != at.v1() || t["experimental_bearer_token"] != gateway.Token || t["wire_api"] != "responses" {
+					return "Codex's [model_providers.magpie] no longer points at magpie's gateway (" + at.v1() + ")"
 				}
-				if c := get("model_catalog_json"); c != catalogPath {
+				if c := get("model_catalog_json"); c != at.native(catalogPath) {
 					return "Codex's model_catalog_json is no longer magpie's list"
 				}
 				if _, err := os.Stat(catalogPath); err != nil {
 					return "magpie's model list for Codex (" + catalogPath + ") is gone"
 				}
 			case viaBase():
-				if u := get("openai_base_url"); strings.TrimSuffix(u, "/") != codexGatewayURL() {
-					return "Codex's openai_base_url is " + u + ", not magpie's gateway at " + codexGatewayURL()
+				if u := get("openai_base_url"); strings.TrimSuffix(u, "/") != at.codexURL() {
+					return "Codex's openai_base_url is " + u + ", not magpie's gateway at " + at.codexURL()
 				}
 			default:
 				return "Codex's config no longer sends its model through magpie (no openai_base_url or model_provider of magpie's), so Codex asks OpenAI for a model OpenAI doesn't have"
@@ -387,14 +391,15 @@ func codex(home string) *Agent {
 			{
 				// how Codex takes magpie's models: beside its ChatGPT
 				// sign-in (openai_base_url), or with magpie as its provider,
-				// the Codex app in its API state
+				// the Codex app in its API state. Kept in the stash, where
+				// set("") leaves it.
 				Key: "login", Label: "sign-in", Quiet: true,
-				Get: func() string { return stashLoad()[codexLoginKey] },
+				Get: func() string { return stashLoad()[at.key("codex.login")] },
 				Set: func(v string) error {
 					if v != "" && v != "api" {
 						return fmt.Errorf("sign-in is api or empty (ChatGPT), not %q", v)
 					}
-					stash(map[string]string{codexLoginKey: v})
+					stash(map[string]string{at.key("codex.login"): v})
 					if m := get("model"); isMagpie(m) {
 						return set(m)
 					}
@@ -410,9 +415,6 @@ func codex(home string) *Agent {
 		},
 	}
 }
-
-// codexLoginKey keeps the sign-in field in the stash, where set("") leaves it.
-const codexLoginKey = "codex.login"
 
 func contains(xs []string, x string) bool {
 	for _, v := range xs {
@@ -449,8 +451,11 @@ func codexGatewayURL() string { return gateway.URL() + gateway.CodexPath }
 
 // isCodexGateway reports whether an openai_base_url is magpie's, on
 // whichever port it listened on then.
-func isCodexGateway(u string) bool {
-	return strings.HasPrefix(u, "http://127.0.0.1:") && strings.HasSuffix(strings.TrimSuffix(u, "/"), gateway.CodexPath)
+func isCodexGateway(u string) bool { return isCodexGatewayOn(u, "127.0.0.1") }
+
+// isCodexGatewayOn is isCodexGateway for a gateway reached at host.
+func isCodexGatewayOn(u, host string) bool {
+	return strings.HasPrefix(u, "http://"+host+":") && strings.HasSuffix(strings.TrimSuffix(u, "/"), gateway.CodexPath)
 }
 
 // codexStaleCache ages Codex's cached model list if it isn't the one magpie
