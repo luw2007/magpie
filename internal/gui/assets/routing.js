@@ -1547,7 +1547,7 @@
   const pHead = el("div", "row-head"), pList = el("div", "list rt-pools");
   gsec.append(gHead, gList, pHead, pList);
   more.prepend(gsec);
-  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["rotate", "In turn"], ["usage", "Least used"]];
+  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["rotate", "In turn"], ["usage", "Least used"], ["benchmark", "Benchmark"]];
   const AFF_OPTS = [["", "Auto"], ["session", "Session"], ["turn", "Within a turn"], ["off", "Off"]];
   const AFF_HINT = {
     "": "A conversation stays with the account or key that answered it while what the vendor cached of it is worth keeping — within a turn always, across turns while it's fresh.",
@@ -1560,6 +1560,7 @@
     order: "In order: the first model until it can't answer, then the next — each over its own accounts or keys as its provider routes them.",
     rotate: "In turn: each conversation's next turn goes to the next member's account or key, spreading the load.",
     usage: "Least used first: the account or key with the most of its allowance left goes first.",
+    benchmark: "Benchmark: qualified DeepSWE model-and-effort pairs are tried by average completion time; unknown or unqualified pairs keep their configured order afterward.",
   };
   const EFFORTS = ["low", "medium", "high", "xhigh", "max"]; // provider.Efforts
   // what a rule matches, in words
@@ -1604,6 +1605,7 @@
     if (groups) steady(drawGroups);
   }
   function drawGroups() {
+    const newBtn = el("button", "text", t("New group"));
     newBtn.onclick = () => { gEdit = { id: "", draft: { name: "", members: [], member_efforts: {}, routing: "", affinity: "", rules: [] } }; renderGroups(); };
     gHead.replaceChildren(el("span", "label", t("Routing groups")), el("span", "grow"), el("span", "note", t("models agents pick as one")), newBtn);
     const rows = [];
