@@ -299,6 +299,11 @@ func summarize(p Period, now time.Time, recs []Record) Summary {
 				break
 			}
 		}
+		if pr == nil {
+			if v, ok := catalog.MakerPriceOf(r.Model); ok {
+				pr = &v
+			}
+		}
 		prices[k] = pr
 		return pr
 	}

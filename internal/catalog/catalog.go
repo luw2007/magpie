@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -325,6 +326,31 @@ func PriceOf(providerID, modelID string) (Price, bool) {
 	}
 	return Price{}, false
 }
+
+// MakerPriceOf finds a bare model's list price at its maker on models.dev.
+// A familiar name alone is not a price: the maker must list that model.
+func MakerPriceOf(model string) (Price, bool) {
+	id := strings.ToLower(strings.TrimSpace(model))
+	id = id[strings.LastIndexByte(id, '/')+1:]
+	for _, candidate := range []string{id, datedModel.ReplaceAllString(id, "")} {
+		for _, maker := range []struct{ prefix, provider string }{
+			{"claude", "anthropic"}, {"gpt", "openai"}, {"o1", "openai"}, {"o3", "openai"}, {"o4", "openai"},
+			{"codex", "openai"}, {"gemini", "google"}, {"deepseek", "deepseek"}, {"grok", "xai"},
+			{"glm", "zai"}, {"kimi", "moonshotai"}, {"qwen", "alibaba"}, {"mistral", "mistral"},
+			{"devstral", "mistral"}, {"minimax", "minimax"},
+		} {
+			if strings.HasPrefix(candidate, maker.prefix) {
+				if price, ok := PriceOf(maker.provider, candidate); ok {
+					return price, true
+				}
+				break
+			}
+		}
+	}
+	return Price{}, false
+}
+
+var datedModel = regexp.MustCompile(`-\d{8}$`)
 
 // APIOf is the API a models.dev provider's model is served on, when the
 // catalog says it's one of its own: "responses" or "anthropic" for a model

@@ -752,7 +752,6 @@ func title(s string) string {
 
 // ---- pricing ----------------------------------------------------------------
 
-var dated = regexp.MustCompile(`-\d{8}$`)
 
 // priceOf prices a model as a session names it: one through magpie as
 // "<provider>/<model>" at the price the gateway counts it at, else the bare
@@ -774,31 +773,9 @@ func priceOf(model string) (catalog.Price, bool) {
 			}
 		}
 	}
-	bare := strings.ToLower(m[strings.LastIndexByte(m, '/')+1:])
-	for _, id := range []string{bare, dated.ReplaceAllString(bare, "")} {
-		for _, c := range makers(id) {
-			if pr, ok := catalog.PriceOf(c, id); ok {
-				return pr, true
-			}
-		}
-	}
-	return catalog.Price{}, false
+	return catalog.MakerPriceOf(m)
 }
 
-// makers are the models.dev providers that make a model of this id.
-func makers(id string) []string {
-	for _, m := range []struct{ prefix, provider string }{
-		{"claude", "anthropic"}, {"gpt", "openai"}, {"o1", "openai"}, {"o3", "openai"}, {"o4", "openai"},
-		{"codex", "openai"}, {"gemini", "google"}, {"deepseek", "deepseek"}, {"grok", "xai"},
-		{"glm", "zai"}, {"kimi", "moonshotai"}, {"qwen", "alibaba"}, {"mistral", "mistral"},
-		{"devstral", "mistral"}, {"minimax", "minimax"},
-	} {
-		if strings.HasPrefix(id, m.prefix) {
-			return []string{m.provider}
-		}
-	}
-	return nil
-}
 
 // ---- resuming ---------------------------------------------------------------
 

@@ -26,6 +26,19 @@ func writeCatalog(t *testing.T, body string) {
 	Reset()
 	t.Cleanup(Reset)
 }
+func TestMakerPriceOf(t *testing.T) {
+	writeCatalog(t, `{"openai":{"models":{"gpt-5.6-sol":{"id":"gpt-5.6-sol","cost":{"input":2,"output":8}}}}}`)
+	for _, name := range []string{"gpt-5.6-sol", "codex/gpt-5.6-sol"} {
+		price, ok := MakerPriceOf(name)
+		if !ok || price.Input != 2 || price.Output != 8 {
+			t.Fatalf("%s: %+v, %v", name, price, ok)
+		}
+	}
+	if _, ok := MakerPriceOf("gpt-unknown"); ok {
+		t.Fatal("unknown model was priced")
+	}
+}
+
 
 func TestProviderReadsTemperatureCapability(t *testing.T) {
 	writeCatalog(t, `{
