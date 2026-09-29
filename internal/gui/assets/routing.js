@@ -389,7 +389,8 @@
 
   // how the reasoning a try was sent at came to be
   function effortNote(r, tr) {
-    const agent = agentName(r.agent);
+    const agent = agentName(r.agent), member = tried(r, tr);
+    if (member?.effort && tr.effort) return t("{level} reasoning, configured for this group member", { level: tr.effort });
     if (tr.picked) return r.effort && r.effort !== tr.effort
       ? t("{level} reasoning, picked for the turn; {agent} asked for {asked}", { level: tr.effort, agent, asked: r.effort })
       : t("{level} reasoning, picked for the turn", { level: tr.effort });
@@ -402,7 +403,8 @@
   function tryWhy(r, i) {
     const tr = r.tries[i], said = trySaid(r, i);
     if (!tr.effort || !r.effort || r.effort === tr.effort) return said;
-    const agent = agentName(r.agent);
+    const agent = agentName(r.agent), member = tried(r, tr);
+    if (member?.effort) return said + " " + t("This group member is configured for {level} reasoning instead of the {asked} {agent} asked for.", { level: tr.effort, asked: r.effort, agent });
     return said + (/[。！？]$/.test(said) ? "" : " ") + (tr.picked
       ? t("The turn's pick replaced the {asked} {agent} asked for.", { asked: r.effort, agent })
       : t("{level} is the model's nearest to the {asked} {agent} asked for.", { level: tr.effort, asked: r.effort, agent }));
@@ -1602,8 +1604,7 @@
     if (groups) steady(drawGroups);
   }
   function drawGroups() {
-    const newBtn = el("button", "text", t("New group"));
-    newBtn.onclick = () => { gEdit = { id: "", draft: { name: "", members: [], routing: "", affinity: "", rules: [] } }; renderGroups(); };
+    newBtn.onclick = () => { gEdit = { id: "", draft: { name: "", members: [], member_efforts: {}, routing: "", affinity: "", rules: [] } }; renderGroups(); };
     gHead.replaceChildren(el("span", "label", t("Routing groups")), el("span", "grow"), el("span", "note", t("models agents pick as one")), newBtn);
     const rows = [];
     if (gEdit && !gEdit.id) rows.push(groupEditor(null));
@@ -1633,7 +1634,7 @@
     nm.append(el("b", "", g.name), el("code", "mdl", "group/" + g.id));
     if (g.auto) nm.append(el("small", "auto", t("found by magpie")));
     const sep = g.routing === "order" ? " → " : " · ";
-    const mem = el("div", "mem", g.members.map((id) => memberLabel(g, id)).join(sep));
+    const mem = el("div", "mem", g.members.map((id) => memberLabel(g, id) + (g.member_efforts?.[id] ? ` · ${g.member_efforts[id]}` : "")).join(sep));
     main.append(nm, mem);
     const m = ROUTE_OPTS.find(([id]) => id === (g.routing || "")) || ROUTE_OPTS[0];
     const tags = el("span", "tags");
@@ -1647,7 +1648,7 @@
     if (!g.ready) tags.append(el("span", "tag bad", t("no member ready")));
     const edit = el("button", "text", t("Edit"));
     edit.onclick = (e) => { e.stopPropagation(); open(); };
-    const open = () => { gEdit = { id: g.id, draft: { name: g.name, members: [...g.members], routing: g.routing || "", affinity: g.affinity || "", classifier: g.classifier || "", effort: g.effort || "", rules: (g.rules || []).map((r) => ({ ...r, intent: r.intent || "", agents: [...(r.agents || [])] })) } }; renderGroups(); };
+    const open = () => { gEdit = { id: g.id, draft: { name: g.name, members: [...g.members], member_efforts: { ...(g.member_efforts || {}) }, routing: g.routing || "", affinity: g.affinity || "", classifier: g.classifier || "", effort: g.effort || "", rules: (g.rules || []).map((r) => ({ ...r, intent: r.intent || "", agents: [...(r.agents || [])] })) } }; renderGroups(); };
     row.onclick = open;
     row.append(ics, main, tags, edit);
     return row;
@@ -1703,14 +1704,23 @@
         const m = modelOf(id), s = subOf(id);
         const row = el("div", "fbrow");
         const n = el("span", "n");
-        n.append(el("span", "", memberName(id)));
+        n.append(el("span", "", memberName(id)), el("code", "mdl", id));
         if (m || s) n.append(el("small", "", memberNote(id)));
         row.append(el("span", "i", String(i + 1)), memberIcon(id), n, el("span", "grow"));
         if (s) row.title = s.members.map((x) => memberLabel(s, x)).join(s.routing === "order" ? " → " : " · ");
         if (!m && !s) { row.classList.add("off"); row.title = t("No provider serves {id} now; it is skipped", { id }); }
+        const effort = d.member_efforts[id] || "";
+        const effortBtn = el("button", "rt-cond" + (effort ? " on" : ""));
+        const effortText = (v) => v ? v : t("Request effort");
+        effortBtn.textContent = effortText(effort);
+        effortBtn.title = t("Reasoning effort for {id}", { id });
+        effortBtn.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "member-effort", label: "reasoning effort", value: effort || "request", menu: true,
+          options: [{ value: "request", label: t("Request"), note: t("inherit the request or turn effort") }, ...EFFORTS.map((v) => ({ value: v, label: v }))],
+          onPick: (v) => { if (v === "request" || !v) delete d.member_efforts[id]; else d.member_efforts[id] = v; effortBtn.textContent = effortText(v === "request" ? "" : v); effortBtn.classList.toggle("on", v !== "request"); } }, effortBtn, ev);
+        row.append(effortBtn);
         if (i) { const up = el("button", "text", t("Up")); up.onclick = () => { d.members.splice(i - 1, 0, d.members.splice(i, 1)[0]); draw(); }; row.append(up); }
         const rm = el("button", "text", t("Remove"));
-        rm.onclick = () => { d.members.splice(i, 1); d.rules = d.rules.filter((r) => d.members.includes(r.use)); draw(); drawRules(); };
+        rm.onclick = () => { d.members.splice(i, 1); delete d.member_efforts[id]; d.rules = d.rules.filter((r) => d.members.includes(r.use)); draw(); drawRules(); };
         row.append(rm);
         list.append(row);
       });
@@ -1907,7 +1917,7 @@
       if (d.rules.some((r) => r.intent) && !d.classifier) return status(t("Choose the model that tells which intent a message is"), "warn");
       if (d.effort === "auto" && !d.classifier) return status(t("Choose the model that rates how hard a turn is"), "warn");
       saveBtn.classList.add("busy");
-      groupAction("save", { id: idOf(), from: g?.id, name: d.name.trim() || idOf(), members: d.members, routing: d.routing, affinity: d.affinity, rules: d.rules, effort: d.effort, classifier: d.rules.some((r) => r.intent) || d.effort === "auto" ? d.classifier : "", context: g?.context || 0 }, t(g ? "{name} saved" : "{name} added", { name: d.name.trim() || idOf() }));
+      groupAction("save", { id: idOf(), from: g?.id, name: d.name.trim() || idOf(), members: d.members, member_efforts: Object.fromEntries(Object.entries(d.member_efforts || {}).filter(([id, effort]) => d.members.includes(id) && EFFORTS.includes(effort))), routing: d.routing, affinity: d.affinity, rules: d.rules, effort: d.effort, classifier: d.rules.some((r) => r.intent) || d.effort === "auto" ? d.classifier : "", context: g?.context || 0 }, t(g ? "{name} saved" : "{name} added", { name: d.name.trim() || idOf() }));
     };
     saveBtn.onclick = save;
     bar.append(cancel, saveBtn);

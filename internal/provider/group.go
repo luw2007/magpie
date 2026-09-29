@@ -50,11 +50,14 @@ func (g Group) Ruled() bool { return len(g.Rules) > 0 || g.Effort == EffortAuto 
 
 // Group is a routing group.
 type Group struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Members  []string `json:"members"`            // "provider/model" or "group/<id>", in order
-	Routing  string   `json:"routing,omitempty"`  // as Provider.Routing, over all the members' keys and accounts
-	Affinity string   `json:"affinity,omitempty"` // as Provider.Affinity
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Members []string `json:"members"` // "provider/model" or "group/<id>", in order
+	// MemberEfforts overrides the request's thinking level for selected
+	// exact member IDs, including group/<id> for a nested group.
+	MemberEfforts map[string]string `json:"member_efforts,omitempty"`
+	Routing       string            `json:"routing,omitempty"`  // as Provider.Routing, over all the members' keys and accounts
+	Affinity      string            `json:"affinity,omitempty"` // as Provider.Affinity
 	// Rules send the requests they match to one member first, in order:
 	// the first that matches decides (see Rule).
 	Rules []Rule `json:"rules,omitempty"`
@@ -92,6 +95,7 @@ type Member struct {
 	// Via are the groups in the group it is of, the outermost first: the
 	// group each of Path's members but the last names.
 	Via      []Group
+	Effort   string // outermost explicit member effort, including a nested group's override
 	Provider Provider
 	Model    string // what the vendor is asked for
 }
@@ -109,7 +113,7 @@ func (m Member) Groups() []string {
 // Below is the member as the group at depth (0 the group itself, 1 the
 // group in it Path[0] names, …) has it.
 func (m Member) Below(depth int) Member {
-	return Member{ID: m.Path[depth], Path: m.Path[depth:], Via: m.Via[depth:], Provider: m.Provider, Model: m.Model}
+	return Member{ID: m.Path[depth], Path: m.Path[depth:], Via: m.Via[depth:], Effort: m.Effort, Provider: m.Provider, Model: m.Model}
 }
 
 // maxNest is how deep groups in groups may go.
@@ -274,16 +278,20 @@ func groupOf(all []Group, id string) (Group, bool) {
 func membersIn(entries []Entry, all []Group, g Group) []Member {
 	var out []Member
 	seen := map[string]bool{}
-	var walk func(g Group, path []string, via []Group, in []string)
-	walk = func(g Group, path []string, via []Group, in []string) {
+	var walk func(g Group, path []string, via []Group, in []string, effort string)
+	walk = func(g Group, path []string, via []Group, in []string, effort string) {
 		for _, id := range g.Members {
+			memberEffort := effort
+			if memberEffort == "" {
+				memberEffort = g.MemberEfforts[id]
+			}
 			at := append(slices.Clone(path), id)
 			if gid, ok := strings.CutPrefix(id, GroupPrefix); ok {
 				sub, ok := groupOf(all, gid)
 				if !ok || slices.Contains(in, gid) || len(via) >= maxNest {
 					continue // gone, a loop, or deeper than anyone nests
 				}
-				walk(sub, at, append(slices.Clone(via), sub), append(slices.Clone(in), gid))
+				walk(sub, at, append(slices.Clone(via), sub), append(slices.Clone(in), gid), memberEffort)
 				continue
 			}
 			p, m, ok := resolveIn(entries, id)
@@ -291,10 +299,10 @@ func membersIn(entries []Entry, all []Group, g Group) []Member {
 				continue
 			}
 			seen[p.ID+"/"+m] = true
-			out = append(out, Member{ID: at[0], Path: at, Via: via, Provider: p, Model: m})
+			out = append(out, Member{ID: at[0], Path: at, Via: via, Effort: memberEffort, Provider: p, Model: m})
 		}
 	}
-	walk(g, nil, nil, []string{g.ID})
+	walk(g, nil, nil, []string{g.ID}, "")
 	return out
 }
 
@@ -372,6 +380,21 @@ func SaveGroup(g Group) error {
 	if len(g.Members) == 0 {
 		return errors.New("a group needs a model in it")
 	}
+	cleanEfforts := make(map[string]string)
+	for id, effort := range g.MemberEfforts {
+		id, effort = strings.TrimSpace(id), strings.ToLower(strings.TrimSpace(effort))
+		if !slices.Contains(g.Members, id) {
+			continue
+		}
+		if !slices.Contains(Efforts, effort) {
+			return fmt.Errorf("member %s has invalid effort %q (choose low, medium, high, xhigh or max)", id, effort)
+		}
+		cleanEfforts[id] = effort
+	}
+	if len(cleanEfforts) == 0 {
+		cleanEfforts = nil
+	}
+	g.MemberEfforts = cleanEfforts
 	if err := groupsInGroup(g, groupsIn(providerEntries())); err != nil {
 		return err
 	}
@@ -380,7 +403,7 @@ func SaveGroup(g Group) error {
 			return fmt.Errorf("%s decides a group's model and effort; it holds no conversation, so it can only be the group's classifier", m)
 		}
 	}
-	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed {
+	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Benchmark {
 		g.Routing = ""
 	}
 	if !slices.Contains(Affinities, g.Affinity) {
@@ -592,6 +615,10 @@ func RenameGroup(from, to string) error {
 			if m == old {
 				f.Groups[i].Members[j] = now
 			}
+		}
+		if effort, ok := f.Groups[i].MemberEfforts[old]; ok {
+			delete(f.Groups[i].MemberEfforts, old)
+			f.Groups[i].MemberEfforts[now] = effort
 		}
 		for j, r := range f.Groups[i].Rules {
 			if r.Use == old {

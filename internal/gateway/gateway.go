@@ -770,9 +770,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// own, and an agent's side requests (a title, a summary) to a smaller
 	// model leave the conversation where it is
 	scope, mode, rotate := p.ID+"/"+model, p.Affinity, p.Routing == provider.Rotate
+	plannedEffort := ""
 	if isGroup {
 		// a routing group: every member's keys or accounts weighed together
-		cands, pl = s.planGroup(g, ms, from)
+		plannedEffort = requestEffort(from, body)
+		if hit != nil && hit.Pick != "" {
+			plannedEffort = hit.Pick
+		}
+		cands, pl = s.planGroup(g, ms, from, plannedEffort)
 		group = groupRef(g, ms)
 		scope, mode, rotate = provider.GroupPrefix+g.ID, g.Affinity, g.Routing == provider.Rotate
 		if words != "" {
@@ -823,6 +828,18 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	for _, n := range nested {
 		if effort == "" && n.Rule != nil {
 			effort = n.Rule.Pick
+		}
+	}
+	if isGroup && g.Routing == provider.Benchmark && effort != "" && effort != plannedEffort && hit != nil && hit.Use == "" && !aff.Kept {
+		benchmarkReorder(cands, &pl, "", effort, deepSWE.get())
+	}
+	if isGroup && effort != "" {
+		for _, n := range nested {
+			if n.Rule != nil && n.Rule.Pick != "" && n.Rule.Use == "" {
+				if sub := groupRouting(group, n.Group); sub == provider.Benchmark {
+					benchmarkReorder(cands, &pl, n.Group, effort, deepSWE.get())
+				}
+			}
 		}
 	}
 	// A vision rule may choose a vision model even when the group has
@@ -911,14 +928,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 		}
 		picked := false // the effort asked for in place of the agent's
-		if effort != "" {
-			// the level this model has nearest to the one picked; one whose
-			// levels aren't known isn't asked for more than high, which
-			// every vendor with levels takes
-			level := fitEffort(effort, c.p.Efforts(c.model))
-			if len(c.p.Efforts(c.model)) == 0 && level == "xhigh" {
-				level = "high"
-			}
+		level := benchmarkEffort(c, effort)
+		if level != "" {
+			// Fit each member's requested level to its model before protocol conversion.
 			if b := withEffort(from, attemptBody, level); !bytes.Equal(b, attemptBody) {
 				attemptBody, picked = b, true
 			}

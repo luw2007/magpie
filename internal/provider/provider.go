@@ -78,6 +78,7 @@ type Provider struct {
 	// "" smart, the first while it has quota to spare, then whichever has
 	// the most; "order" in order, the next one only when the one before
 	// can't take it; "rotate" each in turn; "usage" the least used first.
+	// "benchmark" is accepted for groups only and resets to smart here.
 	// Whichever it is, one out of credit, out of quota, rate limited or
 	// failing is passed over for as long as that lasts.
 	Routing string `json:"routing,omitempty"`

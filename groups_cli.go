@@ -17,11 +17,12 @@ import (
 const groupUsage = `usage:
   magpie groups                           list routing groups: yours, then those magpie found
   magpie group <id>                       show one group and its models (also: magpie group show <id>)
-  magpie group add <name> models=<m1>[,m2…] [routing=…] [stays=…]
+  magpie group add <name> models=<m1>[,m2…] [member-efforts=<m>:<level>,…] [routing=…]
                                           make a group; agents pick it as group/<id>, the id made from the name;
                                           a name in use replaces that group
   magpie group set <id> k=v…              change one: name, models (the whole list, in order),
-                                          models+=<m> (append), models-=<m> (drop), routing, stays,
+                                          models+=<m> (append), models-=<m> (drop), member-efforts,
+                                          member-efforts+= (set selected), member-efforts-=<m> (clear selected), routing, stays,
                                           context (how long a request agents are told it takes: 272k; empty is
                                           its shortest model's), family (a tag: magpie visible shows agents
                                           families, not each group),
@@ -41,10 +42,16 @@ const groupUsage = `usage:
   models   provider/model ids as magpie models lists them; a bare model id works when one provider serves it;
            group/<id> puts another group in it, routed by its own routing and rules in its place —
            never one the group is in already (that would put it in itself), at most 8 groups deep
+  member-efforts  each exact member's reasoning level (low, medium, high, xhigh, max),
+                  e.g. member-efforts=provider/model:xhigh,group/fast:high;
+                  omit one to follow the agent's or classifier's turn effort. A nested
+                  group's override applies to its members; models keep their original IDs
   routing  smart   (default) of the subscriptions with quota to spare, the one renewing soonest first
            order   the first model until it can't answer, then the next
            rotate  each conversation's next turn goes to the next member's account or key
            usage   the account or key with the most of its allowance left first
+           benchmark  DeepSWE IQ ≥ 80 and ≥ 20 samples at each member's model+effort,
+                      fastest average minutes first; missing evidence keeps model order
   stays    auto    (default) with the account or key that answered, while its cache is worth keeping
            session for the whole session
            turn    within a turn only; routing decides afresh when you speak again
@@ -59,6 +66,7 @@ const groupUsage = `usage:
        magpie group set opus-anywhere stays=session models+=openrouter/anthropic/claude-opus-5.5
        magpie group set auto-gpt-6-astra id=gpt-6-astra
        magpie group add Everything models=group/opus-anywhere,deepseek/deepseek-v4-flash routing=order
+       magpie group set everything member-efforts+=deepseek/deepseek-v4-flash:max
        magpie group set opus-anywhere effort=auto classifier=typesafe/jev-latest
        magpie claude group/opus-anywhere`
 
@@ -72,6 +80,7 @@ var routingNames = []struct {
 	{provider.Ordered, "order", []string{"ordered", "in-order"}},
 	{provider.Rotate, "rotate", []string{"in-turn", "round-robin"}},
 	{provider.LeastUsed, "usage", []string{"least-used"}},
+	{provider.Benchmark, "benchmark", []string{"fast"}},
 }
 
 var staysNames = []struct {
@@ -248,12 +257,18 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 		}
 		return out, nil
 	}
+	var effortEdits []struct{ key, value string }
 	for _, kv := range pairs {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok {
 			return fmt.Errorf("expected key=value, got %q (magpie group help)", kv)
 		}
 		var err error
+		switch strings.ToLower(strings.TrimSpace(k)) {
+		case "member-efforts", "member-efforts+", "member-efforts-":
+			effortEdits = append(effortEdits, struct{ key, value string }{strings.ToLower(strings.TrimSpace(k)), v})
+			continue
+		}
 		switch strings.ToLower(strings.TrimSpace(k)) {
 		case "id":
 			if !allowID {
@@ -313,10 +328,48 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 		case "classifier", "classify":
 			g.Classifier = strings.TrimPrefix(strings.TrimSpace(v), "magpie/")
 		default:
-			return fmt.Errorf("unknown field %q (fields: name, models, models+, models-, routing, stays, context, family, effort, classifier; magpie group help)", k)
+			return fmt.Errorf("unknown field %q (fields: name, models, models+, models-, member-efforts, member-efforts+, member-efforts-, routing, stays, context, family, effort, classifier; magpie group help)", k)
 		}
 		if err != nil {
 			return err
+		}
+	}
+	for _, edit := range effortEdits {
+		if edit.key == "member-efforts-" && strings.TrimSpace(edit.value) == "" {
+			return fmt.Errorf("member-efforts- needs a member id")
+		}
+		if edit.key == "member-efforts" {
+			g.MemberEfforts = nil
+		}
+		for _, item := range splitList(edit.value) {
+			id := item
+			level := ""
+			if edit.key != "member-efforts-" {
+				i := strings.LastIndexByte(item, ':')
+				if i <= 0 {
+					return fmt.Errorf("member effort %q must be <member>:low|medium|high|xhigh|max", item)
+				}
+				id, level = item[:i], item[i+1:]
+				if !slices.Contains(provider.Efforts, strings.ToLower(level)) {
+					return fmt.Errorf("member effort %q must be <member>:low|medium|high|xhigh|max", item)
+				}
+			}
+			resolved, err := resolve(id)
+			if err != nil {
+				return err
+			}
+			id = resolved
+			if !slices.Contains(g.Members, id) {
+				return fmt.Errorf("%s is not in the group (its models: %s)", id, strings.Join(g.Members, ", "))
+			}
+			if edit.key == "member-efforts-" {
+				delete(g.MemberEfforts, id)
+			} else {
+				if g.MemberEfforts == nil {
+					g.MemberEfforts = make(map[string]string)
+				}
+				g.MemberEfforts[id] = strings.ToLower(level)
+			}
 		}
 	}
 	return nil
@@ -649,9 +702,9 @@ func groups() error {
 		for _, id := range g.Members {
 			if _, ok := names[id]; ok {
 				ready = true
-				ms = append(ms, id)
+				ms = append(ms, memberWithEffort(g, id))
 			} else {
-				ms = append(ms, faint.Render(id+" (not served)"))
+				ms = append(ms, faint.Render(memberWithEffort(g, id)+" (not served)"))
 			}
 		}
 		r.members = strings.Join(ms, sep)
@@ -686,6 +739,13 @@ func groups() error {
 	return nil
 }
 
+func memberWithEffort(g provider.Group, id string) string {
+	if effort := g.MemberEfforts[id]; effort != "" {
+		return id + " (" + effort + ")"
+	}
+	return id
+}
+
 func showGroup(g provider.Group) error {
 	kv := func(k, v string) { fmt.Printf("  %s %s\n", muted.Render(pad(k, 9)), v) }
 	head := bold.Render(g.Name) + muted.Render("  "+provider.GroupPrefix+g.ID)
@@ -704,7 +764,7 @@ func showGroup(g provider.Group) error {
 		if i == 0 {
 			k = "models"
 		}
-		line := fmt.Sprintf("%d %s", i+1, id)
+		line := fmt.Sprintf("%d %s", i+1, memberWithEffort(g, id))
 		if l, ok := memberLabel(id, names); ok {
 			line += muted.Render("  " + l)
 		} else {

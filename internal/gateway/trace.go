@@ -98,6 +98,17 @@ func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
 	return ref
 }
 
+func groupRouting(ref *GroupRef, id string) string {
+	if ref != nil {
+		for _, sub := range ref.Subs {
+			if sub.ID == id {
+				return sub.Routing
+			}
+		}
+	}
+	return ""
+}
+
 // Weighed is one account or key as routing weighed it.
 type Weighed struct {
 	ID       string            `json:"id"` // what rests after a failure
@@ -110,7 +121,8 @@ type Weighed struct {
 	Agent    string            `json:"agent,omitempty"`
 	Plan     string            `json:"plan,omitempty"`
 	Model    string            `json:"model"`
-	Routing  string            `json:"routing"` // its provider's: "", order, rotate, usage
+	Effort   string            `json:"effort,omitempty"` // explicit group member effort; otherwise request/turn effort
+	Routing  string            `json:"routing"`          // provider routing, or group routing for grouped candidates
 	Fallback bool              `json:"fallback,omitempty"`
 	Shared   bool              `json:"shared,omitempty"` // its provider has more than one on
 	Known    bool              `json:"known,omitempty"`  // the vendor said what the account has left
@@ -152,7 +164,7 @@ type planned struct {
 }
 
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
-	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model,
+	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Effort: c.effort,
 		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID}
 	switch {
 	case c.p.Account != nil:

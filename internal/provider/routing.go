@@ -19,6 +19,7 @@ const (
 	Ordered   = "order"
 	Rotate    = "rotate"
 	LeastUsed = "usage"
+	Benchmark = "benchmark"
 )
 
 // SetRouting changes how a provider's requests spread over its keys or

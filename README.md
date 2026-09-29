@@ -169,11 +169,50 @@ magpie claude group/opus-anywhere       # use it
 `routing=` is `smart` (the default: of the subscriptions with quota to
 spare, the one whose allowance renews soonest first), `order` (the first
 model until it can't answer, then the next), `rotate` (each turn to the next
-member) or `usage` (least used first). `stays=` is how long a conversation
-stays with the key or account that answered it: `auto` (the default, while
-the vendor's cache of it is worth keeping), `session`, `turn` or `off`.
-`models=` replaces the whole list, in order; a bare model id works when only
-one provider serves it.
+member), `usage` (least used first), or `benchmark`. Benchmark routing fetches
+the DeepSWE snapshot from CodexRadar's
+`GET /api/v1/intelligence-efficiency?benchmark=deep-swe`: each member is
+compared at its **own** model and effective reasoning effort. If a member has
+no configured effort, it uses the request's final effort (including a
+classifier/Jev choice). Models with at least 20 samples and IQ at least 80 go
+first in ascending `average_minutes`; ties retain the group's configured
+order. Matching preserves vendor model IDs, including a real `-high` suffix.
+Unknown, low-sample, and lower-IQ members follow in configured order. A
+request without reasoning effort keeps configured order unless members have
+explicit efforts.
+
+The DeepSWE snapshot is cached for 15 minutes. A timeout, HTTP or malformed
+response never blocks routing: the request uses the configured order, and a
+failed refresh is retried after one minute. Benchmark routing deliberately
+does **not** use Magpie's local `model_perf` or any other cross-model throughput
+statistics. `fast` is accepted by the CLI as an alias, but groups persist the
+single value `benchmark`:
+
+```sh
+magpie group add Fast \
+  models=codex/gpt-5.6-luna,deepseek/deepseek-v4-flash,gcloud/google/gemini-3.8-flash-high,glm/glm-5.3-flash \
+  routing=benchmark \
+  member-efforts=codex/gpt-5.6-luna:xhigh,deepseek/deepseek-v4-flash:max,gcloud/google/gemini-3.8-flash-high:high,glm/glm-5.3-flash:high
+magpie group set fast member-efforts+=deepseek/deepseek-v4-flash:max
+magpie group set fast member-efforts-=glm/glm-5.3-flash
+```
+
+`member-efforts=` replaces all member overrides; `member-efforts+=` updates
+named members; `member-efforts-=` clears selected members. Keys are exact
+`provider/model` or `group/<id>` members and values are `low`, `medium`,
+`high`, `xhigh`, or `max`. They persist separately under `member_efforts` in
+`providers.json`, leaving `members` model IDs unchanged; older group files
+without overrides remain valid. An override on a nested group member applies
+to that group's models; without one, the nested group's own member overrides
+apply. The chosen effort is used in the outgoing request and changes on
+fallback, not just in benchmark sorting. Requests without reasoning remain
+without reasoning. The Routing view and terminal group's `e` key also edit
+member effort.
+
+`stays=` is how long a conversation stays with the key or account that
+answered it: `auto` (the default, while the vendor's cache of it is worth
+keeping), `session`, `turn` or `off`. `models=` replaces the whole list, in
+order; a bare model id works when only one provider serves it.
 
 The app's Import from other apps dialog can copy providers from Claude Code's
 `settings.json` (`CLAUDE_CONFIG_DIR` when set) and Codex's `config.toml`

@@ -700,7 +700,7 @@ func (m model) View() string {
 	case modeGroup:
 		body = m.viewGroup()
 		// two lines: there is more to do to a group than one holds
-		footer = hints("↑↓", "model / rule", "J K", "move", "a", "add model", "n", "new rule", "↵", "edit rule", "d", "take out", "esc", "back") + "\n" +
+		footer = hints("↑↓", "model / rule", "J K", "move", "a", "add model", "n", "new rule", "↵", "edit rule", "e", "member effort / edit rule", "d", "take out", "esc", "back") + "\n" +
 			pad + hints("c", "classifier", "o", "routing", "s", "stays", "x", "context", "f", "family", "R", "rename")
 	case modeName:
 		body = m.viewName()
