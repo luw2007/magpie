@@ -77,7 +77,9 @@ func TestModelName(t *testing.T) {
 		t.Fatal(n, ok)
 	}
 	a, b := entry(t, "a/sol"), entry(t, "b/sol")
-	if a.Name != "My Sol" || a.Default != "Sol" || a.Label() != "My Sol" || a.Model != "sol" {
+	// a custom name still carries its provider, the same as the vendor's
+	// own name does, so the picker can still be told apart by vendor
+	if a.Name != "My Sol" || a.Default != "Sol" || a.Label() != "My Sol · A" || a.Model != "sol" {
 		t.Fatalf("%+v %q", a, a.Label())
 	}
 	if b.Name != "Sol" || b.Default != "" || b.Label() != "Sol · B" {
@@ -93,10 +95,18 @@ func TestModelName(t *testing.T) {
 	for _, m := range CodexListed() {
 		listed = append(listed, m.ID+"="+m.Name)
 	}
-	if !slices.Contains(listed, "a/sol=My Sol") || !slices.Contains(listed, "b/sol=Sol · B") {
+	if !slices.Contains(listed, "a/sol=My Sol · A") || !slices.Contains(listed, "b/sol=Sol · B") {
 		t.Fatal(listed)
 	}
-	if got := (Provider{ID: "a"}).ModelNames(); got["sol"] != "My Sol" || len(got) != 1 {
+
+	// unless the custom name already says the provider: it isn't repeated
+	if err := SetModelName("a/sol", "Sol on A"); err != nil {
+		t.Fatal(err)
+	}
+	if a := entry(t, "a/sol"); a.Label() != "Sol on A" {
+		t.Fatalf("provider repeated: %+v %q", a, a.Label())
+	}
+	if got := (Provider{ID: "a"}).ModelNames(); got["sol"] != "Sol on A" || len(got) != 1 {
 		t.Fatal(got)
 	}
 

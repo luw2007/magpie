@@ -26,6 +26,7 @@ type Route struct {
 	ID       int64     `json:"id"`
 	Time     time.Time `json:"time"`
 	Agent    string    `json:"agent"`
+	Kind     string    `json:"kind,omitempty"`   // what the call is for, as Call's
 	Model    string    `json:"model"`            // as the agent asked
 	Effort   string    `json:"effort,omitempty"` // the reasoning the agent asked for; "" for none
 	Provider string    `json:"provider"`         // the provider the model resolved to
@@ -43,6 +44,12 @@ type Route struct {
 	Error    string       `json:"error,omitempty"`
 	Millis   int64        `json:"ms,omitempty"`
 	Tokens   int          `json:"tokens,omitempty"`
+	Output   int          `json:"out,omitempty"` // of Tokens, the reply's
+	// TTFT: ms from the request to its reply's first content (text,
+	// reasoning or a tool call), FirstText to its first text, as Millis
+	// counts: streamed replies only (#196)
+	TTFT      int64 `json:"ttft,omitempty"`
+	FirstText int64 `json:"firstText,omitempty"`
 }
 
 // GroupRef is the routing group a request asked for.
@@ -52,7 +59,7 @@ type GroupRef struct {
 	Routing  string   `json:"routing"`
 	Affinity string   `json:"affinity"`
 	Auto     bool     `json:"auto,omitempty"`
-	Members  []string `json:"members"` // those ready, as provider/model
+	Members  []string `json:"members"` // those ready, as provider/model[:effort fixed on it]
 	// Subs: the groups in the group, at any depth, outermost first
 	Subs []SubGroup `json:"subs,omitempty"`
 	// Via: for each of Members, the groups in the group it is of, as
@@ -81,7 +88,7 @@ func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
 	ref := &GroupRef{ID: g.ID, Name: g.Name, Routing: g.Routing, Affinity: g.Affinity, Auto: g.Auto}
 	seen := map[string]bool{}
 	for _, m := range ms {
-		ref.Members = append(ref.Members, m.Provider.ID+"/"+m.Model)
+		ref.Members = append(ref.Members, provider.WithMemberEffort(m.Provider.ID+"/"+m.Model, m.Effort))
 		ref.Via = append(ref.Via, strings.Join(m.Groups(), ">"))
 		in := g.ID
 		for _, v := range m.Via {
@@ -121,8 +128,8 @@ type Weighed struct {
 	Agent    string            `json:"agent,omitempty"`
 	Plan     string            `json:"plan,omitempty"`
 	Model    string            `json:"model"`
-	Effort   string            `json:"effort,omitempty"` // explicit group member effort; otherwise request/turn effort
-	Routing  string            `json:"routing"`          // provider routing, or group routing for grouped candidates
+	Fixed    string            `json:"fixed,omitempty"` // the effort the group's member it is of is fixed at
+	Routing  string            `json:"routing"`         // its provider's: "", order, rotate, usage
 	Fallback bool              `json:"fallback,omitempty"`
 	Shared   bool              `json:"shared,omitempty"` // its provider has more than one on
 	Known    bool              `json:"known,omitempty"`  // the vendor said what the account has left
@@ -145,18 +152,25 @@ type Weighed struct {
 
 // Try is one candidate trying the request.
 type Try struct {
-	ID     string    `json:"id"`
-	Model  string    `json:"model,omitempty"`  // the model it was asked for: a group's members may share a provider's keys
-	Effort string    `json:"effort,omitempty"` // the reasoning it was sent at, fitted to its model's levels; "" for none
-	Picked bool      `json:"picked,omitempty"` // Effort is the turn's pick, in place of the agent's
+	ID     string `json:"id"`
+	Model  string `json:"model,omitempty"`  // the model it was asked for: a group's members may share a provider's keys
+	Effort string `json:"effort,omitempty"` // the reasoning it was sent at, fitted to its model's levels; "" for none
+	Picked bool   `json:"picked,omitempty"` // Effort is the turn's pick, in place of the agent's
+	// Fixed: the effort the group's member it went to is fixed at, which
+	// Effort is (fitted to the model's levels) whatever was asked
+	Fixed  string    `json:"fixed,omitempty"`
 	Start  time.Time `json:"start"`
 	Done   bool      `json:"done"`
 	Status int       `json:"status,omitempty"`
 	Millis int64     `json:"ms,omitempty"`
-	Fail   string    `json:"fail,omitempty"` // why it failed, as rest tells it
-	Error  string    `json:"error,omitempty"`
-	Rest   *Rest     `json:"rest,omitempty"`  // how long it now sits out; none when it was the last to try
-	Again  int64     `json:"again,omitempty"` // ms waited before it was tried again, the last one left
+	// TTFT: ms from Start to its reply's first content, FirstText to its
+	// first text, when it streamed any (#196)
+	TTFT      int64  `json:"ttft,omitempty"`
+	FirstText int64  `json:"firstText,omitempty"`
+	Fail      string `json:"fail,omitempty"` // why it failed, as rest tells it
+	Error     string `json:"error,omitempty"`
+	Rest      *Rest  `json:"rest,omitempty"`  // how long it now sits out; none when it was the last to try
+	Again     int64  `json:"again,omitempty"` // ms waited before it was tried again, the last one left
 }
 
 type planned struct {
@@ -164,7 +178,7 @@ type planned struct {
 }
 
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
-	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Effort: c.effort,
+	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort,
 		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID}
 	switch {
 	case c.p.Account != nil:

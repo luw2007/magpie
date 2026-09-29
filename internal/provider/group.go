@@ -50,14 +50,11 @@ func (g Group) Ruled() bool { return len(g.Rules) > 0 || g.Effort == EffortAuto 
 
 // Group is a routing group.
 type Group struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Members []string `json:"members"` // "provider/model" or "group/<id>", in order
-	// MemberEfforts overrides the request's thinking level for selected
-	// exact member IDs, including group/<id> for a nested group.
-	MemberEfforts map[string]string `json:"member_efforts,omitempty"`
-	Routing       string            `json:"routing,omitempty"`  // as Provider.Routing, over all the members' keys and accounts
-	Affinity      string            `json:"affinity,omitempty"` // as Provider.Affinity
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Members  []string `json:"members"`            // "provider/model[:effort]" or "group/<id>", in order (see MemberEffort)
+	Routing  string   `json:"routing,omitempty"`  // as Provider.Routing, over all the members' keys and accounts
+	Affinity string   `json:"affinity,omitempty"` // as Provider.Affinity
 	// Rules send the requests they match to one member first, in order:
 	// the first that matches decides (see Rule).
 	Rules []Rule `json:"rules,omitempty"`
@@ -95,9 +92,12 @@ type Member struct {
 	// Via are the groups in the group it is of, the outermost first: the
 	// group each of Path's members but the last names.
 	Via      []Group
-	Effort   string // outermost explicit member effort, including a nested group's override
 	Provider Provider
 	Model    string // what the vendor is asked for
+	// Effort is the reasoning the member is fixed at ("provider/model:low"),
+	// asked of the model whatever the agent or the group's classifier
+	// asked; "" follows the group.
+	Effort string
 }
 
 // Groups are the ids of the groups in the group the model is of, the
@@ -113,7 +113,7 @@ func (m Member) Groups() []string {
 // Below is the member as the group at depth (0 the group itself, 1 the
 // group in it Path[0] names, …) has it.
 func (m Member) Below(depth int) Member {
-	return Member{ID: m.Path[depth], Path: m.Path[depth:], Via: m.Via[depth:], Effort: m.Effort, Provider: m.Provider, Model: m.Model}
+	return Member{ID: m.Path[depth], Path: m.Path[depth:], Via: m.Via[depth:], Provider: m.Provider, Model: m.Model, Effort: m.Effort}
 }
 
 // maxNest is how deep groups in groups may go.
@@ -274,42 +274,43 @@ func groupOf(all []Group, id string) (Group, bool) {
 
 // membersIn are a group's models, ready now, in its order: a group in it
 // gives its own there, as deep as they go. A model met again is left
-// where it was first, and a group that would be in itself is cut there.
+// where it was first — the same model at another effort is another
+// member — and a group that would be in itself is cut there.
 func membersIn(entries []Entry, all []Group, g Group) []Member {
 	var out []Member
 	seen := map[string]bool{}
-	var walk func(g Group, path []string, via []Group, in []string, effort string)
-	walk = func(g Group, path []string, via []Group, in []string, effort string) {
+	var walk func(g Group, path []string, via []Group, in []string)
+	walk = func(g Group, path []string, via []Group, in []string) {
 		for _, id := range g.Members {
-			memberEffort := effort
-			if memberEffort == "" {
-				memberEffort = g.MemberEfforts[id]
-			}
 			at := append(slices.Clone(path), id)
 			if gid, ok := strings.CutPrefix(id, GroupPrefix); ok {
 				sub, ok := groupOf(all, gid)
 				if !ok || slices.Contains(in, gid) || len(via) >= maxNest {
 					continue // gone, a loop, or deeper than anyone nests
 				}
-				walk(sub, at, append(slices.Clone(via), sub), append(slices.Clone(in), gid), memberEffort)
+				walk(sub, at, append(slices.Clone(via), sub), append(slices.Clone(in), gid))
 				continue
 			}
-			p, m, ok := resolveIn(entries, id)
-			if !ok || seen[p.ID+"/"+m] {
+			model, effort := memberEffortIn(entries, id)
+			p, m, ok := resolveIn(entries, model)
+			key := WithMemberEffort(p.ID+"/"+m, effort)
+			if !ok || seen[key] {
 				continue
 			}
-			seen[p.ID+"/"+m] = true
-			out = append(out, Member{ID: at[0], Path: at, Via: via, Effort: memberEffort, Provider: p, Model: m})
+			seen[key] = true
+			out = append(out, Member{ID: at[0], Path: at, Via: via, Provider: p, Model: m, Effort: effort})
 		}
 	}
-	walk(g, nil, nil, []string{g.ID}, "")
+	walk(g, nil, nil, []string{g.ID})
 	return out
 }
 
 // groupEntries are the catalog's groups: each with a member ready, named
 // as the user named it, answering for its first member when an agent asks
 // what the model can do, and offering only the reasoning levels every
-// member has.
+// member has — but for those fixed at an effort of their own, which take
+// whatever the agent asks. With every member fixed, the group offers the
+// levels they are fixed at, so that an agent still asks it to reason.
 func groupEntries(entries []Entry) []Entry {
 	var out []Entry
 	all := groupsIn(entries)
@@ -322,6 +323,13 @@ func groupEntries(entries []Entry) []Entry {
 			continue
 		}
 		e := Entry{ID: GroupPrefix + g.ID, Model: ms[0].Model, Name: g.Name, Provider: ms[0].Provider, Group: g.ID, Images: true}
+		var fixed []string // the efforts members are fixed at
+		levelled := false  // a member that follows the agent's effort was met
+		// Codex's ultra (max, with Codex handing parts of the task to agents
+		// of its own) is a level of ChatGPT's own models alone; a group with
+		// one of them in it, every member at max, offers it too, and the
+		// gateway sends max to the members that have no ultra
+		ultra := false
 		for i, m := range ms {
 			if !slices.ContainsFunc(ms[:i], func(o Member) bool { return o.Provider.ID == m.Provider.ID }) {
 				e.Icons = append(e.Icons, m.Provider.Icon) // each provider once, "" for one without
@@ -342,12 +350,28 @@ func groupEntries(entries []Entry) []Entry {
 				e.Context = ctx
 			}
 			if i == 0 {
-				e.Efforts = efforts
 				e.ImageInput = imageInput
+			} else {
+				e.ImageInput = sharedImageInput(e.ImageInput, imageInput)
+			}
+			if m.Effort != "" {
+				if !slices.Contains(fixed, m.Effort) {
+					fixed = append(fixed, m.Effort)
+				}
+				continue
+			}
+			ultra = ultra || slices.Contains(efforts, "ultra")
+			if !levelled {
+				e.Efforts, levelled = efforts, true
 				continue
 			}
 			e.Efforts = slices.DeleteFunc(slices.Clone(e.Efforts), func(v string) bool { return !slices.Contains(efforts, v) })
-			e.ImageInput = sharedImageInput(e.ImageInput, imageInput)
+		}
+		if !levelled {
+			e.Efforts = fixedLevels(fixed)
+		}
+		if ultra && slices.Contains(e.Efforts, "max") && !slices.Contains(e.Efforts, "ultra") {
+			e.Efforts = append(e.Efforts, "ultra")
 		}
 		if e.ImageInput != nil && !*e.ImageInput {
 			e.Images = false
@@ -380,22 +404,18 @@ func SaveGroup(g Group) error {
 	if len(g.Members) == 0 {
 		return errors.New("a group needs a model in it")
 	}
-	cleanEfforts := make(map[string]string)
-	for id, effort := range g.MemberEfforts {
-		id, effort = strings.TrimSpace(id), strings.ToLower(strings.TrimSpace(effort))
-		if !slices.Contains(g.Members, id) {
-			continue
+	entries := providerEntries()
+	for i, m := range g.Members {
+		if model, effort := memberEffortIn(entries, m); effort != "" && strings.HasPrefix(model, GroupPrefix) {
+			return fmt.Errorf("%s is a group: its models reason as it says, so it takes no effort of its own (:%s)", model, effort)
 		}
-		if !slices.Contains(Efforts, effort) {
-			return fmt.Errorf("member %s has invalid effort %q (choose low, medium, high, xhigh or max)", id, effort)
-		}
-		cleanEfforts[id] = effort
+		g.Members[i] = cleanMember(entries, m)
 	}
-	if len(cleanEfforts) == 0 {
-		cleanEfforts = nil
+	g.Members = cleanList(g.Members)
+	for i := range g.Rules {
+		g.Rules[i].Use = cleanMember(entries, strings.TrimSpace(g.Rules[i].Use))
 	}
-	g.MemberEfforts = cleanEfforts
-	if err := groupsInGroup(g, groupsIn(providerEntries())); err != nil {
+	if err := groupsInGroup(g, groupsIn(entries)); err != nil {
 		return err
 	}
 	for _, m := range g.Members {
@@ -615,10 +635,6 @@ func RenameGroup(from, to string) error {
 			if m == old {
 				f.Groups[i].Members[j] = now
 			}
-		}
-		if effort, ok := f.Groups[i].MemberEfforts[old]; ok {
-			delete(f.Groups[i].MemberEfforts, old)
-			f.Groups[i].MemberEfforts[now] = effort
 		}
 		for j, r := range f.Groups[i].Rules {
 			if r.Use == old {

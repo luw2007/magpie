@@ -103,6 +103,10 @@ func gemini(home string) *Agent {
 			return "custom"
 		}
 		switch auth() {
+		case "":
+			// none chosen: the CLI asks on its first run, as with no CLI at
+			// all — the default, so the row folds away with the others
+			return ""
 		case "gemini-api-key":
 			return "api-key"
 		case "vertex-ai":

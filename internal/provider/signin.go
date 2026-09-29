@@ -68,6 +68,7 @@ type signInFlow struct {
 	redirect string
 	srv      *http.Server
 	stop     func() // ends an agent's own login command, when that is the sign-in
+	kiro     *kiroFlow
 	done     chan struct{}
 }
 
@@ -228,6 +229,11 @@ func (s *signInFlow) begin() error {
 		s.mu.Lock()
 		s.st.URL = devinAuthorizeURL + "?" + q.Encode()
 		s.mu.Unlock()
+	case "kiro":
+		// Kiro's sign-in page, as the Kiro IDE opens it
+		if ln, err = startKiroSignIn(s, challenge); err != nil {
+			return err
+		}
 	case "copilot":
 		// GitHub's device code, as Copilot's editors sign in
 		if err := startCopilotSignIn(s); err != nil {
@@ -241,6 +247,11 @@ func (s *signInFlow) begin() error {
 	case CommandCodePlanID:
 		// Command Code's browser sign-in, as its CLI makes it
 		if err := startCommandCodeSignIn(s); err != nil {
+			return err
+		}
+	case "qoder":
+		// Qoder's device flow, run by magpie and kept in its own store
+		if err := startQoderSignIn(s); err != nil {
 			return err
 		}
 	case "zcode":
@@ -367,6 +378,10 @@ func (s *signInFlow) finish(out SignInState) bool {
 }
 
 func (s *signInFlow) callback(w http.ResponseWriter, r *http.Request) {
+	if s.kiro != nil {
+		s.kiroCallback(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/callback", "/auth/callback", "/oauth2callback", "/oauth-callback":
 	case "/cancel":
@@ -404,9 +419,14 @@ func (s *signInFlow) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	l, err := s.exchange(ctx, q.Get("code"))
 	if err == nil && s.st.Agent == "devin" {
-		// devin keeps the one account it is signed in to: the exchange
-		// already wrote it; there is nothing beside it to keep
-		s.finish(SignInState{State: "done", User: l.User, Plan: l.Plan, Using: true})
+		// the exchange kept it already: the CLI's own, or one beside it
+		using := false
+		for _, d := range devinLogins() {
+			if strings.EqualFold(d.User, l.User) {
+				using = d.Active
+			}
+		}
+		s.finish(SignInState{State: "done", User: l.User, Plan: l.Plan, Using: using})
 		signInPage(w, true, "You're signed in", fmt.Sprintf("%s is added to magpie. You can close this tab.", l.User))
 		return
 	}
@@ -529,21 +549,37 @@ func claudeExchange(ctx context.Context, code, verifier, redirect, state string)
 		ExpiresAt: time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).UnixMilli(),
 		Scopes:    strings.Fields(tok.Scope),
 	}}
-	// the plan comes with the profile, as it does for Claude Code
-	if p, err := claudeProfile(ctx, tok.AccessToken); err == nil {
-		c.OAuth.SubscriptionType = claudePlans[p.Organization.Type]
-		c.OAuth.RateLimitTier = p.Organization.RateLimitTier
-		if p.Account.Email != "" {
-			acct["emailAddress"] = p.Account.Email
-		}
-		if p.Account.DisplayName != "" {
-			acct["displayName"] = p.Account.DisplayName
-		}
-		if p.Organization.BillingType != "" {
-			acct["billingType"] = p.Organization.BillingType
-		}
-		acct["hasExtraUsageEnabled"] = p.Organization.ExtraUsage
+	claudeProfileInto(ctx, &c, acct)
+	return claudeLogin(c, acct)
+}
+
+// claudeProfileInto asks Claude for the account's profile and puts it in
+// acct (Claude Code's oauthAccount) and its plan in c; the plan comes with
+// the profile, as it does for Claude Code. It says whether Claude answered.
+func claudeProfileInto(ctx context.Context, c *claudeCredentials, acct map[string]any) bool {
+	p, err := claudeProfile(ctx, c.OAuth.AccessToken)
+	if err != nil {
+		return false
 	}
+	c.OAuth.SubscriptionType = claudePlans[p.Organization.Type]
+	c.OAuth.RateLimitTier = p.Organization.RateLimitTier
+	set := func(k, v string) {
+		if v != "" {
+			acct[k] = v
+		}
+	}
+	set("accountUuid", p.Account.UUID)
+	set("emailAddress", p.Account.Email)
+	set("displayName", p.Account.DisplayName)
+	set("organizationUuid", p.Organization.UUID)
+	set("organizationName", p.Organization.Name)
+	set("billingType", p.Organization.BillingType)
+	acct["hasExtraUsageEnabled"] = p.Organization.ExtraUsage
+	return true
+}
+
+// claudeLogin is a Claude sign-in as magpie keeps it.
+func claudeLogin(c claudeCredentials, acct map[string]any) (savedLogin, error) {
 	email, _ := acct["emailAddress"].(string)
 	if email == "" {
 		return savedLogin{}, errors.New("Claude didn't say which account signed in")
@@ -561,10 +597,13 @@ var claudePlans = map[string]string{"claude_max": "max", "claude_pro": "pro", "c
 
 type claudeProfileInfo struct {
 	Account struct {
+		UUID        string `json:"uuid"`
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
 	} `json:"account"`
 	Organization struct {
+		UUID          string `json:"uuid"`
+		Name          string `json:"name"`
 		Type          string `json:"organization_type"`
 		RateLimitTier string `json:"rate_limit_tier"`
 		BillingType   string `json:"billing_type"`
@@ -605,17 +644,25 @@ func codexExchange(ctx context.Context, code, verifier, redirect string) (savedL
 	if tok.AccessToken == "" || tok.RefreshToken == "" || tok.IDToken == "" {
 		return savedLogin{}, errors.New("ChatGPT sent back no token")
 	}
-	id := jwtClaims(tok.IDToken)
+	return codexLogin(tok.IDToken, tok.AccessToken, tok.RefreshToken, "")
+}
+
+// codexLogin is a ChatGPT sign-in as magpie keeps it: auth.json as `codex
+// login` writes it. accountID is used when the ID token doesn't name one.
+func codexLogin(idToken, accessToken, refreshToken, accountID string) (savedLogin, error) {
+	id := jwtClaims(idToken)
 	user := codexUser(id)
 	if user == "" {
 		return savedLogin{}, errors.New("ChatGPT didn't say which account signed in")
 	}
-	// auth.json as `codex login` writes it
+	if a := claimString(id, "https://api.openai.com/auth", "chatgpt_account_id"); a != "" {
+		accountID = a
+	}
 	auth, err := json.MarshalIndent(map[string]any{
 		"OPENAI_API_KEY": nil,
 		"auth_mode":      "chatgpt",
-		"tokens": map[string]string{"id_token": tok.IDToken, "access_token": tok.AccessToken,
-			"refresh_token": tok.RefreshToken, "account_id": claimString(id, "https://api.openai.com/auth", "chatgpt_account_id")},
+		"tokens": map[string]string{"id_token": idToken, "access_token": accessToken,
+			"refresh_token": refreshToken, "account_id": accountID},
 		"last_refresh": time.Now().UTC().Format(time.RFC3339Nano),
 	}, "", "  ")
 	if err != nil {

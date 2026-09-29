@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -195,5 +196,58 @@ func TestCommandCodePlanName(t *testing.T) {
 	}
 	if tm := cmdTime(float64(1_900_000_000_000)); tm == nil || tm.Unix() != 1_900_000_000 {
 		t.Fatalf("ms: %v", tm)
+	}
+}
+
+// A whoami that errs on a key just made doesn't fail the sign-in (tigger_ultra:
+// "Command Code didn't take the new key: Internal Server Error"): it is asked
+// again, then passed over for the name Studio sent; only a key it turns down
+// fails.
+func TestCommandCodeSignInWhoamiDown(t *testing.T) {
+	signIn(t)
+	var asked atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		switch {
+		case key == "bad-key":
+			w.WriteHeader(401)
+		case r.URL.Path == "/alpha/whoami":
+			asked.Add(1)
+			w.WriteHeader(500)
+		case r.URL.Path == "/alpha/billing/subscriptions":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{"planId": "individual-pro-monthly", "status": "active"}})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	oldAPI, oldWait := cmdAPI, cmdWhoamiWait
+	cmdAPI, cmdWhoamiWait = srv.URL, 10*time.Millisecond
+	defer func() { cmdAPI, cmdWhoamiWait = oldAPI, oldWait }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	for _, c := range []struct{ key, user, state, errText string }{
+		{"new-key", "tigger", "done", ""},
+		{"bad-key", "evil", "failed", "Command Code didn't take the new key: Unauthorized"},
+		{"new-key", "", "failed", "Command Code couldn't say which account signed in: Internal Server Error"},
+	} {
+		asked.Store(0)
+		st, err := StartSignIn(CommandCodePlanID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, _ := url.Parse(st.URL)
+		if _, err := noFollow.PostForm(u.Query().Get("callback"), url.Values{"apiKey": {c.key}, "state": {u.Query().Get("state")}, "userName": {c.user}}); err != nil {
+			t.Fatal(err)
+		}
+		st, _ = WaitSignIn(ctx, st.ID)
+		if st.State != c.state || st.Error != c.errText {
+			t.Fatalf("%s %q: %+v", c.key, c.user, st)
+		}
+		if c.state == "done" && (st.User != c.user || st.Plan != "Pro" || asked.Load() != 3) {
+			t.Fatalf("signed in: %+v, whoami asked %d times", st, asked.Load())
+		}
 	}
 }

@@ -1,9 +1,10 @@
 package provider
 
 // A plan bought with an API key — Zhipu's GLM Coding Plan (and Z.ai's),
-// Kimi Code, OpenCode Go and a Command Code plan — has windows of allowance like a subscription's, which the
-// vendor tells to the key: the Usage page shows them beside the
-// subscriptions'.
+// Kimi Code, OpenCode Go, a Command Code plan and StepFun's Step Plan —
+// has windows of allowance like a subscription's, which the vendor tells
+// to the key (StepFun only to a sign-in, stepfun_plan.go): the Usage page
+// shows them beside the subscriptions'.
 
 import (
 	"context"
@@ -367,6 +368,8 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 			got[i] = &q
 		}()
 	}
+	stepfun := make(chan []SubscriptionQuota, 1)
+	go func() { stepfun <- stepPlanQuotas(ctx) }()
 	wg.Wait()
 	out := []SubscriptionQuota{}
 	for _, q := range got {
@@ -374,6 +377,7 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 			out = append(out, *q)
 		}
 	}
+	out = append(out, <-stepfun...)
 	if ctx.Err() == nil {
 		c.Lock()
 		c.at, c.data = time.Now(), out

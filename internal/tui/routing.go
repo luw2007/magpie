@@ -34,7 +34,7 @@ func (m *model) reloadGroups() {
 	m.grow = clamp(m.grow, len(m.groups))
 }
 
-var routings = []string{"", provider.Ordered, provider.Rotate, provider.LeastUsed, provider.Benchmark}
+var routings = []string{"", provider.Ordered, provider.Rotate, provider.LeastUsed}
 
 func routingName(v string) string {
 	switch v {
@@ -44,8 +44,6 @@ func routingName(v string) string {
 		return "rotate"
 	case provider.LeastUsed:
 		return "least used"
-	case provider.Benchmark:
-		return "benchmark"
 	}
 	return "smart"
 }
@@ -60,13 +58,6 @@ func staysName(v string) string {
 		return "never stays"
 	}
 	return "stays auto"
-}
-
-func memberName(g provider.Group, id string) string {
-	if effort := g.MemberEfforts[id]; effort != "" {
-		return id + " (" + effort + ")"
-	}
-	return id
 }
 
 // saveGroup changes one group and saves it: one magpie found becomes the
@@ -369,32 +360,10 @@ func (m model) updateGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openMemberPicker(pickMsg{group: g.ID})
 	case "n":
 		m.openRule(g, -1)
-	case "enter":
+	case "enter", "e":
 		if onRule {
 			m.openRule(g, m.gsel-n)
 		}
-	case "e":
-		if onRule {
-			m.openRule(g, m.gsel-n)
-			break
-		}
-		id := g.Members[m.gsel]
-		at := slices.Index(provider.Efforts, g.MemberEfforts[id])
-		next := ""
-		if at+1 < len(provider.Efforts) {
-			next = provider.Efforts[at+1]
-		}
-		return m, saveGroup(g.ID, func(g *provider.Group) error {
-			if next == "" {
-				delete(g.MemberEfforts, id)
-			} else {
-				if g.MemberEfforts == nil {
-					g.MemberEfforts = make(map[string]string)
-				}
-				g.MemberEfforts[id] = next
-			}
-			return nil
-		}, id+" effort "+map[bool]string{true: next, false: "follows request"}[next != ""])
 	case "c":
 		if !slices.ContainsFunc(g.Rules, func(r provider.Rule) bool { return r.Intent != "" }) {
 			m.flash, m.flashOK = g.Name+" has no rule with an intent to classify for · n adds one", false
@@ -483,7 +452,6 @@ func (m model) updateGroup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.gsel = clamp(m.gsel, all-1)
 		return m, saveGroup(g.ID, func(g *provider.Group) error {
 			g.Members = slices.DeleteFunc(g.Members, func(x string) bool { return x == id })
-			delete(g.MemberEfforts, id)
 			g.Rules = slices.DeleteFunc(g.Rules, func(r provider.Rule) bool { return r.Use == id })
 			return nil
 		}, id+" taken out")
@@ -541,11 +509,7 @@ func (m model) viewGroups() string {
 		if g.Auto {
 			notes = append(notes, "found")
 		}
-		var memberNames []string
-		for _, id := range g.Members {
-			memberNames = append(memberNames, memberName(g, id))
-		}
-		members := strings.Join(memberNames, " → ")
+		members := strings.Join(g.Members, " → ")
 		line += "  " + sText.Render(strings.Join(notes, " · "))
 		if room := m.w - lipgloss.Width(line) - 4; room > 10 {
 			line += "  " + sMuted.Render(trunc(members, room))
@@ -573,9 +537,9 @@ func (m model) viewGroup() string {
 	b.WriteString(pad + "  " + sMuted.Render(strings.Join(head, " · ")) + "\n\n")
 	b.WriteString(pad + "  " + sFaint.Render("models · the first that can take a request gets it") + "\n")
 	for i, id := range g.Members {
-		marker, name := "  ", sText.Render(memberName(g, id))
+		marker, name := "  ", sText.Render(id)
 		if i == m.gsel {
-			marker, name = sCursor.Render("▸ "), sNameOn.Render(memberName(g, id))
+			marker, name = sCursor.Render("▸ "), sNameOn.Render(id)
 		}
 		b.WriteString(pad + marker + sFaint.Render(fmt.Sprintf("%d  ", i+1)) + name + "\n")
 	}

@@ -58,7 +58,7 @@ func usageCmd(args []string) error {
 			if s.Tokens() > 0 {
 				share = fmt.Sprintf("%3.0f%%", 100*float64(g.Tokens())/float64(s.Tokens()))
 			}
-			fmt.Println("  "+pad(name(g), w), muted.Render(share), pad(fmtTokens(g.Tokens()), 7), faint.Render(pad(plural(g.Calls, "call"), 10)), cost(g.Totals))
+			fmt.Println("  "+pad(name(g), w), muted.Render(share), pad(fmtTokens(g.Tokens()), 7), faint.Render(pad(plural(g.Calls, "call"), 10)), cost(g.Totals), faint.Render(speed(g.Totals)))
 		}
 	}
 	table("agents", s.Agents, func(g stats.Group) string {
@@ -84,6 +84,26 @@ func usageCmd(args []string) error {
 	}
 	fmt.Println(faint.Render("  " + stats.Path()))
 	return nil
+}
+
+// speed is how long the timed calls took to their first token, and how
+// fast they wrote after it (#196); "" when none was timed.
+func speed(t stats.Totals) string {
+	if t.Timed == 0 {
+		return ""
+	}
+	out := "ttft " + fmtMs(t.MeanTTFT())
+	if v := t.Speed(); v > 0 {
+		out += fmt.Sprintf(" · %.0f tok/s", v)
+	}
+	return out
+}
+
+func fmtMs(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%d ms", ms)
+	}
+	return fmt.Sprintf("%.1f s", float64(ms)/1000)
 }
 
 func plural(n int, unit string) string {

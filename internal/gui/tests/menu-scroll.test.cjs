@@ -33,6 +33,7 @@ async function serve(route) {
   if (url.pathname === "/api/sessions") return json({ sessions, dirs: ["/test/sessions"] });
   if (url.pathname === "/api/sessions/stats") return json({ from: date, to: date, days: [{ date, usage, active: [] }], agents: { fixture: "Fixture" } });
   if (url.pathname === "/api/update" || url.pathname === "/api/drift") return json({});
+  if (url.pathname === "/api/agents/cli") return json({ agents: {}, pending: false });
   if (url.pathname === "/api/groups") return json({ groups: [] });
   if (url.pathname === "/api/gateway/trace") return json({ mine: false, now: date, totals: { requests: 0, rerouted: 0, errors: 0 } });
   assert(!url.pathname.startsWith("/api/"), "Unexpected API: " + url.pathname);

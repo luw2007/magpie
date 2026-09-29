@@ -343,10 +343,12 @@ func providerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := provider.Delete(p.ID); err != nil {
+		moved, err := agent.Reseat(func() error { return provider.Delete(p.ID) })
+		if err != nil {
 			return err
 		}
 		fmt.Println(green.Render("✓"), "removed", p.Name)
+		printMoved(moved)
 		return nil
 	case "test":
 		// with models named, a request to each of them; else one per endpoint
@@ -413,9 +415,11 @@ func providerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := provider.SetOff(p.ID, verb == "off"); err != nil {
+		moved, err := agent.Reseat(func() error { return provider.SetOff(p.ID, verb == "off") })
+		if err != nil {
 			return err
 		}
+		defer printMoved(moved)
 		if verb == "off" {
 			fmt.Println(green.Render("✓"), p.Name, muted.Render("is switched off: agents are given none of its models"))
 		} else {
@@ -823,4 +827,12 @@ func fetchedFrom(p provider.Provider) string {
 		return h
 	}
 	return p.Name
+}
+
+// printMoved says which agents a change moved off models it stopped
+// serving (agent.Reseat).
+func printMoved(moved []agent.Move) {
+	for _, m := range moved {
+		fmt.Println(green.Render("✓"), "moved", m.String())
+	}
 }

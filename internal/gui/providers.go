@@ -58,6 +58,10 @@ type providerJSON struct {
 		Takes bool `json:"takes"`
 		Set   bool `json:"set"`
 	} `json:"balanceToken"`
+	// a StepFun provider's Step Plan windows, told only to a platform
+	// sign-in: which site's, and whether one is kept
+	StepPlan *stepPlanJSON `json:"stepPlan,omitempty"`
+
 	Key struct {
 		Set      bool   `json:"set"`
 		Masked   string `json:"masked"`
@@ -80,6 +84,15 @@ type providerJSON struct {
 	Sponsored bool               `json:"sponsored"`
 	KeyList   []provider.KeyInfo `json:"keyList"`           // its keys, in the order requests try them
 	Account   *accountJSON       `json:"account,omitempty"` // a signed-in agent, see provider.Account
+}
+
+// stepPlanJSON: whether a StepFun provider's platform sign-in is kept, and
+// where and how the user gets one
+type stepPlanJSON struct {
+	Site        string `json:"site"`
+	SignedIn    bool   `json:"signedIn"`
+	URL         string `json:"url"`
+	Bookmarklet string `json:"bookmarklet"`
 }
 
 type accountJSON struct {
@@ -134,6 +147,13 @@ type providersJSON struct {
 	Presets   []presetJSON   `json:"presets"`
 	Excluded  []excludedJSON `json:"excluded"` // sign-ins magpie found but will not share
 	Gateway   gatewayJSON    `json:"gateway"`
+	// CodexDaemon is the account Codex's background app-server is still
+	// signed in to after Codex was switched to another; "" when none is
+	// left behind (provider.CodexDaemonStale).
+	CodexDaemon string `json:"codexDaemon,omitempty"`
+	// Moved is the agents the change moved off models it stopped serving
+	// (agent.Reseat), for the page to say so.
+	Moved []agent.Move `json:"moved,omitempty"`
 }
 
 // agentModel is the model an agent is on, as magpie's catalog names it.
@@ -191,6 +211,9 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		out.Key.Optional = pr.NoKey
 	}
 	out.BalanceToken.Takes, out.BalanceToken.Set = provider.TakesBalanceToken(p), p.BalanceToken != ""
+	if site := provider.StepFunSite(p); site != "" {
+		out.StepPlan = &stepPlanJSON{site, provider.StepFunSignedIn(site), provider.StepFunSignInURL(site), provider.StepFunBookmarklet()}
+	}
 	out.Key.Set = p.Key != ""
 	out.Key.Masked = provider.Mask(p.Key)
 	out.KeyList = p.KeyList()
@@ -208,7 +231,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 			// a Cursor subscription is served by the gateway, not an agent magpie configures
 			out.Account.Name, out.Account.Icon = "Cursor CLI", "cursor"
 		} else if a.Agent == "kiro" {
-			// Kiro's sign-in is kiro-cli's or the Kiro IDE's
+			// Kiro's sign-in is magpie's own, kiro-cli's or the Kiro IDE's
 			out.Account.Name, out.Account.Icon = "Kiro", "kiro-color"
 		} else if a.Agent == "antigravity" {
 			out.Account.Name, out.Account.Icon = "Antigravity", "antigravity-color"
@@ -286,6 +309,9 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 }
 
 func providersState() providersJSON {
+	// an account signed in since start-up is listed with its vendor's
+	// models, not magpie's own list of them (#204)
+	provider.FetchNew(8 * time.Second)
 	agents := agent.Detected()
 	s := providersJSON{Providers: []providerJSON{}, Presets: []presetJSON{}, Excluded: []excludedJSON{}}
 	for _, x := range provider.Excluded() {
@@ -328,6 +354,7 @@ func providersState() providersJSON {
 	} else {
 		s.Gateway.Running, s.Gateway.Window = gateway.Serving()
 	}
+	s.CodexDaemon = provider.CodexDaemonStale()
 	return s
 }
 
@@ -433,6 +460,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		in := req.Provider
+		var moved []agent.Move
 		switch r.PathValue("action") {
 		case "show":
 			// a signed-in account the user removed, back with its picks
@@ -555,8 +583,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		case "off", "on":
 			// switched off, it stays with its keys, but agents are given
 			// none of its models; the files they keep them in follow,
-			// through catalog.Changed
-			if err := provider.SetOff(in.ID, r.PathValue("action") == "off"); err != nil {
+			// through catalog.Changed, and the agents on one of its models
+			// are moved to another
+			var err error
+			if moved, err = agent.Reseat(func() error {
+				return provider.SetOff(in.ID, r.PathValue("action") == "off")
+			}); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -567,7 +599,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return
 			}
 		case "delete":
-			if err := provider.Delete(in.ID); err != nil {
+			var err error
+			if moved, err = agent.Reseat(func() error { return provider.Delete(in.ID) }); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -578,7 +611,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return
 			}
 			if len(req.Test) > 0 {
-				ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+				// an image model's test draws a picture, which takes longer
+				ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 				defer cancel()
 				writeJSON(rw, map[string]any{"results": p.TestModels(ctx, req.Test)})
 				return
@@ -589,6 +623,34 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				Results  []provider.Result `json:"results"`
 				Provider providerJSON      `json:"provider"`
 			}{p.Test(ctx), providerInfo(*p, agentUses(agent.Detected(), provider.GroupFinder()))})
+			return
+		case "balance":
+			// the editor's check of a balance as it stands in the form,
+			// before a Save: the saved provider with the form's URL, field,
+			// headers and token (a blank one keeping the saved)
+			p, err := provider.Find(in.ID)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			q := *p
+			q.BalanceURL, q.BalancePath = strings.TrimSpace(in.BalanceURL), strings.TrimSpace(in.BalancePath)
+			if in.Headers != nil {
+				q.Headers = in.Headers
+			}
+			if in.BalanceToken != "" {
+				q.BalanceToken = in.BalanceToken
+			} else if req.ClearBalanceToken {
+				q.BalanceToken = ""
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			amount, ok, err := provider.Balance(ctx, q)
+			out := map[string]any{"ok": ok, "amount": amount}
+			if err != nil {
+				out["error"] = err.Error()
+			}
+			writeJSON(rw, out)
 			return
 		case "unfetch":
 			// the vendor's list, forgotten until the next Refresh
@@ -618,7 +680,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			http.NotFound(rw, r)
 			return
 		}
-		writeJSON(rw, providersState())
+		st := providersState()
+		st.Moved = moved
+		writeJSON(rw, st)
 	})
 	// How much of its allowance each of an agent's accounts has used.
 	mux.HandleFunc("GET /api/login/usage", func(rw http.ResponseWriter, r *http.Request) {
@@ -634,18 +698,21 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		var err error
+		var change func() error
 		switch r.PathValue("action") {
 		case "switch":
-			err = provider.SwitchLogin(in.Agent, in.User)
+			change = func() error { return provider.SwitchLogin(in.Agent, in.User) }
 		case "forget":
-			err = provider.ForgetLogin(in.Agent, in.User)
+			change = func() error { return provider.ForgetLogin(in.Agent, in.User) }
 		case "on", "off":
-			err = provider.SetLoginOn(in.Agent, in.User, r.PathValue("action") == "on")
+			change = func() error { return provider.SetLoginOn(in.Agent, in.User, r.PathValue("action") == "on") }
 		default:
 			http.NotFound(rw, r)
 			return
 		}
+		// the last account signed out or off takes the sign-in's models
+		// away: the agents on them are moved to others
+		moved, err := agent.Reseat(change)
 		if err != nil {
 			fail(rw, err)
 			return
@@ -653,6 +720,27 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		// an agent on its own models goes through magpie while more of
 		// its accounts are on, and straight to its vendor again once not
 		agent.SyncCatalog()
+		st := providersState()
+		st.Moved = moved
+		writeJSON(rw, st)
+	})
+	// Codex's background app-server, left on the account before a switch:
+	// restarting it (which ends the Codex sessions on it), or letting it be.
+	mux.HandleFunc("POST /api/codex/daemon/{action}", func(rw http.ResponseWriter, r *http.Request) {
+		switch r.PathValue("action") {
+		case "restart":
+			ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+			defer cancel()
+			if err := provider.RestartCodexDaemon(ctx); err != nil {
+				fail(rw, err)
+				return
+			}
+		case "dismiss":
+			provider.DismissCodexDaemon()
+		default:
+			http.NotFound(rw, r)
+			return
+		}
 		writeJSON(rw, providersState())
 	})
 	// A provider's several keys: add one, put one in use, name or remove it.
@@ -666,6 +754,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		var err error
+		var moved []agent.Move
 		switch r.PathValue("action") {
 		case "add":
 			err = provider.AddKey(in.ID, in.Name, in.Key, in.Protocol)
@@ -674,11 +763,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		case "use":
 			err = provider.UseKey(in.ID, in.Ref)
 		case "remove":
-			err = provider.RemoveKey(in.ID, in.Ref)
+			// the last key gone, or off, takes the provider's models away
+			moved, err = agent.Reseat(func() error { return provider.RemoveKey(in.ID, in.Ref) })
 		case "rename":
 			err = provider.RenameKey(in.ID, in.Ref, in.Name)
 		case "on", "off":
-			err = provider.SetKeyOn(in.ID, in.Ref, r.PathValue("action") == "on")
+			moved, err = agent.Reseat(func() error { return provider.SetKeyOn(in.ID, in.Ref, r.PathValue("action") == "on") })
 		default:
 			http.NotFound(rw, r)
 			return
@@ -698,7 +788,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				cancel()
 			}
 		}
-		writeJSON(rw, providersState())
+		st := providersState()
+		st.Moved = moved
+		writeJSON(rw, st)
 	})
 	// Adding a subscription: magpie opens the vendor's sign-in in the
 	// browser and the window follows it until the account is in.
@@ -733,7 +825,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		rw.WriteHeader(http.StatusNoContent)
 	})
 	// Accounts brought in from another tool's export (Antigravity's, from
-	// Antigravity Cockpit, Antigravity Manager, CLIProxyAPI), each file's
+	// Antigravity Cockpit, Antigravity Manager, CLIProxyAPI; ChatGPT's and
+	// Claude's from CLIProxyAPI or the agents' own files), each file's
 	// text as it is; each checked with the vendor before it is kept.
 	mux.HandleFunc("POST /api/signin/import", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -746,7 +839,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
-		res, err := provider.ImportGoogleAccounts(ctx, in.Agent, in.Files)
+		imp := provider.ImportGoogleAccounts
+		if in.Agent == "codex" || in.Agent == "claude" {
+			// ChatGPT and Claude sign-ins: CLIProxyAPI's auth files, Codex
+			// CLI's auth.json, Claude Code's .credentials.json
+			imp = provider.ImportLogins
+		}
+		res, err := imp(ctx, in.Agent, in.Files)
 		if err != nil {
 			fail(rw, err)
 			return
@@ -756,6 +855,34 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			Results   []provider.ImportedAccount `json:"results"`
 			Providers providersJSON              `json:"providers"`
 		}{res, providersState()})
+	})
+	// StepFun's Step Plan windows: the session the user copied from their
+	// browser with magpie's bookmarklet
+	mux.HandleFunc("POST /api/stepfun/{site}/session", func(rw http.ResponseWriter, r *http.Request) {
+		site := r.PathValue("site")
+		if provider.StepFunSignInURL(site) == "" {
+			http.NotFound(rw, r)
+			return
+		}
+		var in struct{ Text string }
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if err := provider.SaveStepFunPaste(ctx, site, in.Text); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, providersState())
+	})
+	mux.HandleFunc("POST /api/stepfun/{site}/signout", func(rw http.ResponseWriter, r *http.Request) {
+		if err := provider.SignOutStepFun(r.PathValue("site")); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, providersState())
 	})
 	// the page copies through here first: in the app's window the
 	// clipboard API is refused or missing, depending on the system

@@ -36,11 +36,20 @@ type Record struct {
 	// pick for the turn, or the agent's own — as it takes it; "" for none
 	Effort string `json:"effort,omitempty"`
 	Millis int64  `json:"ms"`
-	Status int    `json:"status"`
+	// TTFT: ms from the request to its reply's first content — text,
+	// reasoning or a tool call — and FirstText to its first text, counted
+	// as Millis is, so Millis-TTFT is how long the reply took to write;
+	// none for a reply that wasn't streamed (#196)
+	TTFT      int64 `json:"ttft_ms,omitempty"`
+	FirstText int64 `json:"first_text_ms,omitempty"`
+	Status    int   `json:"status"`
 	// Session is the conversation the call was part of, as its agent names
 	// it (X-Magpie-Session, or the session header Claude Code, Codex or
 	// OpenCode sends): several sessions on one model told apart
 	Session string `json:"session,omitempty"`
+	// Kind is what the agent made the call for when it isn't a turn of
+	// the conversation: a Codex subagent's (review, compact, guardian…)
+	Kind string `json:"kind,omitempty"`
 }
 
 // Path is the log file: ~/.config/magpie/usage.jsonl (XDG-aware).
@@ -162,10 +171,35 @@ type Totals struct {
 	Reasoning  int     `json:"reasoning"`
 	Cost       float64 `json:"cost"`     // USD at list prices, for the priced calls
 	Unpriced   int     `json:"unpriced"` // calls with tokens but no known price
+	// Timed: the answered calls whose first token was timed (streamed),
+	// TTFT the sum of their ttft_ms; DecodeMs the time from it to the end
+	// of those that wrote any, over which DecodeOut tokens came: their
+	// mean wait, and how fast they wrote (#196)
+	Timed     int   `json:"timed,omitempty"`
+	TTFT      int64 `json:"ttft_ms,omitempty"`
+	DecodeMs  int64 `json:"decode_ms,omitempty"`
+	DecodeOut int   `json:"decode_out,omitempty"`
 }
 
 // Tokens is what went in and out, excluding cache traffic.
 func (t Totals) Tokens() int { return t.Input + t.Output }
+
+// MeanTTFT is the mean ms to the first token of the timed calls, 0 for none.
+func (t Totals) MeanTTFT() int64 {
+	if t.Timed == 0 {
+		return 0
+	}
+	return t.TTFT / int64(t.Timed)
+}
+
+// Speed is how fast the timed calls wrote, in tokens a second after their
+// first: 0 for none.
+func (t Totals) Speed() float64 {
+	if t.DecodeMs <= 0 {
+		return 0
+	}
+	return float64(t.DecodeOut) / (float64(t.DecodeMs) / 1000)
+}
 
 func (t *Totals) add(r Record, price *catalog.Price) {
 	t.Calls++
@@ -177,6 +211,14 @@ func (t *Totals) add(r Record, price *catalog.Price) {
 	t.CacheRead += r.CacheRead
 	t.CacheWrite += r.CacheWrite
 	t.Reasoning += r.Reasoning
+	if r.TTFT > 0 && r.Status < 400 {
+		t.Timed++
+		t.TTFT += r.TTFT
+		if r.Output > 0 && r.Millis > r.TTFT {
+			t.DecodeMs += r.Millis - r.TTFT
+			t.DecodeOut += r.Output
+		}
+	}
 	if r.Input+r.Output == 0 {
 		return
 	}

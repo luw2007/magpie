@@ -96,9 +96,13 @@ type Request struct {
 	Stream     bool
 	Effort     string // low | medium | high | xhigh | max, when the client asked
 	Thinking   bool   // the client asked for visible reasoning
-	Parallel   *bool  // parallel tool calls allowed
-	WebSearch  bool   // the client offered its provider's own web search
-	Fast       bool   // the client asked for priority processing: service_tier priority (Codex's Fast mode)
+	// ThinkOff is the client turning reasoning off: effort "none" (which
+	// Effort reads as low, for vendors with no way to turn it off) or an
+	// Anthropic request with thinking disabled.
+	ThinkOff  bool
+	Parallel  *bool // parallel tool calls allowed
+	WebSearch bool  // the client offered its provider's own web search
+	Fast      bool  // the client asked for priority processing: service_tier priority (Codex's Fast mode)
 	// CacheKey is the client's prompt_cache_key (Codex sends its thread's
 	// id), which OpenAI, and relays in front of it, route a conversation by
 	// to where its prompt is cached.
@@ -130,15 +134,16 @@ const (
 
 // Event is one thing a streaming reply said.
 type Event struct {
-	Kind  EventKind
-	Text  string
-	ID    string
-	Name  string
-	MsgID string
-	Model string
-	Stop  string // stop | length | tool | filter
-	Usage Usage
-	Hits  []Hit
+	Kind   EventKind
+	Status int // upstream HTTP status for KError, when known
+	Text   string
+	ID     string
+	Name   string
+	MsgID  string
+	Model  string
+	Stop   string // stop | length | tool | filter
+	Usage  Usage
+	Hits   []Hit
 }
 
 // Usage counts tokens.
@@ -398,6 +403,8 @@ func effortOf(s string) string {
 		return "low"
 	case "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(s)
+	case "ultra": // Codex's max, with its own agents to hand work to
+		return "max"
 	}
 	return ""
 }
@@ -410,7 +417,14 @@ var effortRank = []string{"none", "minimal", "low", "medium", "high", "xhigh", "
 // asks "medium" of a model it was given no levels for, and an agent's
 // setting can outlive the model it was picked for; GLM-5.3 takes low, high
 // and max only.
+//
+// Codex's ultra is max to a model without an ultra of its own (a routing
+// group offers it when a ChatGPT model in it does): sent as max, or the
+// nearest the model has below it.
 func fitEffort(want string, levels []string) string {
+	if want == "ultra" && !slices.Contains(levels, want) {
+		want = "max"
+	}
 	if len(levels) == 0 || slices.Contains(levels, want) {
 		return want
 	}

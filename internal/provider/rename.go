@@ -28,7 +28,15 @@ func Rename(from, to string) error {
 	if to == from {
 		return nil
 	}
-	if _, ok := find(Accounts(), from); ok || slices.Contains(accountIDs, from) {
+	f := load()
+	i := slices.IndexFunc(f.Providers, func(p Provider) bool { return p.ID == from })
+	// one of the user's own saved on a subscription's id before that was one
+	// (a "WorkBuddy" key before v0.1.261) can be moved off it; the
+	// subscription itself can't
+	custom := i >= 0 && hasEndpoint(f.Providers[i])
+	_, signedIn := find(Accounts(), from)
+	sub := slices.Contains(accountIDs, from)
+	if (signedIn || sub) && !custom {
 		return fmt.Errorf("%s is a subscription: its id is its agent's", from)
 	}
 	switch {
@@ -39,8 +47,6 @@ func Rename(from, to string) error {
 	case slices.Contains(accountIDs, to):
 		return fmt.Errorf("%q is the id of the %s subscription; pick another", to, to)
 	}
-	f := load()
-	i := slices.IndexFunc(f.Providers, func(p Provider) bool { return p.ID == from })
 	if i < 0 {
 		return fmt.Errorf("no provider %q", from)
 	}
@@ -53,7 +59,9 @@ func Rename(from, to string) error {
 	}
 	p := &f.Providers[i]
 	p.ID = to
-	if !slices.Contains(p.Was, from) {
+	// the subscription's id is the subscription's: an old ref to it isn't
+	// taken for this one
+	if !sub && !slices.Contains(p.Was, from) {
 		p.Was = append(p.Was, from)
 	}
 	for j := range f.Providers {
@@ -124,4 +132,26 @@ func Renamed() map[string]string {
 		}
 	}
 	return out
+}
+
+// OnAccountIDs are the user's own providers saved on a subscription's id,
+// which hide that subscription once it is signed in (All lists the one
+// saved): made before the id was a subscription's, as a WorkBuddy key was
+// before WorkBuddy's plan was one. MoveOffAccountIDs moves them.
+func OnAccountIDs() []string {
+	var out []string
+	for _, p := range load().Providers {
+		if slices.Contains(accountIDs, p.ID) && hasEndpoint(p) {
+			out = append(out, p.ID)
+		}
+	}
+	return out
+}
+
+// FreeID is id, or id-2, id-3… whichever no provider or subscription has.
+func FreeID(id string) string { return freeID(id) }
+
+// hasEndpoint: a provider of the user's, not a subscription's model picks.
+func hasEndpoint(p Provider) bool {
+	return p.Chat != "" || p.Responses != "" || p.Anthropic != "" || p.Decide != ""
 }

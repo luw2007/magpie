@@ -435,15 +435,12 @@ func isGoogle(p provider.Provider) bool {
 
 // viaFor is where model is best asked to draw at p.
 func viaFor(p provider.Provider, model string) drawVia {
-	m := strings.ToLower(model)
-	onImages := slices.ContainsFunc([]string{"gpt-image", "chatgpt-image", "dall-e", "imagen", "imagine", "qwen-image", "wanx", "wan2", "seedream", "cogview", "flux", "stable-diffusion", "sdxl", "kolors", "hidream"},
-		func(w string) bool { return strings.Contains(m, w) })
 	switch {
-	case isGoogle(p) && strings.Contains(m, "gemini"):
+	case isGoogle(p) && strings.Contains(strings.ToLower(model), "gemini"):
 		return viaGemini
 	case provider.HostOf(p.Base(provider.Chat)) == "openrouter.ai":
 		return viaChat
-	case onImages:
+	case catalog.ImagesAPI(model):
 		return viaImages
 	}
 	return viaChat

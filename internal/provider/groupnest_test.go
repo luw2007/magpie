@@ -1,62 +1,9 @@
 package provider
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
-
-func TestGroupJSONWithoutMemberEffortsRoundTrips(t *testing.T) {
-	var g Group
-	if err := json.Unmarshal([]byte(`{"id":"old","name":"Old","members":["a/m"],"routing":"order"}`), &g); err != nil {
-		t.Fatal(err)
-	}
-	if g.MemberEfforts != nil || g.ID != "old" || len(g.Members) != 1 {
-		t.Fatalf("decoded old group: %+v", g)
-	}
-	b, err := json.Marshal(g)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := got["member_efforts"]; ok {
-		t.Fatalf("old group gained member_efforts: %s", b)
-	}
-}
-
-func TestNestedGroupMemberEffortInheritanceAndOverride(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	for _, id := range []string{"a", "b"} {
-		if err := Save(Provider{ID: id, Name: id, Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m"}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := SaveGroup(Group{ID: "inner", Name: "Inner", Members: []string{"a/m", "b/m"}, MemberEfforts: map[string]string{"a/m": "medium"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveGroup(Group{ID: "outer", Name: "Outer", Members: []string{"group/inner", "b/m"}, MemberEfforts: map[string]string{"group/inner": "high", "b/m": "xhigh"}}); err != nil {
-		t.Fatal(err)
-	}
-	_, members, ok := FindGroup("group/outer")
-	if !ok || len(members) != 2 {
-		t.Fatalf("members: %v %v", ok, members)
-	}
-	if members[0].Model != "m" || members[0].Effort != "high" || members[1].Effort != "high" {
-		t.Fatalf("outer nested override: %+v", members)
-	}
-	// Without an outer override, the nested group's exact member setting wins.
-	if err := SaveGroup(Group{ID: "outer", Name: "Outer", Members: []string{"group/inner"}}); err != nil {
-		t.Fatal(err)
-	}
-	_, members, ok = FindGroup("group/outer")
-	if !ok || len(members) != 2 || members[0].Effort != "medium" {
-		t.Fatalf("nested inheritance: %v %+v", ok, members)
-	}
-}
 
 // A group may have groups among its members, each routed as it says, but
 // never one it is in: a loop is refused when saved, and cut if the file

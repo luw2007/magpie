@@ -64,6 +64,7 @@ func parseChat(body []byte) (*Request, error) {
 	if r.Effort != "" {
 		r.Thinking = true
 	}
+	r.ThinkOff = strings.EqualFold(strings.TrimSpace(c.ReasoningEffort), "none")
 	var stop string
 	if json.Unmarshal(c.Stop, &stop) == nil && stop != "" {
 		r.Stop = []string{stop}

@@ -90,6 +90,7 @@ func parseResponses(body []byte) (*Request, error) {
 	if q.Reasoning != nil {
 		r.Effort = effortOf(q.Reasoning.Effort)
 		r.Thinking = true
+		r.ThinkOff = strings.EqualFold(strings.TrimSpace(q.Reasoning.Effort), "none")
 	}
 	var s string
 	if json.Unmarshal(q.Input, &s) == nil {

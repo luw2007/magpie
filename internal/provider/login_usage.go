@@ -38,10 +38,14 @@ func LoginUsage(ctx context.Context, agent string) map[string]SubscriptionQuota 
 		logins = copilotLoginList()
 	case "zcode":
 		logins = zcodeLoginList()
+	case "kiro":
+		logins = kiroLoginList()
 	case "workbuddy", WorkBuddyAIID:
 		logins = wbLoginList(wbSiteOf(agent))
 	case CommandCodePlanID:
 		logins = cmdLoginList()
+	case "qoder":
+		logins = loginsOf(qoderLogins())
 	case "gemini", "antigravity":
 		logins = googleLoginList(agent)
 	case "cursor": // one account, the one cursor-agent is signed in to
@@ -89,6 +93,9 @@ func LoginUsage(ctx context.Context, agent string) map[string]SubscriptionQuota 
 }
 
 func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
+	if l.Agent == "qoder" {
+		return qoderLoginQuota(ctx, l)
+	}
 	if l.Agent == "cursor" {
 		return cursorSubscriptionUsage(ctx, l.Plan)
 	}
@@ -97,6 +104,9 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	}
 	if l.Agent == "zcode" {
 		return zcodeLoginQuota(ctx, l)
+	}
+	if l.Agent == "kiro" {
+		return kiroLoginQuota(ctx, l)
 	}
 	if w := wbSiteOf(l.Agent); w != nil {
 		return wbLoginQuota(ctx, w, l)

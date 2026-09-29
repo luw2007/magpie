@@ -32,8 +32,8 @@ const usageHalfLife = time.Hour
 var routed = struct {
 	sync.Mutex
 	turn     map[string]int      // provider → requests routed in turn
-	used     map[string]tokenUse // candidate rest id → tokens it served
-	failures map[string]int      // candidate rest id → failures since it last answered
+	used     map[string]tokenUse // candidate restKey → tokens it served
+	failures map[string]int      // candidate restKey → failures since it last answered
 }{turn: map[string]int{}, used: map[string]tokenUse{}, failures: map[string]int{}}
 
 type tokenUse struct {
@@ -45,8 +45,10 @@ func (u tokenUse) now(t time.Time) float64 {
 	return u.n * math.Exp2(-t.Sub(u.at).Seconds()/usageHalfLife.Seconds())
 }
 
-// served counts what a candidate just answered against it; key is what it
-// rests by (restKey).
+// served counts what a candidate just answered against it, by who it is:
+// rest for a key, an account by its user whichever the agent is signed in
+// to (restKey, as key is), so a switch doesn't hand one account's count to
+// another (#209).
 func served(rest, key string, tokens int) {
 	if tokens <= 0 {
 		tokens = 1 // it answered, whether or not it said how much
@@ -62,7 +64,7 @@ func served(rest, key string, tokens int) {
 // servedCandidate records an answer and ends both the provider's rest and,
 // when it has one, the candidate's model-specific rest.
 func servedCandidate(c candidate, tokens int) {
-	served(c.rest, c.restKey(), tokens)
+	served(c.restKey(), c.restKey(), tokens)
 	if id := c.restID(); id != c.restKey() {
 		clearRest(id)
 	}
@@ -302,8 +304,8 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		r.Link, _ = provider.Verification([]byte(r.said))
 	default:
 		routed.Lock()
-		routed.failures[c.rest]++
-		n := routed.failures[c.rest]
+		routed.failures[c.restKey()]++
+		n := routed.failures[c.restKey()]
 		routed.Unlock()
 		d, r.By, r.Failures = min(fallbackCooldown<<min(n-1, 10), longestRetry), "backoff", n
 		// a subscription that failed with a window full is out of it,
@@ -412,10 +414,11 @@ func retryAfter(h http.Header, now time.Time) time.Duration {
 var allowances = provider.Allowances
 
 // Shares of an allowance past which an account is kept for when the others
-// can't take a request: low, and all but used up.
+// can't take a request: low, and all but used up — where the agent signed
+// in to it is signed in to another, too (provider.SpentShare).
 const (
 	lowShare  = 90
-	usedShare = 98
+	usedShare = provider.SpentShare
 )
 
 // route orders one provider's candidates as its routing says.
@@ -549,7 +552,7 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 		tokens := make([]float64, len(cs))
 		wg.tokens = map[string]float64{}
 		for i, c := range cs {
-			tokens[i] = routed.used[c.rest].now(now)
+			tokens[i] = routed.used[c.restKey()].now(now)
 			wg.tokens[c.rest] = tokens[i]
 		}
 		routed.Unlock()

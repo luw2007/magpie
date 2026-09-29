@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -146,7 +147,9 @@ func parseAnthropic(body []byte) (*Request, error) {
 	// output_config's effort sets how hard the model thinks only when it
 	// was asked to think: Claude Code's title requests carry effort but no
 	// thinking, and reasoning_effort would turn it on upstream
-	if th := a.Thinking; th != nil && (th.Type == "enabled" || th.Type == "adaptive") {
+	if th := a.Thinking; th != nil && th.Type == "disabled" {
+		r.ThinkOff = true
+	} else if th != nil && (th.Type == "enabled" || th.Type == "adaptive") {
 		r.Thinking = true
 		r.Effort = effortOfBudget(th.BudgetTokens)
 		if oc := a.OutputConfig; oc != nil {
@@ -169,8 +172,21 @@ func thinkingOffUnlessAsked(body []byte) []byte {
 	if json.Unmarshal(body, &v) != nil || v.Thinking != nil {
 		return body
 	}
-	return withFields(body, map[string]any{"thinking": map[string]any{"type": "disabled"}})
+	// added at the end, the rest left byte for byte as the agent sent it
+	b := bytes.TrimRight(body, " \t\r\n")
+	if len(b) < 2 || b[len(b)-1] != '}' {
+		return withFields(body, map[string]any{"thinking": map[string]any{"type": "disabled"}})
+	}
+	out := append([]byte{}, b[:len(b)-1]...)
+	if len(bytes.TrimSpace(out)) > 1 {
+		out = append(out, ',')
+	}
+	return append(out, `"thinking":{"type":"disabled"}}`...)
 }
+
+// anthropicModel is one of Anthropic's own models, which think only when asked,
+// so a request for one is left as the agent sent it.
+var anthropicModel = regexp.MustCompile(`(?i)(?:^|[/.:-])claude-`)
 
 // alwaysThinks is a vendor refusing to turn a model's thinking off: Z.ai's
 // GLM-5.3 answers 1210, "…always engages in thinking…".

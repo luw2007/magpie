@@ -3,9 +3,11 @@ package provider
 import (
 	"context"
 	"fmt"
+	"log"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
@@ -42,9 +44,9 @@ func (p Provider) Available() []catalog.Model {
 	if live, _, ok := catalog.Live(p.ID); ok {
 		switch p.ID {
 		case "cursor":
-			live = collapseCursorModels(withCursorContexts(live))
+			live = withoutCursorCapacity(collapseCursorModels(withCursorContexts(live)))
 		case "devin":
-			live = withDevinContexts(live)
+			live = withDevinContexts(devinCollapse(live, devinCached(), p.Models))
 		case "antigravity":
 			// after its names are filled in, and so that a family's
 			// levels aren't taken off by a known model of its id
@@ -53,6 +55,9 @@ func (p Provider) Available() []catalog.Model {
 		return catalog.Decorate(live, known)
 	}
 	if signedIn {
+		if p.ID == "devin" { // with the variants the user picked
+			return withDevinContexts(devinCollapse(known, nil, p.Models))
+		}
 		return known
 	}
 	if len(known) == 0 {
@@ -111,6 +116,45 @@ func (p Provider) Fetch(ctx context.Context) ([]catalog.Model, error) {
 		return nil, err
 	}
 	return catalog.Chat(ms), catalog.SaveLive(p.ID, base, ms)
+}
+
+// newFetches is when each account with no list from its vendor yet was
+// last asked for one by FetchNew.
+var newFetches = struct {
+	sync.Mutex
+	m map[string]time.Time
+}{m: map[string]time.Time{}}
+
+// newFetchRetry is how long FetchNew leaves an account whose list it
+// couldn't get before asking again.
+var newFetchRetry = 10 * time.Minute
+
+// FetchNew asks each signed-in account whose vendor list magpie hasn't
+// fetched yet for it, each for at most timeout. Start-up does this for the
+// accounts there then; an account signed in while magpie runs (in magpie or
+// in the agent's own app) otherwise showed magpie's built-in list, fewer
+// models than the vendor serves, until Refresh was clicked (#204). One that
+// fails is asked again after newFetchRetry, not each time.
+func FetchNew(timeout time.Duration) {
+	newFetches.Lock()
+	defer newFetches.Unlock()
+	for _, p := range All() {
+		if p.Account == nil || !p.Ready() {
+			continue
+		}
+		if _, ok := p.Fetched(); ok {
+			continue
+		}
+		if t, ok := newFetches.m[p.ID]; ok && time.Since(t) < newFetchRetry {
+			continue
+		}
+		newFetches.m[p.ID] = time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		if _, err := p.Fetch(ctx); err != nil {
+			log.Println(p.ID + ": " + err.Error())
+		}
+		cancel()
+	}
 }
 
 // fetchOne asks the first endpoint that answers, with p's key.
@@ -356,6 +400,13 @@ func (p Provider) Known(model string) []string {
 	for _, m := range p.Available() {
 		if m.ID == model {
 			return effortsOf(m)
+		}
+	}
+	// one of Devin's variants an agent was set to, which the list offers as
+	// its family: the one effort its id runs at, whatever effort is asked
+	if p.ID == "devin" {
+		if l := devinEffortOf(model); l != "" {
+			return []string{l}
 		}
 	}
 	return catalog.EffortsOf(model)

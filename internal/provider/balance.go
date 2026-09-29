@@ -1,7 +1,7 @@
 package provider
 
 // What is left on an API key, as the vendor's own balance endpoint tells
-// it: DeepSeek, Kimi, OpenRouter, SiliconFlow, Command Code and AiHubMix are known by their hosts
+// it: DeepSeek, Kimi, OpenRouter, SiliconFlow, StepFun, Command Code and AiHubMix are known by their hosts
 // (AiHubMix tells the whole account's to its access token, BalanceToken);
 // any other provider can name an endpoint and where the amount sits in its
 // reply (BalanceURL, BalancePath), the way a relay's own usage query does.
@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,11 @@ type balanceSource struct {
 func balanceSourceOf(p Provider) (balanceSource, bool) {
 	if p.BalanceURL != "" {
 		path := p.BalancePath
+		if strings.TrimSpace(path) == "" && balanceURLPath(p.BalanceURL) == newAPIUserSelf {
+			// new-api's account query with its field left out: the quota,
+			// in new-api's units, as it reports it
+			path = newAPIQuotaPath
+		}
 		// a token saved beside it (a new-api relay's access token, its
 		// /api/user/self telling the account's quota) is asked with
 		// instead of the key
@@ -55,6 +61,10 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 			return balanceSource{"https://api.siliconflow.cn/v1/user/info", readSiliconFlow("¥"), ""}, true
 		case "api.siliconflow.com":
 			return balanceSource{"https://api.siliconflow.com/v1/user/info", readSiliconFlow("$"), ""}, true
+		case "api.stepfun.com":
+			return balanceSource{"https://api.stepfun.com/v1/accounts", readStepFun("¥"), ""}, true
+		case "api.stepfun.ai":
+			return balanceSource{"https://api.stepfun.ai/v1/accounts", readStepFun("$"), ""}, true
 		case "api.commandcode.ai":
 			return balanceSource{"https://api.commandcode.ai/alpha/billing/credits", readCommandCode, ""}, true
 		case "aihubmix.com":
@@ -65,6 +75,62 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 		}
 	}
 	return balanceSource{}, false
+}
+
+// new-api's two balance queries: /api/usage/token tells a key what is left
+// on it and is asked with the key alone (its token check takes no access
+// token), /api/user/self tells the account's quota, $1 to 500000 of it, to
+// the account's access token with the user's id in New-Api-User.
+const (
+	newAPIKeyUsage  = "/api/usage/token"
+	newAPIUserSelf  = "/api/user/self"
+	newAPIQuotaPath = "$data.quota / 500000"
+)
+
+// balanceURLPath is a balance URL's path, without a slash at its end.
+func balanceURLPath(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(u.Path, "/")
+}
+
+// errKeyUsageWithToken is a balance token beside new-api's query for a key,
+// which never takes it: asked, it could only be refused, so what to name in
+// its place is said instead.
+func errKeyUsageWithToken(raw string) error {
+	self := newAPIUserSelf
+	if u, err := url.Parse(strings.TrimSpace(raw)); err == nil && u.Host != "" {
+		self = u.Scheme + "://" + u.Host + newAPIUserSelf
+	}
+	return fmt.Errorf("the Balance URL %s takes the API key, not the access token: set it to %s (Balance field %s) for the account's balance, or remove the token for the key's own", raw, self, newAPIQuotaPath)
+}
+
+// balanceRefusal is what a reply of {"success":false,"message":…} says, a
+// new-api relay's way of turning a request down, with a 401 and a 200
+// alike; a reply without the two is not one.
+func balanceRefusal(b []byte) (string, bool) {
+	var r struct {
+		Success *bool  `json:"success"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(b, &r) != nil || r.Success == nil || *r.Success || strings.TrimSpace(r.Message) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(r.Message), true
+}
+
+// newAPIUserHint puts what to do before a new-api refusal about the
+// New-Api-User header, which its /api/user/self wants beside the access
+// token ("无权进行此操作，未提供 New-Api-User", "Unauthorized, New-Api-User
+// header not provided", or its format error or mismatch); any other
+// message is left as it came.
+func newAPIUserHint(msg string) string {
+	if !strings.Contains(strings.ToLower(msg), "new-api-user") {
+		return msg
+	}
+	return "add the header New-Api-User = your user ID (shown in the site's personal settings) to this provider's Headers; the relay said: " + msg
 }
 
 // TakesBalanceToken says the provider's vendor tells the account's balance
@@ -186,6 +252,27 @@ func readSiliconFlow(sign string) func([]byte) (string, error) {
 			return "", err
 		}
 		v, ok := number(r.Data.Total)
+		if !ok {
+			return "", errors.New("no balance in the reply")
+		}
+		return money(sign, v), nil
+	}
+}
+
+// readStepFun: {"object":"account","type":"prepaid","balance":26.00,
+// "total_cash_balance":0.00,"total_voucher_balance":26.00}, balance being
+// what is left to spend, vouchers included, and the totals what was ever
+// paid in and given. A Step Plan key tells it too: the plan's key is the
+// account's, and the account's balance is what it spends past the plan.
+func readStepFun(sign string) func([]byte) (string, error) {
+	return func(b []byte) (string, error) {
+		var r struct {
+			Balance any `json:"balance"`
+		}
+		if err := json.Unmarshal(b, &r); err != nil {
+			return "", err
+		}
+		v, ok := number(r.Balance)
 		if !ok {
 			return "", errors.New("no balance in the reply")
 		}
@@ -502,6 +589,9 @@ func Balance(ctx context.Context, p Provider) (amount string, ok bool, err error
 	if !ok || p.Account != nil || p.Key == "" {
 		return "", false, nil
 	}
+	if src.token != "" && p.BalanceURL != "" && balanceURLPath(p.BalanceURL) == newAPIKeyUsage {
+		return "", true, errKeyUsageWithToken(p.BalanceURL)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.url, nil)
 	if err != nil {
 		return "", true, err
@@ -530,6 +620,15 @@ func Balance(ctx context.Context, p Provider) (amount string, ok bool, err error
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if msg, refused := balanceRefusal(b); refused {
+		// said as the relay says it, whatever the status: not a field
+		// missing from a reply that was never the balance
+		msg = newAPIUserHint(msg)
+		if res.StatusCode >= 300 {
+			msg = res.Status + ": " + msg
+		}
+		return "", true, errors.New(msg)
+	}
 	if res.StatusCode >= 300 {
 		// what a JSON reply says, on one line; a page of HTML says nothing
 		msg := strings.Join(strings.Fields(string(b)), " ")

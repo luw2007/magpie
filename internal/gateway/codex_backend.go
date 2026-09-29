@@ -35,6 +35,8 @@ var codexAPIBase = "https://api.openai.com/v1"
 // only magpie reads back.
 const magpieCompaction = "magpie1:"
 
+var nativeSealedAgentPayload = regexp.MustCompile(`^gAAAAA[A-Za-z0-9_-]+={0,2}$`)
+
 // codexCompactPrompt and codexSummaryPrefix are Codex's own (Apache-2.0,
 // openai/codex, prompts/templates/compact).
 const codexCompactPrompt = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
@@ -79,6 +81,10 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 				writeError(w, provider.Responses, 400, "/responses/compact is not supported for Magpie models; use a compaction_trigger on /responses")
 				return
 			}
+			if hasSealedAgentMessage(body) {
+				writeError(w, provider.Responses, 400, "An OpenAI lead sent a sealed subagent task that a Magpie-served model cannot read. Use a Magpie-served model for the lead, or choose an OpenAI subagent.")
+				return
+			}
 			body, compact := codexInput(body, true)
 			if compact {
 				s.codexCompact(w, r, body)
@@ -97,6 +103,38 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.codexUpstream(w, r, rest, body)
+}
+
+// Only native sealed agent tasks need this guidance. Other encrypted_content
+// fields (including ordinary model history) keep their existing handling.
+func hasSealedAgentMessage(body []byte) bool {
+	var request map[string]json.RawMessage
+	if json.Unmarshal(body, &request) != nil {
+		return false
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(request["input"], &items) != nil {
+		return false
+	}
+	for _, raw := range items {
+		var item struct {
+			Type    string            `json:"type"`
+			Content []json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &item) != nil || item.Type != "agent_message" {
+			continue
+		}
+		for _, content := range item.Content {
+			var part struct {
+				Type             string `json:"type"`
+				EncryptedContent string `json:"encrypted_content"`
+			}
+			if json.Unmarshal(content, &part) == nil && part.Type == "encrypted_content" && nativeSealedAgentPayload.MatchString(part.EncryptedContent) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // codexBody reads a request's body as it was before Codex compressed it
@@ -177,7 +215,8 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 	// a turn goes in the Routing view's live trace as the others do, to
 	// the one it can go to: Codex's own sign-in, or its key
 	var tr *Route
-	end := func(status int, msg string, tokens int) {}
+	first := firstToken{start: start} // the reply's first tokens (#196), counted as ms are
+	end := func(status int, msg string, tokens, out int) {}
 	if rest == "/responses" {
 		who := "Codex's own sign-in"
 		if base == codexAPIBase {
@@ -185,13 +224,16 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 		}
 		model := modelOf(body)
 		seat := Weighed{ID: "codex", Provider: "openai", Name: "OpenAI", Icon: "openai", Who: who, Kind: "account", Agent: "codex", Model: model}
-		tr = s.trace.begin(Route{Time: start, Agent: agentOf(r), Model: model, Provider: "openai",
+		tr = s.trace.begin(Route{Time: start, Agent: agentOf(r), Kind: callKind(r.Header), Model: model, Provider: "openai",
 			Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Start: start}}})
-		end = func(status int, msg string, tokens int) {
+		end = func(status int, msg string, tokens, out int) {
 			ms := time.Since(start).Milliseconds()
+			ttft, text := first.ms()
 			s.trace.update(tr, func(t *Route) {
 				t.Tries[0].Done, t.Tries[0].Status, t.Tries[0].Millis, t.Tries[0].Error = true, status, ms, msg
+				t.Tries[0].TTFT, t.Tries[0].FirstText = ttft, text
 				t.Done, t.Status, t.Error, t.Millis, t.Tokens = true, status, msg, ms, tokens
+				t.Output, t.TTFT, t.FirstText = out, ttft, text
 			})
 		}
 	}
@@ -200,7 +242,7 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 		req, err := http.NewRequestWithContext(r.Context(), r.Method, u, bytes.NewReader(body))
 		if err != nil {
 			writeError(w, provider.Responses, 502, err.Error())
-			end(502, err.Error(), 0)
+			end(502, err.Error(), 0, 0)
 			return
 		}
 		copyHeaders(req.Header, r.Header)
@@ -208,7 +250,7 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 		req.Header.Del("Accept-Encoding")
 		if res, err = s.client.Do(req); err != nil {
 			writeError(w, provider.Responses, 502, "OpenAI: "+err.Error())
-			end(502, "OpenAI: "+err.Error(), 0)
+			end(502, "OpenAI: "+err.Error(), 0, 0)
 			return
 		}
 		if rest != "/responses" || tries >= 3 || (res.StatusCode != 400 && res.StatusCode != 404) {
@@ -237,7 +279,7 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 		s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
 			Provider: "openai", Agent: agentOf(r), Status: res.StatusCode,
 			Millis: time.Since(start).Milliseconds(), Error: res.Status})
-		end(res.StatusCode, res.Status, 0)
+		end(res.StatusCode, res.Status, 0, 0)
 		return
 	}
 	for k, vs := range res.Header {
@@ -262,6 +304,7 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 		if n > 0 {
 			if sniff != nil {
 				sniff.write(buf[:n])
+				first.see(buf[:n])
 			}
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				break
@@ -278,19 +321,20 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 		return
 	}
 	call := Call{Time: start, From: provider.Responses, To: provider.Responses, Model: modelOf(body),
-		Provider: "openai", Agent: agentOf(r), Status: res.StatusCode,
+		Provider: "openai", Agent: agentOf(r), Kind: callKind(r.Header), Status: res.StatusCode,
 		Millis: time.Since(start).Milliseconds()}
+	call.TTFT, call.FirstText = first.ms()
 	var uu Usage
 	uu.add(sniff.usage())
 	call.Usage = uu
 	if res.StatusCode >= 400 {
 		call.Error = res.Status
 	}
-	end(call.Status, call.Error, uu.Input+uu.Output+uu.CacheRead+uu.CacheWrite)
+	end(call.Status, call.Error, uu.Input+uu.Output+uu.CacheRead+uu.CacheWrite, uu.Output)
 	s.record(call)
 	usage.Append(usage.Record{Time: start, Agent: call.Agent, Provider: call.Provider, Host: provider.HostOf(base), Model: call.Model,
 		Input: uu.Input, Output: uu.Output, CacheRead: uu.CacheRead, CacheWrite: uu.CacheWrite,
-		Reasoning: uu.Reasoning, Millis: call.Millis, Status: call.Status, Session: sessionOf(r.Header)})
+		Reasoning: uu.Reasoning, Millis: call.Millis, TTFT: call.TTFT, FirstText: call.FirstText, Status: call.Status, Session: sessionOf(r.Header), Kind: call.Kind})
 }
 
 // unreadableItem is the item OpenAI's refusal names: sealed content it
@@ -372,6 +416,48 @@ func hopHeader(k string) bool {
 		return true
 	}
 	return false
+}
+
+// codexHeader is one of the headers Codex tells the ChatGPT backend about
+// a request by, which go on with it when a pool account signs it as they
+// do when Codex's own sign-in does (codexUpstream): x-openai-subagent (a
+// guardian review, a thread's title, memories, a compaction…), the turn's
+// x-codex-turn-metadata, its installation, window and parent thread, and
+// the session. Never a sign-in: the account's own goes in its place, and
+// Codex's device attestation is its own sign-in's. Nor what holds for
+// Codex's own account alone: x-openai-codex-luna-reserve, which says its
+// plan's allowance is used up (another account's may not be), and
+// x-codex-turn-state, the backend's routing of the turn for that account.
+func codexHeader(k string) bool {
+	k = strings.ToLower(k)
+	if strings.Contains(k, "authorization") || k == "x-oai-attestation" ||
+		k == "x-openai-codex-luna-reserve" || k == "x-codex-turn-state" {
+		return false
+	}
+	switch k {
+	case "session_id", "conversation_id", "x-client-request-id", "version":
+		return true
+	}
+	return strings.HasPrefix(k, "x-openai-") || strings.HasPrefix(k, "x-codex-")
+}
+
+// callKind is what an agent made a call for when it isn't a turn of the
+// conversation, as Codex names it in x-openai-subagent: "guardian" (auto
+// review of an approval), "review", "compact", "memory_consolidation",
+// "thread_title", "collab_spawn"… A turn Codex sends on Luna Reserve, once
+// the plan's own allowance is used up, is "luna_reserve".
+func callKind(h http.Header) string {
+	v := strings.TrimSpace(h.Get("x-openai-subagent"))
+	if v == "" && h.Get("x-openai-memgen-request") != "" {
+		v = "memgen"
+	}
+	if v == "" && h.Get("x-openai-codex-luna-reserve") != "" {
+		v = "luna_reserve"
+	}
+	if len(v) > 40 {
+		v = v[:40]
+	}
+	return v
 }
 
 func copyHeaders(dst, src http.Header) {

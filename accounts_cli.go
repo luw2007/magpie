@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -82,10 +83,12 @@ func accountsCmd(args []string) error {
 			return err
 		}
 		if args[1] == "forget" {
-			if err := provider.ForgetLogin(id, args[3]); err != nil {
+			moved, err := agent.Reseat(func() error { return provider.ForgetLogin(id, args[3]) })
+			if err != nil {
 				return err
 			}
 			fmt.Println(green.Render("✓"), "forgot", args[3])
+			printMoved(moved)
 			return nil
 		}
 		if err := provider.SwitchLogin(id, args[3]); err != nil {
@@ -96,6 +99,12 @@ func accountsCmd(args []string) error {
 			return nil
 		}
 		fmt.Println(green.Render("✓"), id, "is now signed in as", args[3], muted.Render("· sessions already running keep their account until restarted"))
+		if id == "codex" {
+			if was := provider.CodexDaemonStale(); was != "" {
+				fmt.Println(" ", "Codex's background service is still signed in as", was+"; restart it to use", args[3]+":", provider.CodexDaemonRestart)
+				fmt.Println(" ", muted.Render("running Codex sessions will be interrupted"))
+			}
+		}
 		return nil
 	}
 	which, asJSON := "", false

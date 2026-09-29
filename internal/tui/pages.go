@@ -156,7 +156,8 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if off {
 			what = "switched off: agents are given none of its models"
 		}
-		return m, saveProvider(p.ID, func(p *provider.Provider) { p.Off = off }, p.Name+" "+what)
+		id := p.ID
+		return m, reseatCmd(func() error { return provider.SetOff(id, off) }, p.Name+" "+what)
 	case "t":
 		m.flash, m.flashOK = "testing "+p.Name+"…", true
 		return m, testCmd(p)
@@ -167,14 +168,25 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.confirm = ""
-		return m, func() tea.Msg {
-			if err := provider.Delete(p.ID); err != nil {
-				return flashMsg{text: err.Error()}
-			}
-			return flashMsg{text: "removed " + p.Name, ok: true}
-		}
+		id := p.ID
+		return m, reseatCmd(func() error { return provider.Delete(id) }, "removed "+p.Name)
 	}
 	return m, nil
+}
+
+// reseatCmd makes a change that may take models away from the agents on
+// them, and says which it moved to others (agent.Reseat).
+func reseatCmd(change func() error, done string) tea.Cmd {
+	return func() tea.Msg {
+		moved, err := agent.Reseat(change)
+		if err != nil {
+			return flashMsg{text: err.Error()}
+		}
+		for _, mv := range moved {
+			done += "; moved " + mv.String()
+		}
+		return flashMsg{text: done, ok: true}
+	}
 }
 
 // saveProvider changes one provider and saves it.

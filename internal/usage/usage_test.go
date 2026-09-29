@@ -1,7 +1,9 @@
 package usage
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,5 +101,34 @@ func TestSummarizeSessions(t *testing.T) {
 	if len(ss) != 3 || ss[0].ID != "a" || ss[0].Agent != "claude" || ss[0].Input != 40 || ss[0].Calls != 2 ||
 		ss[1].Agent != "codex" || ss[1].Input != 7 || ss[2].ID != "b" {
 		t.Fatalf("%+v", ss)
+	}
+}
+
+// The timed calls (#196) sum to a mean time to the first token and how
+// fast the replies were written after it; old records, whole replies and
+// failures aren't in them, and a record without them reads as before.
+func TestSummarizeTimesFirstTokens(t *testing.T) {
+	now := time.Date(2026, 9, 23, 15, 30, 0, 0, time.UTC)
+	at := now.Add(-time.Hour)
+	recs := []Record{
+		{Time: at, Provider: "p", Model: "m", Output: 100, Millis: 3000, TTFT: 1000, FirstText: 2000, Status: 200},
+		{Time: at, Provider: "p", Model: "m", Output: 50, Millis: 1500, TTFT: 500, Status: 200},
+		{Time: at, Provider: "p", Model: "m", Output: 999, Millis: 800, Status: 200}, // not streamed
+		{Time: at, Provider: "p", Model: "m", Millis: 100, TTFT: 90, Status: 502},    // failed
+	}
+	s := summarize(Today, now, recs)
+	m := s.Models[0]
+	if m.Timed != 2 || m.MeanTTFT() != 750 || m.DecodeMs != 3000 || m.DecodeOut != 150 || m.Speed() != 50 {
+		t.Fatalf("model: %+v", m.Totals)
+	}
+	if s.Timed != 2 || s.Series[14].Timed != 2 {
+		t.Fatalf("totals: %+v", s.Totals)
+	}
+	if (Totals{}).Speed() != 0 || (Totals{}).MeanTTFT() != 0 {
+		t.Fatal("nothing timed")
+	}
+	b, _ := json.Marshal(Record{Time: at, Provider: "p", Model: "m", Millis: 5})
+	if strings.Contains(string(b), "ttft") || strings.Contains(string(b), "first_text") {
+		t.Fatalf("untimed record: %s", b)
 	}
 }

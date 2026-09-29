@@ -29,10 +29,12 @@ import (
 const fallbackCooldown = time.Minute
 
 type candidate struct {
-	p      provider.Provider
-	model  string
-	rest   string // what rests after a failure: the provider, or one of its keys
-	effort string // explicit group member effort, otherwise the request/turn's effort
+	p     provider.Provider
+	model string
+	rest  string // what rests after a failure: the provider, or one of its keys
+	// effort is the reasoning the group's member it is of is fixed at
+	// ("provider/model:low"); "" for one that follows the agent or the group
+	effort string
 }
 
 // label names a candidate in a call's record: the provider, and the key
@@ -60,6 +62,12 @@ func (c candidate) restKey() string {
 	return c.rest
 }
 
+// seat is the candidate as one of a group's members has it: its key or
+// account, the model, and the effort the member is fixed at.
+func (c candidate) seat() string {
+	return provider.WithMemberEffort(c.rest+"/"+c.model, c.effort)
+}
+
 func (c candidate) isOpenRouterFree() bool {
 	return c.p.Preset == "openrouter" && strings.HasSuffix(c.model, ":free")
 }
@@ -76,11 +84,14 @@ func (c candidate) restID() string {
 // who is the key or account itself, however many the provider has on: a
 // provider's one key rests as the provider, and as itself once another
 // is added, and a conversation it answered stays with it all the same.
+// An account is its user, signed in to or not: rest names the one the
+// agent is on by the provider's id alone, which a switch of the agent's
+// account hands to another (#209).
 func (c candidate) who() string {
 	if c.p.Account == nil && c.p.Key != "" {
 		return c.p.ID + "#" + provider.KeyID(c.p.Key)
 	}
-	return c.rest
+	return c.restKey()
 }
 
 // perKey is a provider once per key it has on, in order — or, for a
@@ -263,14 +274,12 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.Protocol, effort string, pl *planned, asides *[]candidate, wAsides *[]Weighed) []candidate {
 	keys := func(m provider.Member) []candidate {
 		cs, aside, left := perKeyOf(m.Provider, m.Model, from)
-		for i := range cs {
-			cs[i].effort = m.Effort
-		}
-		for i := range aside {
-			aside[i].effort = m.Effort
-		}
-		for i := range left {
-			left[i].effort = m.Effort
+		// the effort the member is fixed at goes with each of its keys:
+		// the same model at another effort is another member's
+		for _, l := range [][]candidate{cs, aside, left} {
+			for i := range l {
+				l[i].effort = m.Effort
+			}
 		}
 		*asides = append(*asides, aside...)
 		for _, w := range asideOf(aside, m.Provider, false, from) {
@@ -290,7 +299,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 		for _, m := range ms {
 			cs := keys(m)
 			for _, c := range cs {
-				of[c.rest+"/"+c.model] = m
+				of[c.seat()] = m
 			}
 			all = append(all, cs...)
 		}
@@ -305,7 +314,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 			cs, wg = weigh(provider.Provider{ID: provider.GroupPrefix + g.ID, Routing: g.Routing}, all, "", from)
 		}
 		for i, c := range cs {
-			m := of[c.rest+"/"+c.model]
+			m := of[c.seat()]
 			w := weighed(c, m.Provider, wg, false, from)
 			w.Routing, w.Via = g.Routing, m.Groups()
 			w.Turn = i == 0 && g.Routing == provider.Rotate && len(cs) > 1
@@ -477,10 +486,12 @@ type holdWriter struct {
 
 	ended bool   // the stream's last event was written: the reply is whole
 	tail  []byte // the end of the last write, for a marker split across two
+
+	first firstToken // when its first content and text came (#196)
 }
 
 func newHoldWriter(w http.ResponseWriter, hold bool) *holdWriter {
-	return &holdWriter{w: w, hold: hold, header: http.Header{}}
+	return &holdWriter{w: w, hold: hold, header: http.Header{}, first: firstToken{start: time.Now()}}
 }
 
 func (h *holdWriter) Header() http.Header { return h.header }
@@ -516,6 +527,7 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 		h.WriteHeader(http.StatusOK)
 	}
 	h.see(b)
+	h.first.see(b)
 	if h.passing {
 		return h.w.Write(b)
 	}
@@ -704,6 +716,12 @@ func streamEvent(ev []byte) (kind, status int, msg string) {
 	case len(v.Error) > 0 && string(v.Error) != "null":
 		return errOf(v.Error)
 	case typ == "ping", typ == "message_start", typ == "response.created", typ == "response.in_progress", typ == "response.queued":
+		return eventLead, 0, ""
+	case strings.HasPrefix(typ, "codex."):
+		// the ChatGPT backend's word on the account (codex.rate_limits),
+		// ahead of the reply: taken for content, it let the stream
+		// through, and a refusal after it (response.failed) went to the
+		// agent rather than tried again
 		return eventLead, 0, ""
 	case typ == "" && v.Choices != nil:
 		// a Chat chunk: the first says only who speaks

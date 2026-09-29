@@ -105,7 +105,7 @@ func TestCodexOwnModelMovesToNextAccount(t *testing.T) {
 }
 
 // Codex signed in to the next account once the one it was on is out
-// (provider.SwitchCodexWhenUsedUp): the one out still rests, now beside it,
+// (provider.SwitchWhenSpent): the one out still rests, now beside it,
 // and the one it is on now doesn't take that rest over.
 func TestCodexSwitchedAccountRestsAsItself(t *testing.T) {
 	codexSignedIn(t, "spare@example.com")
@@ -145,6 +145,107 @@ func TestResetsIn(t *testing.T) {
 	} {
 		if got := resetsIn([]byte(body), now); got != want {
 			t.Errorf("%s: %v, want %v", body, got, want)
+		}
+	}
+}
+
+// A turn served by the pool of Codex's accounts goes on with what Codex
+// says about it — a guardian review, the turn's metadata, Luna Reserve —
+// as it would to Codex's own sign-in, signed by the pool's account and
+// never by the client's; the Routing view and the usage log say it was a
+// guardian review (碳碳双键: 为何 codex 桌面选的 5.6sol，但是请求记录…显示
+// 的全是 gpt-6-luna).
+func TestCodexPoolForwardsCodexHeaders(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	var heads []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		heads = append(heads, r.Header.Clone())
+		if r.Header.Get("chatgpt-account-id") == "acct-1" {
+			w.WriteHeader(429)
+			io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}`)
+			return
+		}
+		io.WriteString(w, sse(
+			`data: {"type":"response.created","response":{"id":"r1","model":"gpt-5.5"}}`,
+			`data: {"type":"response.output_text.delta","delta":"pong"}`,
+			`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":7,"output_tokens":1}}}`))
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	req.Header.Set("User-Agent", "codex_cli_rs/0.155.1")
+	req.Header.Set("x-openai-subagent", "guardian")
+	req.Header.Set("x-codex-turn-metadata", `{"turn_id":"t1"}`)
+	req.Header.Set("x-openai-codex-luna-reserve", "true")
+	req.Header.Set("x-codex-installation-id", "inst-1")
+	req.Header.Set("x-codex-turn-state", "acct-1-state")
+	req.Header.Set("x-oai-attestation", "device-proof")
+	req.Header.Set("x-openai-actor-authorization", "Bearer someone")
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "pong") {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(heads) != 2 {
+		t.Fatalf("%d requests upstream", len(heads))
+	}
+	for i, h := range heads {
+		for k, want := range map[string]string{
+			"x-openai-subagent":       "guardian",
+			"x-codex-turn-metadata":   `{"turn_id":"t1"}`,
+			"x-codex-installation-id": "inst-1",
+			"chatgpt-account-id":      "acct-" + string(rune('1'+i)),
+		} {
+			if got := h.Get(k); got != want {
+				t.Errorf("request %d: %s %q, want %q", i, k, got, want)
+			}
+		}
+		if h.Get("x-openai-codex-luna-reserve") != "" || h.Get("x-codex-turn-state") != "" {
+			t.Errorf("request %d carries what holds for Codex's own account: %v", i, h)
+		}
+		if h.Get("Authorization") == "Bearer chatgpt-token" || h.Get("x-oai-attestation") != "" || h.Get("x-openai-actor-authorization") != "" {
+			t.Errorf("request %d carries the client's sign-in: %v", i, h)
+		}
+	}
+	if r := s.trace.routes[len(s.trace.routes)-1]; r.Kind != "guardian" {
+		t.Errorf("route kind %q", r.Kind)
+	}
+	b, _ := os.ReadFile(filepath.Join(filepath.Dir(provider.Path()), "usage.jsonl"))
+	if !strings.Contains(string(b), `"kind":"guardian"`) {
+		t.Errorf("usage log: %s", b)
+	}
+}
+
+func TestCallKind(t *testing.T) {
+	for want, h := range map[string]map[string]string{
+		"":             {},
+		"guardian":     {"x-openai-subagent": " guardian ", "x-openai-codex-luna-reserve": "true"},
+		"thread_title": {"x-openai-subagent": "thread_title"},
+		"memgen":       {"x-openai-memgen-request": "1"},
+		"luna_reserve": {"x-openai-codex-luna-reserve": "true"},
+	} {
+		hh := http.Header{}
+		for k, v := range h {
+			hh.Set(k, v)
+		}
+		if got := callKind(hh); got != want {
+			t.Errorf("%v: %q, want %q", h, got, want)
+		}
+	}
+	for k, want := range map[string]bool{
+		"x-openai-subagent": true, "X-Codex-Turn-Metadata": true, "X-Codex-Turn-State": false, "x-openai-codex-luna-reserve": false, "session_id": true, "Session_id": true,
+		"Authorization": false, "chatgpt-account-id": false, "x-oai-attestation": false,
+		"x-openai-actor-authorization": false, "User-Agent": false, "Cookie": false,
+	} {
+		if codexHeader(k) != want {
+			t.Errorf("codexHeader(%q) = %v", k, !want)
 		}
 	}
 }

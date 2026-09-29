@@ -226,8 +226,10 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 			}
 		}
 	}
-	if _, ok := kiroAccount(); ok && !hidden["kiro"] {
-		fetches = append(fetches, func() SubscriptionQuota { return kiroSubscriptionUsage(ctx) })
+	if key := kiroKey(); key != "" && !hidden["kiro"] {
+		fetches = append(fetches, func() SubscriptionQuota { return kiroQuotaAt(ctx, key, "") })
+	} else if !hidden["kiro"] {
+		fetches = append(fetches, perLogin(ctx, kiroLoginList(), "Kiro", "kiro-color")...)
 	}
 	if !hidden["zcode"] {
 		fetches = append(fetches, perLogin(ctx, zcodeLoginList(), "ZCode", "zcode")...)
@@ -239,6 +241,9 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 	}
 	if !hidden[CommandCodePlanID] {
 		fetches = append(fetches, perLogin(ctx, cmdLoginList(), "Command Code", "commandcode")...)
+	}
+	if !hidden["qoder"] {
+		fetches = append(fetches, perLogin(ctx, loginsOf(qoderLogins()), "Qoder", "qoder")...)
 	}
 	for _, agent := range []string{"gemini", "antigravity"} {
 		if hidden[agent] {

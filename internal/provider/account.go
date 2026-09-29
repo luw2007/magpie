@@ -44,8 +44,10 @@ type Account struct {
 	// a non-streaming request instead of relaying it.
 	Stream bool `json:"-"`
 
-	// Home is where a Grok account keeps its sign-in: the CLI's own home,
-	// or one of magpie's for a further account (see grok_accounts.go).
+	// Home is where a Grok, Kiro or Devin account keeps its sign-in: the
+	// agent's own (the CLI's home for Grok, "" for Kiro and Devin), or one
+	// of magpie's for a further account (grok_accounts.go, kiro_accounts.go,
+	// devin_accounts.go).
 	Home string `json:"-"`
 
 	// token is set on a saved sign-in in use beside the agent's own (see
@@ -78,10 +80,15 @@ func (p Provider) APIs(model string) []Protocol {
 		}
 	}
 	// Bedrock has no list to say it: Claude is served on Anthropic's
-	// messages alone, every other model on chat completions alone
+	// messages alone, OpenAI's GPT models on Responses and chat
+	// completions, every other model (gpt-oss too) on chat completions
+	// alone
 	if p.IsBedrock() {
 		if bedrockClaude(model) {
 			return []Protocol{Anthropic}
+		}
+		if bedrockGPT(model) && p.Responses != "" {
+			return []Protocol{Responses, Chat}
 		}
 		return []Protocol{Chat}
 	}
@@ -290,14 +297,28 @@ func readClaudeCredential() (claudeCredentials, claudeCredentialLocation, bool) 
 	if !claudeKeychain {
 		return claudeCredentials{}, claudeCredentialLocation{}, false
 	}
-	out, err := proc.Command("security", "find-generic-password", "-s", "Claude Code-credentials", "-w").Output()
-	if err != nil {
+	// Claude Code reads the item under its account ($USER); by service
+	// alone the keychain may hand back another one — left from an earlier
+	// sign-in — which isn't the sign-in in use
+	account := claudeKeychainAccount()
+	var c claudeCredentials
+	var ok, wasHex bool
+	for _, args := range [][]string{{"-a", account}, nil} {
+		out, err := proc.Command("security", append([]string{"find-generic-password", "-s", "Claude Code-credentials", "-w"}, args...)...).Output()
+		if err != nil {
+			continue
+		}
+		var b []byte
+		b, wasHex = keychainText(bytes.TrimSpace(out))
+		if c, ok = parseClaudeCredentials(b); ok {
+			break
+		}
+	}
+	if !ok {
 		return claudeCredentials{}, claudeCredentialLocation{}, false
 	}
-	b, wasHex := keychainText(bytes.TrimSpace(out))
-	c, ok := parseClaudeCredentials(b)
-	loc := claudeCredentialLocation{keychain: true, account: claudeKeychainAccount()}
-	if ok && wasHex {
+	loc := claudeCredentialLocation{keychain: true, account: account}
+	if wasHex {
 		// written by magpie before it wrote them on one line: Claude Code
 		// reads that hex as no sign-in, so it is written again as it
 		// writes it
@@ -737,6 +758,9 @@ func Accounts() []Provider {
 		}
 	}
 	if p, ok := commandCodeAccount(); ok {
+		out = append(out, p)
+	}
+	if p, ok := qoderAccount(); ok {
 		out = append(out, p)
 	}
 	for _, agent := range []string{"gemini", "antigravity"} {

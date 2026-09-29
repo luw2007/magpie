@@ -141,6 +141,20 @@ var presets = []PresetDef{
 			{ID: "plan-ams", Name: "Plan · Europe", Chat: "https://token-plan-ams.xiaomimimo.com/v1", Responses: "https://token-plan-ams.xiaomimimo.com/v1", Anthropic: "https://token-plan-ams.xiaomimimo.com/anthropic"},
 			{ID: "api", Name: "Pay as you go", Chat: "https://api.xiaomimimo.com/v1", Responses: "https://api.xiaomimimo.com/v1", Anthropic: "https://api.xiaomimimo.com/anthropic"},
 		}},
+	// Baidu Qianfan's Token Plan (个人版): a personal plan's quota is spent
+	// only at its own endpoints under qianfan.baidubce.com (v2 for chat
+	// completions and Responses, anthropic for messages), on a plan key of
+	// its own that the pay-as-you-go API turns away. It serves no model
+	// list, so the plan's documented models are given, less deepseek-v4-flash
+	// and kimi-k2.6, gone 2026-09-29; qianfan-code-latest is whichever the
+	// console has picked.
+	{ID: "qianfan-token-plan", Name: "Baidu Qianfan Token Plan", Icon: "baiducloud-color", Kind: KindVendor,
+		Chat: "https://qianfan.baidubce.com/v2/tokenplan/personal", Responses: "https://qianfan.baidubce.com/v2/tokenplan/personal", Anthropic: "https://qianfan.baidubce.com/anthropic/tokenplan/personal",
+		Note:    "Token Plan · 个人版",
+		Website: "https://cloud.baidu.com/doc/qianfan/s/Dmrabu8b6", KeysURL: "https://console.bce.baidu.com/qianfan/resource/token-plan",
+		NoList: true,
+		Models: []string{"qianfan-code-latest", "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731",
+			"glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1"}},
 	// Tencent Cloud's Token Plan (TokenHub): a general and a Hy plan on one
 	// sk-tp- key, served at their own endpoints under /plan, chat completions
 	// and Anthropic messages only (its Codex page asks for wire_api "chat").
@@ -202,20 +216,24 @@ var presets = []PresetDef{
 	// Amazon Bedrock (#176), with a Bedrock API key (AWS_BEARER_TOKEN_BEDROCK),
 	// no SigV4: its runtime serves Claude on Anthropic's messages at
 	// /anthropic/v1/messages and the other models on chat completions at
-	// /openai/v1, each in the region picked. It has no list to ask, so the
-	// models are given: Claude as its global. inference profiles, which
-	// every commercial region routes; one kept in a geography (us., eu.,
-	// apac., jp., au.) is typed in by hand.
+	// /openai/v1, and OpenAI's GPT models (not gpt-oss) on the Responses
+	// API there too, each in the region picked. It has no list to ask, so the
+	// models are given: Claude and GPT-6 as their global. inference
+	// profiles, which every commercial region routes (GPT-6 has no in-region
+	// id there), then the in-region ids of the others, which not every
+	// region serves (gpt-oss isn't in ap-southeast-1); one kept in a
+	// geography (us., eu., apac., jp., au.) is typed in by hand.
 	{ID: "bedrock", Name: "Amazon Bedrock", Icon: "bedrock-color", Kind: KindVendor,
-		Chat: bedrockChat("us-east-1"), Anthropic: bedrockAnthropic("us-east-1"),
+		Chat: bedrockChat("us-east-1"), Responses: bedrockChat("us-east-1"), Anthropic: bedrockAnthropic("us-east-1"),
 		Note:    "Bedrock API key",
 		Website: "https://aws.amazon.com/bedrock/", KeysURL: "https://console.aws.amazon.com/bedrock/home#/api-keys",
 		Regions: bedrockRegions("us-east-1", "us-east-2", "us-west-2", "eu-central-1", "eu-west-1", "eu-west-3",
 			"ap-northeast-1", "ap-southeast-1", "ap-southeast-2", "ap-south-1"),
 		NoList: true,
-		Models: []string{"global.anthropic.claude-opus-5-5", "global.anthropic.claude-sonnet-5", "global.anthropic.claude-opus-5",
+		Models: []string{"global.anthropic.claude-opus-5-5", "global.anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5", "global.anthropic.claude-opus-5",
 			"global.anthropic.claude-fable-5-1", "global.anthropic.claude-opus-4-8", "global.anthropic.claude-opus-4-7",
 			"global.anthropic.claude-haiku-4-5-20251001-v1:0",
+			"global.openai.gpt-6-astra", "global.openai.gpt-6-sol", "global.openai.gpt-6-luna",
 			"openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "qwen.qwen3-coder-480b-a35b-v1:0", "deepseek.v3.2",
 			"moonshotai.kimi-k2.5", "zai.glm-5", "minimax.minimax-m2.5"}},
 	// Ollama's own hosted models: the local server's API, at ollama.com with a key
@@ -260,6 +278,17 @@ var presets = []PresetDef{
 	{ID: "siliconflow", Name: "SiliconFlow", Icon: "siliconcloud-color", Kind: KindRelay, Catalog: "siliconflow",
 		Chat:    "https://api.siliconflow.cn/v1",
 		Website: "https://cloud.siliconflow.cn", KeysURL: "https://cloud.siliconflow.cn/account/ak"},
+	// NVIDIA's hosted NIM endpoints (#197): chat completions only; its
+	// /v1/responses answers for a few models alone, 404 for the rest
+	{ID: "nvidia", Name: "NVIDIA NIM", Icon: "nvidia-color", Kind: KindRelay, Catalog: "nvidia",
+		Chat:    "https://integrate.api.nvidia.com/v1",
+		Website: "https://build.nvidia.com", KeysURL: "https://build.nvidia.com/settings/api-keys"},
+	// 魔搭's API-Inference (#197), a ModelScope access token as the key; not
+	// DashScope, the Qwen presets' API
+	{ID: "modelscope", Name: "ModelScope", Icon: "modelscope-color", Kind: KindRelay, Catalog: "modelscope",
+		Chat: "https://api-inference.modelscope.cn/v1", Responses: "https://api-inference.modelscope.cn/v1",
+		Note:    "魔搭 · API-Inference",
+		Website: "https://modelscope.cn/docs/model-service/API-Inference/intro", KeysURL: "https://modelscope.cn/my/myaccesstoken"},
 	{ID: "aihubmix", Name: "AiHubMix", Icon: "aihubmix-color", Kind: KindRelay,
 		Chat: "https://aihubmix.com/v1", Anthropic: "https://aihubmix.com",
 		Website: "https://aihubmix.com", KeysURL: "https://console.aihubmix.com/token"},
@@ -319,7 +348,7 @@ func bedrockAnthropic(region string) string {
 func bedrockRegions(ids ...string) []Region {
 	out := make([]Region, len(ids))
 	for i, id := range ids {
-		out[i] = Region{ID: id, Name: id, Chat: bedrockChat(id), Anthropic: bedrockAnthropic(id)}
+		out[i] = Region{ID: id, Name: id, Chat: bedrockChat(id), Responses: bedrockChat(id), Anthropic: bedrockAnthropic(id)}
 	}
 	return out
 }

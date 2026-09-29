@@ -19,6 +19,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -416,6 +417,9 @@ func startCommandCodeSignIn(s *signInFlow) error {
 	return nil
 }
 
+// cmdWhoamiWait is how long a sign-in waits to ask whoami again.
+var cmdWhoamiWait = time.Second
+
 // cmdOrigins are the Studio pages that may post to the callback.
 var cmdOrigins = []string{"https://commandcode.ai", "https://staging.commandcode.ai"}
 
@@ -540,8 +544,12 @@ func (s *signInFlow) commandCodeCallback(w http.ResponseWriter, r *http.Request)
 	answer(true, "")
 }
 
-// cmdSignedIn checks a new key and names its account, as the CLI does
-// with whoami, and reads its plan.
+// cmdSignedIn names a new key's account with whoami, and reads its plan.
+// Only whoami turning the key down (401, 403) fails the sign-in: the CLI's
+// own browser sign-in keeps the key Studio posts without asking whoami at
+// all, and whoami has answered a key just made with a 500, so a whoami
+// that errs is asked again a few times and then passed over for the name
+// Studio sent with the key.
 func cmdSignedIn(ctx context.Context, a cmdAuth) (who, plan string, err error) {
 	var me struct {
 		User struct {
@@ -551,8 +559,25 @@ func cmdSignedIn(ctx context.Context, a cmdAuth) (who, plan string, err error) {
 			Email    string `json:"email"`
 		} `json:"user"`
 	}
-	if err := accountJSON(ctx, cmdAPI+"/alpha/whoami", a.APIKey, nil, &me); err != nil {
-		return "", "", fmt.Errorf("Command Code didn't take the new key: %w", err)
+	for try := 0; ; try++ {
+		err := accountJSON(ctx, cmdAPI+"/alpha/whoami", a.APIKey, nil, &me)
+		var st *accountStatusError
+		if err == nil {
+			break
+		}
+		if errors.As(err, &st) && (st.status == http.StatusUnauthorized || st.status == http.StatusForbidden) {
+			return "", "", fmt.Errorf("Command Code didn't take the new key: %w", err)
+		}
+		if try == 2 || ctx.Err() != nil {
+			if firstNonEmpty(a.UserName, a.UserID) == "" {
+				return "", "", fmt.Errorf("Command Code couldn't say which account signed in: %w", err)
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(cmdWhoamiWait):
+		}
 	}
 	who = firstNonEmpty(me.User.UserName, a.UserName, me.User.Email, me.User.ID, a.UserID)
 	if who == "" {

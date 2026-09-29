@@ -529,7 +529,7 @@ func TestAnthropicPassthroughTurnsThinkingOffUnlessAsked(t *testing.T) {
 	for _, c := range []struct{ req, want string }{
 		{`{"model":"m1","max_tokens":5,"messages":[],"output_config":{"effort":"high"}}`, `"thinking":{"type":"disabled"}`},
 		{`{"model":"m1","max_tokens":5,"messages":[],"thinking":{"type":"adaptive"}}`, `"thinking":{"type":"adaptive"}`},
-		{`{"model":"m1","max_tokens":5,"messages":[],"thinking":{"type":"enabled","budget_tokens":2048}}`, `"thinking":{"budget_tokens":2048,"type":"enabled"}`},
+		{`{"model":"m1","max_tokens":5,"messages":[],"thinking":{"type":"enabled","budget_tokens":2048}}`, `"thinking":{"type":"enabled","budget_tokens":2048}`},
 	} {
 		if code, body := post(t, "/v1/messages", c.req); code != 200 {
 			t.Fatalf("%d %s", code, body)

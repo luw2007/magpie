@@ -16,6 +16,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/yetone/magpie/internal/redact"
 )
 
 // Settings is what the user chose. "" and "system" both mean "follow the OS".
@@ -38,10 +40,13 @@ type Settings struct {
 	// tokens, passwords) from the vendors behind magpie: they go as
 	// placeholders, and come back as they were. RedactPersonal does the same
 	// for emails, phone numbers and ID and bank card numbers, and
-	// RedactWords for the user's own words.
-	Redact         bool     `json:"redact,omitempty"`
-	RedactPersonal bool     `json:"redactPersonal,omitempty"`
-	RedactWords    []string `json:"redactWords,omitempty"`
+	// RedactWords for the user's own words. RedactRules are the user's own
+	// rules for secrets magpie's don't know (a gateway's oc_sk_… key), a
+	// prefix or a pattern each, masked with the secrets while Redact is on.
+	Redact         bool          `json:"redact,omitempty"`
+	RedactPersonal bool          `json:"redactPersonal,omitempty"`
+	RedactWords    []string      `json:"redactWords,omitempty"`
+	RedactRules    []redact.Rule `json:"redactRules,omitempty"`
 	// LAN shares the gateway on the local network, for agents on other
 	// machines; a request from one must carry LANKey as its API key, a
 	// key magpie makes when LAN is first turned on.
@@ -223,6 +228,11 @@ func Save(s Settings) error {
 	if s.ImageGen != "" && s.ImageGen != "off" && !strings.Contains(s.ImageGen, "/") {
 		return fmt.Errorf("the image generation model must be a model's id such as openai/gpt-image-1, or off, not %q", s.ImageGen)
 	}
+	rules, err := redact.CheckRules(s.RedactRules)
+	if err != nil {
+		return err
+	}
+	s.RedactRules = rules
 	s.AgentOrder, s.AgentsHidden, s.AgentsShown = ids(s.AgentOrder), ids(s.AgentsHidden), ids(s.AgentsShown)
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		return err

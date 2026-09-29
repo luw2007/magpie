@@ -73,70 +73,22 @@ func TestApplyGroupPairs(t *testing.T) {
 	if err := applyGroupPairs(&g, []string{"models=m,b/x a/m", "routing=order", "stays=session", "name=G one"}, resolve, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyGroupPairs(&g, []string{"member-efforts=b/x:high"}, resolve, false); err != nil || g.MemberEfforts["b/x"] != "high" {
-		t.Fatalf("member effort: %+v %v", g.MemberEfforts, err)
-	}
-	for _, bad := range []string{"member-efforts=b/x:turbo", "member-efforts=nope:high"} {
-		if err := applyGroupPairs(&g, []string{bad}, resolve, false); err == nil {
-			t.Errorf("%s accepted", bad)
-		}
-	}
-	ids["or/model:free"] = "or/model:free"
-	g.Members = append(g.Members, "or/model:free")
-	if err := applyGroupPairs(&g, []string{"member-efforts+=or/model:free:max"}, resolve, false); err != nil || g.MemberEfforts["or/model:free"] != "max" {
-		t.Fatalf("colon model effort: %+v %v", g.MemberEfforts, err)
+	if strings.Join(g.Members, " ") != "a/m b/x" || g.Routing != "order" || g.Affinity != "session" || g.Name != "G one" {
+		t.Fatalf("%+v", g)
 	}
 	if err := applyGroupPairs(&g, []string{"models+=b/y,b/x", "models-=a/m"}, resolve, false); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(g.Members, " ") != "b/x or/model:free b/y" {
+	if strings.Join(g.Members, " ") != "b/x b/y" {
 		t.Fatalf("members: %v", g.Members)
 	}
-	if err := applyGroupPairs(&g, []string{"models-=x"}, resolve, false); err != nil || strings.Join(g.Members, " ") != "or/model:free b/y" {
+	if err := applyGroupPairs(&g, []string{"models-=x"}, resolve, false); err != nil || strings.Join(g.Members, " ") != "b/y" {
 		t.Fatalf("drop by bare id: %v %v", err, g.Members)
 	}
 	for _, bad := range [][]string{{"models"}, {"colour=red"}, {"id=x"}, {"models=nope"}, {"routing=fastest"}, {"models-=a/m"}} {
 		h := g
 		if err := applyGroupPairs(&h, bad, resolve, false); err == nil {
 			t.Errorf("%v: no error", bad)
-		}
-	}
-}
-
-func TestGroupMemberEfforts(t *testing.T) {
-	groupsHome(t)
-	g, err := addGroup("Efforts", []string{"models=a/m,b/gpt-5.5", "member-efforts=a/m:high,b/gpt-5.5:xhigh"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if g.MemberEfforts["a/m"] != "high" || g.MemberEfforts["b/gpt-5.5"] != "xhigh" {
-		t.Fatalf("added efforts: %+v", g.MemberEfforts)
-	}
-	if saved := storedGroups(t)[0]["member_efforts"].(map[string]any); saved["a/m"] != "high" || saved["b/gpt-5.5"] != "xhigh" {
-		t.Fatalf("stored efforts: %v", saved)
-	}
-
-	g, err = setGroup("efforts", []string{"member-efforts=a/m:low", "member-efforts+=b/gpt-5.5:max"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if g.MemberEfforts["a/m"] != "low" || g.MemberEfforts["b/gpt-5.5"] != "max" {
-		t.Fatalf("replaced/added efforts: %+v", g.MemberEfforts)
-	}
-	if _, err := setGroup("efforts", []string{"member-efforts-=a/m"}); err != nil {
-		t.Fatal(err)
-	}
-	g, _ = findGroup("efforts")
-	if _, ok := g.MemberEfforts["a/m"]; ok || g.MemberEfforts["b/gpt-5.5"] != "max" {
-		t.Fatalf("removed effort: %+v", g.MemberEfforts)
-	}
-	for _, pairs := range [][]string{
-		{"member-efforts=a/m:turbo"},
-		{"member-efforts=not/a-member:high"},
-		{"member-efforts-=not/a-member"},
-	} {
-		if _, err := setGroup("efforts", pairs); err == nil {
-			t.Errorf("%v accepted", pairs)
 		}
 	}
 }

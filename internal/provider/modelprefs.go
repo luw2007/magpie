@@ -12,11 +12,14 @@ import (
 
 // A model's name is the vendor's, or models.dev's, and agents are shown it
 // with the provider after it (Claude Opus 5.5 · Claude Code). The user can
-// give one of a provider's models a name of their own instead (Opus 5.5):
-// it is kept in settings' ModelNames by "<provider id>/<model id>", apart
-// from the vendor's list, so a Refresh, a restart or an upgrade leaves it,
-// and the same model another provider serves keeps its own. Only the name
-// changes: the model's id, and where requests for it go, stay as they were.
+// give one of a provider's models a name of their own instead (Opus): it is
+// kept in settings' ModelNames by "<provider id>/<model id>", apart from the
+// vendor's list, so a Refresh, a restart or an upgrade leaves it, and the
+// same model another provider serves keeps its own. Only the name changes:
+// the model's id, and where requests for it go, stay as they were. The
+// provider still goes after it (Opus · Claude Code), same as the vendor's
+// own name, so a picker full of renamed models can still be told apart by
+// vendor; it's left off only when the name given already says it.
 
 // The user can also keep only some of the reasoning levels a model has
 // (low, medium and high of its six): settings' ModelEfforts, kept the same
@@ -196,16 +199,17 @@ func renameKeys[V any](m map[string]V, from, to string) bool {
 	return len(moved) > 0
 }
 
-// Label is how an agent's list names the entry: the name the user gave it,
-// else its own with its provider's after it, or "routing group" for a
-// group's.
+// Label is how an agent's list names the entry: its name (the user's own,
+// when they gave one, else the vendor's) with its provider's after it, or
+// "routing group" for a group's — dropped only when a name of the user's
+// own already carries the provider's, so it isn't said twice.
 func (e Entry) Label() string {
-	if e.Default != "" {
-		return e.Name
-	}
 	by := e.Provider.Name
 	if e.Group != "" {
 		by = "routing group"
+	}
+	if e.Default != "" && strings.Contains(strings.ToLower(e.Name), strings.ToLower(by)) {
+		return e.Name
 	}
 	return e.Name + " · " + by
 }

@@ -45,9 +45,9 @@ and there is a terminal version (`magpie tui`) and a plain CLI.
   use its models through the gateway, with nothing copied and no key to
   paste.
 - **Providers with one field.** Pick a preset (Anthropic, OpenAI, Gemini,
-  DeepSeek, Kimi, GLM, MiniMax, StepFun, Qwen, Tencent Cloud Token Plan,
+  DeepSeek, Kimi, GLM, MiniMax, StepFun, Qwen, Baidu Qianfan Token Plan, Tencent Cloud Token Plan,
   Huawei Cloud MaaS, Volcengine Ark, Mistral, Groq, xAI, OpenRouter, Together,
-  Fireworks, SiliconFlow, AiHubMix, 302.AI, Ollama, LM Studio…),
+  Fireworks, SiliconFlow, NVIDIA NIM, ModelScope, AiHubMix, 302.AI, Ollama, LM Studio…),
   paste a key, done. Custom vendors need a name and a base URL. magpie never
   reads keys from your shell environment.
 - **Real model lists, nothing compiled in.** With a key in hand magpie asks
@@ -83,6 +83,7 @@ and there is a terminal version (`magpie tui`) and a plain CLI.
 | omp (oh-my-pi) | `~/.omp/agent/config.yml` (+ `models.yml`) | model |
 | Devin        | `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows) | model |
 | Hermes Agent | `~/.hermes/config.yaml` (`$HERMES_HOME`) | model |
+| Kimi Code    | `~/.kimi/config.toml` (`$KIMI_SHARE_DIR`) | model (a `magpie` provider; magpie's models in Kimi's /model) |
 | Cline (CLI)  | `~/.cline/data/settings/providers.json` (`$CLINE_DIR`) | model, effort (magpie takes its openai-compatible provider) |
 | Qoder (CLI)  | `~/.qoder/settings.json` (`$QODER_CONFIG_DIR`) | model, effort (a `magpie` custom provider; needs a Qoder plan with BYOK) |
 | Qoder CN (CLI) | `~/.qoder-cn/settings.json` (`$QODERCN_CONFIG_DIR`) | model, effort (as Qoder; its own accounts, a Qoder CN plan with BYOK) |
@@ -148,6 +149,16 @@ or balance appears in the Usage page, `magpie quota`, and
 `GET /v1/magpie/quotas`. Unrelated pools are not matched merely because they
 expose a model with the same family name.
 
+Baidu Qianfan's [Token Plan Personal](https://cloud.baidu.com/doc/qianfan/s/Dmrabu8b6)
+is available as `qianfan-token-plan`, with its dedicated Chat Completions,
+Responses and Anthropic Messages endpoints. Add it with
+`magpie provider add qianfan-token-plan <personal-plan-api-key>`.
+`qianfan-code-latest` follows the model selected in the Qianfan console;
+explicit model IDs such as `glm-5.3` select that model directly. The preset
+uses the documented plan models because the plan has no model-list endpoint;
+new model IDs can also be entered by hand. Use a Token Plan Personal key:
+Coding Plan and enterprise plans have different endpoints.
+
 ### Routing groups
 
 A routing group is several models, from one provider or many, that an agent
@@ -173,7 +184,7 @@ member), `usage` (least used first), or `benchmark`. Benchmark routing fetches
 the DeepSWE snapshot from CodexRadar's
 `GET /api/v1/intelligence-efficiency?benchmark=deep-swe`: each member is
 compared at its **own** model and effective reasoning effort. If a member has
-no configured effort, it uses the request's final effort (including a
+no fixed effort, it uses the request's final effort (including a
 classifier/Jev choice). Models with at least 20 samples and IQ at least 80 go
 first in ascending `average_minutes`; ties retain the group's configured
 order. Matching preserves vendor model IDs, including a real `-high` suffix.
@@ -190,24 +201,11 @@ single value `benchmark`:
 
 ```sh
 magpie group add Fast \
-  models=codex/gpt-5.6-luna,deepseek/deepseek-v4-flash,gcloud/google/gemini-3.8-flash-high,glm/glm-5.3-flash \
-  routing=benchmark \
-  member-efforts=codex/gpt-5.6-luna:xhigh,deepseek/deepseek-v4-flash:max,gcloud/google/gemini-3.8-flash-high:high,glm/glm-5.3-flash:high
-magpie group set fast member-efforts+=deepseek/deepseek-v4-flash:max
-magpie group set fast member-efforts-=glm/glm-5.3-flash
+  models=codex/gpt-5.6-luna:xhigh,deepseek/deepseek-v4-flash:max,gcloud/google/gemini-3.8-flash-high:high,glm/glm-5.3-flash:high \
+  routing=benchmark
+magpie group set fast models+=deepseek/deepseek-v4-flash:high
+magpie group set fast models-=glm/glm-5.3-flash:high
 ```
-
-`member-efforts=` replaces all member overrides; `member-efforts+=` updates
-named members; `member-efforts-=` clears selected members. Keys are exact
-`provider/model` or `group/<id>` members and values are `low`, `medium`,
-`high`, `xhigh`, or `max`. They persist separately under `member_efforts` in
-`providers.json`, leaving `members` model IDs unchanged; older group files
-without overrides remain valid. An override on a nested group member applies
-to that group's models; without one, the nested group's own member overrides
-apply. The chosen effort is used in the outgoing request and changes on
-fallback, not just in benchmark sorting. Requests without reasoning remain
-without reasoning. The Routing view and terminal group's `e` key also edit
-member effort.
 
 `stays=` is how long a conversation stays with the key or account that
 answered it: `auto` (the default, while the vendor's cache of it is worth
@@ -230,8 +228,9 @@ An agent you have signed in to is a subscription with models behind it, so
 magpie offers it as a provider too. Claude Code (an OAuth login in the macOS
 Keychain or `~/.claude/.credentials.json`), Codex (a ChatGPT login in
 `~/.codex/auth.json`), Copilot (a GitHub login in
-`~/.config/github-copilot/apps.json`) and Devin (`devin auth login`, kept in
-`~/.local/share/devin/credentials.toml`) appear in `magpie providers` and in
+`~/.config/github-copilot/apps.json`), Devin (`devin auth login`, kept in
+`~/.local/share/devin/credentials.toml`) and Qoder (signed in from magpie with
+its OAuth device flow, kept in magpie's own config) appear in `magpie providers` and in
 the Providers tab as *signed in as …*, with their models spelled
 `claude/claude-sonnet-5`, `codex/gpt-5.5`, `copilot/claude-sonnet-4.5` or
 `devin/swe-2-max` in every other agent's picker. magpie reads the agent's own credentials each

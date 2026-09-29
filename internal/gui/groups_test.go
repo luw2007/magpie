@@ -10,8 +10,9 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
-// Legacy groups without member_efforts remain visible beside benchmark groups.
-func TestGroupsStateKeepsLegacyAndMemberEfforts(t *testing.T) {
+// Legacy groups without member efforts stay visible beside groups whose
+// members are fixed at efforts of their own.
+func TestGroupsStateKeepsLegacyAndFixedMembers(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
@@ -21,7 +22,7 @@ func TestGroupsStateKeepsLegacyAndMemberEfforts(t *testing.T) {
 	if err := provider.SaveGroup(provider.Group{ID: "legacy", Name: "Legacy", Members: []string{"a/m"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.SaveGroup(provider.Group{ID: "fast", Name: "Fast", Members: []string{"a/m"}, MemberEfforts: map[string]string{"a/m": "high"}, Routing: provider.Benchmark}); err != nil {
+	if err := provider.SaveGroup(provider.Group{ID: "fast", Name: "Fast", Members: []string{"a/m:high"}, Routing: provider.Benchmark}); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
@@ -39,10 +40,10 @@ func TestGroupsStateKeepsLegacyAndMemberEfforts(t *testing.T) {
 	for _, g := range state.Groups {
 		seen[g.ID] = g
 	}
-	if !seen["legacy"].Ready || len(seen["legacy"].Members) != 1 || seen["legacy"].MemberEfforts != nil {
+	if !seen["legacy"].Ready || len(seen["legacy"].Members) != 1 {
 		t.Fatalf("legacy group lost: %+v", seen["legacy"])
 	}
-	if !seen["fast"].Ready || seen["fast"].MemberEfforts["a/m"] != "high" {
+	if !seen["fast"].Ready || !strings.Contains(strings.Join(seen["fast"].Members, " "), "a/m:high") {
 		t.Fatalf("fast group lost: %+v", seen["fast"])
 	}
 }
