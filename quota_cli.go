@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -43,7 +46,7 @@ func quotaCmd(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	qs := []provider.Quota{}
-	for _, q := range provider.QuotaReport(ctx, time.Now()) {
+	for _, q := range quotaData(ctx) {
 		if len(only) == 0 || quotaMatches(q, only) {
 			qs = append(qs, q)
 		}
@@ -86,6 +89,48 @@ func quotaCmd(args []string) error {
 	}
 	fmt.Println(faint.Render("  % is how much of a window is used · ↻ when it starts again · --json for scripts, or GET /v1/magpie/quotas on the gateway"))
 	return nil
+}
+
+// quotaData is what magpie quota shows: a running gateway's, asked first,
+// since some subscriptions need an environment variable only the app's
+// own (a local proxy's admin key, say — see sub2api_usage.go's SUB2API_*
+// and CPAMC_*) that a shell running the CLI need not have; computed in
+// this process only when no gateway answers.
+func quotaData(ctx context.Context) []provider.Quota {
+	gctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if qs, err := quotasFromGateway(gctx); err == nil {
+		return qs
+	}
+	return provider.QuotaReport(ctx, time.Now())
+}
+
+// quotasFromGateway is a running gateway's GET /v1/magpie/quotas, the
+// report it computed in its own environment.
+func quotasFromGateway(ctx context.Context) ([]provider.Quota, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL()+"/v1/magpie/quotas", nil)
+	if err != nil {
+		return nil, err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gateway: %s", res.Status)
+	}
+	var body struct {
+		Data []provider.Quota `json:"data"`
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		return nil, err
+	}
+	return body.Data, nil
 }
 
 // resetsCell is a Codex account's rate-limit resets in a line: "↺ 2
