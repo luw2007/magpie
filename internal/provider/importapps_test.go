@@ -95,7 +95,7 @@ func TestImportCCSwitch(t *testing.T) {
 	if p, err := Find("some-relay"); err != nil || p.Key != "sk-relay" || len(p.Models) != 2 {
 		t.Fatalf("relay saved: %+v", p)
 	}
-	if p, _ := Find("deepseek"); p.Key != "sk-other" || len(p.Keys) != 1 || p.Keys[0].Key != "sk-ds" {
+	if p, _ := Find("deepseek"); p.Key != "sk-other" || len(p.Keys) != 2 || p.Keys[0].Key != "sk-other" || p.Keys[1].Key != "sk-ds" || p.Keys[0].ID == "" || p.Keys[1].ID == "" || p.Keys[0].ID == p.Keys[1].ID {
 		t.Fatalf("deepseek's second key: %+v", p)
 	}
 	if it := itemsOf(t, "cc-switch")["claude/ds"]; it.Status != "same" {

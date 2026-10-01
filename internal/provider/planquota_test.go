@@ -209,8 +209,8 @@ func TestPlanQuotas(t *testing.T) {
 	t.Cleanup(func() { http.DefaultClient.Transport = old })
 
 	for _, p := range []Provider{
-		{ID: "glm", Name: "GLM", Chat: "https://open.bigmodel.cn/api/coding/paas/v4", Key: "glm-a", KeyName: "work",
-			Keys: []KeyAccount{{Key: "glm-a"}, {Key: "glm-b", Name: "home"}, {Key: "glm-off", Off: true}}},
+		{ID: "glm", Name: "GLM", Chat: "https://open.bigmodel.cn/api/coding/paas/v4",
+			Keys: []KeyAccount{{ID: "work", Key: "glm-a", Name: "work"}, {ID: "home", Key: "glm-b", Name: "home"}, {ID: "off", Key: "glm-off", Off: true}}},
 		{ID: "glm-api", Name: "GLM API", Chat: "https://open.bigmodel.cn/api/paas/v4", Key: "glm-payg"},
 		{ID: "go", Name: "OpenCode Go", Chat: "https://opencode.ai/zen/go/v1", Key: "go-k"},
 		{ID: "zen", Name: "Zen", Chat: "https://opencode.ai/zen/v1", Key: "zen-k"},

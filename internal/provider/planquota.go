@@ -329,7 +329,7 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 			continue
 		}
 		keys := []string{p.Key}
-		names := []string{p.KeyName}
+		names := []string{p.SelectedKey().Name}
 		for _, k := range p.Keys {
 			if !k.Off && k.Key != "" && k.Key != p.Key {
 				keys, names = append(keys, k.Key), append(names, k.Name)

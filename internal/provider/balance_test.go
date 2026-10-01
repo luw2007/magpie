@@ -124,8 +124,8 @@ func TestKeyBalances(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Key: "sk-one", KeyName: "main",
-		Keys:       []KeyAccount{{Name: "spare", Key: "sk-two"}, {Name: "gone", Key: "sk-bad"}, {Name: "off", Key: "sk-off", Off: true}},
+	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1",
+		Keys:       []KeyAccount{{ID: "main", Name: "main", Key: "sk-one"}, {ID: "spare", Name: "spare", Key: "sk-two"}, {ID: "gone", Name: "gone", Key: "sk-bad"}, {ID: "off", Name: "off", Key: "sk-off", Off: true}},
 		Headers:    map[string]string{"X-Org": "acme"},
 		BalanceURL: srv.URL + "/api/usage/token", BalancePath: "$data.total_available / 500000"}); err != nil {
 		t.Fatal(err)

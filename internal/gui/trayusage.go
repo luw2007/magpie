@@ -26,9 +26,12 @@ func trayUsageEvery() time.Duration {
 	return time.Duration(settings.Load().TrayUsageEvery) * time.Minute
 }
 
-// trayCardID names a card for settings.TrayUsage: its provider, and the
-// account when there is one, as two of one vendor can be signed in.
+// trayCardID names pools independently of their bound providers; other cards
+// use the provider and optional account identity.
 func trayCardID(q provider.SubscriptionQuota) string {
+	if q.PoolRef != "" {
+		return "pool|" + q.PoolRef
+	}
 	if q.User == "" {
 		return q.Provider
 	}

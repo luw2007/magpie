@@ -135,18 +135,73 @@ System One `choice`, `noul`, and `score` questions to
 `https://bjev.bytedance.net/v1/systemone`; agents do not see it in their
 model picker.
 
-### Local sub2api quotas
+### Quota sources, pools, and key bindings
 
-When `SUB2API_BASE_URL` and `SUB2API_ADMIN_API_KEY` are set, Magpie asks the
-sub2api admin API directly for Claude and GPT, preserving every allowance
-window it reports, including five-hour and seven-day windows. With
-`CPAMC_BASE_URL`, `CPAMC_TOKEN`, `CPAMC_GOOGLE_AUTH_INDEX`, `ZHIPU_API_KEY`,
-and `DEEPSEEK_API_KEY`, it also asks Google/GCloud, GLM, and DeepSeek directly.
-The first provider mapping intentionally covers IDs containing
-`claude-sub2api`, `codex-gpt`, `gcloud`, `glm`, or `deepseek`. Their allowance
-or balance appears in the Usage page, `magpie quota`, and
-`GET /v1/magpie/quotas`. Unrelated pools are not matched merely because they
-expose a model with the same family name.
+Quota configuration lives with providers in `~/.config/magpie/providers.json`
+(`$XDG_CONFIG_HOME/magpie/providers.json` when set). Sources have stable IDs and
+explicit types: `sub2api`, `google-proxy`, `glm`, `deepseek`, or `traex`. Multiple
+instances of the same source type are independent. Pools reference a source ID
+and upstream account **IDs**, never display names; API keys reference a list of pools and
+the exact upstream model IDs they may serve (`*`, or an omitted list, means all).
+Quota configuration does not add models to a provider's catalog.
+Account IDs are opaque identifiers in persisted configuration; each source's
+discovery and collection decide which IDs are valid and report missing readings
+explicitly instead of inventing quota.
+
+```sh
+magpie quota sources add --id relay --name "My sub2api" --type sub2api \
+  --base-url https://relay.example.com --credential-env SUB2API_ADMIN_API_KEY
+magpie quota sources discover --id relay
+magpie quota pools add --id gpt-more --name "More plan" --source relay --accounts 2
+magpie quota pools add --id gpt --name "Pro plan" --source relay --accounts 8
+magpie provider keys my-relay                    # stable key IDs, masked secrets
+magpie provider keys my-relay bind KEY_ID --pools gpt-more,gpt --models gpt-6-luna
+magpie quota sources list
+magpie quota pools list
+magpie quota
+```
+
+Use source/pool `edit` and `remove` commands with `--id`; linked sources and pools
+cannot be deleted until their references are removed. The Usage page offers the
+same source and pool editing, account discovery, and key/model binding controls.
+Inline `--credential` uses the existing mode-0600 secret-saving convention and is
+masked in public configuration responses. Alternatively use `--credential-env`
+and optionally `--env-file ~/path/to/credentials.env`: the latter accepts only
+plain `KEY=VALUE` entries, never executes a shell or fish file. Relative files
+resolve beside `providers.json`; `~/` and environment variables in paths expand,
+but credential values remain literal. Inline credentials and credential
+environment references are mutually exclusive. `--off` disables a source without
+removing its configuration. Google proxy sources accept optional `--project`.
+Traex sources expose `--weekly-model`, `--load-model`, and `--command`; command is
+an executable path invoked with fixed `models --json` arguments, never a shell.
+
+Legacy main keys and additional keys migrate into one persisted key list on load;
+their stable IDs survive secret replacement, ordering, enablement, and protocol
+changes. Quota collection no longer guesses provider IDs or automatically reads
+the old `SUB2API_*`, `CPAMC_*`, `ZHIPU_API_KEY`, or `DEEPSEEK_API_KEY` integration.
+`magpie quota sources import-env` explicitly imports those exported variables into
+sources only. Discover accounts and bind pools and keys yourself; importing never
+assumes which API key belongs to an upstream account. Backups and synchronization
+include source and pool configuration; secret-free backups omit inline secrets.
+
+One key can bind several pools (`poolRefs` in persisted key entries), and each pool
+can include several accounts; several keys can share a pool without duplicating
+its displayed usage. Each account retains its independent windows and a
+source-qualified identity. Routing uses the **maximum applicable window usage**
+across every pool/account bound to the key, not a sum or average of percentages.
+If any bound pool is unknown, the key's aggregate usage remains unknown.
+This is a conservative estimate: Magpie selects an API key, not the account that
+an upstream relay will actually choose. Unknown, stale, or failed readings are
+explicit states, never a fabricated 0% usage or remaining balance. Unbound keys
+keep their previous routing behavior, and signed-in OAuth routing is unchanged.
+Model scopes are checked against the actual outbound model after model mapping,
+before key ranking and fallback. Pool/account/key machine identifiers appear in
+quota output alongside independent display names.
+Fresh numeric readings use `status: "measured"`; `asOf` records when they were
+collected and does not itself mean stale. Readings become stale after the shared
+one-minute freshness interval, expired reset windows, or a failed-refresh fallback.
+Pool cards use pool identity independently of any one provider, since associated
+keys can belong to several providers.
 
 ### Routing groups
 

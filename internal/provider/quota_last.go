@@ -46,10 +46,13 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 	if user == "" {
 		user = q.User
 	}
-	if user == "" || q.Provider == "" {
+	key := q.Provider + "/" + strings.ToLower(user)
+	if q.PoolRef != "" {
+		identity, _ := json.Marshal([]string{q.SourceRef, q.PoolRef, q.AccountID})
+		key = "pool:" + string(identity)
+	} else if user == "" || q.Provider == "" {
 		return q
 	}
-	key := q.Provider + "/" + strings.ToLower(user)
 	c := &lastQuotas
 	c.Lock()
 	defer c.Unlock()
@@ -63,7 +66,11 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 		if len(q.Windows) == 0 && q.Balance == "" {
 			return q
 		}
-		e := lastQuota{At: time.Now(), Q: q}
+		at := time.Now()
+		if q.AsOf != nil {
+			at = *q.AsOf
+		}
+		e := lastQuota{At: at, Q: q}
 		for _, w := range q.Windows {
 			if w.matches != nil {
 				return q // a pool that can't be written down isn't kept
@@ -71,7 +78,6 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 			e.Spans = append(e.Spans, lastWindow{w.Span, w.Model, w.Aside})
 		}
 		e.Q.Error = ""
-		e.Q.AsOf = nil
 		if c.m == nil {
 			c.m = map[string]lastQuota{}
 		}
@@ -94,8 +100,16 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 			out.Windows[i].Span, out.Windows[i].Model, out.Windows[i].Aside = e.Spans[i].Span, e.Spans[i].Model, e.Spans[i].Aside
 		}
 	}
-	out.Windows = elapsed(out.Windows, time.Now())
+	if q.PoolRef == "" {
+		out.Windows = elapsed(out.Windows, time.Now())
+	}
 	out.Name, out.Icon, out.User = q.Name, q.Icon, q.User
+	out.Status = "stale"
+	if q.PoolRef != "" {
+		out.PoolRef, out.SourceRef, out.AccountID = q.PoolRef, q.SourceRef, q.AccountID
+		out.KeyRefs, out.DisplayName = q.KeyRefs, q.DisplayName
+		out.Error = q.Error
+	}
 	if out.Name == "" {
 		out.Name, out.Icon = e.Q.Name, e.Q.Icon
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"maps"
 	"os"
@@ -29,6 +30,10 @@ const providerUsage = `usage:
   magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.token, models.url
   magpie provider set <id> k=v…           change a provider's settings, with the same k=v pairs as add
   magpie provider key <id> <key>          change the API key
+  magpie provider keys <id> [list]        list stable key IDs, masked secrets and bindings
+  magpie provider keys <id> bind <key-id> --pools <id,...> --models <id,...>
+                                         omitted flags preserve bindings; empty values clear them
+  magpie provider keys <id> replace <key-id> <secret>   rotate a secret, preserving identity and bindings
   magpie provider icon <id> <file|name>   give a custom provider a picture (PNG, JPEG, SVG…) or a built-in icon
   magpie provider fallback <id> <provider/model>…   where requests go when it's out of quota or down (none clears)
   magpie provider models <id> [ids…]      fetch the vendor's model list, or choose which models to expose
@@ -230,6 +235,8 @@ func providerCmd(args []string) error {
 	}
 	verb, rest := args[1], args[2:]
 	switch verb {
+	case "keys":
+		return providerKeysCmd(rest)
 	case "add":
 		return addProvider(rest)
 	case "set":
@@ -272,11 +279,14 @@ func providerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		p.Key = rest[1]
-		if err := provider.Save(*p); err != nil {
+		if p.KeyID != "" {
+			if err := provider.ReplaceKey(p.ID, p.KeyID, rest[1]); err != nil {
+				return err
+			}
+		} else if err := provider.AddKey(p.ID, "", rest[1], ""); err != nil {
 			return err
 		}
-		fmt.Println(green.Render("✓"), p.Name, "key", muted.Render(provider.Mask(p.Key)))
+		fmt.Println(green.Render("✓"), p.Name, "key", muted.Render(provider.Mask(rest[1])))
 		return nil
 	case "icon":
 		if len(rest) != 2 {
@@ -457,6 +467,61 @@ func providerCmd(args []string) error {
 	return showProvider(*p)
 }
 
+func providerKeysCmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("magpie provider keys <id> [list|bind|replace]")
+	}
+	p, err := provider.Find(args[0])
+	if err != nil {
+		return err
+	}
+	if len(args) == 1 || (len(args) == 2 && args[1] == "list") {
+		for _, k := range p.KeyList() {
+			fmt.Printf("%s\t%s\t%s\ton=%t\tprotocol=%s\tpools=%s\tmodels=%s\n", k.ID, k.Name, k.Masked, k.On, k.Protocol, strings.Join(k.PoolRefs, ","), strings.Join(k.Models, ","))
+		}
+		return nil
+	}
+	if len(args) < 3 {
+		return fmt.Errorf("key ID is required")
+	}
+	switch args[1] {
+	case "replace":
+		if len(args) != 4 {
+			return fmt.Errorf("magpie provider keys <id> replace <key-id> <secret>")
+		}
+		return provider.ReplaceKey(p.ID, args[2], args[3])
+	case "bind":
+		var key provider.KeyAccount
+		found := false
+		for _, k := range p.Keys {
+			if k.ID == args[2] {
+				key, found = k, true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("key %q not found", args[2])
+		}
+		fs := flag.NewFlagSet("provider keys bind", flag.ContinueOnError)
+		pools := fs.String("pools", strings.Join(key.PoolRefs, ","), "comma-separated quota pool IDs; empty clears")
+		models := fs.String("models", strings.Join(key.Models, ","), "comma-separated allowed models; empty clears")
+		if err := fs.Parse(args[3:]); err != nil {
+			if err == flag.ErrHelp {
+				return nil
+			}
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("unexpected binding arguments")
+		}
+		allowed := strings.FieldsFunc(*models, func(r rune) bool { return r == ',' || r == ' ' })
+		poolRefs := strings.FieldsFunc(*pools, func(r rune) bool { return r == ',' || r == ' ' })
+		return provider.SetKeyBinding(p.ID, key.ID, poolRefs, allowed)
+	default:
+		return fmt.Errorf("unknown keys command %q", args[1])
+	}
+}
+
 // addProvider: `magpie provider add <preset> [key]` or `magpie provider add <name> k=v…`
 func addProvider(rest []string) error {
 	if len(rest) == 0 {
@@ -630,6 +695,14 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.Anthropic = v
 		case "key":
 			p.Key = v
+			if p.KeyID != "" {
+				for i := range p.Keys {
+					if p.Keys[i].ID == p.KeyID {
+						p.Keys[i].Key = v
+						break
+					}
+				}
+			}
 		case "catalog":
 			p.Catalog = v
 		case "models":

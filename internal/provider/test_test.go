@@ -34,8 +34,8 @@ func TestTestUsesEachEndpointsKey(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Anthropic: srv.URL,
-		Key: "sk-chat", KeyProtocol: Chat, Models: []string{"gpt-6-sol"},
-		Keys: []KeyAccount{{Key: "sk-anthropic", Protocol: Anthropic}}}
+		Models: []string{"gpt-6-sol"},
+		Keys:   []KeyAccount{{ID: "chat", Key: "sk-chat", Protocol: Chat}, {ID: "anthropic", Key: "sk-anthropic", Protocol: Anthropic}}}
 	for _, r := range p.Test(context.Background()) {
 		if !r.OK {
 			t.Errorf("%s: %+v", r.Protocol, r)
@@ -51,7 +51,7 @@ func TestTestUsesEachEndpointsKey(t *testing.T) {
 	if len(ms) != 2 {
 		t.Fatalf("merged list %+v", ms)
 	}
-	chat, anth := p.first(), p.Keys[0]
+	chat, anth := p.Keys[0], p.Keys[1]
 	if !p.Serves(chat, "gpt-6-sol") || p.Serves(chat, "claude-opus-5") || !p.Serves(anth, "claude-opus-5") || p.Serves(anth, "gpt-6-sol") {
 		t.Error("each key serves only its own list")
 	}
@@ -92,8 +92,7 @@ func TestTestModels(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Anthropic: srv.URL,
-		Key: "sk-chat", KeyProtocol: Chat,
-		Keys: []KeyAccount{{Key: "sk-anthropic", Protocol: Anthropic}}}
+		Keys: []KeyAccount{{ID: "chat", Key: "sk-chat", Protocol: Chat}, {ID: "anthropic", Key: "sk-anthropic", Protocol: Anthropic}}}
 	p.Fetch(context.Background())
 	rs := p.TestModels(context.Background(), []string{"gpt-6-sol", "claude-opus-5", "gone"})
 	if len(rs) != 3 || !rs[0].OK || !rs[1].OK || rs[2].OK || rs[2].Status != 404 || rs[2].Error != "no channel for model gone" {

@@ -55,9 +55,9 @@ func serveOn(t *testing.T, id, key string, models []string, v http.Handler, keys
 	t.Helper()
 	up := httptest.NewServer(v)
 	t.Cleanup(up.Close)
-	p := provider.Provider{ID: id, Name: strings.ToUpper(id), Key: key, Models: models, Chat: up.URL + "/v1"}
+	p := provider.Provider{ID: id, Name: strings.ToUpper(id), Keys: []provider.KeyAccount{{ID: key, Key: key}}, Models: models, Chat: up.URL + "/v1"}
 	for _, k := range keys {
-		p.Keys = append(p.Keys, provider.KeyAccount{Key: k})
+		p.Keys = append(p.Keys, provider.KeyAccount{ID: k, Key: k})
 	}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
@@ -335,7 +335,7 @@ func TestAffinity(t *testing.T) {
 	s := New()
 	postAs(t, s, "s1", first)
 	restingUntil.Lock()
-	restingUntil.m["aff#"+provider.KeyID("k1")] = time.Now().Add(time.Minute)
+	restingUntil.m["aff#k1"] = time.Now().Add(time.Minute)
 	restingUntil.Unlock()
 	postAs(t, s, "s1", again)
 	if r := s.trace.routes[len(s.trace.routes)-1]; v.tried[1] != "k2" || r.Affinity.Why != "resting" {
@@ -355,8 +355,8 @@ func TestKeyPoolsByProtocol(t *testing.T) {
 	v := &keyed{}
 	up := httptest.NewServer(v)
 	t.Cleanup(up.Close)
-	p := provider.Provider{ID: "mix", Name: "MIX", Key: "k1", KeyProtocol: provider.Chat, Models: []string{"m"}, Chat: up.URL + "/v1",
-		Keys: []provider.KeyAccount{{Key: "k2"}, {Key: "k3", Protocol: provider.Chat}}, Routing: provider.Rotate}
+	p := provider.Provider{ID: "mix", Name: "MIX", Models: []string{"m"}, Chat: up.URL + "/v1",
+		Keys: []provider.KeyAccount{{ID: "k1", Key: "k1", Protocol: provider.Chat}, {ID: "k2", Key: "k2"}, {ID: "k3", Key: "k3", Protocol: provider.Chat}}, Routing: provider.Rotate}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}

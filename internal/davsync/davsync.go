@@ -4,9 +4,9 @@
 // only ever holds a file it can't read.
 //
 // The magpie serving the gateway syncs every few minutes. The setup is
-// taken in five parts: providers (with their pictures and groups),
-// settings, profiles, the agents' models and the library (instructions,
-// MCP servers and skills). A part changed only here is
+// taken in five parts: providers (with their pictures, groups, usage sources
+// and quota pools), settings, profiles, the agents' models and the library
+// (instructions, MCP servers and skills). A part changed only here is
 // pushed; one changed only on the server is brought in; one changed on
 // both since the last sync keeps the newer, and the one it replaced is
 // saved in the sync folder beside magpie's files and named in a notice.
@@ -351,7 +351,7 @@ func hashes(b backup.Bundle) map[string]string {
 	}
 	s.Window, s.Proxy, s.Dock, s.DockWindow = nil, "", false, false // this computer's own: never synced
 	return map[string]string{
-		"providers": h([]any{b.Providers, b.Icons, b.Groups}),
+		"providers": h([]any{b.Providers, b.Icons, b.Groups, b.Sources, b.QuotaPools}),
 		"settings":  h(s),
 		"profiles":  h(orEmpty(b.Profiles)),
 		"agents":    h(orEmpty(b.Agents)),
@@ -371,6 +371,7 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 	switch part {
 	case "providers":
 		ps := from.Providers
+		sources := from.Sources
 		if !from.Keys && to.Keys { // sent without keys: keep the ones the server has
 			keys := map[string]provider.Provider{}
 			for _, p := range to.Providers {
@@ -378,12 +379,31 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 			}
 			ps = slices.Clone(ps)
 			for i, p := range ps {
-				if k, ok := keys[p.ID]; ok && p.Key == "" && len(p.Keys) == 0 {
-					ps[i].Key, ps[i].KeyName, ps[i].Keys, ps[i].KeyProtocol = k.Key, k.KeyName, k.Keys, k.KeyProtocol
+				if k, ok := keys[p.ID]; ok {
+					ps[i].Keys = slices.Clone(p.Keys)
+					if len(p.Keys) == 0 {
+						ps[i].Keys = slices.Clone(k.Keys)
+					}
+					for j := range ps[i].Keys {
+						if ps[i].Keys[j].Key == "" {
+							if n := slices.IndexFunc(k.Keys, func(q provider.KeyAccount) bool { return q.ID == ps[i].Keys[j].ID }); n >= 0 {
+								ps[i].Keys[j].Key = k.Keys[n].Key
+							}
+						}
+					}
+				}
+			}
+			sources = slices.Clone(sources)
+			for i := range sources {
+				if sources[i].Credential == "" && sources[i].CredentialEnv == "" {
+					if j := slices.IndexFunc(to.Sources, func(s provider.UsageSource) bool { return s.ID == sources[i].ID }); j >= 0 {
+						sources[i].Credential = to.Sources[j].Credential
+					}
 				}
 			}
 		}
 		to.Providers, to.Icons, to.Groups = ps, from.Icons, from.Groups
+		to.Sources, to.QuotaPools = sources, from.QuotaPools
 		to.Keys = to.Keys || from.Keys
 	case "settings":
 		to.Settings = from.Settings
@@ -440,7 +460,7 @@ func bring(b backup.Bundle, part string) error {
 				}
 			}
 		}
-		return provider.Mirror(b.Providers, b.Groups)
+		return provider.MirrorConfiguration(b.Providers, b.Groups, b.Sources, b.QuotaPools)
 	case "settings":
 		_, err := backup.Restore(b, backup.Parts{Settings: true})
 		return err

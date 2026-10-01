@@ -209,6 +209,16 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			fail(404, fmt.Sprintf("magpie knows no model %q to draw with", d.Model))
 			return
 		}
+		// Resolve gives the actual outbound model. Apply credential bindings
+		// before selecting or weighing an image request's key as for chat.
+		if p.Account == nil {
+			cs := route(p, perKey(p, model, provider.Chat), model, provider.Chat)
+			if len(cs) == 0 {
+				fail(404, "no enabled key allows model "+model)
+				return
+			}
+			p = cs[0].p
+		}
 		call.Provider, call.To = p.ID, provider.Chat
 		ctx, cancel := context.WithTimeout(r.Context(), drawTimeout)
 		defer cancel()

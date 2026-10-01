@@ -71,7 +71,8 @@ func TestClaudeCodeHeadersReachAnthropicRelay(t *testing.T) {
 
 	// a provider with no key of its own still never sees magpie's
 	p, _ := provider.Find("fake")
-	p.Key = ""
+	p.Keys = nil
+	p.Key, p.KeyID = "", ""
 	provider.Save(*p)
 	send("/v1/messages", claude)
 	if a, k := f.head.Get("Authorization"), f.head.Get("X-Api-Key"); a != "" || k != "" {

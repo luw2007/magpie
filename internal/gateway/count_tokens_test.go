@@ -170,13 +170,13 @@ func TestCountTokensKeyFailover(t *testing.T) {
 				io.WriteString(w, tc.reply)
 			}))
 			t.Cleanup(up.Close)
-			p := provider.Provider{ID: "count", Name: "Count", Key: "k-first", Anthropic: up.URL, Chat: up.URL + "/v1", Models: []string{"m1"},
-				Keys:     []provider.KeyAccount{{Key: "k-off", Off: true}, {Key: "k-unlisted"}, {Key: "k-chat", Protocol: provider.Chat}, {Key: "k-next"}},
+			p := provider.Provider{ID: "count", Name: "Count", Anthropic: up.URL, Chat: up.URL + "/v1", Models: []string{"m1"},
+				Keys:     []provider.KeyAccount{{ID: "first", Key: "k-first"}, {ID: "off", Key: "k-off", Off: true}, {ID: "unlisted", Key: "k-unlisted"}, {ID: "chat", Key: "k-chat", Protocol: provider.Chat}, {ID: "next", Key: "k-next"}},
 				Fallback: []string{"count/other-model"}}
 			if err := provider.Save(p); err != nil {
 				t.Fatal(err)
 			}
-			if err := catalog.SaveLive(p.ID, up.URL, []catalog.Model{{ID: "m1", Keys: []string{provider.KeyID("k-first"), provider.KeyID("k-chat"), provider.KeyID("k-next")}}}); err != nil {
+			if err := catalog.SaveLive(p.ID, up.URL, []catalog.Model{{ID: "m1", Keys: []string{"first", "chat", "next"}}}); err != nil {
 				t.Fatal(err)
 			}
 			if err := settings.Save(settings.Settings{RedactPersonal: true}); err != nil {
@@ -252,11 +252,11 @@ func TestCountTokensTransportFailover(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 			t.Setenv("XDG_CACHE_HOME", t.TempDir())
-			p := provider.Provider{ID: "transport-" + outcome, Name: "Transport", Key: "first", Anthropic: "http://count.test", Models: []string{"m1"},
-				Keys: []provider.KeyAccount{{Key: "off", Off: true}, {Key: "next"}}}
+			p := provider.Provider{ID: "transport-" + outcome, Name: "Transport", Anthropic: "http://count.test", Models: []string{"m1"},
+				Keys: []provider.KeyAccount{{ID: "first", Key: "first"}, {ID: "off", Key: "off", Off: true}, {ID: "next", Key: "next"}}}
 			t.Cleanup(func() {
 				for _, k := range p.KeysOn() {
-					id := p.ID + "#" + provider.KeyID(k.Key)
+					id := p.ID + "#" + k.ID
 					restingUntil.Lock()
 					delete(restingUntil.m, id)
 					delete(restingUntil.note, id)
@@ -335,7 +335,7 @@ func TestCountTokensTransportFailover(t *testing.T) {
 				message := "last connection broke"
 				if outcome == "canceled" {
 					message = "context canceled"
-					if s.resting(p.ID + "#" + provider.KeyID("first")) {
+					if s.resting(p.ID + "#first") {
 						t.Fatal("client cancellation rested a key")
 					}
 				}

@@ -60,7 +60,7 @@ func TestFetchedKeysShareImageCapability(t *testing.T) {
 		w.Write([]byte(`{"data":[{"id":"shared","modalities":{"input":` + input + `}}]}`))
 	}))
 	defer server.Close()
-	p := Provider{ID: "relay", Chat: server.URL, Key: "vision-key", Keys: []KeyAccount{{Key: "text-key"}}}
+	p := Provider{ID: "relay", Chat: server.URL, Keys: []KeyAccount{{ID: "vision", Key: "vision-key"}, {ID: "text", Key: "text-key"}}}
 	models, err := p.Fetch(context.Background())
 	if err != nil || len(models) != 1 || models[0].ImageInput == nil || *models[0].ImageInput || models[0].Images {
 		t.Fatalf("shared image capability: %+v, %v", models, err)
@@ -78,7 +78,7 @@ func TestFetchedKeysKeepUnknownImageCapability(t *testing.T) {
 		w.Write([]byte(`{"data":[{"id":"shared"` + input + `}]}`))
 	}))
 	defer server.Close()
-	p := Provider{ID: "relay", Chat: server.URL, Key: "vision-key", Keys: []KeyAccount{{Key: "unknown-key"}}}
+	p := Provider{ID: "relay", Chat: server.URL, Keys: []KeyAccount{{ID: "vision", Key: "vision-key"}, {ID: "unknown", Key: "unknown-key"}}}
 	models, err := p.Fetch(context.Background())
 	if err != nil || len(models) != 1 || models[0].ImageInput != nil {
 		t.Fatalf("confirmed and unknown image capability: %+v, %v", models, err)
@@ -96,10 +96,10 @@ func TestFetchedKeysKeepUnknownImageCapabilityFromOldCache(t *testing.T) {
 		w.Write([]byte(`{"data":[{"id":"shared","modalities":{"input":["text","image"]}}]}`))
 	}))
 	defer server.Close()
-	if err := catalog.SaveLive("relay", server.URL, []catalog.Model{{ID: "shared", Keys: []string{keyID("failed-key")}}}); err != nil {
+	if err := catalog.SaveLive("relay", server.URL, []catalog.Model{{ID: "shared", Keys: []string{"failed"}}}); err != nil {
 		t.Fatal(err)
 	}
-	p := Provider{ID: "relay", Chat: server.URL, Key: "vision-key", Keys: []KeyAccount{{Key: "failed-key"}}}
+	p := Provider{ID: "relay", Chat: server.URL, Keys: []KeyAccount{{ID: "vision", Key: "vision-key"}, {ID: "failed", Key: "failed-key"}}}
 	models, err := p.Fetch(context.Background())
 	if err != nil || len(models) != 1 || models[0].ImageInput != nil {
 		t.Fatalf("fresh capability and old cache without ImageInput: %+v, %v", models, err)
@@ -142,8 +142,8 @@ func TestOffKeyIsNotFetched(t *testing.T) {
 	defer srv.Close()
 
 	if err := Save(Provider{
-		ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Key: "sk-on",
-		Keys: []KeyAccount{{Name: "spare", Key: "sk-off", Off: true}},
+		ID: "relay", Name: "Relay", Chat: srv.URL + "/v1",
+		Keys: []KeyAccount{{ID: "on", Key: "sk-on"}, {ID: "off", Name: "spare", Key: "sk-off", Off: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestOffKeyIsNotFetched(t *testing.T) {
 		t.Fatalf("on key's model missing: %+v", got)
 	}
 
-	if err := SetKeyOn("relay", KeyID("sk-off"), true); err != nil {
+	if err := SetKeyOn("relay", "off", true); err != nil {
 		t.Fatal(err)
 	}
 	p, err = Find("relay")

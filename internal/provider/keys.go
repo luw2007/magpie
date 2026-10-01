@@ -1,113 +1,105 @@
 package provider
 
-// A provider can hold several accounts, as a subscription can: several API
-// keys — a personal one and the team's, a paid plan and a free one. Any
-// number of them can be on at once: requests go to the first, and when it
-// is out of quota or rate limited the gateway moves on to the next one
-// that's on (see gateway/fallback.go). Key stays the first, so everything
-// else that talks to the vendor reads it as before.
-
 import (
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
-// KeyAccount is a saved key after the first. Off keeps it without using it.
+// KeyAccount is a persisted credential with an identity independent of its secret.
 type KeyAccount struct {
-	Name string `json:"name,omitempty"`
-	Key  string `json:"key"`
-	Off  bool   `json:"off,omitempty"`
-	// Protocol, when set, is the only one the key works with: some relays
-	// give out one key for Anthropic and another for OpenAI. Empty is any.
+	ID       string   `json:"id"`
+	Name     string   `json:"name,omitempty"`
+	Key      string   `json:"key"`
 	Protocol Protocol `json:"protocol,omitempty"`
+	Off      bool     `json:"off,omitempty"`
+	PoolRefs []string `json:"poolRefs,omitempty"`
+	Models   []string `json:"models,omitempty"`
 }
 
-// KeyInfo describes one of a provider's keys without giving it away.
 type KeyInfo struct {
-	ID     string `json:"id"` // a fingerprint, to name it in a switch
-	Name   string `json:"name,omitempty"`
-	Masked string `json:"masked"`
-	Active bool   `json:"active"` // the first, where requests go
-	On     bool   `json:"on"`     // in use: the first, or next in line
-
-	Protocol Protocol `json:"protocol,omitempty"` // the only one it works with
+	ID       string   `json:"id"`
+	Name     string   `json:"name,omitempty"`
+	Masked   string   `json:"masked"`
+	Active   bool     `json:"active"`
+	On       bool     `json:"on"`
+	Protocol Protocol `json:"protocol,omitempty"`
+	PoolRefs []string `json:"poolRefs,omitempty"`
+	Models   []string `json:"models,omitempty"`
 }
 
-func keyID(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:5])
-}
-
-// KeyID is the fingerprint a key is named by, in lists and in the gateway.
-func KeyID(key string) string { return keyID(key) }
-
-// KeyList is a provider's keys, in the order requests try them.
-func (p Provider) KeyList() []KeyInfo {
-	var out []KeyInfo
-	if p.Key != "" {
-		out = append(out, KeyInfo{ID: keyID(p.Key), Name: p.KeyName, Masked: Mask(p.Key), Active: true, On: true, Protocol: p.KeyProtocol})
+func newKeyID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("generating key identity: " + err.Error())
 	}
+	return hex.EncodeToString(b[:])
+}
+
+func (p *Provider) normalizeKeys() {
+	if p.Account != nil {
+		return
+	} // OAuth credentials never become saved keys
+	// Constructors may supply Key, but it is never persisted as a mirror.
+	if p.KeyID == "" && strings.TrimSpace(p.Key) != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key == strings.TrimSpace(p.Key) }) {
+		p.Keys = append([]KeyAccount{{Key: strings.TrimSpace(p.Key)}}, p.Keys...)
+	}
+	seen := make(map[string]bool, len(p.Keys))
+	for i := range p.Keys {
+		k := &p.Keys[i]
+		k.Key, k.Name = strings.TrimSpace(k.Key), strings.TrimSpace(k.Name)
+		if k.ID == "" || seen[k.ID] {
+			k.ID = newKeyID()
+		}
+		seen[k.ID] = true
+		k.Models = cleanList(k.Models)
+	}
+	p.Key, p.KeyID = "", ""
 	for _, k := range p.Keys {
-		out = append(out, KeyInfo{ID: keyID(k.Key), Name: k.Name, Masked: Mask(k.Key), On: !k.Off, Protocol: k.Protocol})
+		if !k.Off && k.Key != "" {
+			p.Key, p.KeyID = k.Key, k.ID
+			break
+		}
+	}
+}
+
+// SelectedKey returns metadata for the runtime credential.
+func (p Provider) SelectedKey() KeyAccount {
+	for _, k := range p.Keys {
+		if k.ID == p.KeyID {
+			return k
+		}
+	}
+	return KeyAccount{Key: p.Key}
+}
+
+func (p Provider) KeyList() []KeyInfo {
+	p.Keys = append([]KeyAccount(nil), p.Keys...)
+	p.normalizeKeys()
+	var out []KeyInfo
+	for _, k := range p.Keys {
+		out = append(out, KeyInfo{ID: k.ID, Name: k.Name, Masked: Mask(k.Key), Active: k.ID == p.KeyID, On: !k.Off, Protocol: k.Protocol, PoolRefs: k.PoolRefs, Models: k.Models})
 	}
 	return out
 }
 
-// KeysOn is the keys in use, first to last: the first key, then every
-// saved one that's on.
 func (p Provider) KeysOn() []KeyAccount {
-	if p.Key == "" {
+	if p.Account != nil {
 		return nil
 	}
-	out := []KeyAccount{p.first()}
+	var out []KeyAccount
+	if p.KeyID == "" && p.Key != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key == p.Key }) {
+		out = append(out, KeyAccount{Key: p.Key}) // unsaved constructor only
+	}
 	for _, k := range p.Keys {
 		if !k.Off && k.Key != "" {
 			out = append(out, k)
 		}
 	}
 	return out
-}
-
-// AddKey saves one more key for a provider, on: it takes requests after
-// the ones before it. It becomes the first when the provider has none.
-func AddKey(id, name, key string, proto Protocol) error {
-	name, key = strings.TrimSpace(name), strings.TrimSpace(key)
-	if err := keyProtocolOK(proto); err != nil {
-		return err
-	}
-	if key == "" {
-		return errors.New("paste the key to add")
-	}
-	p, err := Find(id)
-	if err != nil {
-		return err
-	}
-	if p.Account != nil {
-		return errors.New("a signed-in account has no keys")
-	}
-	for _, k := range p.KeyList() {
-		if k.ID == keyID(key) {
-			return fmt.Errorf("%s already has this key", p.Name)
-		}
-	}
-	if p.Key == "" {
-		p.Key, p.KeyName, p.KeyProtocol = key, name, proto
-	} else {
-		p.Keys = append(p.Keys, KeyAccount{Name: name, Key: key, Protocol: proto})
-	}
-	return Save(*p)
-}
-
-// first is the first key as a KeyAccount, and setFirst makes k the first.
-func (p *Provider) first() KeyAccount {
-	return KeyAccount{Name: p.KeyName, Key: p.Key, Protocol: p.KeyProtocol}
-}
-
-func (p *Provider) setFirst(k KeyAccount) {
-	p.Key, p.KeyName, p.KeyProtocol = k.Key, k.Name, k.Protocol
 }
 
 func keyProtocolOK(proto Protocol) error {
@@ -118,156 +110,152 @@ func keyProtocolOK(proto Protocol) error {
 	return fmt.Errorf("unknown protocol %q", proto)
 }
 
-// SetKeyProtocol says which one protocol a key works with; empty is any.
-func SetKeyProtocol(id, keyRef string, proto Protocol) error {
+func AddKey(id, name, key string, proto Protocol) error {
 	if err := keyProtocolOK(proto); err != nil {
 		return err
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("paste the key to add")
 	}
 	p, err := Find(id)
 	if err != nil {
 		return err
 	}
-	i, ok := findKey(p, keyRef)
-	if !ok {
-		return fmt.Errorf("%s has no such key", p.Name)
+	if p.Account != nil {
+		return errors.New("a signed-in account has no keys")
 	}
-	if i < 0 {
-		p.KeyProtocol = proto
-	} else {
-		p.Keys[i].Protocol = proto
+	if slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key == key }) {
+		return fmt.Errorf("%s already has this key", p.Name)
 	}
+	p.Keys = append(p.Keys, KeyAccount{ID: newKeyID(), Name: strings.TrimSpace(name), Key: key, Protocol: proto})
 	return Save(*p)
 }
 
-// WithKey is p using key k: its endpoints narrowed to k's protocol when k
-// has one. It has none left when p doesn't serve that protocol.
-func (p Provider) WithKey(k KeyAccount) Provider {
-	p.Key, p.KeyName, p.KeyProtocol = k.Key, k.Name, k.Protocol
-	if k.Protocol != "" {
-		for _, pr := range Protocols {
-			if pr != k.Protocol {
-				switch pr {
-				case Chat:
-					p.Chat = ""
-				case Responses:
-					p.Responses = ""
-				case Anthropic:
-					p.Anthropic = ""
-				}
-			}
-		}
-	}
-	return p
-}
-
-// findKey is where a key is among p.Keys: -1 for the first key, and ok
-// false when p has no such key.
 func findKey(p *Provider, ref string) (int, bool) {
-	if p.Key != "" && keyID(p.Key) == ref {
-		return -1, true
-	}
 	for i, k := range p.Keys {
-		if keyID(k.Key) == ref {
+		if k.ID == ref {
 			return i, true
 		}
 	}
 	return 0, false
 }
 
-// UseKey makes one of a provider's keys the first, and turns it on; the
-// one it replaces stays on, next in line.
-func UseKey(id, keyRef string) error {
+func editKey(id, ref string, change func(*Provider, int) error) error {
 	p, err := Find(id)
 	if err != nil {
 		return err
 	}
-	i, ok := findKey(p, keyRef)
+	i, ok := findKey(p, ref)
 	if !ok {
 		return fmt.Errorf("%s has no such key", p.Name)
 	}
-	if i < 0 {
-		return nil
+	if err := change(p, i); err != nil {
+		return err
 	}
-	k := p.Keys[i]
-	rest := append([]KeyAccount{p.first()}, append(p.Keys[:i:i], p.Keys[i+1:]...)...)
-	p.setFirst(k)
-	p.Keys = rest
 	return Save(*p)
 }
 
-// promote takes the first key out of use: the next key that's on takes
-// its place. ok is false when none is.
-func promote(p *Provider) (old KeyAccount, ok bool) {
-	for i, k := range p.Keys {
-		if !k.Off {
-			old = p.first()
-			p.setFirst(k)
-			p.Keys = append(p.Keys[:i:i], p.Keys[i+1:]...)
-			return old, true
-		}
-	}
-	return KeyAccount{}, false
-}
-
-// SetKeyOn turns a key on or off. The last key that's on stays on.
-func SetKeyOn(id, keyRef string, on bool) error {
-	p, err := Find(id)
-	if err != nil {
+func SetKeyProtocol(id, ref string, proto Protocol) error {
+	if err := keyProtocolOK(proto); err != nil {
 		return err
 	}
-	i, ok := findKey(p, keyRef)
-	if !ok {
-		return fmt.Errorf("%s has no such key", p.Name)
+	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].Protocol = proto; return nil })
+}
+
+func (p Provider) WithKey(k KeyAccount) Provider {
+	p.Key, p.KeyID = k.Key, k.ID
+	if k.Protocol != "" {
+		if k.Protocol != Chat {
+			p.Chat = ""
+		}
+		if k.Protocol != Responses {
+			p.Responses = ""
+		}
+		if k.Protocol != Anthropic {
+			p.Anthropic = ""
+		}
 	}
-	switch {
-	case i >= 0:
-		p.Keys[i].Off = !on
-	case !on:
-		old, ok := promote(p)
-		if !ok {
+	return p
+}
+
+func UseKey(id, ref string) error {
+	return editKey(id, ref, func(p *Provider, i int) error {
+		k := p.Keys[i]
+		k.Off = false
+		copy(p.Keys[1:i+1], p.Keys[:i])
+		p.Keys[0] = k
+		return nil
+	})
+}
+
+func SetKeyOn(id, ref string, on bool) error {
+	return editKey(id, ref, func(p *Provider, i int) error {
+		if !on && !p.Keys[i].Off && len(p.KeysOn()) == 1 {
 			return errors.New("that's the only key in use; turn another on first")
 		}
-		old.Off = true
-		p.Keys = append([]KeyAccount{old}, p.Keys...)
-	default:
+		p.Keys[i].Off = !on
 		return nil
-	}
-	return Save(*p)
+	})
 }
 
-// RemoveKey forgets a key. The last key in use stays: turn another on first.
-func RemoveKey(id, keyRef string) error {
-	p, err := Find(id)
-	if err != nil {
-		return err
-	}
-	i, ok := findKey(p, keyRef)
-	if !ok {
-		return fmt.Errorf("%s has no such key", p.Name)
-	}
-	if i >= 0 {
-		p.Keys = append(p.Keys[:i], p.Keys[i+1:]...)
-	} else if _, ok := promote(p); !ok {
-		return errors.New("that's the only key in use; turn another on before removing it")
-	}
-	return Save(*p)
+func RemoveKey(id, ref string) error {
+	return editKey(id, ref, func(p *Provider, i int) error {
+		if !p.Keys[i].Off && len(p.KeysOn()) == 1 {
+			return errors.New("that's the only key in use; turn another on before removing it")
+		}
+		p.Keys = slices.Delete(p.Keys, i, i+1)
+		return nil
+	})
 }
 
-// RenameKey names one of a provider's keys, "Personal", "Team".
-func RenameKey(id, keyRef, name string) error {
-	p, err := Find(id)
-	if err != nil {
-		return err
+func RenameKey(id, ref, name string) error {
+	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].Name = strings.TrimSpace(name); return nil })
+}
+
+// ReplaceKey rotates a secret without changing bindings, identity or order.
+func ReplaceKey(id, ref, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("paste the replacement key")
 	}
-	i, ok := findKey(p, keyRef)
-	if !ok {
-		return fmt.Errorf("%s has no such key", p.Name)
+	return editKey(id, ref, func(p *Provider, i int) error {
+		for j, k := range p.Keys {
+			if j != i && k.Key == key {
+				return fmt.Errorf("%s already has this key", p.Name)
+			}
+		}
+		p.Keys[i].Key = key
+		return nil
+	})
+}
+
+// AllowsModel applies only explicit key restrictions, to the outbound model.
+func (k KeyAccount) AllowsModel(model string) bool {
+	return len(k.Models) == 0 || slices.Contains(k.Models, "*") || slices.Contains(k.Models, model)
+}
+
+func SetKeyBinding(id, ref string, poolRefs []string, models []string) error {
+	pools := QuotaPools()
+	refs := make([]string, 0, len(poolRefs))
+	for _, ref := range poolRefs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return errors.New("quota pool reference must not be empty")
+		}
+		if slices.Contains(refs, ref) {
+			return fmt.Errorf("duplicate quota pool %q", ref)
+		}
+		if !slices.ContainsFunc(pools, func(p QuotaPool) bool { return p.ID == ref }) {
+			return fmt.Errorf("unknown quota pool %q", ref)
+		}
+		refs = append(refs, ref)
 	}
-	name = strings.TrimSpace(name)
-	if i < 0 {
-		p.KeyName = name
-	} else {
-		p.Keys[i].Name = name
+	models = cleanList(models)
+	for _, m := range models {
+		if m != "*" && strings.ContainsAny(m, "*?[]") {
+			return fmt.Errorf("model %q must be an exact ID or *", m)
+		}
 	}
-	return Save(*p)
+	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].PoolRefs, p.Keys[i].Models = refs, models; return nil })
 }

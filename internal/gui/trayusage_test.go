@@ -66,3 +66,22 @@ func TestTrayUsageText(t *testing.T) {
 		t.Errorf("empty: %q %q", label, tip)
 	}
 }
+
+func TestTrayPoolSelectionIdentity(t *testing.T) {
+	shared := provider.SubscriptionQuota{PoolRef: "shared", Name: "Shared allowance"}
+	other := provider.SubscriptionQuota{PoolRef: "other", Name: "Shared allowance"}
+	if got := trayCardID(shared); got != "pool|shared" {
+		t.Fatalf("shared pool selection = %q, want pool|shared", got)
+	}
+	if trayCardID(shared) == trayCardID(other) {
+		t.Fatal("distinct pools with the same display name must remain independently selectable")
+	}
+	shared.Provider, shared.User = "vendor-a", "account-a"
+	if got := trayCardID(shared); got != "pool|shared" {
+		t.Fatalf("binding a provider changed pool selection to %q", got)
+	}
+	shared.Provider, shared.User = "vendor-b", "account-b"
+	if got := trayCardID(shared); got != "pool|shared" {
+		t.Fatalf("changing provider binding changed pool selection to %q", got)
+	}
+}

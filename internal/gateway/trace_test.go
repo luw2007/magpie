@@ -24,7 +24,7 @@ func TestTraceTellsTheRoute(t *testing.T) {
 	srv := httptest.NewServer(up)
 	defer srv.Close()
 	p := provider.Provider{ID: "plan", Name: "Plan", Chat: srv.URL + "/v1", Models: []string{"m1"},
-		Key: "k-personal", KeyName: "Personal", Keys: []provider.KeyAccount{{Name: "Team", Key: "k-team"}}}
+		Keys: []provider.KeyAccount{{ID: "personal", Name: "Personal", Key: "k-personal"}, {ID: "team", Name: "Team", Key: "k-team"}}}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestRetryAfterRests(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := provider.Provider{ID: "ra", Name: "RA", Chat: srv.URL + "/v1", Models: []string{"m1"},
-		Key: "k-slow", KeyName: "Slow", Keys: []provider.KeyAccount{{Name: "Fast", Key: "k-fast"}}}
+		Keys: []provider.KeyAccount{{ID: "slow", Name: "Slow", Key: "k-slow"}, {ID: "fast", Name: "Fast", Key: "k-fast"}}}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}

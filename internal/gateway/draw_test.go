@@ -191,8 +191,9 @@ func TestDrawerIsTheSettingOrAutomatic(t *testing.T) {
 func TestVendorFailureIsSaid(t *testing.T) {
 	s, _ := easeled(t)
 	p, _ := provider.Find("art")
-	p.Key = "wrong"
-	provider.Save(*p)
+	if err := provider.ReplaceKey("art", p.KeyID, "wrong"); err != nil {
+		t.Fatal(err)
+	}
 	code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"art/gpt-image-1","prompt":"a magpie"}`)
 	if code != 401 || !strings.Contains(raw, "401") {
 		t.Fatalf("%d %s", code, raw)

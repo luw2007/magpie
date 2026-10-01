@@ -158,11 +158,11 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 	case c.p.Account != nil:
 		w.Kind, w.Who, w.Agent, w.Plan = "account", c.p.Account.User, c.p.Account.Agent, c.p.Account.Plan
 	case c.rest != p.ID:
-		w.Kind, w.Who = "key", c.p.KeyName
+		w.Kind, w.Who = "key", c.p.SelectedKey().Name
 		if w.Who == "" {
 			w.Who = provider.Mask(c.p.Key)
 		}
-		w.Fit, w.Speaks = keyFit(c.p, c.model, from), c.p.KeyProtocol
+		w.Fit, w.Speaks = keyFit(c.p, c.model, from), c.p.SelectedKey().Protocol
 	default:
 		w.Kind = "provider"
 	}

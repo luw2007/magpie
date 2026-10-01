@@ -140,8 +140,7 @@ func TestSeveralKeysOnTakeOverFromEachOther(t *testing.T) {
 	srv := httptest.NewServer(up)
 	defer srv.Close()
 	p := provider.Provider{ID: "plan", Name: "Plan", Chat: srv.URL + "/v1", Models: []string{"m1"},
-		Key: "k-personal", KeyName: "Personal",
-		Keys: []provider.KeyAccount{{Name: "Idle", Key: "k-idle", Off: true}, {Name: "Team", Key: "k-team"}}}
+		Keys: []provider.KeyAccount{{ID: "personal", Name: "Personal", Key: "k-personal"}, {ID: "idle", Name: "Idle", Key: "k-idle", Off: true}, {ID: "team", Name: "Team", Key: "k-team"}}}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}
@@ -357,14 +356,14 @@ func TestKeysMadeForOneProtocol(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := provider.Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1", Anthropic: srv.URL,
-		Key: "k-oai", KeyProtocol: provider.Chat, Models: []string{"claude-opus-4-8", "gpt-5.5", "glm-5"},
-		Keys: []provider.KeyAccount{{Key: "k-ant", Protocol: provider.Anthropic}}}
+		Models: []string{"claude-opus-4-8", "gpt-5.5", "glm-5"},
+		Keys:   []provider.KeyAccount{{ID: "oai", Key: "k-oai", Protocol: provider.Chat}, {ID: "ant", Key: "k-ant", Protocol: provider.Anthropic}}}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}
 	// the vendor lists glm-5 to the Anthropic key only
-	if err := catalog.SaveLive("relay", srv.URL, []catalog.Model{{ID: "gpt-5.5", Keys: []string{provider.KeyID("k-oai")}},
-		{ID: "glm-5", Keys: []string{provider.KeyID("k-ant")}}}); err != nil {
+	if err := catalog.SaveLive("relay", srv.URL, []catalog.Model{{ID: "gpt-5.5", Keys: []string{"oai"}},
+		{ID: "glm-5", Keys: []string{"ant"}}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, x := range []struct{ path, body, want string }{

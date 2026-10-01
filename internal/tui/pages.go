@@ -133,7 +133,19 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openAsk(ask{crumbs: []string{"providers", p.Name, "key"}, input: in,
 			hint: "now " + dash(provider.Mask(p.Key)) + " · the key is kept in magpie's providers file",
 			onEnter: func(v string) tea.Cmd {
-				return saveProvider(p.ID, func(p *provider.Provider) { p.Key = v; provider.ForgetBalances() }, p.Name+" key "+provider.Mask(v))
+				return saveProvider(p.ID, func(p *provider.Provider) {
+					if p.KeyID == "" {
+						p.Keys = append(p.Keys, provider.KeyAccount{Key: v})
+					} else {
+						for i := range p.Keys {
+							if p.Keys[i].ID == p.KeyID {
+								p.Keys[i].Key = v
+								break
+							}
+						}
+					}
+					provider.ForgetBalances()
+				}, p.Name+" key "+provider.Mask(v))
 			}})
 	case "f":
 		in := newInput("a tag, e.g. relay")

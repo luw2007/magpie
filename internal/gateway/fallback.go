@@ -43,8 +43,8 @@ func (c candidate) label() string {
 	if c.p.Account != nil {
 		return c.p.ID + " (" + c.p.Account.User + ")"
 	}
-	if c.p.KeyName != "" {
-		return c.p.ID + " (" + c.p.KeyName + ")"
+	if name := c.p.SelectedKey().Name; name != "" {
+		return c.p.ID + " (" + name + ")"
 	}
 	return c.p.ID + " (" + provider.Mask(c.p.Key) + ")"
 }
@@ -77,7 +77,7 @@ func (c candidate) restID() string {
 // is added, and a conversation it answered stays with it all the same.
 func (c candidate) who() string {
 	if c.p.Account == nil && c.p.Key != "" {
-		return c.p.ID + "#" + provider.KeyID(c.p.Key)
+		return c.p.ID + "#" + c.p.KeyID
 	}
 	return c.rest
 }
@@ -122,13 +122,16 @@ func perKeyOf(p provider.Provider, model string, from provider.Protocol) (out, a
 	keys := p.KeysOn()
 	var unlisted []candidate
 	for _, k := range keys {
+		if !k.AllowsModel(model) {
+			continue // explicit bindings never participate in fallback or weighing
+		}
 		q := p.WithKey(k)
 		if len(q.Speaks()) == 0 {
 			continue // made for a protocol this provider has no endpoint for
 		}
 		rest := p.ID
 		if len(keys) > 1 {
-			rest += "#" + provider.KeyID(k.Key)
+			rest += "#" + k.ID
 		}
 		if !p.Serves(k, model) {
 			// the vendor lists the model to another key only
@@ -141,12 +144,15 @@ func perKeyOf(p provider.Provider, model string, from provider.Protocol) (out, a
 		out, unlisted = unlisted, nil // no key lists it: try them all the same
 	}
 	if len(out) == 0 {
+		if len(keys) > 0 {
+			return nil, nil, nil
+		}
 		return []candidate{{p, model, p.ID}}, nil, nil
 	}
 	sort.SliceStable(out, func(i, j int) bool { return keyFit(out[i].p, model, from) < keyFit(out[j].p, model, from) })
 	pool := out[:0:0]
 	for _, c := range out {
-		if c.p.KeyProtocol == out[0].p.KeyProtocol {
+		if c.p.SelectedKey().Protocol == out[0].p.SelectedKey().Protocol {
 			pool = append(pool, c)
 		} else {
 			aside = append(aside, c)
@@ -158,17 +164,17 @@ func perKeyOf(p provider.Provider, model string, from provider.Protocol) (out, a
 // keyFit ranks how well a key suits a request, best first: 0 fits, 1 needs
 // the request translated, 2 is made for another vendor's models.
 func keyFit(q provider.Provider, model string, from provider.Protocol) int {
-	if q.KeyProtocol == "" {
+	if q.SelectedKey().Protocol == "" {
 		return 0
 	}
 	switch modelFamily(model) {
 	case provider.Anthropic:
-		if q.KeyProtocol == provider.Anthropic {
+		if q.SelectedKey().Protocol == provider.Anthropic {
 			return 0
 		}
 		return 2
 	case provider.Chat:
-		if q.KeyProtocol != provider.Anthropic {
+		if q.SelectedKey().Protocol != provider.Anthropic {
 			return 0
 		}
 		return 2

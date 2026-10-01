@@ -40,25 +40,54 @@ type QuotaWindow struct {
 // SubscriptionQuota is provider-reported allowance usage. This is separate
 // from Dial's local token log: vendors expose percentages, not token totals.
 type SubscriptionQuota struct {
-	Provider string        `json:"provider"`
-	Name     string        `json:"name"`
-	Icon     string        `json:"icon"`
-	Plan     string        `json:"plan,omitempty"`
-	User     string        `json:"user,omitempty"` // the account, so two of one vendor tell apart
-	Windows  []QuotaWindow `json:"windows"`
-	Balance  string        `json:"balance,omitempty"` // what is left on an API key, instead of windows
+	PoolRef     string        `json:"poolRef,omitempty"`
+	SourceRef   string        `json:"sourceRef,omitempty"`
+	AccountID   string        `json:"accountId,omitempty"`
+	KeyRefs     []string      `json:"keyRefs,omitempty"`
+	Status      string        `json:"status,omitempty"`
+	DisplayName string        `json:"displayName,omitempty"`
+	LoadPercent *float64      `json:"loadPercent,omitempty"`
+	Provider    string        `json:"provider"`
+	Name        string        `json:"name"`
+	Icon        string        `json:"icon"`
+	Plan        string        `json:"plan,omitempty"`
+	User        string        `json:"user,omitempty"` // the account, so two of one vendor tell apart
+	Windows     []QuotaWindow `json:"windows"`
+	Balance     string        `json:"balance,omitempty"` // what is left on an API key, instead of windows
 	// Until is when the plan's paid time ends: it renews then when Renew
 	// is "auto", is over when "off", and either when "" (the vendor
 	// doesn't say which).
 	Until *time.Time `json:"until,omitempty"`
 	Renew string     `json:"renew,omitempty"`
 	Error string     `json:"error,omitempty"`
-	// AsOf is when an allowance shown in place of one that couldn't be
-	// read was read (see keepLast); nil for a reading just made.
+	// AsOf records when the allowance was measured. Freshness is determined
+	// by its age, window resets and Status, not by the presence of this timestamp.
 	AsOf *time.Time `json:"asOf,omitempty"`
 	// Resets are the rate-limit resets a Codex account holds, nil when
 	// it holds none (codex_resets.go).
 	Resets *ResetCredits `json:"resets,omitempty"`
+}
+
+// quotaStatus preserves failed/fallback readings and rejects expired measurements.
+func quotaStatus(q SubscriptionQuota, now time.Time) string {
+	if q.Status == "stale" {
+		return "stale"
+	}
+	if q.Error != "" || q.Status == "error" {
+		return "error"
+	}
+	if len(q.Windows) == 0 && q.Balance == "" {
+		return "unknown"
+	}
+	if q.AsOf != nil && now.Sub(*q.AsOf) >= time.Minute {
+		return "stale"
+	}
+	for _, w := range q.Windows {
+		if w.ResetsAt != nil && !w.ResetsAt.After(now) {
+			return "stale"
+		}
+	}
+	return "measured"
 }
 
 var subscriptionUsageCache struct {
@@ -66,6 +95,15 @@ var subscriptionUsageCache struct {
 	at      time.Time
 	data    []SubscriptionQuota
 	pending chan struct{} // closed when the refresh in flight is done
+}
+
+// InvalidateUsageConfiguration prevents old in-flight readings from landing
+// after a source, pool or key binding has changed.
+func InvalidateUsageConfiguration() {
+	c := &subscriptionUsageCache
+	c.Lock()
+	c.at, c.data, c.pending = time.Time{}, nil, nil
+	c.Unlock()
 }
 
 // OnSubscriptionUsage is told when a refresh has landed, for what shows a
@@ -91,7 +129,9 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 		go func() {
 			out := fetchSubscriptionUsage()
 			c.Lock()
-			c.at, c.data, c.pending = time.Now(), out, nil
+			if c.pending == done {
+				c.at, c.data, c.pending = time.Now(), out, nil
+			}
 			c.Unlock()
 			close(done)
 			if f := OnSubscriptionUsage; f != nil {
@@ -110,7 +150,19 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 	}
 	c.Lock()
 	defer c.Unlock()
-	return visibleQuotas(c.data)
+	out := visibleQuotas(c.data)
+	if time.Since(c.at) >= time.Minute {
+		for i := range out {
+			if out[i].PoolRef != "" && out[i].Status == "measured" {
+				out[i].Status = "stale"
+				if out[i].AsOf == nil {
+					at := c.at
+					out[i].AsOf = &at
+				}
+			}
+		}
+	}
+	return out
 }
 
 // visibleQuotas drops accounts removed from magpie since the last refresh.
@@ -122,6 +174,19 @@ func visibleQuotas(all []SubscriptionQuota) []SubscriptionQuota {
 	var chosen map[string]map[string]bool
 	out := []SubscriptionQuota{}
 	for _, q := range all {
+		if q.PoolRef != "" {
+			present := false
+			for _, pool := range QuotaPools() {
+				if pool.ID == q.PoolRef && pool.SourceRef == q.SourceRef {
+					present = true
+					break
+				}
+			}
+			if !present {
+				continue
+			}
+			q.Status = quotaStatus(q, time.Now())
+		}
 		if hidden[q.Provider] {
 			continue
 		}
@@ -248,9 +313,8 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 			fetches = append(fetches, func() SubscriptionQuota { return l.acct.quota(ctx, l.Plan) })
 		}
 	}
-	providers := All()
 	fetched := make(chan []SubscriptionQuota, 1)
-	go func() { fetched <- fetchSub2APIUsage(ctx, providers) }()
+	go func() { fetched <- collectUsageSources(ctx, UsageSources(), QuotaPools(), All()) }()
 	out := make([]SubscriptionQuota, len(fetches))
 	var wg sync.WaitGroup
 	for i, f := range fetches {

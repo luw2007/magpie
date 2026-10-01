@@ -337,6 +337,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 // used up for the candidate's model renews; zero otherwise.
 func (c candidate) full(now time.Time) time.Time {
 	if c.p.Account == nil {
+		if a, ok := keyPoolAllowance(c.p.SelectedKey().PoolRefs); ok {
+			return a.Full(c.model, usedShare, now)
+		}
 		return time.Time{}
 	}
 	return allowances(c.p.Account.Agent)[c.p.Account.User].Full(c.model, usedShare, now)
@@ -410,6 +413,7 @@ func retryAfter(h http.Header, now time.Time) time.Duration {
 }
 
 var allowances = provider.Allowances
+var keyPoolAllowance = provider.KeyPoolAllowance
 
 // Shares of an allowance past which an account is kept for when the others
 // can't take a request: low, and all but used up.
@@ -466,6 +470,14 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 	wg.lefts = map[allowanceKey]left{}
 	for _, c := range cs {
 		if c.p.Account == nil {
+			if refs := c.p.SelectedKey().PoolRefs; len(refs) > 0 {
+				if a, ok := keyPoolAllowance(refs); ok {
+					u, r := a.For(c.model, now)
+					if len(r) > 0 {
+						wg.lefts[c.allowanceKey()] = left{u, r}
+					}
+				}
+			}
 			continue
 		}
 		ag := c.p.Account.Agent
@@ -478,6 +490,10 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 		}
 	}
 	lefts := wg.lefts
+	unknownBound := func(c candidate) bool {
+		_, ok := lefts[c.allowanceKey()]
+		return c.p.Account == nil && len(c.p.SelectedKey().PoolRefs) > 0 && !ok
+	}
 	shareOf := func(c candidate) float64 { return lefts[c.allowanceKey()].used }
 	switch p.Routing {
 	case "":
@@ -490,8 +506,12 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 		// one all but used up only when nothing else can take it. Only the
 		// windows that count the model do: Opus's own weekly allowance
 		// being used up leaves Sonnet alone.
-		var fine, low, spent []candidate
+		var fine, low, spent, unknown []candidate
 		for _, c := range cs {
+			if unknownBound(c) {
+				unknown = append(unknown, c)
+				continue
+			}
 			switch v := shareOf(c); {
 			case v >= usedShare:
 				spent = append(spent, c)
@@ -506,6 +526,9 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 		// and never be known (Anthropic's usage endpoint can turn
 		// magpie away for hours)
 		sort.SliceStable(fine, func(i, j int) bool {
+			if ui, uj := unknownBound(fine[i]), unknownBound(fine[j]); ui != uj {
+				return !ui
+			}
 			if li, lj := learns(fine[i], lefts), learns(fine[j], lefts); li != lj {
 				return li
 			}
@@ -533,7 +556,7 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 				return shareOf(l[i]) < shareOf(l[j])
 			})
 		}
-		cs = append(append(fine, low...), spent...)
+		cs = append(append(append(fine, low...), spent...), unknown...)
 	case provider.Ordered:
 		return cs, wg
 	case provider.Rotate:
@@ -559,6 +582,9 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 		}
 		sort.SliceStable(idx, func(a, b int) bool {
 			ca, cb := cs[idx[a]], cs[idx[b]]
+			if ua, ub := unknownBound(ca), unknownBound(cb); ua != ub {
+				return !ua
+			}
 			if sa, sb := shareOf(ca), shareOf(cb); sa != sb {
 				return sa < sb
 			}

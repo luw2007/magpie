@@ -372,7 +372,7 @@ func TestFailedKeyFetchKeepsUnknownImageCapabilityAtGateway(t *testing.T) {
 		io.WriteString(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
 	}))
 	defer up.Close()
-	p := provider.Provider{ID: "relay", Chat: up.URL + "/v1", Key: "vision-key", Keys: []provider.KeyAccount{{Key: "failed-key"}}, Models: []string{"shared"}}
+	p := provider.Provider{ID: "relay", Chat: up.URL + "/v1", Keys: []provider.KeyAccount{{ID: "vision", Key: "vision-key"}, {ID: "failed", Key: "failed-key"}}, Models: []string{"shared"}}
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}

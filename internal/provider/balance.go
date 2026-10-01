@@ -600,7 +600,7 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 			jobs = append(jobs, job{p, ""})
 			continue
 		}
-		first := p.KeyName
+		first := p.SelectedKey().Name
 		if first == "" {
 			first = Mask(p.Key)
 		}
@@ -611,6 +611,7 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 			}
 			q := p
 			q.Key = k.Key
+			q.KeyID = k.ID
 			name := k.Name
 			if name == "" {
 				name = Mask(k.Key)

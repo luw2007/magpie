@@ -85,6 +85,8 @@ func (p Provider) Fetched() (time.Time, bool) {
 
 // Fetch asks the vendor which models it serves and remembers the answer.
 func (p Provider) Fetch(ctx context.Context) ([]catalog.Model, error) {
+	p.Keys = append([]KeyAccount(nil), p.Keys...)
+	p.normalizeKeys()
 	if p.Decides() {
 		return p.fetchDecide(ctx)
 	}
@@ -243,7 +245,7 @@ func (p Provider) fetchPerKey(ctx context.Context, keys []KeyAccount) ([]catalog
 	var base string
 	var lastErr error
 	for _, k := range keys {
-		id := keyID(k.Key)
+		id := k.ID
 		q := p.WithKey(k)
 		ms, b, err := q.fetchOne(ctx)
 		if err != nil {
@@ -292,7 +294,7 @@ func (p Provider) Serves(k KeyAccount, model string) bool {
 	}
 	for _, m := range live {
 		if m.ID == model {
-			return len(m.Keys) == 0 || slices.Contains(m.Keys, keyID(k.Key))
+			return len(m.Keys) == 0 || slices.Contains(m.Keys, k.ID)
 		}
 	}
 	return true

@@ -408,7 +408,6 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	})
 	mux.HandleFunc("POST /api/provider/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		var req struct {
-			provider.Provider
 			// New is set by the editor's Add: the provider is one more, never
 			// one replacing the provider that has its id or name
 			New bool `json:"new"`
@@ -428,11 +427,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// one per endpoint
 			Test []string `json:"test"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var raw json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 			fail(rw, err)
 			return
 		}
-		in := req.Provider
+		if err := json.Unmarshal(raw, &req); err != nil {
+			fail(rw, err)
+			return
+		}
+		var in provider.Provider
+		if err := json.Unmarshal(raw, &in); err != nil {
+			fail(rw, err)
+			return
+		}
 		switch r.PathValue("action") {
 		case "show":
 			// a signed-in account the user removed, back with its picks
@@ -451,6 +459,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// its key when the form left it blank
 			if pr, err := provider.FromPreset(in.Preset); err == nil && in.Chat == "" && in.Responses == "" && in.Anthropic == "" {
 				pr.Key, pr.Models, pr.Fallback, pr.Headers, pr.BalanceToken, pr.Contexts = in.Key, in.Models, in.Fallback, in.Headers, in.BalanceToken, in.Contexts
+				pr.Keys, pr.KeyID = in.Keys, in.KeyID
 				if in.Name != "" {
 					pr.Name = in.Name
 				}
@@ -500,8 +509,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say
 					}
-					if in.Key == old.Key {
-						in.KeyName, in.KeyProtocol = old.KeyName, old.KeyProtocol
+					if in.Key != "" && in.Key != old.Key && !strings.Contains(in.Key, "*") && !strings.Contains(in.Key, "•") {
+						in.Keys = append([]provider.KeyAccount(nil), old.Keys...)
+						for i := range in.Keys {
+							if in.Keys[i].ID == old.KeyID {
+								in.Keys[i].Key = in.Key
+								break
+							}
+						}
 					}
 				}
 				if in.Icon == "" && old != nil && in.Preset == "" {
@@ -660,6 +675,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		var in struct {
 			ID, Key, Name, Ref string
 			Protocol           provider.Protocol
+			PoolRefs           *[]string
+			Models             []string
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -671,6 +688,30 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			err = provider.AddKey(in.ID, in.Name, in.Key, in.Protocol)
 		case "protocol":
 			err = provider.SetKeyProtocol(in.ID, in.Ref, in.Protocol)
+		case "binding":
+			p, findErr := provider.Find(in.ID)
+			if findErr != nil {
+				err = findErr
+				break
+			}
+			var poolRefs []string
+			found := false
+			for _, k := range p.Keys {
+				if k.ID == in.Ref {
+					poolRefs, found = k.PoolRefs, true
+					break
+				}
+			}
+			if !found {
+				err = fmt.Errorf("key %q not found", in.Ref)
+				break
+			}
+			if in.PoolRefs != nil {
+				poolRefs = *in.PoolRefs
+			}
+			err = provider.SetKeyBinding(in.ID, in.Ref, poolRefs, in.Models)
+		case "replace":
+			err = provider.ReplaceKey(in.ID, in.Ref, in.Key)
 		case "use":
 			err = provider.UseKey(in.ID, in.Ref)
 		case "remove":

@@ -14,6 +14,8 @@ import (
 
 const quotaUsage = `usage: magpie quota [<provider>…] [--json]
        magpie quota reset [<codex account>] [--yes]
+       magpie quota sources <list|add|edit|remove|discover|import-env> [flags]
+       magpie quota pools <list|add|edit|remove> [flags]
   what is left of every subscription, plan and key magpie has: each window's use and
   when it starts again, and each key's balance, asked of the vendors now (or less than
   a minute ago). --json is for scripts and agents; the gateway answers the same at
@@ -24,6 +26,9 @@ const quotaUsage = `usage: magpie quota [<provider>…] [--json]
 
 // quotaCmd: magpie quota [<provider>…] [--json]
 func quotaCmd(args []string) error {
+	if len(args) > 1 && (args[1] == "sources" || args[1] == "pools") {
+		return quotaBindingsCmd(args[1:])
+	}
 	if len(args) > 1 && args[1] == "reset" {
 		return quotaResetCmd(args[2:])
 	}

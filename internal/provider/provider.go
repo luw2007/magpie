@@ -40,19 +40,12 @@ type Provider struct {
 	Name string `json:"name"`
 	// Was are ids the provider had before it was renamed (see Rename):
 	// a model still picked by one of them reaches it.
-	Was    []string `json:"was,omitempty"`
-	Icon   string   `json:"icon,omitempty"`
-	Preset string   `json:"preset,omitempty"` // preset this was created from, if any
-	Key    string   `json:"key"`              // API key, as typed by the user
-
-	// KeyName names the key in use, and Keys are the provider's other
-	// accounts: keys saved to switch to (see keys.go).
-	KeyName string       `json:"keyName,omitempty"`
-	Keys    []KeyAccount `json:"keys,omitempty"`
-	// KeyProtocol, when set, is the one protocol the first key is good
-	// for: a relay that hands out one key for Anthropic and another for
-	// OpenAI (see KeyAccount.Protocol).
-	KeyProtocol Protocol `json:"keyProtocol,omitempty"`
+	Was    []string     `json:"was,omitempty"`
+	Icon   string       `json:"icon,omitempty"`
+	Preset string       `json:"preset,omitempty"` // preset this was created from, if any
+	Key    string       `json:"-"`                // runtime credential derived from Keys
+	KeyID  string       `json:"-"`                // stable identity of the runtime credential
+	Keys   []KeyAccount `json:"keys,omitempty"`
 
 	// Base URLs, one per protocol the vendor serves natively. magpie appends
 	// the usual paths: chat/responses bases end in /v1 (OpenAI style),
@@ -156,8 +149,10 @@ type Provider struct {
 }
 
 type file struct {
-	Providers []Provider `json:"providers"`
-	Groups    []Group    `json:"groups,omitempty"`
+	Providers  []Provider    `json:"providers"`
+	Groups     []Group       `json:"groups,omitempty"`
+	Sources    []UsageSource `json:"sources,omitempty"`
+	QuotaPools []QuotaPool   `json:"quotaPools,omitempty"`
 }
 
 // Path is the file the user's providers live in.
@@ -195,6 +190,7 @@ func store(f file) error {
 	}
 	// what agents were handed of the catalog may be out of date now
 	catalog.Touched()
+	InvalidateUsageConfiguration()
 	return nil
 }
 
@@ -302,11 +298,12 @@ func Save(p Provider) error {
 		// ShowAccount brings it back. Kiro's alone also keeps a key, which
 		// it takes in place of a sign-in — so saving one is how a Kiro
 		// that isn't signed in is added.
-		key := ""
+		var keys []KeyAccount
 		if p.ID == "kiro" {
-			key = p.Key
+			keys = p.Keys
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Affinity: p.Affinity, Contexts: p.Contexts, Family: p.Family, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID)}
+		p = Provider{ID: p.ID, Keys: keys, Models: p.Models, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Affinity: p.Affinity, Contexts: p.Contexts, Family: p.Family, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID)}
+		p.normalizeKeys()
 	} else {
 		if slices.Contains(accountIDs, p.ID) && !stored(p.ID) {
 			// taken, it would hide that subscription once signed in
@@ -502,7 +499,7 @@ func keyOptional(p Provider) bool {
 func normalize(p Provider) Provider {
 	p.ID = strings.ToLower(strings.TrimSpace(p.ID))
 	p.Name = strings.TrimSpace(p.Name)
-	p.Key = strings.TrimSpace(p.Key)
+	p.normalizeKeys()
 	for _, u := range []*string{&p.Chat, &p.Responses, &p.Anthropic, &p.Decide, &p.Website, &p.KeysURL} {
 		*u = strings.TrimRight(strings.TrimSpace(*u), "/")
 		if *u != "" && !strings.Contains(*u, "://") {

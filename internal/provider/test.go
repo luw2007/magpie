@@ -119,7 +119,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 	pick:
 		for _, want := range []Protocol{proto, ""} {
 			for _, k := range keys {
-				if k.Protocol == want && p.Serves(k, model) {
+				if k.Protocol == want && k.AllowsModel(model) && p.Serves(k, model) {
 					q, ok = p.WithKey(k), true
 					break pick
 				}
@@ -154,7 +154,7 @@ func (p Provider) keyFor(proto Protocol) (Provider, bool) {
 // exposed one q's key sees, else the first it sees at all — preferring a
 // Claude model on the Anthropic endpoint.
 func (p Provider) testModel(q Provider, proto Protocol) string {
-	k := q.first()
+	k := q.SelectedKey()
 	var pools [][]catalog.Model
 	if ms := p.Exposed(); len(ms) > 0 {
 		pools = append(pools, ms)
@@ -171,7 +171,7 @@ func (p Provider) testModel(q Provider, proto Protocol) string {
 	} {
 		for _, pool := range pools {
 			for _, m := range pool {
-				if want(m.ID) && (k.Key == "" || p.Serves(k, m.ID)) {
+				if want(m.ID) && k.AllowsModel(m.ID) && (k.Key == "" || p.Serves(k, m.ID)) {
 					return m.ID
 				}
 			}

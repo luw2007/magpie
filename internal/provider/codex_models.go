@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -156,7 +158,8 @@ func parseCodexModels(b []byte) []catalog.Model {
 
 // accountModels names where one account's own model list is kept.
 func accountModels(agent, user string) string {
-	return agent + "@" + keyID(strings.ToLower(user))
+	sum := sha256.Sum256([]byte(strings.ToLower(user)))
+	return agent + "@" + hex.EncodeToString(sum[:5])
 }
 
 // Lists reports whether the account's plan has the model, as far as magpie

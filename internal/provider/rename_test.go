@@ -68,7 +68,7 @@ func TestRename(t *testing.T) {
 		t.Fatal(got)
 	}
 	// a save that doesn't say keeps what it was
-	p.Key = "k2"
+	p.Keys[0].Key = "k2"
 	if err := Save(*p); err != nil {
 		t.Fatal(err)
 	}

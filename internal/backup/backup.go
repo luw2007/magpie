@@ -1,6 +1,6 @@
 // Package backup packs what the user set up in magpie into one file, sealed
 // with a passphrase, to carry to another machine: the providers (their keys
-// too, unless left out), the pictures picked for them, the settings, the
+// too, unless left out), usage sources and quota pools, the pictures, settings,
 // profiles, every agent's model and the library (the instructions, MCP
 // servers and skills magpie gives the agents). Subscriptions are not in it: each is
 // the sign-in of an agent on this machine, so each machine signs in on its
@@ -46,17 +46,19 @@ const (
 
 // Bundle is what a backup holds.
 type Bundle struct {
-	Version   int                        `json:"version"`
-	Created   time.Time                  `json:"created"`
-	App       string                     `json:"app,omitempty"` // the magpie that made it
-	Keys      bool                       `json:"keys"`          // whether the providers carry their keys
-	Providers []provider.Provider        `json:"providers"`
-	Icons     map[string][]byte          `json:"icons,omitempty"`  // pictures picked for providers, by file name
-	Groups    []provider.Group           `json:"groups,omitempty"` // the user's model groups
-	Settings  *settings.Settings         `json:"settings,omitempty"`
-	Profiles  map[string]profile.Profile `json:"profiles,omitempty"`
-	Agents    map[string]string          `json:"agents,omitempty"`  // every agent's fields as they are now
-	Library   *library.Bundle            `json:"library,omitempty"` // nil from a magpie before it, or with none
+	Version    int                        `json:"version"`
+	Created    time.Time                  `json:"created"`
+	App        string                     `json:"app,omitempty"` // the magpie that made it
+	Keys       bool                       `json:"keys"`          // whether the providers carry their keys
+	Providers  []provider.Provider        `json:"providers"`
+	Icons      map[string][]byte          `json:"icons,omitempty"`       // pictures picked for providers, by file name
+	Groups     []provider.Group           `json:"groups,omitempty"`      // the user's model groups
+	Sources    []provider.UsageSource     `json:"sources,omitempty"`     // usage collectors, including their credentials
+	QuotaPools []provider.QuotaPool       `json:"quota_pools,omitempty"` // shared quota identities
+	Settings   *settings.Settings         `json:"settings,omitempty"`
+	Profiles   map[string]profile.Profile `json:"profiles,omitempty"`
+	Agents     map[string]string          `json:"agents,omitempty"`  // every agent's fields as they are now
+	Library    *library.Bundle            `json:"library,omitempty"` // nil from a magpie before it, or with none
 }
 
 type envelope struct {
@@ -94,6 +96,13 @@ func Collect(keys bool, app string) (Bundle, error) {
 		}
 	}
 	b.Groups = provider.StoredGroups()
+	b.Sources = provider.UsageSources()
+	b.QuotaPools = provider.QuotaPools()
+	if !keys {
+		for i := range b.Sources {
+			b.Sources[i].Credential = ""
+		}
+	}
 	if _, err := os.Stat(settings.Path()); err == nil {
 		s := settings.Load()
 		b.Settings = &s
@@ -124,7 +133,11 @@ var secretHeader = regexp.MustCompile(`(?i)auth|key|token|secret|cookie|session|
 func Secret(name string) bool { return secretHeader.MatchString(name) }
 
 func withoutKeys(p provider.Provider) provider.Provider {
-	p.Key, p.KeyName, p.Keys, p.KeyProtocol = "", "", nil, ""
+	p.Key, p.KeyID = "", ""
+	p.Keys = slices.Clone(p.Keys)
+	for i := range p.Keys {
+		p.Keys[i].Key = ""
+	}
 	if len(p.Headers) > 0 {
 		h := map[string]string{}
 		for k, v := range p.Headers {
@@ -238,10 +251,7 @@ func Restore(b Bundle, parts Parts) (Result, error) {
 			}
 		}
 		var err error
-		if r.Added, r.Replaced, err = provider.Restore(b.Providers); err != nil {
-			return r, err
-		}
-		if err := provider.RestoreGroups(b.Groups); err != nil {
+		if r.Added, r.Replaced, err = provider.RestoreConfiguration(b.Providers, b.Groups, b.Sources, b.QuotaPools); err != nil {
 			return r, err
 		}
 		for _, p := range provider.Stored() {

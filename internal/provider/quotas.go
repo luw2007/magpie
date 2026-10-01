@@ -40,6 +40,9 @@ func notShown(plans, subs []SubscriptionQuota) []SubscriptionQuota {
 // at the same moment, and there is one such at least — a window's reset
 // is when that account first used it.
 func sameAccount(a, b SubscriptionQuota) bool {
+	if a.PoolRef != "" || b.PoolRef != "" {
+		return a.PoolRef != "" && a.PoolRef == b.PoolRef && a.SourceRef == b.SourceRef && a.AccountID == b.AccountID
+	}
 	if a.Error != "" || b.Error != "" {
 		return false
 	}
@@ -64,14 +67,22 @@ func sameAccount(a, b SubscriptionQuota) bool {
 // ids (provider/model) for a key's plan or balance, the agent for a
 // subscription.
 type Quota struct {
-	Provider string      `json:"provider"`
-	Name     string      `json:"name"`
-	Kind     string      `json:"kind"` // subscription, plan (bought with a key) or balance (a key's money)
-	Plan     string      `json:"plan,omitempty"`
-	User     string      `json:"user,omitempty"`
-	Windows  []QuotaSpan `json:"windows"`
-	Balance  string      `json:"balance,omitempty"`
-	Error    string      `json:"error,omitempty"`
+	PoolRef     string      `json:"poolRef,omitempty"`
+	SourceRef   string      `json:"sourceRef,omitempty"`
+	AccountID   string      `json:"accountId,omitempty"`
+	KeyRefs     []string    `json:"keyRefs,omitempty"`
+	Status      string      `json:"status,omitempty"`
+	DisplayName string      `json:"displayName,omitempty"`
+	LoadPercent *float64    `json:"loadPercent,omitempty"`
+	AsOf        *time.Time  `json:"asOf,omitempty"`
+	Provider    string      `json:"provider"`
+	Name        string      `json:"name"`
+	Kind        string      `json:"kind"` // subscription, plan (bought with a key) or balance (a key's money)
+	Plan        string      `json:"plan,omitempty"`
+	User        string      `json:"user,omitempty"`
+	Windows     []QuotaSpan `json:"windows"`
+	Balance     string      `json:"balance,omitempty"`
+	Error       string      `json:"error,omitempty"`
 	// Until is when the plan's paid time ends, renewed then when Renew is
 	// "auto", over when "off", either when "".
 	Until *time.Time `json:"until,omitempty"`
@@ -105,6 +116,10 @@ func QuotaReport(ctx context.Context, now time.Time) []Quota {
 			}
 			r := Quota{Provider: q.Provider, Name: q.Name, Kind: kind, Plan: q.Plan, User: q.User,
 				Windows: []QuotaSpan{}, Balance: q.Balance, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets}
+			r.PoolRef, r.SourceRef, r.AccountID = q.PoolRef, q.SourceRef, q.AccountID
+			r.KeyRefs, r.DisplayName, r.Status = q.KeyRefs, q.DisplayName, quotaStatus(q, now)
+			r.LoadPercent = q.LoadPercent
+			r.AsOf = q.AsOf
 			for _, w := range q.Windows {
 				s := QuotaSpan{Name: w.Name, Used: w.Used, Remaining: max(0, 100-w.Used), ResetsAt: w.ResetsAt, Display: w.Display}
 				if s.ResetsAt == nil && w.ResetSecs > 0 {

@@ -294,6 +294,7 @@ func imported(name, key string, e endpoints, models []string) (Provider, string)
 	if p.Key == "" && !keyOptional(p) {
 		return Provider{}, "it has no API key"
 	}
+	p.normalizeKeys()
 	return p, ""
 }
 

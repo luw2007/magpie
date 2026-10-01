@@ -4114,6 +4114,7 @@ function renderKeyAccounts(p) {
       row.append(first);
     }
     list.append(row);
+    list.append(renderKeyBinding(p, k));
   }
   if (addingKey?.id === p.id) {
     const box = el("div", "acc adding");
@@ -4124,9 +4125,9 @@ function renderKeyAccounts(p) {
     const add = el("button", "text primary", t("Add"));
     const go = async () => {
       add.classList.add("busy");
-      const id = await keyFingerprint(key.value.trim());
+      const before = new Set(p.keyList.map(k => k.id));
       if (await accountAction("keys/add", { id: p.id, name: name.value, key: key.value, protocol: addingKey.protocol || "" }, t("Key added — it takes over when the ones before it run out"))) {
-        addingKey = null; justAdded = id; renderProviders(); setTimeout(() => { justAdded = ""; }, 2000);
+        addingKey = null; justAdded = providers?.providers?.find(x => x.id === p.id)?.keyList?.find(k => !before.has(k.id))?.id || ""; renderProviders(); setTimeout(() => { justAdded = ""; }, 2000);
       }
     };
     add.onclick = go;
@@ -4257,14 +4258,6 @@ function keyPill(p) {
   return on[0]?.name || p.key.masked;
 }
 
-// keyFingerprint is the id the backend gives a key, to greet a new one.
-async function keyFingerprint(key) {
-  try {
-    const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
-    return [...h.slice(0, 5)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  } catch { return ""; }
-}
-
 // apiField is the draft's URL a custom provider's base URL fills, by the
 // protocol chosen for it.
 const apiField = { openai: "chat", responses: "responses", anthropic: "anthropic" };
@@ -4393,6 +4386,7 @@ async function loadUsage() {
   renderUsageTab();
   if (usageTab === "sessions") return loadSessions();
   renderUsageLoading();
+  loadUsageConfig();
   loadQuotas();
   usage = await api("usage?period=" + period);
   renderUsage();
@@ -4451,6 +4445,9 @@ function fmtCost(t) {
 }
 const tokensOf = (t) => t.input + t.output;
 
+// Pools retain their own identity even when bound across multiple providers.
+const quotaName = (q) => q.displayName || q.name || q.poolRef || q.provider;
+
 function renderQuotas() {
   renderPanelQuota();
   const subscriptions = $("#subscriptionUsage");
@@ -4484,17 +4481,22 @@ function renderQuotas() {
   // an agent with several accounts is one card, a section per account
   const groups = [];
   for (const sub of quotas) {
-    const g = sub.user && groups.find((x) => x[0].user && x[0].provider === sub.provider);
+    const g = sub.poolRef ? groups.find((x) => x[0].poolRef === sub.poolRef) : sub.user && groups.find((x) => !x[0].poolRef && x[0].user && x[0].provider === sub.provider);
     if (g) g.push(sub); else groups.push([sub]);
   }
   for (const subs of groups) {
     const first = subs[0];
     const card = el("div", "subscription-card" + (first.user ? " several" : ""));
     const head = el("div", "subscription-head");
-    head.append(icon(first.icon), el("b", "", first.name));
+    head.append(icon(first.icon), el("b", "", quotaName(first)));
     if (!first.user && (first.plan || first.until)) head.append(planSpan(first));
     card.append(head);
     for (const sub of subs) {
+      if (sub.poolRef) {
+        card.append(el("div", "hint", `Pool: ${quotaName(sub)} · Source: ${sub.sourceRef || "Unknown"} · Account: ${sub.accountId || "Source-wide"} · Keys: ${(sub.keyRefs || []).join(", ") || "None"}`));
+        card.append(el("div", "hint", `Status: ${sub.status || "unknown"}${sub.error ? " · " + sub.error : ""}${sub.asOf ? ` · ${sub.status === "measured" ? "Measured" : "Last known"}: ` + new Date(sub.asOf).toLocaleString() : ""}`));
+        if (sub.loadPercent !== undefined && sub.loadPercent !== null) card.append(el("div", "hint", `Load: ${sub.loadPercent}%`));
+      }
       if (sub.user) {
         const who = el("div", "subscription-account");
         const u = el("span", "user", sub.user);
@@ -4610,13 +4612,14 @@ function renderPanelQuota() {
     // a balance with windows (Command Code's credits beside its 5-hour and
     // weekly windows) is the windows' card; a balance alone, a figure
     if (q.balance && !q.windows?.length) { bals.push(q); continue; }
-    if (!groups.has(q.name)) groups.set(q.name, []);
-    groups.get(q.name).push(q);
+    const id = q.poolRef ? "pool|" + q.poolRef : q.name;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(q);
   }
-  for (const [name, qs] of groups) {
+  for (const qs of groups.values()) {
     const g = el("div", "pq-group");
     const head = el("div", "pq-gh");
-    head.append(icon(qs[0].icon), el("span", "pq-gn", name));
+    head.append(icon(qs[0].icon), el("span", "pq-gn", quotaName(qs[0])));
     // several accounts: how many, a quiet count by the name; one: its plan
     // and until when, at the right
     if (qs.length > 1) {
@@ -4653,10 +4656,10 @@ function renderPanelQuota() {
   fit();
 }
 
-// asOfText: an allowance standing in for one that couldn't be read just
-// now (a vendor rate limiting its usage endpoint) says when it was read.
+// Collection timestamps are provenance; only stale readings warn of fallback.
 function asOfText(q) {
-  return t("As of {when} — couldn't be read just now", { when: new Date(q.asOf).toLocaleString() });
+  const when = new Date(q.asOf).toLocaleString();
+  return q.status === "stale" ? t("As of {when} — couldn't be read just now", { when }) : t("As of {when}", { when });
 }
 
 // shortWindow: "5 hours" as 5h, "7 days" as 7d; any other name as it is.
@@ -4667,8 +4670,8 @@ function shortWindow(name) {
 
 function panelQuotaCard(q) {
   const card = el("div", "pq-card");
-  card.append(el("span", "pq-user", q.user || q.name));
-  card.title = [q.name, q.user, q.plan, q.until ? planTerm(q) : "", q.balance && t("Balance") + " " + q.balance].filter(Boolean).join(" · ");
+  card.append(el("span", "pq-user", q.user || quotaName(q)));
+  card.title = [quotaName(q), q.user, q.plan, q.until ? planTerm(q) : "", q.balance && t("Balance") + " " + q.balance].filter(Boolean).join(" · ");
   if (q.error) {
     card.classList.add("err");
     card.append(el("span", "pq-sub err", quotaError(q.error)));
@@ -5754,9 +5757,8 @@ function importForm() {
   return ed;
 }
 
-// trayCardID names a Usage page card as settings.TrayUsage does: its
-// provider, and the account when there is one.
-const trayCardID = (q) => q.user ? q.provider + "|" + q.user : q.provider;
+// Pool selections do not depend on any of their bound providers.
+const trayCardID = (q) => q.poolRef ? "pool|" + q.poolRef : q.user ? q.provider + "|" + q.user : q.provider;
 
 // renderTrayUsage: the subscription or plan whose windows show beside the
 // tray icon. The cards are the Usage page's, asked for when the menu opens.
@@ -5773,7 +5775,7 @@ function renderTrayUsage(s, keep) {
   pill.type = "button";
   const paint = () => {
     const card = (quotas || []).find((q) => trayCardID(q) === id);
-    pill.replaceChildren(el("span", "", !id ? t("Off") : card ? card.name : id.split("|")[0]), svg(CHEV, 11, 1.6));
+    pill.replaceChildren(el("span", "", !id ? t("Off") : card ? quotaName(card) : id.startsWith("pool|") ? id.slice(5) : id.split("|")[0]), svg(CHEV, 11, 1.6));
   };
   paint();
   if (id && !quotas) loadQuotas().then(paint);
@@ -5783,7 +5785,7 @@ function renderTrayUsage(s, keep) {
     if (!quotas) { pill.classList.add("busy"); await loadQuotas(); pill.classList.remove("busy"); paint(); }
     const cards = (quotas || []).filter((q) => !q.error && (q.windows?.length || q.balance));
     const opts = [{ v: "", name: "Off", note: "" },
-      ...cards.map((q) => ({ v: trayCardID(q), name: q.name, note: [q.plan, q.user].filter(Boolean).join(" · ") }))];
+      ...cards.map((q) => ({ v: trayCardID(q), name: quotaName(q), note: [q.plan, q.user, q.poolRef && q.sourceRef].filter(Boolean).join(" · ") }))];
     if (!cards.length) opts.push({ v: "\x00", name: "No subscriptions yet", note: "Sign in to one, or add a plan's key, and it shows on the Usage page" });
     openProtoMenu(pill, opts, id, (v) => { if (v !== id && v !== "\x00") savePrefs({ ...keep, trayUsage: v }); }, "Shown beside the icon");
   };

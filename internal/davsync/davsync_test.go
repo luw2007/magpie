@@ -248,16 +248,33 @@ func TestSync(t *testing.T) {
 	c.use(t)
 	Configure(Config{URL: cfg.URL, User: "me", Password: "pw", Passphrase: "correct horse", Keys: false, Agents: true})
 	now(t)
-	provider.Save(provider.Provider{ID: "kimi", Name: "Kimi 2", Chat: "https://api.moonshot.cn/v1", Key: "k2"})
+	rename, err := provider.Find("kimi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := rename.KeyID
+	rename.Name = "Kimi 2"
+	if err := provider.Save(*rename); err != nil {
+		t.Fatal(err)
+	}
 	now(t)
 	a.use(t)
 	now(t)
-	if ps := provider.Stored(); len(ps) != 1 || ps[0].Name != "Kimi 2" || ps[0].Key != "k2" {
+	if ps := provider.Stored(); len(ps) != 1 || ps[0].Name != "Kimi 2" || ps[0].Key != "k2" || ps[0].KeyID != keyID {
 		t.Fatalf("a after c renamed: %+v", ps)
 	}
-	remote, _ := backup.Open(fake.files["/dav/magpie/magpie.magpie-backup"], "correct horse")
-	if remote.Providers[0].Key != "k2" {
-		t.Fatalf("the server lost the key: %+v", remote.Providers)
+	remote, err := backup.Open(fake.files["/dav/magpie/magpie.magpie-backup"], "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remote.Providers[0].Key != "k2" || remote.Providers[0].KeyID != keyID {
+		t.Fatalf("the server lost the credential identity: %+v", remote.Providers)
+	}
+	c.use(t)
+	puts = fake.puts
+	now(t)
+	if fake.puts != puts {
+		t.Fatal("keyless rename was pushed again after syncing")
 	}
 
 	// the wrong passphrase, the wrong password
