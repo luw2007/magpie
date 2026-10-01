@@ -28,7 +28,7 @@ func TestUsageSourcesPreserveAccountsAndSharedPools(t *testing.T) {
 				if r.URL.Query().Get("page") == "1" {
 					data = sub2APIAccounts{Total: 3, Items: []sub2APIAccount{{ID: 1, Name: "same name", Platform: "openai", Type: "oauth"}}}
 				} else {
-					data = sub2APIAccounts{Total: 3, Items: []sub2APIAccount{{ID: 2, Name: "same name", Platform: "anthropic", Type: "oauth"}, {ID: 3, Type: "apikey"}}}
+					data = sub2APIAccounts{Total: 3, Items: []sub2APIAccount{{ID: 2, Name: "same name", Platform: "anthropic", Type: "setup-token"}, {ID: 3, Type: "apikey"}}}
 				}
 			case "/api/v1/admin/accounts/1/usage", "/api/v1/admin/accounts/2/usage":
 				usageCalls.Add(1)

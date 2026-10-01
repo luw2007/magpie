@@ -61,7 +61,7 @@ func discoverSourceAccounts(ctx context.Context, source UsageSource, credential 
 				}
 				seen[account.ID] = true
 				newIDs++
-				if account.Type != "oauth" {
+				if account.Type != "oauth" && account.Type != "setup-token" {
 					continue
 				}
 				out = append(out, SourceAccount{ID: strconv.Itoa(account.ID), Name: account.Name, Platform: account.Platform, Type: account.Type})
