@@ -203,6 +203,18 @@ one-minute freshness interval, expired reset windows, or a failed-refresh fallba
 Pool cards use pool identity independently of any one provider, since associated
 keys can belong to several providers.
 
+The **key binding UI** under each key on the Providers page is rendered as a
+self-contained `.kbind` block (no `.pair` / `.acc` / `.row` reuse, so checkbox
+picks stay compact and never inherit thick dividers from key rows). Two
+labelled sections: **Quota pools** (flex-wrap chips of `name · source-name ·
+source-id`, unavailable refs dimmed with an explicit `.unavailable` class but
+never auto-filtered) and **Model scope** (comma-separated IDs, `*` = any). A
+dedicated footer bar hosts the single Save-binding action so it is never
+squeezed beside inputs or other key controls. Locale-aware — every label and
+hint goes through `t()`, with a full set of `zh` translations in
+`internal/gui/assets/i18n.js`. Payload is unchanged:
+`accountAction("keys/binding", { id, ref, poolRefs, models }, t("Binding saved"))`.
+
 ### Routing groups
 
 A routing group is several models, from one provider or many, that an agent
