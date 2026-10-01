@@ -80,6 +80,32 @@ func TestUsageSourcesPreserveAccountsAndSharedPools(t *testing.T) {
 	}
 }
 
+func TestSetupTokenPassiveWeeklyQuota(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	reset := time.Now().Add(48 * time.Hour).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var data any
+		switch r.URL.Path {
+		case "/api/v1/admin/accounts":
+			data = sub2APIAccounts{Total: 1, Items: []sub2APIAccount{{ID: 6, Name: "max", Platform: "anthropic", Type: "setup-token"}}}
+		case "/api/v1/admin/accounts/6/usage":
+			data = map[string]any{"five_hour": map[string]any{"utilization": 9, "resets_at": time.Now().Add(2 * time.Hour)}}
+		case "/api/v1/admin/accounts/6":
+			data = sub2APIAccount{ID: 6, Extra: map[string]any{"passive_usage_7d_utilization": 0.83, "passive_usage_7d_reset": reset}}
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data})
+	}))
+	defer server.Close()
+	source := UsageSource{ID: "relay", Name: "Relay", Type: "sub2api", BaseURL: server.URL, Credential: "test"}
+	got := collectUsageSources(context.Background(), []UsageSource{source}, []QuotaPool{{ID: "claude", Name: "Claude", SourceRef: "relay", AccountIDs: []string{"6"}}}, nil)
+	if len(got) != 1 || got[0].Status != "measured" || len(got[0].Windows) != 2 || got[0].Windows[1].Used != 83 || !got[0].Windows[1].ResetsAt.Equal(time.Unix(reset, 0)) {
+		t.Fatalf("setup-token weekly quota: %+v", got)
+	}
+}
+
 func TestUsageSourceFailuresNeverBecomeZero(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	lastQuotas.Lock()

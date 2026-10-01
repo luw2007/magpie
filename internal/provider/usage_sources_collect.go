@@ -97,6 +97,16 @@ func sourceAccountQuota(ctx context.Context, source UsageSource, credential stri
 			err = fmt.Errorf("sub2api account ID must be a positive upstream integer ID")
 		} else {
 			err = sub2APIGet(ctx, strings.TrimRight(source.BaseURL, "/")+"/api/v1/admin/accounts/"+account.ID+"/usage", credential, &usage)
+			if err == nil && usage.SevenDay == nil && account.Type == "setup-token" {
+				var detail sub2APIAccount
+				if err = sub2APIGet(ctx, strings.TrimRight(source.BaseURL, "/")+"/api/v1/admin/accounts/"+account.ID, credential, &detail); err == nil {
+					if used, ok := detail.Extra["passive_usage_7d_utilization"].(float64); ok {
+						if reset, ok := detail.Extra["passive_usage_7d_reset"].(float64); ok {
+							usage.SevenDay = &sub2APIWindow{Utilization: used * 100, ResetsAt: time.Unix(int64(reset), 0), reported: true}
+						}
+					}
+				}
+			}
 		}
 	case "google-proxy":
 		usage, err = fetchGoogleQuota(ctx, source, credential)
