@@ -1445,6 +1445,14 @@ const CLI_SPIN = "M13.5 8a5.5 5.5 0 1 1-5.5-5.5";
 
 function cliTag(a) {
   const box = el("span", "ag-cli");
+  // its settings are here, its CLI isn't: uninstalled, its folder left
+  // behind (#843); Install another agent has it again
+  if (a.cliMissing) {
+    const m = el("span", "ag-missing", t("CLI not found"));
+    m.title = t("{agent}'s settings are still here ({path}), but its command-line program isn't found: it may have been uninstalled. Install another agent, below the list, has its install command.", { agent: a.name, path: a.path });
+    box.append(m);
+    return box;
+  }
   const c = cliInfo[a.id];
   if (!c?.version) return box;
   const v = el("span", "ag-ver", c.version);
@@ -1637,7 +1645,9 @@ function paintInstalls() {
   if (mode === "panel" || !list) return;
   let box = $("#agentsInstall");
   const here = new Set((state?.agents || []).map((a) => a.id));
-  const items = installInfo.filter((x) => !here.has(x.id));
+  // one listed above by its settings alone, its CLI gone (#843), is
+  // offered again too
+  const items = installInfo.filter((x) => x.missing || !here.has(x.id));
   if (!items.length) { box?.remove(); return; }
   if (!box) {
     box = el("section", "ag-install");
@@ -1665,7 +1675,15 @@ function paintInstalls() {
       const r = el("div", "ag-install-row");
       r.dataset.id = x.id;
       const who = el("div", "ag-install-who");
-      who.append(icon(x.icon || x.id), el("b", "", x.name));
+      // one whose settings are left (#843) says so under its name
+      const name = el("span", "ag-install-name");
+      name.append(el("b", "", x.name));
+      if (x.missing) {
+        const m = el("span", "ag-install-missing", t("CLI not found"));
+        m.title = t("{agent}'s settings are still here, but its command-line program isn't found", { agent: x.name });
+        name.append(m);
+      }
+      who.append(icon(x.icon || x.id), name);
       const cmds = el("div", "ag-install-cmds");
       for (const c of x.commands) {
         const line = el("div", "ag-install-cmd");
@@ -6486,7 +6504,7 @@ function pickedOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, catalog: p.catalog, decide: p.decide || "", key: "", api: p.chat ? "openai" : p.anthropic ? "anthropic" : p.responses ? "responses" : p.decide ? "decide" : "openai", chosen: pickedOf(p), extra: [], headers: headerRows(p.headers), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, catalog: p.catalog, decide: p.decide || "", key: "", api: p.chat ? "openai" : p.anthropic ? "anthropic" : p.responses ? "responses" : p.decide ? "decide" : "openai", chosen: pickedOf(p), extra: [], headers: headerRows(p.headers), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, pinUpstream: !!p.pinUpstream, balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
 }
 
 // duplicateProvider opens the Add form on a copy of p (#268): its URLs,
@@ -6804,6 +6822,16 @@ function drawEditor(p, presetID) {
   ed.append(...concurrencyField(p));
   ed.append(...priceRateField());
 
+  // the Cline API serves a model from whichever host its AI gateway picks;
+  // pinned, its DeepSeek models are served by DeepSeek's own API alone,
+  // which keeps their prompt cache (White Immortal on Discord)
+  if (p?.cline || (isNew && pr?.id === "clinepass")) {
+    const [ptk, pcb] = tick(t("DeepSeek models only from DeepSeek's own API"), !!draft.pinUpstream);
+    ptk.classList.add("pin-upstream");
+    pcb.onchange = () => { draft.pinUpstream = pcb.checked; };
+    ed.append(...field(t("Upstream"), ptk, t("Cline serves a model from any host its gateway picks; pinned, a request for a DeepSeek model goes only to DeepSeek, which keeps its prompt cache, and fails when DeepSeek can't take it")));
+  }
+
   // a relay in front of Anthropic's or OpenAI's API searches the web as
   // they do, which magpie can't tell from its host (#359): a client's web
   // search goes to it as sent, rather than through magpie's own. Only its
@@ -7056,6 +7084,7 @@ function drawEditor(p, presetID) {
     if (custom) { body.icon = draft.icon || "generic"; body.balanceURL = (draft.balanceURL || "").trim(); body.balancePath = (draft.balancePath || "").trim(); body.modelsURL = (draft.modelsURL || "").trim(); }
     if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
     body.searches = !!draft.searches && searchable();
+    body.pinUpstream = !!draft.pinUpstream;
     const cx = parseContexts(draft.contexts || "");
     if (cx.error) return editorError(t("Context window: {v} is not a length like 128k or 1m", { v: cx.error }), "warn");
     body.contexts = cx.map;
@@ -8261,7 +8290,10 @@ const ROUTINGS = [
   ["rotate", "In turn", "Each turn of a conversation goes to the next one, spreading the load evenly; the requests within a turn stay where it began, so the prompt cache holds, and one that fails is passed over while it rests."],
   ["usage", "Least used first", "Each request goes to the one used least: a subscription by the share of its allowance used, a key by the tokens it served in the last hours."],
   ["pace", "Weekly pace", "Each request goes to the subscription with the most of its week left per hour until it renews — the one with the most to lose at its reset — so less of each week is lost at its reset; one at 90% or more waits until the others can't answer. A key goes by the tokens it served in the last hours."],
+  ["weight", "By weight", "Requests spread over the keys by the weight set beside each: a key weighing 3 takes three requests for every one a key weighing 1 takes, evenly over a few requests. One that fails is passed over while it rests, and the others share its requests; a conversation stays with its key as Stays says."],
 ];
+// weight is a key's share: offered for a provider with keys only
+const routingsOf = (p) => p.account ? ROUTINGS.filter(([id]) => id !== "weight") : ROUTINGS;
 // as on the Routing page's list of these (routing.js AFF_OPTS)
 const STAYS = [
   ["", "Auto", "A conversation stays with the account or key that answered it while what the vendor cached of it is worth keeping — within a turn always, across turns while it's fresh."],
@@ -8315,10 +8347,12 @@ function renderRouting(p) {
     const cur = ROUTINGS.find(([id]) => id === routingNow()) || ROUTINGS[0];
     rHint.textContent = t(cur[2]) + own(cur[0]);
     rUnsaved.hidden = routingNow() === (p.routing || "");
-    // in turn goes round already
-    kLabel.hidden = kWrap.hidden = routingNow() === "rotate";
+    // in turn and by weight go round already
+    kLabel.hidden = kWrap.hidden = routingNow() === "rotate" || routingNow() === "weight";
+    // each key's weight shows beside it while the routing is by weight
+    for (const l of document.querySelectorAll(".accts.keys")) if (l.dataset.provider === p.id) l.classList.toggle("weighted", routingNow() === "weight");
   };
-  const rPick = segs(ROUTINGS.map(([id, name]) => [id, t(name)]), routingNow(), (routing) => { draft.routing = routing; drawRouting(); });
+  const rPick = segs(routingsOf(p).map(([id, name]) => [id, t(name)]), routingNow(), (routing) => { draft.routing = routing; drawRouting(); });
   const rRow = el("div", "route-pick");
   rRow.append(rPick, rUnsaved);
   const rWrap = el("div");
@@ -10013,12 +10047,45 @@ function accountModels(p, ref, isKey, name) {
   return [pill, box];
 }
 
+// keyWeight: a key's weight under By weight routing, and its share of the
+// requests; a click edits it in place, Enter or leaving it saves it.
+function keyWeight(p, k, w, total) {
+  const b = el("button", "key-weight", t("Weight {n} · {share}%", { n: w, share: Math.round(100 * w / total) }));
+  b.title = t("Its share of the requests: a key weighing 3 takes three for every one a key weighing 1 takes");
+  b.onclick = () => {
+    const i = input(String(w), "1");
+    i.type = "number";
+    i.min = "1";
+    i.max = "1000";
+    i.className = "key-weight-in";
+    let done = false;
+    const save = (keep) => {
+      if (done) return;
+      done = true;
+      const n = Math.round(Number(i.value));
+      if (keep && n >= 1 && n <= 1000 && n !== w) accountAction("keys/weight", { id: p.id, ref: k.id, weight: n }, t("{key} weighs {n}", { key: k.name || k.masked, n }));
+      else renderProviders();
+    };
+    i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") save(true); else if (e.key === "Escape") save(false); };
+    i.onblur = () => save(true);
+    b.replaceWith(i);
+    i.focus({ preventScroll: true });
+    i.select();
+  };
+  return b;
+}
+
 // renderKeyAccounts: a key provider's accounts, one per key, the same list
 // a subscription has. addingKey holds the half-typed new one.
 let addingKey = null;
 function renderKeyAccounts(p) {
-  const list = el("div", "accts");
+  const list = el("div", "accts keys");
+  list.dataset.provider = p.id;
+  list.classList.toggle("weighted", (draft?.routing ?? (p.routing || "")) === "weight");
   const several = p.keyList.filter((k) => k.on).length > 1;
+  // the weights of those on, for each one's share (#841)
+  const weightOf = (k) => Math.max(k.weight || 0, 1);
+  const weights = p.keyList.filter((k) => k.on).reduce((n, k) => n + weightOf(k), 0);
   for (const k of p.keyList) {
     const row = el("div", "acc" + (k.on ? " in-use" : " off") + (k.id === justAdded ? " new" : ""));
     row.dataset.accountId = k.id;
@@ -10049,6 +10116,7 @@ function renderKeyAccounts(p) {
       r.title = t("The gateway passes this key over until then, and tries the next one");
       row.append(r);
     }
+    if (k.on && several) row.append(keyWeight(p, k, weightOf(k), weights));
     const proto = protoPicker(p, k.protocol, (v) => accountAction("keys/protocol", { id: p.id, ref: k.id, protocol: v }));
     if (proto) row.append(proto);
     // its own models (#474), when there is another key to send the rest to
@@ -10850,7 +10918,7 @@ function renderQuotas() {
       // when the windows were read: "Updated 3 min ago", or the time of
       // ones standing in for a reading that failed just now (#802; a
       // balance alone says it in its row)
-      const read = !brief && sub.windows?.length && !sub.error && readWhen(sub);
+      const read = !brief && sub.windows?.length && !sub.error && readWhen(sub, true);
       if (read) card.append(read);
       if (!brief && sub.resets?.count) {
         const r = el("div", "quota-resets");
@@ -12182,7 +12250,7 @@ function balanceRow(sub, why, when = true) {
     if (p.percent != null) row.append(balanceMeter(p.percent));
     b.append(row);
   }
-  const read = when && readWhen(sub);
+  const read = when && readWhen(sub, when === "refresh");
   if (read) b.append(read);
   return b;
 }
@@ -12199,22 +12267,57 @@ function balanceMeter(percent) {
 
 // readWhen: when a card's figures were read, quietly under them: "As of
 // …" for one standing in for a reading that failed just now, else how
-// long ago, kept current.
-function readWhen(q) {
+// long ago, kept current. On the Usage page (refresh) the card's own
+// refresh is left of it.
+function readWhen(q, refresh = false) {
+  let s;
   if (q.asOf) {
-    const s = el("div", "quota-read stale", asOfText(q));
+    s = el("div", "quota-read stale", asOfText(q));
     s.title = asOfText(q);
-    return s;
-  }
-  if (!q.readAt) return null;
-  const s = el("div", "quota-read", t("Updated {when}", { when: ago(q.readAt) }));
-  s.dataset.ago = q.readAt;
-  s.title = new Date(q.readAt).toLocaleString();
+  } else if (q.readAt) {
+    s = el("div", "quota-read");
+    const when = el("span", "quota-ago", t("Updated {when}", { when: ago(q.readAt) }));
+    when.dataset.ago = q.readAt;
+    s.append(when);
+    s.title = new Date(q.readAt).toLocaleString();
+  } else return null;
+  if (refresh) s.prepend(quotaRefresh(q));
   return s;
 }
 setInterval(() => {
-  for (const s of document.querySelectorAll(".quota-read[data-ago]")) s.textContent = t("Updated {when}", { when: ago(s.dataset.ago) });
+  for (const s of document.querySelectorAll(".quota-ago[data-ago]")) s.textContent = t("Updated {when}", { when: ago(s.dataset.ago) });
 }, 30000);
+
+// quotaRefresh: a card's own refresh, shown as the card is hovered: that
+// account's or key's allowance alone is read again, the other cards left
+// as they were read (Hu9956, #840: 单独刷新某个套餐，而不用刷新全部). A
+// Claude account's is read by running Claude Code's own /usage, as the
+// page's Refresh does.
+const quotaRefreshing = new Set();
+function quotaRefresh(q) {
+  const key = usageAcctKey(q);
+  const b = el("button", "quota-refresh" + (quotaRefreshing.has(key) ? " busy" : ""));
+  b.type = "button";
+  b.title = t(q.provider === "claude" ? "Read this card again, by running Claude Code's own /usage" : "Read this card again");
+  b.setAttribute("aria-label", t("Refresh this card"));
+  b.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>';
+  b.onclick = async (e) => {
+    e.stopPropagation();
+    if (quotaRefreshing.has(key)) return;
+    quotaRefreshing.add(key);
+    b.classList.add("busy");
+    try {
+      const qs = await api("usage/quotas/refresh?provider=" + encodeURIComponent(q.provider) + (q.user ? "&user=" + encodeURIComponent(q.user) : ""), {});
+      if (Array.isArray(qs)) { quotas = qs; quotasAt = Date.now(); }
+    } catch (err) {
+      status(err.message, "err");
+    } finally {
+      quotaRefreshing.delete(key);
+      renderQuotas();
+    }
+  };
+  return b;
+}
 
 // familyQuota: an account's windows one a model family where they name
 // one, and "Every model", for above them, turning to each window and back
@@ -12249,10 +12352,12 @@ function familyQuota(sub) {
 
 // quotaWindows: one account's allowance as meters, or why there are none.
 function quotaWindows(sub) {
-  if (sub.balance && !sub.windows?.length) return balanceRow(sub, "What is left on the account: the vendor tells only this, so Used / Left leaves it as it is");
+  if (sub.balance && !sub.windows?.length) return balanceRow(sub, "What is left on the account: the vendor tells only this, so Used / Left leaves it as it is", "refresh");
   if (sub.error) {
     const e = el("div", "subscription-error", quotaError(sub.error));
     e.title = sub.error;
+    // read again from here too: a failed reading is the one most wanted
+    e.prepend(quotaRefresh(sub));
     return e;
   }
   const windows = el("div", "quota-windows");

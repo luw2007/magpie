@@ -281,6 +281,7 @@ func affine(scope, mode string, rotate bool, in http.Header, from provider.Proto
 	case "session", "turn", "cache":
 		a.Kept = true
 		if at > 0 {
+			weightedKept(cs[0], cs[at])
 			cs = append(append([]candidate{cs[at]}, cs[:at]...), cs[at+1:]...)
 			order := append(append([]Weighed{pl.order[at]}, pl.order[:at]...), pl.order[at+1:]...)
 			pl.order = order

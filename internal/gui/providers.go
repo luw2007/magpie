@@ -63,6 +63,10 @@ type providerJSON struct {
 	Headers   map[string]string `json:"headers,omitempty"`
 	// the vendor searches the web by itself (provider.Searches)
 	Searches bool `json:"searches"`
+	// on the Cline API: its DeepSeek models are served by DeepSeek's own
+	// API alone (provider.PinUpstream), which only it offers
+	Cline       bool `json:"cline,omitempty"`
+	PinUpstream bool `json:"pinUpstream"`
 	// the proxy its requests go through: "" the global one, "direct"
 	// none, or an address (#237)
 	Proxy string `json:"proxy"`
@@ -372,7 +376,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
 		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Decide: p.Decide, ModelTest: p.ModelTest(), DecideTest: p.AsksDecideModels(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
-		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, Headers: p.Headers, Searches: p.Searches, BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, ModelsURL: p.ModelsURL,
+		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, Headers: p.Headers, Searches: p.Searches, Cline: p.IsCline(), PinUpstream: p.PinUpstream, BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Models, Models: []modelJSON{}, Agents: []providerAgent{},
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, Unlisted: p.Unlisted, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), PriceRate: p.PriceRate,
@@ -892,6 +896,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.Keys, pr.KeyID = in.Keys, in.KeyID
 				pr.ZhipuTeam = in.ZhipuTeam
 				pr.Searches = in.Searches
+				pr.PinUpstream = in.PinUpstream
 				if in.Name != "" {
 					pr.Name = in.Name
 				}
@@ -919,7 +924,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			in.PriceRate = rate
 			var old *provider.Provider
 			if req.New {
-				// a second one of a preset, or a name already in use, is
+				// Add a second preset or reused name beside the first.
 				// added beside the first under the next free id
 				if req.Proxy != nil {
 					in.Proxy = *req.Proxy
@@ -1379,6 +1384,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			Protocol           provider.Protocol
 			PoolRefs           *[]string
 			Models             []string
+			Weight             int
 		}
 		var added, had int
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -1419,6 +1425,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			err = provider.SetKeyBinding(in.ID, in.Ref, poolRefs, in.Models)
 		case "replace":
 			err = provider.ReplaceKey(in.ID, in.Ref, in.Key)
+		case "weight":
+			err = provider.SetKeyWeight(in.ID, in.Ref, in.Weight)
 		case "use":
 			err = provider.UseKey(in.ID, in.Ref)
 		case "remove":

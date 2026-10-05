@@ -732,6 +732,8 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		routed.turn[p.ID]++
 		routed.Unlock()
 		cs = append(append([]candidate{}, cs[n:]...), cs[:n]...)
+	case provider.Weighted:
+		cs = weightedFirst(p.ID, cs)
 	case provider.LeastUsed:
 		// a subscription by the share of its allowance used, as the vendor
 		// says; then, and for keys, by what magpie sent it lately

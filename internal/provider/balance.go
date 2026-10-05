@@ -16,6 +16,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -754,8 +755,9 @@ func ForgetBalances() {
 // providers were saved since (ForgetBalances).
 func KeyBalances(ctx context.Context) []SubscriptionQuota {
 	c := &keyBalanceCache
+	_, again := refreshing(ctx) // one card read again (RefreshUsage)
 	c.Lock()
-	if c.data != nil && time.Since(c.at) < time.Minute {
+	if !again && c.data != nil && time.Since(c.at) < time.Minute {
 		defer c.Unlock()
 		return c.data
 	}
@@ -807,6 +809,7 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 			jobs = append(jobs, job{q, name})
 		}
 	}
+	jobs = slices.DeleteFunc(jobs, func(j job) bool { return !wantsCard(ctx, j.p.ID, j.user) })
 	out := make([]SubscriptionQuota, len(jobs))
 	var wg sync.WaitGroup
 	for i, j := range jobs {
@@ -830,7 +833,11 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 	wg.Wait()
 	if ctx.Err() == nil {
 		c.Lock()
-		c.at, c.data = time.Now(), out
+		if again {
+			c.data = mergeCards(c.data, out)
+		} else {
+			c.at, c.data = time.Now(), out
+		}
 		c.Unlock()
 	}
 	return out

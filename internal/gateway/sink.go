@@ -54,9 +54,10 @@ func sunkAt(c candidate) (sinking, bool) {
 }
 
 // sinks says whether an order routed so sends the rate limited back:
-// in turn goes round already, and a manual group has one member.
+// in turn and by weight go round already, and a manual group has one
+// member.
 func sinks(on bool, routing string) bool {
-	return on && routing != provider.Rotate && routing != provider.Manual
+	return on && routing != provider.Rotate && routing != provider.Weighted && routing != provider.Manual
 }
 
 // sinkOrder is the order of n candidates with those that sank moved

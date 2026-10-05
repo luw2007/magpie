@@ -86,6 +86,7 @@ var cliSpecs = map[string]cliSpec{
 	"copilot": {npm: []string{"@github/copilot"}, brew: []string{"copilot-cli"}},
 	"crush":   {npm: []string{"@charmland/crush"}, brew: []string{"crush"}},
 	"cline":   {npm: []string{"cline"}},
+	"dsh":     {npm: []string{"@deepseek-ai/dsh"}},
 	"goose":   {brew: []string{"block-goose-cli"}},
 	// AtomCode's installer chooses /usr/local/bin or ~/.local/bin by
 	// writability (`.local\bin\atomcode.exe` on Windows); `atomcode upgrade`

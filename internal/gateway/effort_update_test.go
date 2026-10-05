@@ -87,10 +87,12 @@ var effortReply = sse(
 	`data: {"type":"response.output_text.delta","delta":"pong"}`,
 	`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":7,"output_tokens":1}}}`)
 
-// #617: an effort changed mid-thread goes as a configuration_update before
-// the user message it came with, the thread's first effort staying at the
-// top, and is put back in the same place on every later turn; a thread
-// that keeps its effort goes as the agent sent it.
+// #617: an effort lowered mid-thread goes as a configuration_update before
+// the user message it came with, the thread's effort staying at the top,
+// and is put back in the same place on every later turn; one raised above
+// it starts the thread again at the top, since the backend gives an update
+// up a fraction of the reasoning asked; a thread that keeps its effort
+// goes as the agent sent it.
 func TestEffortChangeKeepsTheCache(t *testing.T) {
 	t.Setenv("MAGPIE_EFFORT_UPDATES", "on")
 	f := &fake{t: t, ctype: "none", reply: effortReply}
@@ -106,17 +108,22 @@ func TestEffortChangeKeepsTheCache(t *testing.T) {
 	}{
 		{effortTurn("t1", "low", "a"), want{"low", "user"}},
 		{effortTurn("t1", "low", "a", "b"), want{"low", "user,assistant,user"}},
-		{effortTurn("t1", "high", "a", "b", "c"), want{"low", "user,assistant,user,assistant,u:high,user"}},
-		{effortTurn("t1", "high", "a", "b", "c", "d"), want{"low", "user,assistant,user,assistant,u:high,user,assistant,user"}},
-		{effortTurn("t1", "medium", "a", "b", "c", "d", "e"), want{"low", "user,assistant,user,assistant,u:high,user,assistant,user,assistant,u:medium,user"}},
+		// up: the thread starts again at it, at the top — an update gets
+		// a fraction of the reasoning asked
+		{effortTurn("t1", "high", "a", "b", "c"), want{"high", "user,assistant,user,assistant,user"}},
+		{effortTurn("t1", "high", "a", "b", "c", "d"), want{"high", "user,assistant,user,assistant,user,assistant,user"}},
+		// down: an update before the user message it came with, the top
+		// unchanged, put back in the same place on later turns
+		{effortTurn("t1", "medium", "a", "b", "c", "d", "e"), want{"high", "user,assistant,user,assistant,user,assistant,user,assistant,u:medium,user"}},
+		{effortTurn("t1", "low", "a", "b", "c", "d", "e", "f"), want{"high", "user,assistant,user,assistant,user,assistant,user,assistant,u:medium,user,assistant,u:low,user"}},
 		// back to the first effort: an update to it, the top unchanged
-		{effortTurn("t1", "low", "a", "b", "c", "d", "e", "f"), want{"low", "user,assistant,user,assistant,u:high,user,assistant,user,assistant,u:medium,user,assistant,u:low,user"}},
+		{effortTurn("t1", "high", "a", "b", "c", "d", "e", "f", "g"), want{"high", "user,assistant,user,assistant,user,assistant,user,assistant,u:medium,user,assistant,u:low,user,assistant,u:high,user"}},
 		// another thread, at one effort throughout, is left alone
 		{effortTurn("t2", "high", "x"), want{"high", "user"}},
 		{effortTurn("t2", "high", "x", "y"), want{"high", "user,assistant,user"}},
 		// a history that isn't the last one and more (compacted) starts
 		// the thread again at the effort it asks
-		{effortTurn("t1", "xhigh", "summary", "g"), want{"xhigh", "user,assistant,user"}},
+		{effortTurn("t1", "low", "summary", "h"), want{"low", "user,assistant,user"}},
 	} {
 		code, body := post(t, "/v1/responses", tc.body)
 		if code != 200 || !strings.Contains(body, "pong") {
@@ -145,11 +152,11 @@ func TestEffortUpdateRefused(t *testing.T) {
 	}}
 	effortCodexAccount(t, f)
 
-	post(t, "/v1/responses", effortTurn("t1", "low", "a"))
+	post(t, "/v1/responses", effortTurn("t1", "high", "a"))
 	f.calls = 0
-	code, body := post(t, "/v1/responses", effortTurn("t1", "high", "a", "b"))
+	code, body := post(t, "/v1/responses", effortTurn("t1", "low", "a", "b"))
 	effort, _, input := sentShape(t, f.got)
-	if code != 200 || f.calls != 2 || effort != "high" || strings.Join(input, ",") != "user,assistant,user" {
+	if code != 200 || f.calls != 2 || effort != "low" || strings.Join(input, ",") != "user,assistant,user" {
 		t.Fatalf("refused: status %d after %d calls, sent %q %v: %s", code, f.calls, effort, input, body)
 	}
 	f.calls = 0

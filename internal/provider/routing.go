@@ -24,6 +24,9 @@ const (
 	Rotate    = "rotate"
 	LeastUsed = "usage"
 	Pace      = "pace"
+	// Weighted spreads a provider's requests over its keys by each key's
+	// weight (KeyAccount.Weight, #841), smoothly: 3 and 1 go a, a, b, a…
+	Weighted = "weight"
 )
 
 // SetRouting changes how a provider's requests spread over its keys or

@@ -46,6 +46,8 @@ func routingName(v string) string {
 		return "least used"
 	case provider.Pace:
 		return "weekly pace"
+	case provider.Weighted:
+		return "by weight"
 	case provider.Manual:
 		return "manual"
 	}

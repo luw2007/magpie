@@ -217,7 +217,7 @@ func TestSubscriptionUsageEachAccount(t *testing.T) {
 	t.Cleanup(func() { CodexBase = old })
 
 	var codex []SubscriptionQuota
-	for _, q := range fetchSubscriptionUsage() {
+	for _, q := range fetchSubscriptionUsage(context.Background()) {
 		if q.Provider == "codex" {
 			codex = append(codex, q)
 		}
@@ -231,7 +231,7 @@ func TestSubscriptionUsageEachAccount(t *testing.T) {
 // codexCards are the Usage page's Codex cards, by account.
 func codexCards() map[string]SubscriptionQuota {
 	out := map[string]SubscriptionQuota{}
-	for _, q := range fetchSubscriptionUsage() {
+	for _, q := range fetchSubscriptionUsage(context.Background()) {
 		if q.Provider == "codex" {
 			out[q.User] = q
 		}

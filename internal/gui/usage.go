@@ -436,6 +436,20 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		// went (#694)
 		writeJSON(rw, provider.WithCheckins(provider.Quotas(ctx)))
 	})
+	// One card read again, from its refresh button (#840): ?provider= and,
+	// of a card with several accounts, &user=; the others are left as they
+	// were read. The answer is every card, as GET's.
+	mux.HandleFunc("POST /api/usage/quotas/refresh", func(rw http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("provider")
+		if id == "" {
+			http.Error(rw, "provider is required", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		provider.RefreshUsage(ctx, id, r.URL.Query().Get("user"))
+		writeJSON(rw, provider.WithCheckins(provider.Quotas(ctx)))
+	})
 	// WorkBuddy's daily check-in pressed now, from the Usage card, for
 	// each account not in yet today, as `magpie accounts checkin` does; the
 	// card is read again after

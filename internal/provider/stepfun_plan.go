@@ -495,7 +495,7 @@ func stepPlanQuotas(ctx context.Context) []SubscriptionQuota {
 			continue
 		}
 		site := StepFunSite(p)
-		if site == "" || seen[site] || !StepFunSignedIn(site) {
+		if site == "" || seen[site] || !wantsCard(ctx, p.ID, "") || !StepFunSignedIn(site) {
 			continue
 		}
 		seen[site] = true

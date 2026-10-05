@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/netproxy"
+	"github.com/yetone/magpie/internal/plugin"
 )
 
 // QuotaWindow is one rolling allowance reported by a subscription provider.
@@ -187,7 +188,7 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 		c.pending = done
 		go func() {
 			start := time.Now()
-			out := fetchSubscriptionUsage()
+			out := fetchSubscriptionUsage(ctx)
 			noteDailyCredits(out, time.Now())
 			noteQuotaHistory(out, time.Now())
 			c.Lock()
@@ -314,10 +315,11 @@ func chosenWindows(ws []QuotaWindow, chosen map[string]bool, base func(string) s
 	return out
 }
 
-// fetchSubscriptionUsage asks every signed-in vendor and the optional local
-// sub2api usage adapter at once.
-func fetchSubscriptionUsage() []SubscriptionQuota {
-	ctx0, cancel := context.WithTimeout(context.Background(), subscriptionTimeout)
+// fetchSubscriptionUsage asks every signed-in vendor at once.
+func fetchSubscriptionUsage(ctx context.Context) []SubscriptionQuota {
+	// read for every card's caller alike, or for the one card ctx reads
+	// again (RefreshUsage), as long as a refresh of them all would be
+	ctx0, cancel := context.WithTimeout(context.WithoutCancel(ctx), subscriptionTimeout)
 	defer cancel()
 	// each account asked through its own proxy, if it has one (#237)
 	proxies := map[string]string{}
@@ -331,6 +333,20 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 	hidden := map[string]bool{}
 	for _, p := range load().Providers {
 		hidden[p.ID] = p.Hidden || p.Off // switched off: not asked either
+	}
+	if r, ok := refreshing(ctx); ok {
+		// one card read again: the others not asked
+		for _, p := range load().Providers {
+			hidden[p.ID] = hidden[p.ID] || p.ID != r.provider
+		}
+		for _, id := range []string{"claude", "cursor", "grok", "codex", "copilot", "kiro", "zcode", wbCN.id, wbAI.id, CommandCodePlanID, "qoder", QoderCNID, "zed", "devin", "factory", MiMoID, "gemini", "antigravity"} {
+			hidden[id] = hidden[id] || id != r.provider
+		}
+		for _, pp := range plugin.Cached() {
+			id := PluginID(pp.ID)
+			hidden[id] = hidden[id] || id != r.provider
+			hidden[pp.ID] = hidden[pp.ID] || pp.ID != r.provider
+		}
 	}
 	var fetches []func() SubscriptionQuota
 	// a built-in moved onto its plugin shows the plugin's cards in its
@@ -424,6 +440,11 @@ func fetchSubscriptionUsage() []SubscriptionQuota {
 		// read as loginQuota reads them (googleLoginQuota): one reading
 		// with LoginUsage
 		for _, l := range googleLogins(agent) {
+			if r, ok := refreshing(ctx); ok && r.user != "" && !strings.EqualFold(l.User, r.user) {
+				continue
+			} else if ok {
+				forgetLoginReading(l.Login)
+			}
 			fetches = append(fetches, func() SubscriptionQuota { return loginReading(viaLogin(agent, l.User), l.Login).read })
 		}
 	}
@@ -464,7 +485,7 @@ func withUser(user string, f func() SubscriptionQuota) func() SubscriptionQuota 
 // reading LoginUsage shows beside the account (loginReading).
 func perLogin(ctx context.Context, ls []Login, name, icon string) []func() SubscriptionQuota {
 	var out []func() SubscriptionQuota
-	for _, l := range ls {
+	for _, l := range refreshLogins(ctx, ls) {
 		out = append(out, func() SubscriptionQuota {
 			q := loginReading(ctx, l).read
 			q.Name, q.Icon, q.User = name, icon, l.User

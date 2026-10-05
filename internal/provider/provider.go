@@ -53,6 +53,7 @@ type Provider struct {
 	KeyID  string       `json:"-"`                // stable identity of the runtime credential
 	Keys   []KeyAccount `json:"keys,omitempty"`
 
+
 	// Base URLs, one per protocol the vendor serves natively. magpie appends
 	// the usual paths: chat/responses bases end in /v1 (OpenAI style),
 	// the Anthropic base is the root (what ANTHROPIC_BASE_URL takes).
@@ -79,7 +80,8 @@ type Provider struct {
 	// can't take it; "rotate" each in turn; "usage" the least used first;
 	// "pace" the one with the most remaining allowance per hour until
 	// its window resets first, so less allowance is lost at reset.
-	// The window can be shorter than a week.
+	// The window can be shorter than a week. "weight" by each key's
+	// weight, a key with 3 taking three requests to one with 1's.
 	// Whichever it is, one out of credit, out of quota, rate limited or
 	// failing is passed over for as long as that lasts.
 	Routing string `json:"routing,omitempty"`
@@ -137,6 +139,12 @@ type Provider struct {
 	// magpie can't tell from its host. A request offering one then goes to
 	// it as the client sent it, rather than given magpie's search (#359).
 	Searches bool `json:"searches,omitempty"`
+
+	// PinUpstream, on the Cline API, has its DeepSeek models answered only
+	// by DeepSeek's own API (White Immortal on Discord): Cline routes a
+	// model through an AI gateway that may serve it from any host, and
+	// DeepSeek's own keeps its prompt cache. See ClinePin.
+	PinUpstream bool `json:"pinUpstream,omitempty"`
 
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows
@@ -583,7 +591,6 @@ func AddCopy(p Provider, from string) (string, error) {
 		return "", fmt.Errorf("%s is a signed-in account, which can't be copied", src.Name)
 	}
 	if p.Key == "" {
-		p.Key, p.KeyID = src.Key, src.KeyID
 		p.Keys = slices.Clone(src.Keys)
 		p.Routing, p.Sink, p.Affinity = src.Routing, src.Sink, src.Affinity
 	}
@@ -839,7 +846,7 @@ func normalize(p Provider) Provider {
 			p.Decide = pr.Decide
 		}
 	}
-	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace {
+	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted {
 		p.Routing = ""
 	}
 	if !slices.Contains(Affinities, p.Affinity) {

@@ -175,6 +175,9 @@ type agentJSON struct {
 	// Joined: connected with its own models still in its list (Codex
 	// signed in with ChatGPT, agent.Agent.Join)
 	Joined bool `json:"joined,omitempty"`
+	// CLIMissing: its settings are here, its CLI isn't (#843), which
+	// the row says, and Install another agent offers it again
+	CLIMissing bool `json:"cliMissing,omitempty"`
 }
 
 // clientJSON is an agent, or another client the gateway knows, as a
@@ -1338,6 +1341,7 @@ func state() stateJSON {
 		if a.Launch != nil {
 			aj.Launch = a.Launch()
 		}
+		aj.CLIMissing = a.CLIMissing()
 		s.Agents = append(s.Agents, aj)
 	}
 	if ps, err := profile.Load(); err == nil {

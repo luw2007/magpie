@@ -9,7 +9,9 @@ package gateway
 //	{"type": "configuration_update", "reasoning": {"effort": "high"}}
 //
 // goes before the next user message, in the history from then on, so the
-// prefix the cache keeps stays as it was. The GPT-6 family takes it.
+// prefix the cache keeps stays as it was. The GPT-6 family takes it, but
+// reasons less on an update than on the same effort at the top, so only a
+// lower effort goes as one: a higher one starts the thread again at it.
 //
 // The agent's own history has no such items, so magpie keeps, for each
 // thread on each account and model, the effort it started at and where it
@@ -24,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -128,6 +131,16 @@ func withEffortUpdates(conv, who, model, effort string, body []byte) ([]byte, bo
 	if t == nil {
 		effortThreads.m[k] = &effortThread{base: effort, n: len(items), sum: itemsSum(items), at: now}
 		pruneEffortThreads(now)
+		return nil, false
+	}
+	if slices.Index(effortRank, effort) > slices.Index(effortRank, t.base) {
+		// more than the thread started at: the backend gives an update
+		// a fraction of the reasoning it asks — gpt-6.1-sol started at
+		// low and updated to xhigh reasons as at high, a quarter of
+		// xhigh's (Lutra-Fs, #617) — so the thread starts again at it, at
+		// the top: the cache is lost once for each level up, as a group's
+		// auto effort loses it (keepsEffort), and the reasoning is had
+		effortThreads.m[k] = &effortThread{base: effort, n: len(items), sum: itemsSum(items), at: now}
 		return nil, false
 	}
 	if effort != t.effort() {

@@ -78,7 +78,7 @@ func TestPluginUsage(t *testing.T) {
 	}
 
 	cards := 0
-	for _, q := range fetchSubscriptionUsage() {
+	for _, q := range fetchSubscriptionUsage(context.Background()) {
 		if q.Provider == "fakeco" {
 			cards++
 			if q.Name != "FakeCo" || q.User == "" {
@@ -88,6 +88,12 @@ func TestPluginUsage(t *testing.T) {
 	}
 	if cards != 3 {
 		t.Fatalf("%d usage cards for the plugin's accounts, want 3", cards)
+	}
+	// one account's card read again from its refresh button (#840): that
+	// account's alone is asked
+	again := context.WithValue(context.Background(), cardRefreshKey{}, cardRefresh{"fakeco", "A@fake"})
+	if qs := fetchSubscriptionUsage(again); len(qs) != 1 || qs[0].User != "a@fake" || qs[0].Error != "" {
+		t.Fatalf("a@fake read again: %+v", qs)
 	}
 
 	// a model the plugin says the plan serves at no cost shows as free,

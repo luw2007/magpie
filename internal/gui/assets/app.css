@@ -390,6 +390,7 @@ body.window .row.agent .who .ag-cli { flex: 0 1 auto; overflow: hidden; }
 @container (max-width: 150px) { body.window .row.agent .ag-ver { display: none; } }
 .ag-cli { display: inline-flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
 .ag-cli:empty { display: none; }
+.ag-missing { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 .ag-ver { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
 .ag-up { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 20px; padding: 0 8px 0 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--fg-2); font: inherit; font-size: 11.5px; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer; transition: background-color .15s, color .15s, transform .12s; }
 .ag-up:hover { background: var(--pill); color: var(--fg); }
@@ -417,6 +418,8 @@ body.window .row.agent .who .ag-cli { flex: 0 1 auto; overflow: hidden; }
 .ag-install-row { display: flex; align-items: flex-start; gap: 12px; padding: 9px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; }
 .ag-install-who { display: flex; align-items: center; gap: 8px; flex: 0 0 150px; min-width: 0; padding-top: 2px; }
 .ag-install-who .ic { width: 18px; height: 18px; flex: none; }
+.ag-install-name { display: flex; flex-direction: column; min-width: 0; }
+.ag-install-missing { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .ag-install-who b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ag-install-cmds { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
 .ag-install-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -668,6 +671,17 @@ body.window .field.solo { grid-column: auto; }
 .quota-read { flex-basis: 100%; margin-top: 2px; font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .quota-windows + .quota-read, .quota-balance + .quota-read { margin-top: 8px; }
 .quota-read.stale { color: var(--amber); }
+/* a card's own refresh, left of when it was read (or of why it couldn't
+   be), opening as the card is hovered: at rest the line starts where the
+   card's other lines do (#840) */
+.quota-refresh { display: inline-flex; align-items: center; justify-content: center; width: 0; height: 14px; margin: 0; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--faint); vertical-align: -3px; opacity: 0; overflow: hidden; cursor: pointer; transition: width .12s, margin .12s, opacity .12s; }
+.quota-refresh svg { flex: none; }
+.subscription-card:hover .quota-refresh, .quota-refresh:focus-visible, .quota-refresh.busy { width: 14px; margin: 0 3px 0 -2px; opacity: 1; }
+.quota-refresh:hover { color: var(--fg); background: var(--pill-hover); }
+.quota-refresh.busy { cursor: default; }
+.quota-refresh.busy svg { animation: spin .8s linear infinite; }
+@media (hover: none) { .quota-refresh { width: 14px; margin: 0 3px 0 -2px; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .quota-refresh { transition: none; } }
 .skeleton { display: block; border-radius: 5px; background: linear-gradient(90deg, var(--skel, var(--pill)) 25%, var(--skel-hi, var(--pill-hover)) 45%, var(--skel, var(--pill)) 65%); background-size: 240% 100%; animation: skeleton-shift 1.4s ease-in-out infinite; }
 @keyframes skeleton-shift { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 .sk-cost { width: 72px; height: 15px; }
@@ -1783,6 +1797,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 @media (max-width: 520px) { .acc.adding .kf { grid-template-columns: 1fr; } }
 .acc.adding .bulk-keys { width: 100%; box-sizing: border-box; resize: vertical; min-height: 84px; font-family: var(--code); font-size: 11.5px; line-height: 1.5; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
 .acc.adding .bulk-count { margin-left: 6px; white-space: nowrap; }
+.acc .key-weight { display: none; flex: none; font-size: 11px; padding: 1px 6px; border-radius: 5px; color: var(--fg-2); background: var(--pill); border: 0; cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.accts.weighted .acc .key-weight { display: inline-block; }
+.acc .key-weight-in { width: 64px; flex: none; font-size: 12px; padding: 1px 6px; }
 .acc .key-rest { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 5px; color: var(--amber); background: var(--amber-soft); white-space: nowrap; }
 .acc .proto { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 5px 0 7px; font: inherit; font-size: 11px; color: var(--muted); border: 0; border-radius: 5px; background: var(--pill); white-space: nowrap; cursor: default; transition: opacity .15s, background .12s, color .12s; }
 .acc .proto svg { opacity: .7; transition: transform .15s var(--ease); }

@@ -19,6 +19,10 @@ type KeyAccount struct {
 	Off      bool     `json:"off,omitempty"`
 	PoolRefs []string `json:"poolRefs,omitempty"`
 	Models   []string `json:"models,omitempty"`
+	// Weight is the key's share of the requests when the provider's
+	// routing is Weighted (#841): one with 3 takes three for every one a
+	// key with 1 takes. None, or 0, counts as 1.
+	Weight int `json:"weight,omitempty"`
 }
 
 type KeyInfo struct {
@@ -30,6 +34,7 @@ type KeyInfo struct {
 	Protocol Protocol `json:"protocol,omitempty"`
 	PoolRefs []string `json:"poolRefs,omitempty"`
 	Models   []string `json:"models,omitempty"`
+	Weight   int      `json:"weight,omitempty"`
 	// Rest is why the gateway passes it over now, after a failure, and
 	// until when; nil while it takes requests.
 	Rest *KeyRest `json:"rest,omitempty"`
@@ -103,7 +108,17 @@ func (p Provider) KeyList() []KeyInfo {
 	p.normalizeKeys()
 	var out []KeyInfo
 	for _, k := range p.Keys {
-		out = append(out, KeyInfo{ID: k.ID, Name: k.Name, Masked: Mask(k.Key), Active: k.ID == p.KeyID, On: !k.Off, Protocol: k.Protocol, PoolRefs: k.PoolRefs, Models: k.Models})
+		out = append(out, KeyInfo{
+			ID:       k.ID,
+			Name:     k.Name,
+			Masked:   Mask(k.Key),
+			Active:   k.ID == p.KeyID,
+			On:       !k.Off,
+			Protocol: k.Protocol,
+			PoolRefs: k.PoolRefs,
+			Models:   k.Models,
+			Weight:   k.Weight,
+		})
 	}
 	return out
 }
@@ -208,6 +223,12 @@ func AddKeys(id string, keys []string, proto Protocol) (added, had int, err erro
 	return added, had, Save(*p)
 }
 
+// MaxKeyWeight is the most a key's weight can be.
+const MaxKeyWeight = 1000
+
+// WeightOf is the key's weight as Weighted routing counts it: 1 when none.
+func (k KeyAccount) WeightOf() int { return max(k.Weight, 1) }
+
 func findKey(p *Provider, ref string) (int, bool) {
 	for i, k := range p.Keys {
 		if k.ID == ref {
@@ -239,6 +260,28 @@ func SetKeyProtocol(id, ref string, proto Protocol) error {
 	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].Protocol = proto; return nil })
 }
 
+// SetKeyWeight sets a key's share of the requests under Weighted routing;
+// 0 takes it back to the default, 1.
+func SetKeyWeight(id, keyRef string, weight int) error {
+	if weight < 0 || weight > MaxKeyWeight {
+		return fmt.Errorf("a key's weight is 0 to %d", MaxKeyWeight)
+	}
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	i, ok := findKey(p, keyRef)
+	if !ok {
+		return fmt.Errorf("%s has no such key", p.Name)
+	}
+	if weight == 1 {
+		weight = 0 // the default: kept out of the file
+	}
+	return editKey(id, keyRef, func(p *Provider, _ int) error { p.Keys[i].Weight = weight; return nil })
+}
+
+// WithKey is p using key k: its endpoints narrowed to k's protocol when k
+// has one. It has none left when p doesn't serve that protocol.
 func (p Provider) WithKey(k KeyAccount) Provider {
 	p.Key, p.KeyID = k.Key, k.ID
 	if k.Protocol != "" {

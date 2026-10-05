@@ -41,6 +41,9 @@ type Install struct {
 	Name     string       `json:"name"`
 	Icon     string       `json:"icon,omitempty"`
 	Commands []InstallCmd `json:"commands"`
+	// Missing: the agent's settings are here but its CLI isn't (CLIMissing),
+	// so it is listed on the Agents page and offered here again too
+	Missing bool `json:"missing,omitempty"`
 }
 
 // vendorInstall is the installer each vendor's own docs give first, where
@@ -170,14 +173,38 @@ func Installs() []Install {
 func installsOf(all []*Agent, goos string, node bool) []Install {
 	out := []Install{}
 	for _, a := range all {
-		if a.WSL != "" || a.Detected() {
+		missing := a.CLIMissing()
+		if a.WSL != "" || a.Detected() && !missing {
 			continue
 		}
 		cmds := installCommands(a.ID, goos, node)
 		if len(cmds) == 0 {
 			continue
 		}
-		out = append(out, Install{ID: a.ID, Name: a.Name, Icon: a.Icon, Commands: cmds})
+		out = append(out, Install{ID: a.ID, Name: a.Name, Icon: a.Icon, Commands: cmds, Missing: missing})
 	}
 	return out
+}
+
+// cliShared are the agents whose folder an app or an editor's extension
+// of theirs keeps too, with a CLI of its own inside or none: ~/.codex (the
+// Codex app), ~/.claude (Claude Desktop's Code, the editors' extensions),
+// ~/.gemini (Antigravity, Gemini Code Assist), OpenCode's (its desktop
+// app), ~/.cline (Cline's extensions), Goose's (Goose Desktop). Their
+// folder without the CLI is no sign it was uninstalled.
+var cliShared = map[string]bool{"codex": true, "claude": true, "gemini": true, "opencode": true, "cline": true, "goose": true}
+
+// CLIMissing reports an agent that is here by its settings alone: its
+// folder or config is, its command-line program isn't — not on PATH nor
+// where users' tools go (proc.FindTool), as after an uninstall that left
+// ~/.dsh behind (#843). Only for an agent that is its CLI and that magpie
+// knows an install command for, so the Agents page can offer it again.
+func (a *Agent) CLIMissing() bool {
+	if a.WSL != "" || a.detect != nil || a.Bin == "" || cliShared[a.ID] {
+		return false
+	}
+	if len(installCommands(a.ID, runtime.GOOS, true)) == 0 {
+		return false
+	}
+	return a.Detected() && proc.FindTool(a.Bin) == ""
 }

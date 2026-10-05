@@ -159,7 +159,7 @@ func TestCopilotQuotaWithoutEditorsSignIn(t *testing.T) {
 	t.Cleanup(func() { CopilotUserURL = old })
 
 	var card *SubscriptionQuota
-	for _, q := range fetchSubscriptionUsage() {
+	for _, q := range fetchSubscriptionUsage(context.Background()) {
 		if q.Provider == "copilot" {
 			card = &q
 		}

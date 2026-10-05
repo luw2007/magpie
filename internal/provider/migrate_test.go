@@ -228,7 +228,7 @@ func TestMoveToPlugin(t *testing.T) {
 	}
 	// a built-in with no usage card of its own (Devin) keeps the plugin's
 	cards := 0
-	qs := fetchSubscriptionUsage()
+	qs := fetchSubscriptionUsage(context.Background())
 	for _, q := range qs {
 		if q.Provider == "fakeco" {
 			cards++
@@ -423,7 +423,7 @@ func TestMovedBuiltinQuiet(t *testing.T) {
 	t.Cleanup(func() { zedCloud = zed.CloudURL })
 	cards := func() int {
 		n := 0
-		for _, q := range fetchSubscriptionUsage() {
+		for _, q := range fetchSubscriptionUsage(context.Background()) {
 			if q.Provider == "zed" {
 				n++
 			}
