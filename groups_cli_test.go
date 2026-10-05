@@ -45,12 +45,12 @@ func storedGroups(t *testing.T) []map[string]any {
 }
 
 func TestParseRoutingStays(t *testing.T) {
-	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage"} {
+	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage", "benchmark": "benchmark", "fast": "benchmark"} {
 		if got, err := parseRouting(in); err != nil || got != want {
 			t.Errorf("routing %q: %q %v, want %q", in, got, err, want)
 		}
 	}
-	if _, err := parseRouting("fastest"); err == nil || !strings.Contains(err.Error(), "smart, order, rotate, usage") {
+	if _, err := parseRouting("fastest"); err == nil {
 		t.Errorf("unknown routing: %v", err)
 	}
 	for in, want := range map[string]string{"auto": "", "session": "session", "turn": "turn", "OFF": "off"} {
@@ -95,7 +95,7 @@ func TestApplyGroupPairs(t *testing.T) {
 			t.Errorf("context=%s: %d %v", c.v, g.Context, err)
 		}
 	}
-	for _, bad := range [][]string{{"models"}, {"colour=red"}, {"id=x"}, {"models=nope"}, {"routing=fast"}, {"models-=a/m"}, {"context=lots"}} {
+	for _, bad := range [][]string{{"models"}, {"colour=red"}, {"id=x"}, {"models=nope"}, {"routing=fastest"}, {"models-=a/m"}, {"context=lots"}} {
 		h := g
 		if err := applyGroupPairs(&h, bad, resolve, false); err == nil {
 			t.Errorf("%v: no error", bad)

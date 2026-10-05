@@ -146,6 +146,17 @@ func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
 	return ref
 }
 
+func groupRouting(ref *GroupRef, id string) string {
+	if ref != nil {
+		for _, sub := range ref.Subs {
+			if sub.ID == id {
+				return sub.Routing
+			}
+		}
+	}
+	return ""
+}
+
 // Weighed is one account or key as routing weighed it.
 type Weighed struct {
 	ID       string  `json:"id"` // what rests after a failure

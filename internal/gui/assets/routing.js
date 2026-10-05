@@ -2277,10 +2277,10 @@
   // after the requests: a request picked in the list plays on the stage,
   // so the list sits right under it
   more.append(gsec);
+  // ROUTE_OPTS is provider-level. benchmark/manual are groups only. Weight (#841) is provider-key-only, appended to opts beside each key below.
   const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Weekly pace"]];
-  // a group may also be routed by hand: every request to the member the
-  // user picks on its card (provider.Manual, #317) — a provider's keys can't
-  const GROUP_ROUTE_OPTS = [...ROUTE_OPTS, ["manual", "Manual"]];
+  // a group may also be routed by benchmark or by hand — a provider's keys can't
+  const GROUP_ROUTE_OPTS = [...ROUTE_OPTS, ["benchmark", "Benchmark"], ["manual", "Manual"]];
   const AFF_OPTS = [["", "Auto"], ["session", "Session"], ["turn", "Within a turn"], ["off", "Off"]];
   // what one rate limited with quota left does then (provider.Sink), as in
   // a provider's editor (app.js SINKS)
@@ -2303,8 +2303,8 @@
     "": "Smart, over the members' accounts and keys together: of the subscriptions with quota to spare, the one whose allowance renews soonest goes first — the week decides, and an account with five hours and no week (Claude Enterprise) goes by its five hours, so ahead of every week renewing later; one resting after a failure goes last.",
     order: "In order: the first model until it can't answer, then the next — each over its own accounts or keys as its provider routes them.",
     rotate: "In turn: each conversation's next turn goes to the next member's account or key, spreading the load.",
-    usage: "Least used first: the account or key with the most of its allowance left goes first.",
     pace: "Weekly pace: the account with the most of its week left per hour until it renews goes first, so less of each member's week is lost at its reset — an account with five hours and no week (Claude Enterprise) by what its five hours have left per hour until they renew, so almost always first; a key by the tokens magpie sent it lately.",
+    benchmark: "Benchmark: qualified DeepSWE model-and-effort pairs are tried by average completion time; unknown or unqualified pairs keep their configured order afterward.",
     manual: "Manual: every request goes to the model you pick on the group's card, over its own accounts or keys; the others, and the rules, wait until you pick another — none takes over when it fails.",
   };
   // a group in the group is routed by its own routing, whatever this one's

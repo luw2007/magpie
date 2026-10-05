@@ -11,6 +11,44 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
+// Legacy groups without member efforts stay visible beside groups whose
+// members are fixed at efforts of their own.
+func TestGroupsStateKeepsLegacyAndFixedMembers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := provider.Save(provider.Provider{ID: "a", Name: "a", Key: "k", Chat: "http://127.0.0.1:1/v1", Models: []string{"m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{ID: "legacy", Name: "Legacy", Members: []string{"a/m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{ID: "fast", Name: "Fast", Members: []string{"a/m:high"}, Routing: provider.Benchmark}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	groupRoutes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/groups", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET groups: %d %s", w.Code, w.Body.String())
+	}
+	var state groupsJSON
+	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]groupJSON{}
+	for _, g := range state.Groups {
+		seen[g.ID] = g
+	}
+	if !seen["legacy"].Ready || len(seen["legacy"].Members) != 1 {
+		t.Fatalf("legacy group lost: %+v", seen["legacy"])
+	}
+	if !seen["fast"].Ready || !strings.Contains(strings.Join(seen["fast"].Members, " "), "a/m:high") {
+		t.Fatalf("fast group lost: %+v", seen["fast"])
+	}
+}
+
 // The Routing view's save with another id than the group had (from)
 // renames it: a found group drops its auto- prefix.
 func TestGroupSaveRenames(t *testing.T) {

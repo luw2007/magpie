@@ -1244,9 +1244,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// model leave the conversation where it is
 	scope, mode, rotate := p.ID+"/"+model, p.Affinity, p.Routing == provider.Rotate
 	leadScope := scope // where the lead of a subagent is kept
+	plannedEffort := ""
 	if isGroup {
 		// a routing group: every member's keys or accounts weighed together
-		cands, pl = s.planGroup(g, ms, from)
+		plannedEffort = requestEffort(from, body)
+		if hit != nil && hit.Pick != "" {
+			plannedEffort = hit.Pick
+		}
+		cands, pl = s.planGroup(g, ms, from, plannedEffort)
 		group = groupRef(g, ms)
 		scope, mode, rotate = provider.GroupPrefix+g.ID, g.Affinity, g.Routing == provider.Rotate
 		leadScope = scope
@@ -1328,6 +1333,18 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	for _, n := range nested {
 		if effort == "" && n.Rule != nil {
 			effort, wanted = n.Rule.Pick, n.Rule.Wanted
+		}
+	}
+	if isGroup && g.Routing == provider.Benchmark && effort != "" && effort != plannedEffort && hit != nil && hit.Use == "" && !aff.Kept {
+		benchmarkReorder(cands, &pl, "", effort, deepSWE.get())
+	}
+	if isGroup && effort != "" {
+		for _, n := range nested {
+			if n.Rule != nil && n.Rule.Pick != "" && n.Rule.Use == "" {
+				if sub := groupRouting(group, n.Group); sub == provider.Benchmark {
+					benchmarkReorder(cands, &pl, n.Group, effort, deepSWE.get())
+				}
+			}
 		}
 	}
 	// A vision rule may choose a vision model even when the group has

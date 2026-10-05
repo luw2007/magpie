@@ -342,11 +342,11 @@ func (s *Server) plan(p provider.Provider, model string, from provider.Protocol)
 // one, weighed with the rest by the one it would try first, and tried
 // whole where that one goes — the group's routing picks between its
 // groups, never within them. A member's fallbacks are not the group's.
-func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
+func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol, effort string) ([]candidate, planned) {
 	var pl planned
 	var asides []candidate
 	var wAsides []Weighed
-	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides)
+	out := planLevel(g, ms, 0, from, effort, &pl, &asides, &wAsides)
 	if sinks(g.Sink, g.Routing) {
 		out, pl.order = sinkPlanned(out, pl.order)
 	}
@@ -360,7 +360,7 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 // planLevel orders the models ms of g, a group depth groups down from the
 // one asked for, adding to pl's order as it goes: those set aside and
 // those unlisted it gathers for planGroup to put last.
-func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.Protocol, pl *planned, asides *[]candidate, wAsides *[]Weighed) []candidate {
+func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.Protocol, effort string, pl *planned, asides *[]candidate, wAsides *[]Weighed) []candidate {
 	keys := func(m provider.Member) []candidate {
 		cs, aside, left, barred := perKeyBarred(m.Provider, m.Model, from)
 		pl.left = append(pl.left, barredOf(barred, m.Provider, false, from, m.Groups())...)
@@ -407,7 +407,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 					j++
 				}
 				var sub planned
-				cs := planLevel(m.Via[depth], ms[i:j], depth+1, from, &sub, asides, wAsides)
+				cs := planLevel(m.Via[depth], ms[i:j], depth+1, from, effort, &sub, asides, wAsides)
 				pl.left = append(pl.left, sub.left...)
 				if len(cs) > 0 {
 					// weighed by the first it would try that isn't resting
@@ -430,11 +430,16 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 			}
 			i++
 		}
-		routing := g.Routing
-		if routing == provider.Manual {
-			routing = "" // the member picked, its keys or accounts weighed smartly
+		weighedHeads, wg := heads, weighing{}
+		if g.Routing == provider.Benchmark {
+			benchmarkOrder(weighedHeads, effort, deepSWE.get())
+		} else {
+			routing := g.Routing
+			if routing == provider.Manual {
+				routing = "" // the member picked, its keys or accounts weighed smartly
+			}
+			weighedHeads, wg = weigh(provider.Provider{ID: provider.GroupPrefix + g.ID, Routing: routing}, heads, "", from)
 		}
-		weighedHeads, wg := weigh(provider.Provider{ID: provider.GroupPrefix + g.ID, Routing: routing}, heads, "", from)
 		var out []candidate
 		for i, c := range weighedHeads {
 			k := at[c.seat()][0]
@@ -463,7 +468,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 			for j < len(ms) && len(ms[j].Path) > depth+1 && ms[j].Path[depth] == m.Path[depth] {
 				j++
 			}
-			out = append(out, planLevel(m.Via[depth], ms[i:j], depth+1, from, pl, asides, wAsides)...)
+			out = append(out, planLevel(m.Via[depth], ms[i:j], depth+1, from, effort, pl, asides, wAsides)...)
 			i = j
 			continue
 		}

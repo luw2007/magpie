@@ -151,12 +151,12 @@ func TestGroupRateLimitedSinks(t *testing.T) {
 		return out
 	}
 	rate := []byte(`{"error":{"message":"Too many requests"}}`)
-	cs, _ := s.planGroup(provider.Group{ID: "g", Routing: provider.Ordered}, ms, provider.Chat)
+	cs, _ := s.planGroup(provider.Group{ID: "g", Routing: provider.Ordered}, ms, provider.Chat, "")
 	s.restAfter(cs[0], 429, http.Header{}, rate)
 	rested(cs[0].restKey())
 	for _, routing := range []string{provider.Ordered, ""} {
 		g := provider.Group{ID: "g", Routing: routing, Sink: true}
-		out, pl := s.planGroup(g, ms, provider.Chat)
+		out, pl := s.planGroup(g, ms, provider.Chat, "")
 		if got := ids(out); !slices.Equal(got, []string{"b", "c", "a"}) {
 			t.Fatalf("%q: order %v", routing, got)
 		}
@@ -164,7 +164,7 @@ func TestGroupRateLimitedSinks(t *testing.T) {
 			t.Fatalf("%q: trace %+v", routing, pl.order)
 		}
 		g.Sink = false
-		if out, _ := s.planGroup(g, ms, provider.Chat); ids(out)[0] != "a" {
+		if out, _ := s.planGroup(g, ms, provider.Chat, ""); ids(out)[0] != "a" {
 			t.Fatalf("%q off: order %v", routing, ids(out))
 		}
 	}

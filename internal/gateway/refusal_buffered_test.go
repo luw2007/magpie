@@ -105,7 +105,7 @@ func TestRefusalTriesTheModelsOtherAccountFirst(t *testing.T) {
 	refusalGroup(t, "b/m", "codex/gpt-5.5")
 	s := New()
 	g, ms, _ := provider.FindGroup(provider.GroupPrefix + "g")
-	cands, _ := s.planGroup(g, ms, provider.Responses)
+	cands, _ := s.planGroup(g, ms, provider.Responses, "")
 	var own candidate
 	for _, c := range cands {
 		if c.p.ID == "codex" {

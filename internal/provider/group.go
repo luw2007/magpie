@@ -762,7 +762,7 @@ func SaveGroup(g Group) error {
 			return fmt.Errorf("%s decides a group's model and effort; it holds no conversation, so it can only be the group's classifier", m)
 		}
 	}
-	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Pace && g.Routing != Manual {
+	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Pace && g.Routing != Manual && g.Routing != Benchmark {
 		g.Routing = ""
 	}
 	if !slices.Contains(Affinities, g.Affinity) {

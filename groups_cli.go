@@ -75,6 +75,8 @@ const groupUsage = `usage:
                    of a week is lost at its reset
            manual  only the model you pick (pick=, or click it on the group's card): the others and
                    the rules wait until you pick another or route it otherwise; no failover to them
+           benchmark  DeepSWE IQ ≥ 80 and ≥ 20 samples at each member's model+effort,
+                      fastest average minutes first; missing evidence keeps model order
   stays    auto    (default) with the account or key that answered, while its cache is worth keeping
            session for the whole session
            turn    within a turn only; routing decides afresh when you speak again
@@ -108,6 +110,7 @@ var routingNames = []struct {
 	{provider.LeastUsed, "usage", []string{"least-used"}},
 	{provider.Pace, "pace", []string{"weekly-pace"}},
 	{provider.Manual, "manual", []string{"pick", "picked", "pinned"}},
+	{provider.Benchmark, "benchmark", []string{"fast"}},
 }
 
 var staysNames = []struct {
@@ -448,7 +451,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 			g.Pick, err = pickMember(g.Members, v)
 			g.Routing = provider.Manual
 		default:
-			return fmt.Errorf("unknown field %q (fields: name, models, models+, models-, routing, pick, stays, context, levels, family, effort, classifier, fast; magpie group help)", k)
+			return fmt.Errorf("unknown field %q (fields: name, models, models+, models-, member-efforts, member-efforts+, member-efforts-, routing, pick, stays, context, levels, family, effort, classifier, fast; magpie group help)", k)
 		}
 		if err != nil {
 			return err

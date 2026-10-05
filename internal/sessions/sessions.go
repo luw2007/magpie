@@ -1178,9 +1178,11 @@ func title(s string) string {
 	return s
 }
 
-// ---- pricing ----------------------------------------------------------------
 
 var dated = regexp.MustCompile(`-\d{8}$`)
+
+// ---- pricing ----------------------------------------------------------------
+
 
 // priceOf prices a model as a session names it: one through magpie as
 // "<provider>/<model>" at the price the gateway counts it at — what the user
@@ -1236,6 +1238,7 @@ func makers(id string) []string {
 	}
 	return nil
 }
+
 
 // ---- resuming ---------------------------------------------------------------
 

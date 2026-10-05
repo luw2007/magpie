@@ -605,6 +605,34 @@ the vendor's cache of it is worth keeping), `session`, `turn` or `off`.
 `models=` replaces the whole list, in order; a bare model id works when only
 one provider serves it.
 
+Benchmark routing fetches
+the DeepSWE snapshot from CodexRadar's
+`GET /api/v1/intelligence-efficiency?benchmark=deep-swe`: each member is
+compared at its **own** model and effective reasoning effort. If a member has
+no fixed effort, it uses the request's final effort (including a
+classifier/Jev choice). Models with at least 20 samples and IQ at least 80 go
+first in ascending `average_minutes`; ties retain the group's configured
+order. Matching preserves vendor model IDs, including a real `-high` suffix.
+Unknown, low-sample, and lower-IQ members follow in configured order. A
+request without reasoning effort keeps configured order unless members have
+explicit efforts.
+
+The DeepSWE snapshot is cached for 15 minutes. A timeout, HTTP or malformed
+response never blocks routing: the request uses the configured order, and a
+failed refresh is retried after one minute. Benchmark routing deliberately
+does **not** use Magpie's local `model_perf` or any other cross-model throughput
+statistics. `fast` is accepted by the CLI as an alias, but groups persist the
+single value `benchmark`:
+
+```sh
+magpie group add Fast \
+  models=codex/gpt-5.6-luna:xhigh,deepseek/deepseek-v4-flash:max,gcloud/google/gemini-3.8-flash-high:high,glm/glm-5.3-flash:high \
+  routing=benchmark
+magpie group set fast models+=deepseek/deepseek-v4-flash:high
+magpie group set fast models-=glm/glm-5.3-flash:high
+```
+
+
 The Routing page's Requests list defaults to the time-ordered By request view.
 Choose By session to group calls by the agent's session ID; the page remembers
 your choice across reloads.

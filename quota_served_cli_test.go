@@ -19,6 +19,7 @@ import (
 // as GET /v1/magpie/quotas does (#570).
 func TestQuotaJSONLastServedAt(t *testing.T) {
 	groupsHome(t)
+	t.Setenv("MAGPIE_ADDR", "127.0.0.1:1")
 	for _, k := range agentenv.Vars {
 		t.Setenv(k, "")
 		os.Unsetenv(k)

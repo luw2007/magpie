@@ -82,6 +82,7 @@ type Provider struct {
 	// its window resets first, so less allowance is lost at reset.
 	// The window can be shorter than a week. "weight" by each key's
 	// weight, a key with 3 taking three requests to one with 1's.
+	// "benchmark" is accepted for groups only and resets to smart here.
 	// Whichever it is, one out of credit, out of quota, rate limited or
 	// failing is passed over for as long as that lasts.
 	Routing string `json:"routing,omitempty"`

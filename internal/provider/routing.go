@@ -26,7 +26,9 @@ const (
 	Pace      = "pace"
 	// Weighted spreads a provider's requests over its keys by each key's
 	// weight (KeyAccount.Weight, #841), smoothly: 3 and 1 go a, a, b, a…
-	Weighted = "weight"
+	Weighted  = "weight"
+	// Benchmark is a group-only routing that picks members by benchmark IQ score.
+	Benchmark = "benchmark"
 )
 
 // SetRouting changes how a provider's requests spread over its keys or

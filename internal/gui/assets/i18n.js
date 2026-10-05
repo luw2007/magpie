@@ -2154,7 +2154,6 @@ const I18N = {
     ", {n} sure": "，把握 {n}",
     "Decided by": "决策模型",
     "Agents never see them: a routing group picks one as its classifier.": "agent 看不到它们：只有路由组把其中一个选作判断模型。",
-    "Decision models · Refresh asks the vendor": "决策模型 · 刷新会向服务获取",
     "Jev's names · Refresh asks the vendor": "Jev 的名字 · 刷新会向厂商获取",
     "Jev endpoint": "Jev 端点",
     "The address Jev is asked at; paste the one from your gateway's docs, e.g. Cloudflare's …/accounts/<account id>/ai/run": "向 Jev 发请求的地址；可以直接粘贴网关文档里给的地址，例如 Cloudflare 的 …/accounts/<账户 ID>/ai/run",

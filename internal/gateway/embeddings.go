@@ -63,7 +63,7 @@ func (s *Server) retrieve(path, operation string) http.HandlerFunc {
 		// (429) or one whose vendor fails; a model is asked on its own
 		tries := []candidate{{p: p, model: model}}
 		if g, ms, isGroup := provider.FindGroup(asked); isGroup {
-			if cs, _ := s.planGroup(g.Live(), ms, provider.Chat); len(cs) > 0 {
+			if cs, _ := s.planGroup(g.Live(), ms, provider.Chat, ""); len(cs) > 0 {
 				tries = cs
 			}
 		}
