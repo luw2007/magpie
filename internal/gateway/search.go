@@ -16,6 +16,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // A client may offer its model the web search of the vendor it was made
@@ -23,7 +24,10 @@ import (
 // web_search_options, Gemini's googleSearch. A provider that searches by
 // itself is asked to; any other model is given a web_search tool of
 // magpie's, which a model that can search — the Claude subscription, a
-// Codex account, OpenAI, Anthropic's API, OpenRouter — answers for it.
+// Codex account, OpenAI, Anthropic's API, OpenRouter — answers for it, or,
+// with none of them, a search API the user gave a key to (search_api.go).
+// A Kimi Code plan searches for its own models first, with its search
+// service (search_kimi.go).
 
 // searchRounds is how many times a reply may go back to its model with
 // what a search found.
@@ -40,21 +44,81 @@ func searching(ctx context.Context) bool {
 	return v
 }
 
+// searchForKey holds the request magpie's searches are run for, which the
+// Routing view names by a search's row: magpie's own call, on the model it
+// searches with, not the conversation's (#314).
+type searchForKey struct{}
+
+// CallFor is the request a call magpie made on its own was made for: its
+// agent, and the model that agent asked for.
+type CallFor struct {
+	Agent string `json:"agent"`
+	Model string `json:"model"`
+}
+
+func searchFor(ctx context.Context) *CallFor {
+	f, _ := ctx.Value(searchForKey{}).(*CallFor)
+	return f
+}
+
 // searchesItself says whether the provider searches the web by itself when
 // asked on this API.
 func searchesItself(p provider.Provider, proto provider.Protocol) bool {
 	if p.Account != nil {
-		return (p.Account.Agent == "codex" || p.Account.Agent == "grok") && proto == provider.Responses
+		// Grok by its id: moved to its plugin, its account is the plugin's;
+		// its plugin beside the built-in (grok-plugin) by the plugin's id
+		return (p.Account.Agent == "codex" || p.ID == "grok" || p.PluginProvider() == "grok") && proto == provider.Responses
+	}
+	// a relay said to search (#359), on an API it has an address for: one
+	// with only a Chat address would be sent no search tool at all
+	if p.Searches && (proto == provider.Anthropic || proto == provider.Responses) && p.Base(proto) != "" {
+		return true
 	}
 	return slices.Contains(searchHosts[proto], provider.HostOf(p.Base(proto)))
 }
 
-// searchHosts are the APIs that search by themselves: OpenAI's and xAI's
-// web_search tool, Anthropic's web_search_20250305, OpenRouter's web
-// plugin, Gemini's googleSearch.
+// googleAccount is a Google sign-in, Gemini CLI's or Antigravity's, which
+// asks Code Assist; a plugin's is left to the plugin.
+func googleAccount(p provider.Provider) bool {
+	return p.Account != nil && (p.Account.Agent == "gemini" || p.Account.Agent == "antigravity") && !p.IsPlugin()
+}
+
+// codeAssistSearches is whether model, on a Google sign-in, searches with
+// Google by itself: Gemini runs googleSearch on Code Assist, but not beside
+// function tools — Antigravity turns the two down together, 400 "Please
+// enable tool_config.include_server_side_tool_invocations to use Built-in
+// tools with Function calling", with that flag set in toolConfig too — so
+// only a request that declares none (searchesFor). One that does is given
+// magpie's search, which the account answers itself (ownSearcher, #757).
+func codeAssistSearches(p provider.Provider, proto provider.Protocol, model string) bool {
+	return proto == provider.CodeAssist && googleAccount(p) && searchModel(model)
+}
+
+// searchModel is a model Code Assist runs googleSearch for: Gemini's, not
+// Claude's or GPT-OSS's on Antigravity, nor an image model.
+func searchModel(model string) bool {
+	l := strings.ToLower(model)
+	return strings.Contains(l, "gemini") && !catalog.DrawsID(l)
+}
+
+// searchesFor is searchesItself for one request: a Google sign-in's Gemini
+// searches by itself only for a request without function tools.
+func searchesFor(p provider.Provider, proto provider.Protocol, model string, req *Request) bool {
+	if searchesItself(p, proto) {
+		return true
+	}
+	return codeAssistSearches(p, proto, model) && (len(req.Tools) == 0 || req.ToolChoice == "none")
+}
+
+// searchHosts are the APIs that search by themselves: OpenAI's, xAI's,
+// DeepSeek's, Zhipu's and Z.ai's web_search tool (Zhipu's on its Responses
+// API only, DeepSeek's on its Responses and Anthropic APIs: their Chat APIs
+// have no such tool), Anthropic's web_search_20250305 (DeepSeek's Anthropic
+// API runs it too, answering web_search_tool_result blocks, #669),
+// OpenRouter's web plugin, Gemini's googleSearch.
 var searchHosts = map[provider.Protocol][]string{
-	provider.Responses: {"api.openai.com", "api.x.ai"},
-	provider.Anthropic: {"api.anthropic.com"},
+	provider.Responses: {"api.openai.com", "api.x.ai", "api.deepseek.com", "open.bigmodel.cn", "api.z.ai"},
+	provider.Anthropic: {"api.anthropic.com", "api.deepseek.com"},
 	provider.Chat:      {"openrouter.ai"},
 	provider.Gemini:    {"generativelanguage.googleapis.com"},
 }
@@ -69,38 +133,179 @@ func searchAsked(proto provider.Protocol, body []byte) bool {
 	return err == nil && req.WebSearch
 }
 
-// searcher is the model magpie searches with: the first of the providers
-// that search by themselves, with a small model of theirs, as searching
-// needs no more.
+// searcher is the model magpie searches with: the one Settings names, while
+// it can (chosenSearcher), else the first of the providers that search by
+// themselves, with a small model of theirs, as searching needs no more.
 func searcher() (provider.Provider, string, bool) {
-	rank := func(p provider.Provider) int {
-		switch {
-		case p.Account != nil && p.Account.Agent == "claude":
-			return 0
-		case p.Account != nil && p.Account.Agent == "codex":
-			return 1
-		case searchesItself(p, provider.Anthropic):
-			return 2
-		case searchesItself(p, provider.Responses):
-			return 3
-		case searchesItself(p, provider.Chat):
-			return 4
-		}
-		return -1
+	if p, m, why := chosenSearcher(); why == "" && p != nil {
+		return *p, m, true
 	}
+	return autoSearcher()
+}
+
+// searchRank is where a provider comes among those that can search for a
+// model that can't, -1 when it can't. A relay said to search is left out:
+// it would spend the relay's quota on other models' searches, and one that
+// serves only Claude Code refuses magpie's own request, which has no
+// metadata.user_id (#359).
+func searchRank(p provider.Provider) int {
+	p.Searches = false
+	switch {
+	case p.Account != nil && p.Account.Agent == "claude":
+		return 0
+	case p.Account != nil && p.Account.Agent == "codex":
+		return 1
+	case searchesItself(p, provider.Anthropic):
+		return 2
+	case searchesItself(p, provider.Responses):
+		return 3
+	case searchesItself(p, provider.Chat):
+		return 4
+	case googleAccount(p):
+		// Gemini on a Google sign-in, by googleSearch (#757)
+		return 5
+	}
+	return -1
+}
+
+// manualRelayRank is after every provider magpie picks or falls back to by
+// itself: a relay said to search is offered only to be named (#359).
+const manualRelayRank = 6
+
+// namedSearcherRank is searchRank as Settings may name it: a Kimi Code
+// plan, by its search service, and a relay said to search on Anthropic's or
+// Responses' API come last, and only by hand.
+func namedSearcherRank(p provider.Provider) (int, bool) {
+	if r := searchRank(p); r >= 0 {
+		return r, false
+	}
+	if provider.KimiCodeSearch(p) != "" {
+		return manualRelayRank, true
+	}
+	if p.Searches && (searchesItself(p, provider.Anthropic) || searchesItself(p, provider.Responses)) {
+		return manualRelayRank, true
+	}
+	return -1, false
+}
+
+// autoSearcher is the searcher magpie picks by itself: the first by
+// searchRank that is on, with its small model.
+func autoSearcher() (provider.Provider, string, bool) {
 	var best provider.Provider
 	var model string
 	top := -1
 	for _, p := range provider.All() {
-		r := rank(p)
+		r := searchRank(p)
 		if r < 0 || !p.On() || (top >= 0 && r >= top) {
 			continue
 		}
-		if m := smallModel(p, nil); m != "" {
+		if m := searcherModel(p); m != "" {
 			best, model, top = p, m, r
 		}
 	}
 	return best, model, top >= 0
+}
+
+// Why the searcher Settings names isn't used, and magpie picks one itself.
+const (
+	SearcherGone   = "gone"    // no such provider any more
+	SearcherOff    = "off"     // turned off, or signed out
+	SearcherCant   = "cant"    // it can't search the web by itself
+	SearcherNoneOf = "nomodel" // it lists no model to search with
+)
+
+// chosenSearcher is the provider and model Settings' Searcher names
+// ("<provider>" for its small model, or "<provider>/<model>"), and why it
+// can't be used, "" when it can. A model it no longer lists gives way to
+// its small model, as when none is named. Nil when none is named.
+func chosenSearcher() (*provider.Provider, string, string) {
+	v := strings.TrimSpace(settings.Load().Searcher)
+	if v == "" {
+		return nil, "", ""
+	}
+	id, model, _ := strings.Cut(v, "/")
+	i := slices.IndexFunc(provider.All(), func(p provider.Provider) bool { return p.ID == id })
+	if i < 0 {
+		return nil, "", SearcherGone
+	}
+	p := provider.All()[i]
+	r, _ := namedSearcherRank(p)
+	switch {
+	case !p.On():
+		return &p, "", SearcherOff
+	case r < 0:
+		return &p, "", SearcherCant
+	case provider.KimiCodeSearch(p) != "":
+		// it searches with no model
+		return &p, "", ""
+	}
+	if model != "" && slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return m.ID == model }) && (!googleAccount(p) || searchModel(model)) {
+		return &p, model, ""
+	}
+	if m := searcherModel(p); m != "" {
+		return &p, m, ""
+	}
+	if ms := p.Available(); len(ms) > 0 {
+		return &p, ms[0].ID, ""
+	}
+	return &p, "", SearcherNoneOf
+}
+
+// Searchers are the providers Settings' Searcher may name: those magpie
+// would pick, then relays said to search, each with the model it would
+// search with.
+func Searchers() []SearcherChoice {
+	var out []SearcherChoice
+	for _, p := range provider.All() {
+		r, manualOnly := namedSearcherRank(p)
+		if r < 0 || !p.On() {
+			continue
+		}
+		if provider.KimiCodeSearch(p) != "" {
+			out = append(out, SearcherChoice{Provider: p, rank: r, ManualOnly: manualOnly, Service: true})
+			continue
+		}
+		var ms []catalog.Model
+		for _, m := range p.Available() {
+			if !strings.HasPrefix(m.ID, provider.GroupPrefix) && (!googleAccount(p) || searchModel(m.ID)) {
+				ms = append(ms, m)
+			}
+		}
+		if len(ms) == 0 {
+			continue
+		}
+		out = append(out, SearcherChoice{Provider: p, Small: searcherModel(p), Models: ms, rank: r, ManualOnly: manualOnly, Own: googleAccount(p)})
+	}
+	slices.SortStableFunc(out, func(a, b SearcherChoice) int { return cmp.Compare(a.rank, b.rank) })
+	return out
+}
+
+// SearcherChoice is a provider Settings' Searcher may name.
+type SearcherChoice struct {
+	Provider   provider.Provider
+	Small      string // the model it searches with when none is named
+	Models     []catalog.Model
+	rank       int
+	ManualOnly bool // a relay said to search, which only Settings may name
+	// Service is a Kimi Code plan, which searches by its search service,
+	// with no model (and no Small or Models)
+	Service bool
+	// Own is a Google sign-in, whose Gemini searches for the provider's
+	// own models first, whoever is named (ownSearcher)
+	Own bool
+}
+
+// RelaysSaidToSearch are the providers on that are said to search by
+// themselves but are not asked for another model unless Settings names them
+// (#359).
+func RelaysSaidToSearch() []provider.Provider {
+	var out []provider.Provider
+	for _, p := range provider.All() {
+		if p.Searches && p.On() && searchRank(p) < 0 {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // smallModel is the provider's cheapest small model of a vendor that
@@ -140,13 +345,24 @@ func smallModel(p provider.Provider, keep func(catalog.Model) bool) string {
 		return slices.MinFunc(ms, func(a, b catalog.Model) int { return cmp.Compare(cost(a), cost(b)) }).ID
 	}
 	small := slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool {
-		l := strings.ToLower(m.ID)
+		// "gemini" has a "mini" in it, which made every Gemini small and
+		// the first of them, a Pro, the one picked (#757)
+		l := strings.ReplaceAll(strings.ToLower(m.ID), "gemini", "")
 		return !strings.Contains(l, "haiku") && !strings.Contains(l, "mini") && !strings.Contains(l, "flash")
 	})
 	if id := cheapest(small); id != "" {
 		return id
 	}
 	return cheapest(ms)
+}
+
+// searcherModel is the model p searches with when none is named: its
+// small model, of those it can search with.
+func searcherModel(p provider.Provider) string {
+	if googleAccount(p) {
+		return smallModel(p, func(m catalog.Model) bool { return searchModel(m.ID) })
+	}
+	return smallModel(p, nil)
 }
 
 // searchTool is the tool a model that can't search is given, under a name
@@ -163,15 +379,84 @@ func searchTool(tools []Tool) Tool {
 
 const searchSystem = "You are a web search tool. Search the web for what is asked and report what the results say: the facts that answer it, as specifically as they are given (numbers, dates, versions, names), each with the title and URL of its page. Report only what the pages say; don't answer from memory, don't add advice. Be concise."
 
-// webSearch searches the web with the searcher's model and says what it
-// found, and on which pages.
+// webSearch searches the web and says what it found, and on which pages:
+// for a model of a Kimi Code plan, with the plan's search service first;
+// then with the searcher's model, or, without one or when it fails, with
+// the search APIs the user set up (#419).
 func (s *Server) webSearch(ctx context.Context, query string) (string, []Hit, error) {
+	var errs []error
+	if p, ok := ownSearcher(ctx); ok {
+		said, hits, err := s.ownSearch(ctx, p, query)
+		if err == nil {
+			return said, hits, nil
+		}
+		errs = append(errs, err)
+	}
+	said, hits, err := s.modelSearch(ctx, query)
+	if err == nil {
+		return said, hits, nil
+	}
+	apis := len(provider.SearchAPIs()) > 0
+	// that no provider searches is news only when nothing else was tried
+	if !errors.Is(err, errNoSearcher) || len(errs) == 0 && !apis {
+		errs = append(errs, err)
+	}
+	if !apis {
+		return "", nil, errors.Join(errs...)
+	}
+	said, hits, err = s.apiSearch(ctx, query)
+	if err != nil {
+		return "", nil, errors.Join(append(errs, err)...)
+	}
+	return said, hits, nil
+}
+
+var errNoSearcher = errors.New("no provider that can search the web, nor a search API, is set up in magpie")
+
+// searchersInTurn is how many searchers a search is asked of, in turn,
+// before it goes to the search APIs.
+const searchersInTurn = 3
+
+// modelSearch searches the web with the searcher's model; one that fails
+// or finds nothing gives way to the next searcher magpie would pick, all
+// of them within searchTimeout.
+func (s *Server) modelSearch(ctx context.Context, query string) (string, []Hit, error) {
 	p, model, ok := searcher()
 	if !ok {
-		return "", nil, errors.New("no provider that can search the web is set up in magpie")
+		return "", nil, errNoSearcher
 	}
 	ctx, cancel := context.WithTimeout(context.WithValue(ctx, searchingKey{}, true), searchTimeout)
 	defer cancel()
+	type pick struct{ id, model string }
+	tried := []pick{{p.ID, model}}
+	said, hits, err := s.searchBy(ctx, p, model, query)
+	for _, c := range Searchers() {
+		if c.ManualOnly {
+			continue
+		}
+		if err == nil || ctx.Err() != nil || len(tried) >= searchersInTurn {
+			break
+		}
+		if c.Small == "" || slices.ContainsFunc(tried, func(t pick) bool { return t.id == c.Provider.ID }) {
+			continue
+		}
+		tried = append(tried, pick{c.Provider.ID, c.Small})
+		var next error
+		if said, hits, next = s.searchWith(ctx, c.Provider, c.Small, query); next != nil {
+			err = errors.Join(err, next)
+		} else {
+			err = nil
+		}
+	}
+	return said, hits, err
+}
+
+// searchWith asks one searcher's model to search: what it said, with the
+// pages its searches found. A reply with no page found and no address in
+// what it says found nothing: the model answered without searching (#669:
+// DeepSeek on its Chat API, which has no search tool, said it couldn't, or
+// wrote its own tool-call markup as text).
+func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, query string) (string, []Hit, error) {
 	body, _ := json.Marshal(map[string]any{
 		"model": p.ID + "/" + model, "max_tokens": 4096, "stream": false, "system": searchSystem,
 		"messages": []map[string]any{{"role": "user", "content": "Search the web for: " + query}},
@@ -213,18 +498,28 @@ func (s *Server) webSearch(ctx context.Context, query string) (string, []Hit, er
 		case "text":
 			text.WriteString(b.Text)
 		case "web_search_tool_result":
-			var hits []Hit
-			json.Unmarshal(b.Content, &hits)
-			for _, h := range hits {
-				if h.URL != "" {
-					sources = append(sources, "- "+h.Title+" — "+h.URL)
-					found = append(found, h)
+			// each result read on its own, its title, address and age
+			// only: a vendor's encrypted_content is for that vendor, and
+			// an error ({"type":"web_search_tool_result_error"}) has none
+			var results []json.RawMessage
+			json.Unmarshal(b.Content, &results)
+			for _, raw := range results {
+				var h struct {
+					Title   string `json:"title"`
+					URL     string `json:"url"`
+					PageAge any    `json:"page_age"`
 				}
+				if json.Unmarshal(raw, &h) != nil || h.URL == "" {
+					continue
+				}
+				age, _ := h.PageAge.(string)
+				sources = append(sources, "- "+h.Title+" — "+h.URL)
+				found = append(found, Hit{Title: h.Title, URL: h.URL, PageAge: age})
 			}
 		}
 	}
 	said := strings.TrimSpace(text.String())
-	if said == "" {
+	if said == "" || (len(found) == 0 && !strings.Contains(said, "://")) {
 		return "", nil, fmt.Errorf("%s/%s found nothing", p.ID, model)
 	}
 	if len(sources) > 0 && len(sources) <= 20 {
@@ -245,7 +540,7 @@ type round func(ctx context.Context, req *Request) (<-chan Event, int, string)
 // reply. The first round's failure is a status, as another provider may
 // take over.
 func (s *Server) searchReply(w http.ResponseWriter, r *http.Request, from provider.Protocol, name string, req *Request, usage *Usage, ask round) (int, string) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(context.WithValue(r.Context(), searchForKey{}, &CallFor{Agent: callerOf(r).agent, Model: unprefixed(req.Model)}))
 	defer cancel()
 	q := *req
 	q.WebSearch = false
@@ -360,7 +655,7 @@ func (s *Server) searchRounds(ctx context.Context, q *Request, tool string, in <
 					results[i].Text, results[i].IsError = "query is empty", true
 					return
 				}
-				found, hits, err := s.webSearch(ctx, a.Query)
+				found, hits, err := s.webSearch(context.WithValue(ctx, searchCallKey{}, c.ID), a.Query)
 				if err != nil {
 					results[i].Text, results[i].IsError = "search failed: "+err.Error(), true
 					return

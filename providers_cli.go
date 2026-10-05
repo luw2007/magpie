@@ -14,8 +14,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/stats"
 )
 
@@ -27,7 +29,7 @@ const providerUsage = `usage:
   magpie provider <id>                    show one provider and its models
   magpie provider add <preset> <key>      add a preset vendor   e.g. magpie provider add deepseek sk-…
                                           again, it adds another (deepseek-2); k=v pairs too: id, name, header.X-Foo
-  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.token, models.url
+  magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, decide, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.token, models.url, search
   magpie provider set <id> k=v…           change a provider's settings, with the same k=v pairs as add
   magpie provider key <id> <key>          change the API key
   magpie provider keys <id> [list]        list stable key IDs, masked secrets and bindings
@@ -37,6 +39,12 @@ const providerUsage = `usage:
   magpie provider icon <id> <file|name>   give a custom provider a picture (PNG, JPEG, SVG…) or a built-in icon
   magpie provider fallback <id> <provider/model>…   where requests go when it's out of quota or down (none clears)
   magpie provider models <id> [ids…]      fetch the vendor's model list, or choose which models to expose
+  magpie provider refresh <id>            fetch the vendor's model list again (as the app's Refresh)
+  magpie provider account-models <id> [account|key [ids…|all]]
+                                          the models one account or key alone serves; all: every model the provider has
+  magpie provider account-cap <id> [account [percent|off]]
+                                          use a subscription account up to a share of each usage window (e.g. 70):
+                                          at it, routing takes the account for used up until the window renews
   magpie provider listed <id> yes|no      no: its models serve only through routing groups, not in the list
   magpie provider off|on <id>             switch it off (kept, but no agent or request uses it), or on again
   magpie provider test <id> [model…]      send a tiny request through each endpoint, or to each model
@@ -45,8 +53,17 @@ const providerUsage = `usage:
   e.g. magpie provider add "My Relay" url=https://relay.example.com/v1 key=sk-…
        magpie provider add "Own Claude" anthropic=https://gw.example.com key=sk-… catalog=anthropic
        magpie provider add "My Relay" url=https://relay.example.com/v1 key=sk-… header.X-Org-Id=acme
+       magpie provider add remote-magpie sk-magpie-… url=http://192.168.1.20:3425 id=office
+                                   (another computer's magpie, shared on its network: its models and routing
+                                    groups as office/…, each request sent on in the API the agent spoke)
+       magpie provider add bailian-decision sk-… workspace=<workspace id>   (or region=ap-southeast-1, or region=token-plan with an sk-sp- key)
+       magpie provider add "My Decider" decide=https://decide.example.com/v1 key=sk-… models=my-decision-model
+                                   (a System One API, POST …/systemone: it routes groups, its models are never an agent's)
        magpie provider add anthropic sk-… id=anthropic-ws2 name="Anthropic WS2" header.anthropic-workspace-id=wrkspc_…
        magpie provider set my-relay models.url=https://relay.example.com/api/models catalog=
+       magpie provider set my-relay search=yes
+                                   (the relay answers Claude Code's WebSearch and Codex's web_search itself:
+                                    those go to it as sent, not through magpie's own search)
        magpie provider add "My Relay" url=https://relay.example.com/v1 key=sk-… balance=https://relay.example.com/api/usage/token balance.path='$data.total_available / 500000'
        magpie provider set my-relay balance.path='(1 - credits.monthlyCredits / 70) %'
        magpie provider set my-relay balance=https://relay.example.com/api/user/self balance.path='$data.quota / 500000' balance.token=<access token> header.New-Api-User=<user id>
@@ -64,7 +81,13 @@ const providerUsage = `usage:
 // providers: `magpie providers`
 func providers() error {
 	all := provider.All()
+	// a providers.json that can't be read is not "no providers yet": what
+	// is listed is then the signed-in accounts alone, and it ends in why
+	bad := provider.FileError()
 	if len(all) == 0 && len(provider.Excluded()) == 0 {
+		if bad != nil {
+			return bad
+		}
 		fmt.Println(muted.Render("no providers yet ·"), "magpie provider add deepseek sk-…", muted.Render("· magpie presets lists the vendors"))
 		return nil
 	}
@@ -90,7 +113,7 @@ func providers() error {
 			r.key = amber.Render("○ no key")
 		}
 		n := len(p.Exposed())
-		if t, ok := p.Fetched(); ok {
+		if t, ok := p.Listed(); ok {
 			r.models = fmt.Sprintf("%d of %d models", n, len(p.Available())) + muted.Render(" · fetched "+ago(t))
 		} else {
 			r.models = fmt.Sprintf("%d models", n)
@@ -111,7 +134,9 @@ func providers() error {
 	}
 	for _, x := range provider.Excluded() {
 		name := x.Agent
-		if a, err := agent.Find(x.Agent); err == nil {
+		if x.Name != "" {
+			name = x.Name
+		} else if a, err := agent.Find(x.Agent); err == nil {
 			name = a.Name
 		}
 		fmt.Println()
@@ -125,7 +150,7 @@ func providers() error {
 		}
 		fmt.Println(" ", muted.Render(name+" is signed in but not offered: "+x.Why+back))
 	}
-	return nil
+	return bad
 }
 
 // usesByProvider maps provider ids to the agents currently routed to them.
@@ -179,6 +204,7 @@ func presets() error {
 // one agent is shown and what is kept from it
 func models(args []string) error {
 	entries := provider.Catalog()
+	bad := provider.FileError() // as in providers: said, not "no models yet"
 	var hidden []provider.Entry
 	agentID := ""
 	if len(args) > 0 {
@@ -194,6 +220,8 @@ func models(args []string) error {
 	if len(entries) == 0 && agentID != "" {
 		names, _ := provider.VisibleTo(agentID)
 		fmt.Println(amber.Render("!"), agentID, "is shown none of them: nothing is in", strings.Join(names, ", "), muted.Render("· magpie visible "+agentID+" all shows it every model"))
+	} else if len(entries) == 0 && bad != nil {
+		return bad
 	} else if len(entries) == 0 {
 		fmt.Println(muted.Render("no models yet · add a provider first:"), "magpie provider add deepseek sk-…")
 		return nil
@@ -224,8 +252,8 @@ func models(args []string) error {
 	if agentID != "" {
 		explainHidden(agentID, hidden)
 	}
-	fmt.Println(faint.Render("  " + gateway.URL() + "/v1"))
-	return nil
+	fmt.Println(faint.Render("  " + advertisedURL() + "/v1"))
+	return bad
 }
 
 // providerCmd: `magpie provider <verb> …`
@@ -353,10 +381,12 @@ func providerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := provider.Delete(p.ID); err != nil {
+		moved, err := agent.Reseat(func() error { return provider.Delete(p.ID) })
+		if err != nil {
 			return err
 		}
 		fmt.Println(green.Render("✓"), "removed", p.Name)
+		printMoved(moved)
 		return nil
 	case "test":
 		// with models named, a request to each of them; else one per endpoint
@@ -393,6 +423,10 @@ func providerCmd(args []string) error {
 			os.Exit(1)
 		}
 		return nil
+	case "account-models", "account-model":
+		return accountModelsCmd(rest)
+	case "account-cap", "account-caps":
+		return accountCapCmd(rest)
 	case "listed":
 		// no: the provider's models leave the list agents see and serve
 		// only through the routing groups they are in
@@ -423,22 +457,27 @@ func providerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := provider.SetOff(p.ID, verb == "off"); err != nil {
+		moved, err := agent.Reseat(func() error { return provider.SetOff(p.ID, verb == "off") })
+		if err != nil {
 			return err
 		}
+		defer printMoved(moved)
 		if verb == "off" {
 			fmt.Println(green.Render("✓"), p.Name, muted.Render("is switched off: agents are given none of its models"))
 		} else {
 			fmt.Println(green.Render("✓"), p.Name, muted.Render("is switched on"))
 		}
 		return nil
-	case "models":
+	case "models", "refresh", "fetch":
 		if len(rest) < 1 {
-			return fmt.Errorf("magpie provider models <id> [model ids to expose…]")
+			return fmt.Errorf("magpie provider %s <id> [model ids to expose…]", verb)
 		}
 		p, err := provider.Find(rest[0])
 		if err != nil {
 			return err
+		}
+		if len(rest) > 1 && verb != "models" {
+			return fmt.Errorf("magpie provider %s <id> fetches its list · magpie provider models <id> <ids…> picks from it", verb)
 		}
 		if len(rest) > 1 {
 			p.Models = rest[1:]
@@ -452,11 +491,17 @@ func providerCmd(args []string) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		ms, err := p.Fetch(ctx)
+		ms, dropped, err := p.Refetch(ctx)
 		if err != nil {
 			return err
 		}
 		fmt.Println(green.Render("✓"), len(ms), "models from", fetchedFrom(*p))
+		if len(dropped) > 0 {
+			fmt.Println(amber.Render("!"), "gone from its list, so no longer picked:", strings.Join(dropped, ", "))
+		}
+		if q, err := provider.Find(p.ID); err == nil {
+			p = q // without the picks just dropped
+		}
 		return showProvider(*p)
 	}
 	// `magpie provider <id>`
@@ -603,7 +648,8 @@ func announce(id string) error {
 
 func showProvider(p provider.Provider) error {
 	kv := func(k, v string) {
-		if v != "" {
+		// a plugin's provider is reached through the plugin, not a URL
+		if v != "" && !strings.HasPrefix(v, "plugin://") {
 			fmt.Printf("  %s %s\n", muted.Render(pad(k, 10)), v)
 		}
 	}
@@ -616,13 +662,23 @@ func showProvider(p provider.Provider) error {
 	kv("responses", p.Responses)
 	kv("anthropic", p.Anthropic)
 	kv("decide", p.Decide)
+	if p.Searches {
+		kv("search", "by itself"+muted.Render("  a client's web search goes to it as sent"))
+	}
 	switch {
 	case p.Account != nil:
 		who := p.Account.User
 		if p.Account.Plan != "" {
 			who += muted.Render("  " + p.Account.Plan)
 		}
-		kv("account", who+muted.Render("  from "+p.Account.Agent+"'s own sign-in"))
+		from := p.Account.Agent + "'s own sign-in"
+		if p.IsPlugin() {
+			from = p.Name + "'s sign-in"
+			if provider.Moved(p.ID) {
+				from = p.ID + "'s own sign-in" // as the built-in said
+			}
+		}
+		kv("account", who+muted.Render("  from "+from))
 	case p.Key != "":
 		kv("key", muted.Render(provider.Mask(p.Key)))
 	case p.Ready():
@@ -651,7 +707,7 @@ func showProvider(p provider.Provider) error {
 	}
 	ms := p.Exposed()
 	src := "models.dev"
-	if t, ok := p.Fetched(); ok {
+	if t, ok := p.Listed(); ok {
 		src = fetchedFrom(p) + " · fetched " + ago(t)
 	}
 	kv("models", fmt.Sprintf("%d exposed of %d %s", len(ms), len(p.Available()), muted.Render("from "+src)))
@@ -677,6 +733,7 @@ func showProvider(p provider.Provider) error {
 }
 
 func applyPairs(p *provider.Provider, pairs []string) error {
+	workspace := ""
 	for _, kv := range pairs {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -693,6 +750,30 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.Responses = v
 		case "anthropic":
 			p.Anthropic = v
+		case "decide":
+			// a System One root (…/systemone is asked under it): the
+			// provider routes groups, its models any name (#647)
+			p.Decide = v
+		case "workspace":
+			workspace = strings.TrimSpace(v)
+		case "region", "plan":
+			pr := provider.Preset(p.Preset)
+			if pr == nil || len(pr.Regions) == 0 {
+				return fmt.Errorf("%s has no regions or plans to pick", p.Name)
+			}
+			var ids []string
+			for _, r := range pr.Regions {
+				ids = append(ids, r.ID)
+			}
+			i := slices.IndexFunc(pr.Regions, func(r provider.Region) bool { return strings.EqualFold(r.ID, v) })
+			if i < 0 {
+				return fmt.Errorf("%s=%s: %s's are %s", k, v, pr.Name, strings.Join(ids, ", "))
+			}
+			r := pr.Regions[i]
+			p.Chat, p.Responses, p.Anthropic, p.Decide = r.Chat, r.Responses, r.Anthropic, r.Decide
+			if r.KeysURL != "" {
+				p.KeysURL = r.KeysURL
+			}
 		case "key":
 			p.Key = v
 			if p.KeyID != "" {
@@ -719,6 +800,14 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.BalanceToken = v
 		case "models.url":
 			p.ModelsURL = v
+		case "search":
+			// yes: the vendor searches the web by itself, a web search a
+			// client offers going to it as it was sent (a relay in front of
+			// Anthropic's or OpenAI's API)
+			if v != "yes" && v != "no" {
+				return fmt.Errorf("search=yes|no, not %q", v)
+			}
+			p.Searches = v == "yes"
 		case "context":
 			if err := setContext(p, "*", v); err != nil {
 				return err
@@ -764,6 +853,13 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			}
 			return fmt.Errorf("unknown field %q\n\n%s", k, providerUsage)
 		}
+	}
+	if workspace != "" {
+		// Bailian's decision model is asked at the workspace's own host
+		if !strings.Contains(p.Decide, provider.WorkspaceID) {
+			return fmt.Errorf("workspace= fills in a Bailian workspace's host, and %s's decision API names none", p.Name)
+		}
+		p.Decide = strings.ReplaceAll(p.Decide, provider.WorkspaceID, workspace)
 	}
 	return nil
 }
@@ -823,15 +919,66 @@ func refreshLive(ctx context.Context) {
 	}
 }
 
+// keyNote says who the gateway takes any key from: this machine alone,
+// unless MAGPIE_ADDR puts it on the network (a server, a Docker image)
+// without sharing it from Settings, when it is anyone who reaches it.
+func keyNote() string {
+	if s := settings.Load(); s.LAN {
+		return "(anything works from this machine; from others, an enabled gateway key — magpie gateway-key add <name>)"
+	}
+	if gateway.OpenToAnyone() {
+		return "(anything works, from anyone who reaches it — share it from Settings to require a key)"
+	}
+	return "(anything works; the gateway only listens on localhost)"
+}
+
+// containerNote follows the addresses magpie finds for itself in a
+// container, which are the container's own.
+const containerNote = "these are the container's own addresses: other machines use the host's, and MAGPIE_PUBLIC_URL=http://<host>:<port> puts it here"
+
+// shareLines are where other machines reach the gateway while it is shared
+// from Settings, for the banner.
+func shareLines() []string {
+	if s := settings.Load(); !s.LAN || s.LANKey == "" {
+		return nil
+	}
+	var out []string
+	for _, u := range gateway.LANURLs() {
+		out = append(out, muted.Render("  network ")+" "+u)
+	}
+	if gateway.ContainerAddrs() {
+		out = append(out, muted.Render("  "+containerNote))
+	}
+	return out
+}
+
+// advertisedURL is what the CLIs print for other machines: the public
+// address when MAGPIE_PUBLIC_URL is valid, otherwise the one reached from
+// this machine.
+func advertisedURL() string {
+	if u := gateway.PublicURL(); u != "" {
+		return u
+	}
+	return gateway.URL()
+}
+
 // serve: `magpie serve` — the gateway alone, in the foreground.
 func serve() error {
 	s := gateway.New()
 	go stats.Run(version, "serve")
+	go catalog.KeepFresh() // new models' prices, in a gateway left running
+	public := advertisedURL()
 	fmt.Println(green.Render("●"), "magpie gateway on", bold.Render(gateway.URL()))
-	fmt.Println(muted.Render("  OpenAI  "), gateway.URL()+"/v1/chat/completions", muted.Render("·"), gateway.URL()+"/v1/responses")
-	fmt.Println(muted.Render("  Anthropic"), gateway.URL()+"/v1/messages")
-	fmt.Println(muted.Render("  key     "), gateway.Token, muted.Render("(anything works; the gateway only listens on localhost)"))
+	fmt.Println(muted.Render("  OpenAI  "), public+"/v1/chat/completions", muted.Render("·"), public+"/v1/responses")
+	fmt.Println(muted.Render("  Anthropic"), public+"/v1/messages")
+	fmt.Println(muted.Render("  key     "), gateway.Token, muted.Render(keyNote()))
+	for _, l := range shareLines() {
+		fmt.Println(l)
+	}
 	n := len(provider.Catalog())
+	if err := provider.FileError(); err != nil {
+		fmt.Println(amber.Render("!"), err) // served without it, as no providers
+	}
 	if n == 0 {
 		fmt.Println(amber.Render("!"), "no models yet ·", "magpie provider add deepseek sk-…")
 	} else {
@@ -896,4 +1043,118 @@ func fetchedFrom(p provider.Provider) string {
 		return h
 	}
 	return p.Name
+}
+
+// accountModelsCmd: `magpie provider account-models <id> [account|key
+// [ids…|all]]` — the models one account or key of a provider alone serves
+// (#474), each account's with none named, all for every one the provider has.
+func accountModelsCmd(rest []string) error {
+	if len(rest) < 1 {
+		return fmt.Errorf("magpie provider account-models <id> [account|key [model ids…|all]]")
+	}
+	p, err := provider.Find(rest[0])
+	if err != nil {
+		return err
+	}
+	if len(rest) > 2 {
+		ms := rest[2:]
+		if len(ms) == 1 && (ms[0] == "all" || ms[0] == "-") {
+			ms = nil
+		}
+		if err := provider.SetAccountModels(p.ID, rest[1], ms); err != nil {
+			return err
+		}
+	}
+	refs := p.AccountRefs()
+	if len(rest) > 1 {
+		ref, _, err := provider.AccountModelsOf(p.ID, rest[1])
+		if err != nil {
+			return err
+		}
+		refs = []string{ref}
+	}
+	if len(refs) == 0 {
+		fmt.Println(muted.Render(p.Name + " has no account or key"))
+		return nil
+	}
+	label := map[string]string{}
+	for _, k := range p.KeyList() {
+		if k.Name != "" {
+			label[k.ID] = k.Name + " " + muted.Render(k.Masked+" · "+k.ID)
+		} else {
+			label[k.ID] = k.Masked + " " + muted.Render(k.ID)
+		}
+	}
+	for _, r := range refs {
+		name := r
+		if l, ok := label[r]; ok {
+			name = l
+		}
+		_, ms, _ := provider.AccountModelsOf(p.ID, r)
+		if len(ms) == 0 {
+			fmt.Println(name, muted.Render("· every model "+p.Name+" serves"))
+		} else {
+			fmt.Println(name, "· only", strings.Join(ms, ", "))
+		}
+	}
+	return nil
+}
+
+// accountCapCmd shows, or sets with a share or off, the usage cap of a
+// subscription's accounts: the share of each window one is used to at most
+// (provider.AccountCaps).
+func accountCapCmd(rest []string) error {
+	if len(rest) < 1 {
+		return fmt.Errorf("magpie provider account-cap <id> [account [percent|off]]")
+	}
+	p, err := provider.Find(rest[0])
+	if err != nil {
+		return err
+	}
+	if p.Account == nil {
+		return fmt.Errorf("%s has keys, not subscription accounts with usage windows to cap", p.Name)
+	}
+	if len(rest) > 2 {
+		cap, err := provider.ParseCap(rest[2])
+		if err != nil {
+			return err
+		}
+		if err := provider.SetAccountCap(p.ID, rest[1], cap); err != nil {
+			return err
+		}
+		if p, err = provider.Find(p.ID); err != nil {
+			return err
+		}
+	}
+	refs := p.AccountRefs()
+	if len(rest) > 1 {
+		refs = slices.DeleteFunc(refs, func(r string) bool { return !strings.EqualFold(r, strings.TrimSpace(rest[1])) })
+		if len(refs) == 0 {
+			return fmt.Errorf("%s has no account %q", p.Name, rest[1])
+		}
+	}
+	if len(refs) == 0 {
+		fmt.Println(muted.Render(p.Name + " has no account"))
+		return nil
+	}
+	for _, r := range refs {
+		if c := p.AccountCap(r); c > 0 {
+			fmt.Printf("%s · capped at %d%% of each usage window\n", r, c)
+		} else {
+			fmt.Println(r, muted.Render("· no cap: used to 100%"))
+		}
+	}
+	return nil
+}
+
+// printMoved says which agents a change moved off models it stopped
+// serving (agent.Reseat).
+func printMoved(moved []agent.Move) {
+	for _, m := range moved {
+		if m.Error != "" {
+			fmt.Println("!", m.String())
+			continue
+		}
+		fmt.Println(green.Render("✓"), "moved", m.String())
+	}
 }

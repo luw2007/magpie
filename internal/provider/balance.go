@@ -1,10 +1,11 @@
 package provider
 
 // What is left on an API key, as the vendor's own balance endpoint tells
-// it: DeepSeek, Kimi, OpenRouter, SiliconFlow, Command Code and AiHubMix are known by their hosts
+// it: DeepSeek, Kimi, OpenRouter, SiliconFlow, StepFun, Command Code and AiHubMix are known by their hosts
 // (AiHubMix tells the whole account's to its access token, BalanceToken);
 // any other provider can name an endpoint and where the amount sits in its
-// reply (BalanceURL, BalancePath), the way a relay's own usage query does.
+// reply (BalanceURL, BalancePath), the way a relay's own usage query does,
+// with {key} where it wants the key in the URL (withBalanceKey).
 
 import (
 	"context"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,7 +36,7 @@ type balanceSource struct {
 // the one its host is known to have.
 func balanceSourceOf(p Provider) (balanceSource, bool) {
 	if p.BalanceURL != "" {
-		path := p.BalancePath
+		path := balancePathOf(p)
 		// a token saved beside it (a new-api relay's access token, its
 		// /api/user/self telling the account's quota) is asked with
 		// instead of the key
@@ -55,6 +57,10 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 			return balanceSource{"https://api.siliconflow.cn/v1/user/info", readSiliconFlow("¥"), ""}, true
 		case "api.siliconflow.com":
 			return balanceSource{"https://api.siliconflow.com/v1/user/info", readSiliconFlow("$"), ""}, true
+		case "api.stepfun.com":
+			return balanceSource{"https://api.stepfun.com/v1/accounts", readStepFun("¥"), ""}, true
+		case "api.stepfun.ai":
+			return balanceSource{"https://api.stepfun.ai/v1/accounts", readStepFun("$"), ""}, true
 		case "api.commandcode.ai":
 			return balanceSource{"https://api.commandcode.ai/alpha/billing/credits", readCommandCode, ""}, true
 		case "aihubmix.com":
@@ -65,6 +71,73 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 		}
 	}
 	return balanceSource{}, false
+}
+
+// balancePathOf is the balance field of a provider that named its Balance
+// URL.
+func balancePathOf(p Provider) string {
+	if strings.TrimSpace(p.BalancePath) == "" && balanceURLPath(p.BalanceURL) == newAPIUserSelf {
+		// new-api's account query with its field left out: the quota,
+		// in new-api's units, as it reports it
+		return newAPIQuotaPath
+	}
+	return p.BalancePath
+}
+
+// new-api's two balance queries: /api/usage/token tells a key what is left
+// on it and is asked with the key alone (its token check takes no access
+// token), /api/user/self tells the account's quota, $1 to 500000 of it, to
+// the account's access token with the user's id in New-Api-User.
+const (
+	newAPIKeyUsage  = "/api/usage/token"
+	newAPIUserSelf  = "/api/user/self"
+	newAPIQuotaPath = "$data.quota / 500000"
+)
+
+// balanceURLPath is a balance URL's path, without a slash at its end.
+func balanceURLPath(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(u.Path, "/")
+}
+
+// errKeyUsageWithToken is a balance token beside new-api's query for a key,
+// which never takes it: asked, it could only be refused, so what to name in
+// its place is said instead.
+func errKeyUsageWithToken(raw string) error {
+	self := newAPIUserSelf
+	if u, err := url.Parse(strings.TrimSpace(raw)); err == nil && u.Host != "" {
+		self = u.Scheme + "://" + u.Host + newAPIUserSelf
+	}
+	return fmt.Errorf("the Balance URL %s takes the API key, not the access token: set it to %s (Balance field %s) for the account's balance, or remove the token for the key's own", raw, self, newAPIQuotaPath)
+}
+
+// balanceRefusal is what a reply of {"success":false,"message":…} says, a
+// new-api relay's way of turning a request down, with a 401 and a 200
+// alike; a reply without the two is not one.
+func balanceRefusal(b []byte) (string, bool) {
+	var r struct {
+		Success *bool  `json:"success"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(b, &r) != nil || r.Success == nil || *r.Success || strings.TrimSpace(r.Message) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(r.Message), true
+}
+
+// newAPIUserHint puts what to do before a new-api refusal about the
+// New-Api-User header, which its /api/user/self wants beside the access
+// token ("无权进行此操作，未提供 New-Api-User", "Unauthorized, New-Api-User
+// header not provided", or its format error or mismatch); any other
+// message is left as it came.
+func newAPIUserHint(msg string) string {
+	if !strings.Contains(strings.ToLower(msg), "new-api-user") {
+		return msg
+	}
+	return "add the header New-Api-User = your user ID (shown in the site's personal settings) to this provider's Headers; the relay said: " + msg
 }
 
 // TakesBalanceToken says the provider's vendor tells the account's balance
@@ -193,6 +266,27 @@ func readSiliconFlow(sign string) func([]byte) (string, error) {
 	}
 }
 
+// readStepFun: {"object":"account","type":"prepaid","balance":26.00,
+// "total_cash_balance":0.00,"total_voucher_balance":26.00}, balance being
+// what is left to spend, vouchers included, and the totals what was ever
+// paid in and given. A Step Plan key tells it too: the plan's key is the
+// account's, and the account's balance is what it spends past the plan.
+func readStepFun(sign string) func([]byte) (string, error) {
+	return func(b []byte) (string, error) {
+		var r struct {
+			Balance any `json:"balance"`
+		}
+		if err := json.Unmarshal(b, &r); err != nil {
+			return "", err
+		}
+		v, ok := number(r.Balance)
+		if !ok {
+			return "", errors.New("no balance in the reply")
+		}
+		return money(sign, v), nil
+	}
+}
+
 // readAiHubMix: {"object":"list","total_usage":12.5}, what is left on the
 // key in dollars, despite the name. A key without a limit answers -1 of
 // AiHubMix's units ($1 is 500000 of them): it has no balance of its own, and
@@ -269,10 +363,47 @@ func readAiHubMixAccount(b []byte) (string, error) {
 // windowLimits.fiveHour.cap %; week: …; $credits.monthlyCredits" is
 // "5h 0% · week 3.4% · $70.00".
 func readBalancePath(b []byte, path string) (string, error) {
-	if !strings.Contains(path, ";") && !strings.Contains(path, ":") {
-		return readBalanceOne(b, path)
+	parts, err := readBalanceParts(b, path)
+	if err != nil {
+		return "", err
 	}
-	var out []string
+	return joinBalanceParts(parts), nil
+}
+
+// BalancePart is one amount of a balance field, for a card to show each
+// of several on a line of its own, its label apart from its figure, rather
+// than all of them run together: Percent is its share, 0 to 100, when it
+// was asked as one ("%" after it), for a meter.
+type BalancePart struct {
+	Label   string   `json:"label,omitempty"`
+	Text    string   `json:"text"`
+	Percent *float64 `json:"percent,omitempty"`
+}
+
+// joinBalanceParts is the amounts on one line, as Balance tells them:
+// "5h 0% · week 3.4% · $70.00".
+func joinBalanceParts(parts []BalancePart) string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p.Label != "" {
+			out = append(out, p.Label+" "+p.Text)
+		} else {
+			out = append(out, p.Text)
+		}
+	}
+	return strings.Join(out, " · ")
+}
+
+// readBalanceParts is readBalancePath's amounts, each apart.
+func readBalanceParts(b []byte, path string) ([]BalancePart, error) {
+	if !strings.Contains(path, ";") && !strings.Contains(path, ":") {
+		v, pct, err := readBalanceOne(b, path)
+		if err != nil {
+			return nil, err
+		}
+		return []BalancePart{{Text: v, Percent: pct}}, nil
+	}
+	var out []BalancePart
 	for part := range strings.SplitSeq(path, ";") {
 		if strings.TrimSpace(part) == "" {
 			continue
@@ -282,26 +413,24 @@ func readBalancePath(b []byte, path string) (string, error) {
 			label, expr = "", part
 		}
 		label = strings.TrimSpace(label)
-		v, err := readBalanceOne(b, expr)
+		v, pct, err := readBalanceOne(b, expr)
 		if err != nil {
 			if label != "" {
 				err = fmt.Errorf("%s: %w", label, err)
 			}
-			return "", err
+			return nil, err
 		}
-		if label != "" {
-			v = label + " " + v
-		}
-		out = append(out, v)
+		out = append(out, BalancePart{Label: label, Text: v, Percent: pct})
 	}
 	if len(out) == 0 {
-		return "", errors.New("no balance path: where in the reply the amount is, e.g. data.balance")
+		return nil, errors.New("no balance path: where in the reply the amount is, e.g. data.balance")
 	}
-	return strings.Join(out, " · "), nil
+	return out, nil
 }
 
-// readBalanceOne is one amount of a balance path.
-func readBalanceOne(b []byte, path string) (string, error) {
+// readBalanceOne is one amount of a balance path, and its share in percent
+// when it was asked as one.
+func readBalanceOne(b []byte, path string) (string, *float64, error) {
 	path = strings.TrimSpace(path)
 	sign := ""
 	for _, s := range []string{"$", "¥", "€", "£"} {
@@ -315,38 +444,48 @@ func readBalanceOne(b []byte, path string) (string, error) {
 		percent, path = true, strings.TrimSpace(rest)
 	}
 	if path == "" {
-		return "", errors.New("no balance path: where in the reply the amount is, e.g. data.balance")
+		return "", nil, errors.New("no balance path: where in the reply the amount is, e.g. data.balance")
 	}
 	var reply any
 	if err := json.Unmarshal(b, &reply); err != nil {
-		return "", errors.New("the reply is not JSON")
+		return "", nil, errors.New("the reply is not JSON")
 	}
 	e := &balanceExpr{src: path, reply: reply}
 	if e.lone() {
 		// a path alone: its value, a number or not
 		v, err := e.at(path)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if n, ok := number(v); ok {
-			return balanceAmount(sign, n, percent), nil
+			return balanceAmount(sign, n, percent), balanceShare(n, percent), nil
 		}
 		if s, ok := v.(string); ok && s != "" && !percent {
-			return sign + s, nil
+			return sign + s, nil, nil
 		}
-		return "", fmt.Errorf("%q in the reply is not an amount", path)
+		return "", nil, fmt.Errorf("%q in the reply is not an amount", path)
 	}
 	n, err := e.sum()
 	if err == nil && e.i < len(e.src) {
 		err = fmt.Errorf("the balance path has %q it can't read", e.src[e.i:])
 	}
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if math.IsInf(n, 0) || math.IsNaN(n) {
-		return "", fmt.Errorf("the balance path divides by nothing")
+		return "", nil, fmt.Errorf("the balance path divides by nothing")
 	}
-	return balanceAmount(sign, n, percent), nil
+	return balanceAmount(sign, n, percent), balanceShare(n, percent), nil
+}
+
+// balanceShare is an amount asked as a percent, 0.25 as 25; nil for one
+// that wasn't.
+func balanceShare(n float64, percent bool) *float64 {
+	if !percent {
+		return nil
+	}
+	p := n * 100
+	return &p
 }
 
 func balanceAmount(sign string, n float64, percent bool) string {
@@ -498,20 +637,31 @@ func (e *balanceExpr) at(path string) (any, error) {
 // Balance asks the vendor what is left on the provider's key in use. ok is
 // false when there is no way to ask it.
 func Balance(ctx context.Context, p Provider) (amount string, ok bool, err error) {
+	amount, _, ok, err = balanceParts(ctx, p)
+	return amount, ok, err
+}
+
+// balanceParts is Balance, with the amounts of a balance field the user
+// wrote each apart (nil for a vendor magpie reads itself).
+func balanceParts(ctx context.Context, p Provider) (amount string, parts []BalancePart, ok bool, err error) {
+	ctx = p.Via(ctx)
 	src, ok := balanceSourceOf(p)
 	if !ok || p.Account != nil || p.Key == "" {
-		return "", false, nil
+		return "", nil, false, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src.url, nil)
+	if src.token != "" && p.BalanceURL != "" && balanceURLPath(p.BalanceURL) == newAPIKeyUsage {
+		return "", nil, true, errKeyUsageWithToken(p.BalanceURL)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, withBalanceKey(src.url, p.Key, true), nil)
 	if err != nil {
-		return "", true, err
+		return "", nil, true, err
 	}
 	if src.token != "" {
 		// a named endpoint still gets the provider's headers, which is
 		// where a new-api relay's New-Api-User goes
 		if p.BalanceURL != "" {
 			for k, v := range p.Headers {
-				req.Header.Set(k, v)
+				req.Header.Set(k, withBalanceKey(v, p.Key, false))
 			}
 		}
 		req.Header.Set("Authorization", balanceAuthorization(src.token))
@@ -520,29 +670,67 @@ func Balance(ctx context.Context, p Provider) (amount string, ok bool, err error
 			req.Header.Set(k, v)
 		}
 		for k, v := range p.Headers {
-			req.Header.Set(k, v)
+			req.Header.Set(k, withBalanceKey(v, p.Key, false))
 		}
 	}
 	req.Header.Set("Accept", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", true, err
+		if k := url.QueryEscape(p.Key); k != "" && strings.Contains(err.Error(), k) {
+			// the URL in the error has the key in it: not shown on a card
+			return "", nil, true, errors.New(strings.ReplaceAll(err.Error(), k, Mask(p.Key)))
+		}
+		return "", nil, true, err
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if msg, refused := balanceRefusal(b); refused {
+		// said as the relay says it, whatever the status: not a field
+		// missing from a reply that was never the balance
+		msg = newAPIUserHint(msg)
+		if res.StatusCode >= 300 {
+			msg = res.Status + ": " + msg
+		}
+		return "", nil, true, errors.New(msg)
+	}
 	if res.StatusCode >= 300 {
 		// what a JSON reply says, on one line; a page of HTML says nothing
 		msg := strings.Join(strings.Fields(string(b)), " ")
 		if !strings.HasPrefix(msg, "{") {
-			return "", true, errors.New(res.Status)
+			return "", nil, true, errors.New(res.Status)
 		}
 		if r := []rune(msg); len(r) > 200 {
 			msg = string(r[:200]) + "…"
 		}
-		return "", true, fmt.Errorf("%s: %s", res.Status, msg)
+		return "", nil, true, fmt.Errorf("%s: %s", res.Status, msg)
+	}
+	if p.BalanceURL != "" {
+		// the field the user wrote: its amounts each apart, as well
+		if parts, err = readBalanceParts(b, balancePathOf(p)); err != nil {
+			return "", nil, true, err
+		}
+		return joinBalanceParts(parts), parts, true, nil
 	}
 	amount, err = src.read(b)
-	return amount, true, err
+	return amount, nil, true, err
+}
+
+// balanceKeyNames are what a Balance URL or a header's value names the
+// key by, for a vendor that wants it somewhere of its own, in the query
+// most often (…/balance?key={key}): each key the provider has on is put in
+// its own ask, so each card tells that key's balance.
+var balanceKeyNames = []string{"{key}", "{apiKey}", "{api_key}"}
+
+// withBalanceKey is s with the key in place of its names, escaped for a
+// URL's query when inURL.
+func withBalanceKey(s, key string, inURL bool) string {
+	if inURL {
+		key = url.QueryEscape(key)
+	}
+	for _, n := range balanceKeyNames {
+		s = strings.ReplaceAll(s, n, key)
+	}
+	return s
 }
 
 var keyBalanceCache struct {
@@ -626,13 +814,17 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 		go func() {
 			defer wg.Done()
 			q := SubscriptionQuota{Provider: j.p.ID, Name: j.p.Name, Icon: j.p.Icon, User: j.user, Windows: []QuotaWindow{}}
-			amount, _, err := Balance(ctx, j.p)
+			amount, parts, _, err := balanceParts(ctx, j.p)
 			if err != nil {
 				q.Error = err.Error()
 			} else {
 				q.Balance = amount
+				q.BalanceParts = cardParts(parts)
+				now := time.Now()
+				q.ReadAt = &now
 			}
-			out[i] = q
+			// the vendor failing a while shows the balance last read
+			out[i] = keepLast(q, keyTag("balance", j.p.Key))
 		}()
 	}
 	wg.Wait()
@@ -642,6 +834,16 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 		c.Unlock()
 	}
 	return out
+}
+
+// cardParts are the amounts a balance's card shows each apart, the
+// percent a meter: several, or one asked as a percent; nil for one amount
+// alone, the figure as it always was.
+func cardParts(parts []BalancePart) []BalancePart {
+	if len(parts) > 1 || len(parts) == 1 && parts[0].Percent != nil {
+		return parts
+	}
+	return nil
 }
 
 // balanceAuthorization is a balance token as its Authorization header: a

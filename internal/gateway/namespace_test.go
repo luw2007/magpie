@@ -28,13 +28,13 @@ func TestNamespacedToolsOffered(t *testing.T) {
 	for _, tl := range r.Tools {
 		names = append(names, tl.Name)
 	}
-	if got := strings.Join(names, ","); got != "exec_command,collaboration__spawn_agent" {
+	if got := strings.Join(names, ","); got != "exec_command,collaboration__spawn_agent,collaboration__freeform" {
 		t.Fatalf("tools = %s", got)
 	}
 	if r.Tools[1].Description != "Spawns an agent." || !strings.Contains(string(r.Tools[1].Schema), "message") {
 		t.Fatalf("spawn_agent lost its description or schema: %+v", r.Tools[1])
 	}
-	if q := r.Namespaced["collaboration__spawn_agent"]; q != (nsTool{"collaboration", "spawn_agent"}) {
+	if q := r.Namespaced["collaboration__spawn_agent"]; q != (nsTool{Namespace: "collaboration", Name: "spawn_agent"}) {
 		t.Fatalf("namespaced = %+v", r.Namespaced)
 	}
 	if _, ok := r.Namespaced["exec_command"]; ok {
@@ -86,7 +86,7 @@ func TestLongNamespacedNamesFit(t *testing.T) {
 }
 
 func namespacedReq() *Request {
-	return &Request{Model: "m", Namespaced: map[string]nsTool{"collaboration__spawn_agent": {"collaboration", "spawn_agent"}}}
+	return &Request{Model: "m", Namespaced: map[string]nsTool{"collaboration__spawn_agent": {Namespace: "collaboration", Name: "spawn_agent"}}}
 }
 
 func TestNamespacedCallStreamed(t *testing.T) {

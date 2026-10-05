@@ -1,5 +1,15 @@
 package provider
 
+// PLUGIN-SERVED (see AGENTS.md): WorkBuddy ("workbuddy" and "workbuddy-ai")
+// is a deprecated built-in subscription served by its plugin,
+// @magpie-community/opencode-workbuddy-auth, once moved onto it
+// (provider.Moved; the default for a new sign-in). A moved one's sign-ins,
+// models, requests and usage are all the plugin's, never this code's (only
+// the move, in migrate*.go, still reads its accounts). A fix here alone
+// doesn't reach those users; fix the plugin
+// (github.com/magpie-community/plugins, packages/workbuddy) and raise the
+// mover's min in internal/provider/migrate_workbuddy.go.
+
 // A WorkBuddy subscription is Tencent's CodeBuddy plan, which WorkBuddy
 // (its desktop app, packaged from CodeBuddy Code) signs in to. The plan is
 // served on an OpenAI-compatible endpoint under the account's own access
@@ -37,7 +47,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,6 +132,17 @@ var (
 		authID: "workbuddy-desktop-ai", platform: "workbuddy-ai", endpoint: &wbAIEndpoint, models: wbAIModels}
 )
 
+// WorkBuddyBaseForTest points WorkBuddy's API at cn, and WorkBuddy AI's at
+// ai, until the returned function runs. A provider built after the call
+// uses them. Tests outside this package use it.
+func WorkBuddyBaseForTest(cn, ai string) func() {
+	oldC, oldA := wbEndpoint, wbAIEndpoint
+	wbEndpoint, wbAIEndpoint = cn, ai
+	return func() {
+		wbEndpoint, wbAIEndpoint = oldC, oldA
+	}
+}
+
 // WorkBuddyAIID is WorkBuddy AI's subscription, the international build's.
 const WorkBuddyAIID = "workbuddy-ai"
 
@@ -157,6 +180,12 @@ type wbAccount struct {
 	site  *wbSite
 	creds wbCreds
 	own   bool
+	// via, for an account on the plugin, sends a request as the plugin
+	// does, signed with its sign-in, which magpie never renews itself
+	via func(*http.Request) (*http.Response, error)
+	// card is the provider id its Usage card has, when not the site's:
+	// the plugin's signed in under its own id, "workbuddy-plugin"
+	card string
 }
 
 // ---- WorkBuddy's own account --------------------------------------------------
@@ -296,7 +325,7 @@ func setWorkBuddyLoginOn(w *wbSite, user string, on bool) error {
 }
 
 func forgetWorkBuddyLogin(w *wbSite, user string) error {
-	return forgetSideLogin(w.id, user, w.name+"'s own sign-in; sign out in "+w.name, wbSide(w), nil)
+	return forgetSideLogin(w.id, user, wbSide(w), nil)
 }
 
 func workBuddyAccount(w *wbSite) (Provider, bool) {
@@ -341,6 +370,7 @@ func wbProvider(a wbAccount) Provider {
 		}
 		return nil
 	}
+	acct.explain = wbExplain
 	acct.models = func() []catalog.Model { return w.models }
 	acct.fetch = func(ctx context.Context) ([]catalog.Model, error) {
 		ms, err := wbFetchModels(ctx, w, acct.sign)
@@ -410,6 +440,24 @@ func wbClientHeaders(req *http.Request) {
 	id = wbRequestID()
 	req.Header.Set("X-Conversation-Message-ID", id)
 	req.Header.Set("X-Request-ID", id)
+}
+
+// WBRefusedHint is what the user can do about WorkBuddy's "Illegal API
+// invocation from an unapproved channel": both builds (the CodeBuddy plan)
+// answer it to a chat whose system prompt is Codex's or Claude Code's own
+// (#182), whatever the headers. magpie never rewrites that prompt; the
+// agent is told to use WorkBuddy from another agent instead.
+const WBRefusedHint = "WorkBuddy refuses chats from Codex and Claude Code (their system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group"
+
+// wbRefused matches that refusal in what WorkBuddy answered.
+var wbRefused = regexp.MustCompile(`(?i)unapproved channel|illegal api invocation`)
+
+// wbExplain adds WBRefusedHint to WorkBuddy's refusal of the client.
+func wbExplain(status int, body []byte) string {
+	if status >= 400 && wbRefused.Match(body) {
+		return WBRefusedHint
+	}
+	return ""
 }
 
 // wbRequestID is a new id as WorkBuddy makes them: 32 hex digits.
@@ -588,7 +636,8 @@ func wbQuota(ctx context.Context, a wbAccount) SubscriptionQuota {
 		used += float64(p.CycleUsedCapacity)
 	}
 	if total > 0 {
-		w := QuotaWindow{Name: "Credits", Used: 100 * used / total, Display: fmt.Sprintf("%s / %s", compactNumber(used), compactNumber(total))}
+		w := QuotaWindow{Name: "Credits", Used: 100 * used / total, Display: fmt.Sprintf("%s / %s", compactNumber(used), compactNumber(total)),
+			Amount: used, Limit: total, Unit: "credits"}
 		q.Windows = append(q.Windows, w)
 	}
 	return q
@@ -669,6 +718,10 @@ const (
 // {code, msg, data}: code 0 is a success. On a non-zero code it returns a
 // *wbError carrying it.
 func wbCall(ctx context.Context, method, u string, headers map[string]string, body, dst any) error {
+	return wbCallVia(ctx, http.DefaultClient.Do, method, u, headers, body, dst)
+}
+
+func wbCallVia(ctx context.Context, do func(*http.Request) (*http.Response, error), method, u string, headers map[string]string, body, dst any) error {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -684,7 +737,7 @@ func wbCall(ctx context.Context, method, u string, headers map[string]string, bo
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := do(req)
 	if err != nil {
 		return err
 	}
@@ -785,22 +838,83 @@ func startWorkBuddySignIn(s *signInFlow, w *wbSite) error {
 			return
 		}
 		c.UID = acc.UID
-		who := wbWho(acc.Nickname, acc.PhoneNumber, acc.UID)
-		auth, _ := json.Marshal(c)
-		ownUser, _, hasOwn := wbOwn(w)
-		if !hasOwn {
-			ownUser = ""
-		}
-		if err := addSideLogin(savedLogin{Agent: w.id, User: who, Auth: auth}, ownUser, func(savedLogin) {}); err != nil {
+		who, again, using, err := wbKeepSignIn(w, c, wbWho(acc.Nickname, acc.PhoneNumber, acc.UID))
+		if err != nil {
 			fail(err.Error())
 			return
 		}
 		wbTokens.Lock()
 		wbTokens.m[w.id+"|"+c.UID] = c
 		wbTokens.Unlock()
-		s.finish(SignInState{State: "done", User: who, Using: hasOwn && strings.EqualFold(ownUser, who)})
+		s.finish(SignInState{State: "done", User: who, Using: using, Again: again})
 	}()
 	return nil
+}
+
+// wbKeepSignIn keeps an account magpie just signed in, told from the
+// others by its WorkBuddy uid, never by its name: two accounts can share a
+// nickname, and the second took the first one's place (#413). The same
+// account again renews its sign-in where it is listed (again). The one
+// WorkBuddy itself is signed in to becomes magpie's own sign-in of it, so
+// it stays listed once WorkBuddy signs in to another: WorkBuddy's page
+// offers the account the app is signed in to, and accounts added one by
+// one that way each pushed the last off the list (#413). using says
+// WorkBuddy is signed in to it too.
+func wbKeepSignIn(w *wbSite, c wbCreds, name string) (who string, again, using bool, err error) {
+	ownUser, own, hasOwn := wbOwn(w)
+	auth, err := json.Marshal(c)
+	if err != nil {
+		return "", false, false, err
+	}
+	using = hasOwn && own.UID == c.UID
+	loginsMu.Lock()
+	defer loginsMu.Unlock()
+	ls := readLogins()
+	// uidOf is a saved account's uid, "" where it isn't known: WorkBuddy's
+	// own while WorkBuddy can't be read, a sign-in that can't be read
+	uidOf := func(l savedLogin) string {
+		if l.own() {
+			if hasOwn && strings.EqualFold(l.User, ownUser) {
+				return own.UID
+			}
+			return ""
+		}
+		sc, _ := wbSavedCreds(l)
+		return sc.UID
+	}
+	same := slices.IndexFunc(ls, func(l savedLogin) bool { return l.Agent == w.id && uidOf(l) == c.UID })
+	if same < 0 {
+		// one of the same name whose uid isn't known is taken to be it, as
+		// before (#155); one whose uid is another's is another account
+		same = slices.IndexFunc(ls, func(l savedLogin) bool {
+			return l.Agent == w.id && strings.EqualFold(l.User, name) && uidOf(l) == ""
+		})
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if same >= 0 {
+		l := &ls[same]
+		again = l.Hidden == ""
+		if l.own() {
+			// WorkBuddy's own is first unless another was put first: it
+			// stays first as magpie's
+			if !slices.ContainsFunc(ls, func(m savedLogin) bool { return m.Agent == w.id && m.First }) {
+				l.First = true
+			}
+			l.On = true
+		}
+		l.Auth, l.Seen, l.Lapsed, l.Hidden = auth, now, "", ""
+		return l.User, again, using, writeLogins(ls)
+	}
+	// another account of the same name is told apart by the end of its uid
+	who = name + " (" + c.UID + ")"
+	tail := c.UID[max(0, len(c.UID)-4):]
+	for _, n := range []string{name, name + " (" + tail + ")"} {
+		if !slices.ContainsFunc(ls, func(l savedLogin) bool { return l.Agent == w.id && strings.EqualFold(l.User, n) }) {
+			who = n
+			break
+		}
+	}
+	return who, false, using, writeLogins(append(ls, savedLogin{Agent: w.id, User: who, Auth: auth, Seen: now, On: true}))
 }
 
 // wbPoll asks path every second until it answers with data, giving up at

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/catalog"
 )
 
 const (
@@ -177,6 +179,42 @@ func TestCodexWarmFailureRetried(t *testing.T) {
 	}
 }
 
+// Codex can report an unused window with a reset a full span away. If a
+// successful request leaves that window untouched, it still needs a retry.
+func TestCodexUnusedFiveHourWindowRetried(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex-warmup.json")
+	start := time.Date(2026, 9, 29, 6, 0, 0, 0, time.UTC)
+	f := &fakeWarm{now: start, errs: map[string]error{}}
+	f.ws = map[string][]QuotaWindow{"a@example.com": {{Name: "5 hours", Span: fiveHours, ResetSecs: int64(fiveHours.Seconds())}}}
+	for i := range 10 {
+		f.now = start.Add(time.Duration(i) * 5 * time.Minute)
+		// The backend keeps reporting an unstarted window, rather than a
+		// countdown from the first warm-up.
+		f.run(t, path, "all")
+	}
+	if len(f.sent) != 3 {
+		t.Fatalf("sent %d times in 45 minutes, want initial, 15-minute and 45-minute retries", len(f.sent))
+	}
+	// Once its reset counts down from the first request, stop retrying.
+	f.now = start.Add(50 * time.Minute)
+	reset := start.Add(45*time.Minute + fiveHours)
+	f.ws["a@example.com"][0] = win("5 hours", fiveHours, 0, reset)
+	f.run(t, path, "all")
+	f.now = start.Add(2 * time.Hour)
+	f.run(t, path, "all")
+	f.now = start.Add(2*time.Hour + 5*time.Minute)
+	f.ws["a@example.com"][0] = win("5 hours", fiveHours, 2, reset)
+	f.run(t, path, "all")
+	if len(f.sent) != 3 {
+		t.Fatalf("retried a running window: %v", f.sent)
+	}
+	f.now = reset.Add(time.Minute)
+	f.run(t, path, "all")
+	if len(f.sent) != 4 {
+		t.Fatalf("did not warm the next reset: %v", f.sent)
+	}
+}
+
 // A warm-up goes to the ChatGPT backend as the gateway's Codex requests
 // do: the account's own sign-in, Codex's instructions, nothing stored.
 func TestCodexWarmRequest(t *testing.T) {
@@ -242,5 +280,40 @@ func TestCodexWarmRequest(t *testing.T) {
 	}
 	if CodexWarmed()["me@example.com"].IsZero() {
 		t.Fatalf("not kept: %v", CodexWarmed())
+	}
+}
+
+// #604: the warm-up asks the cheapest model, by price where it is known,
+// else a mini, else a luna, else the first listed.
+func TestWarmPick(t *testing.T) {
+	ids := func(ids ...string) []catalog.Model {
+		ms := make([]catalog.Model, len(ids))
+		for i, id := range ids {
+			ms[i] = catalog.Model{ID: id}
+		}
+		return ms
+	}
+	prices := map[string]catalog.Price{
+		"gpt-6.1-sol": {Input: 2, Output: 10}, "gpt-6-astra": {Input: 10, Output: 50},
+		"gpt-6-luna": {Input: 0.1, Output: 0.5}, "gpt-5.6-luna": {Input: 0.2, Output: 1.2},
+	}
+	priced := func(id string) (catalog.Price, bool) { p, ok := prices[id]; return p, ok }
+	none := func(string) (catalog.Price, bool) { return catalog.Price{}, false }
+	gpt6 := ids("gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5")
+	for _, c := range []struct {
+		name  string
+		ms    []catalog.Model
+		price func(string) (catalog.Price, bool)
+		want  string
+	}{
+		{"priced", gpt6, priced, "gpt-6-luna"},
+		{"no prices: a luna", gpt6, none, "gpt-6-luna"},
+		{"no prices: a mini first", ids("gpt-5-codex", "gpt-5-codex-mini", "gpt-6-luna"), none, "gpt-5-codex-mini"},
+		{"no prices, no cheap name", ids("gpt-6.1-sol", "gpt-6-sol"), none, "gpt-6.1-sol"},
+		{"the model's own price first", []catalog.Model{{ID: "gpt-6.1-sol"}, {ID: "x", Price: &catalog.Price{Input: 0.01, Output: 0.01}}}, priced, "x"},
+	} {
+		if got := warmPick(c.ms, c.price).ID; got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
 	}
 }

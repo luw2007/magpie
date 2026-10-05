@@ -4,16 +4,22 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 // Migrate carries the files of an install that predates the name over:
 // ~/.config/dial and ~/.cache/dial become ~/.config/magpie and
 // ~/.cache/magpie. It copies rather than moves, so a dial that is still
 // running keeps working, and it only fills folders that do not exist yet.
-// The old folders can be deleted once nothing uses them.
+// The old folders can be deleted once nothing uses them. A portable
+// magpie has only its own data folder and copies nothing in.
 func Migrate() {
+	if Portable() != "" {
+		return
+	}
 	copyTree(filepath.Join(filepath.Dir(Dir()), "dial"), Dir())
-	cache := os.Getenv("XDG_CACHE_HOME")
+	cache := appdir.Getenv("XDG_CACHE_HOME")
 	if cache == "" {
 		home, _ := os.UserHomeDir()
 		cache = filepath.Join(home, ".cache")

@@ -1,14 +1,18 @@
 package gateway
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
@@ -71,7 +75,7 @@ func easeled(t *testing.T) (*Server, *easel) {
 	e := &easel{}
 	up := httptest.NewServer(e)
 	t.Cleanup(up.Close)
-	if err := provider.Save(provider.Provider{ID: "art", Name: "Art", Chat: up.URL + "/v1", Key: "key", Models: []string{"text", "gpt-image-1", "painter-image-preview", "gemini-2.5-flash-image"}}); err != nil {
+	if err := provider.Save(provider.Provider{ID: "art", Name: "Art", Chat: up.URL + "/v1", Keys: []provider.KeyAccount{{ID: "k-key", Key: "key"}}, Models: []string{"text", "gpt-image-1", "painter-image-preview", "gemini-2.5-flash-image"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := catalog.SaveLive("art", up.URL+"/v1", []catalog.Model{{ID: "text"}}); err != nil {
@@ -163,6 +167,33 @@ func TestEditSendsTheImages(t *testing.T) {
 	// an edit with no image is turned away
 	if code, _, _ := postImages(t, s, "/v1/images/edits", "application/json", `{"model":"art/gpt-image-1","prompt":"x"}`); code != 400 {
 		t.Fatalf("edit without image: %d", code)
+	}
+}
+
+// Every account of a subscription held at its usage cap is told when to
+// come back, as the text path tells it (cappedError's soonest, in a
+// Retry-After): drawOnAccounts worked the same message out and dropped the
+// time, so a client backing off a drawing had nothing to wait by.
+func TestDrawCappedSaysWhenItIsBack(t *testing.T) {
+	codexSignedIn(t)
+	capUsage(t, map[string]float64{"me@example.com": 90}) // five hours at 90% of a 70% cap, renewing in three
+	if err := provider.SetAccountCap("codex", "me@example.com", 70); err != nil {
+		t.Fatal(err)
+	}
+	p, err := provider.Find("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	_, _, code, back, err := s.drawOnAccounts(context.Background(), *p, "gpt-image-1", drawing{})
+	if code != http.StatusTooManyRequests || err == nil {
+		t.Fatalf("%d %v", code, err)
+	}
+	if !strings.Contains(err.Error(), "past its 70% cap") {
+		t.Fatalf("error: %v", err)
+	}
+	if d := time.Until(back); d < 2*time.Hour || d > 4*time.Hour {
+		t.Fatalf("back in %v, not the five hours' renewal", d)
 	}
 }
 
@@ -296,7 +327,8 @@ func TestCodexAccountDraws(t *testing.T) {
 	if ds := Drawers(*p); len(ds) != 2 || ds[0].ID != "gpt-image-2" || ds[1].ID != "gpt-image-2.5" {
 		t.Fatalf("drawers %v", ds)
 	}
-	if m, ok := drawer(); !ok || m != "codex/gpt-image-2.5" {
+	// Automatic asks for what Codex CLI asks for: a plan may be refused 2.5
+	if m, ok := drawer(); !ok || m != "codex/gpt-image-2" {
 		t.Fatalf("drawer = %q %v", m, ok)
 	}
 	s := New()
@@ -309,7 +341,7 @@ func TestCodexAccountDraws(t *testing.T) {
 	if paths[0] != "/backend-api/codex/images/generations" || !strings.Contains(bodies[0], `"model":"gpt-image-2"`) {
 		t.Fatalf("asked %v %v", paths, bodies)
 	}
-	if head.Get("chatgpt-account-id") != "acct-1" || head.Get("Accept") != "application/json" || head.Get("originator") != "codex_cli_rs" || head.Get("x-codex-imagegen-request-id") == "" {
+	if head.Get("chatgpt-account-id") != "acct-1" || head.Get("Accept") != "application/json" || head.Get("originator") != "codex_cli_rs" || head.Get("x-codex-imagegen-request-id") == "" || head.Get("x-codex-image-turn-id") == "" {
 		t.Fatalf("headers %v", head)
 	}
 	// an edit goes as JSON, the image a data URL: the backend turns multipart away
@@ -319,5 +351,209 @@ func TestCodexAccountDraws(t *testing.T) {
 	mu.Lock()
 	if code != 200 || paths[1] != "/backend-api/codex/images/edits" || head.Get("Content-Type") != "application/json" || !strings.Contains(bodies[1], `"images":[{"image_url":"data:image/png;base64,`) {
 		t.Fatalf("%d %s; asked %v %s", code, raw, paths, head.Get("Content-Type"))
+	}
+}
+
+// chatgpt.com's 403 for a ChatGPT account's images says what it likely
+// means, and Automatic asks for the model Codex CLI does (#545).
+func TestCodexDrawRefused(t *testing.T) {
+	codexSignedIn(t)
+	var models []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Model string }
+		json.NewDecoder(r.Body).Decode(&req)
+		models = append(models, req.Model)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"detail":"Forbidden"}`)
+	}))
+	defer up.Close()
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+	code, _, raw := postImages(t, New(), "/v1/images/generations", "application/json", `{"prompt":"a magpie"}`)
+	if code != 403 || !strings.Contains(raw, "Forbidden") || !strings.Contains(raw, "plan or workspace may not draw") {
+		t.Fatalf("%d %s", code, raw)
+	}
+	if len(models) != 1 || models[0] != "gpt-image-2" {
+		t.Fatalf("asked for %v", models)
+	}
+}
+
+// A ChatGPT account whose plan won't draw (chatgpt.com: 403
+// {"detail":"Forbidden"}) hands the drawing to the next account on, as a
+// Plus account further down draws it (#545); the one refused doesn't rest
+// for text over it, and the next drawing asks it first again.
+func TestCodexDrawMovesToNextAccount(t *testing.T) {
+	codexSignedIn(t, "plus@example.com")
+	var mu sync.Mutex
+	var tried []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		tried = append(tried, r.Header.Get("chatgpt-account-id"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("chatgpt-account-id") == "acct-1" {
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, `{"detail":"Forbidden"}`)
+			return
+		}
+		io.WriteString(w, `{"created":1,"data":[{"b64_json":"`+base64.StdEncoding.EncodeToString(pngBytes)+`"}],"usage":{"input_tokens":5,"output_tokens":196}}`)
+	}))
+	defer up.Close()
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	defer func() { provider.CodexBase = was }()
+	s := New()
+	code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"prompt":"a magpie"}`)
+	if code != 200 || len(a.Data) != 1 {
+		t.Fatalf("%d %s", code, raw)
+	}
+	mu.Lock()
+	if strings.Join(tried, ",") != "acct-1,acct-2" {
+		t.Fatalf("tried %v", tried)
+	}
+	tried = nil
+	mu.Unlock()
+	restingUntil.Lock()
+	rests := len(restingUntil.m)
+	restingUntil.Unlock()
+	if rests != 0 {
+		t.Fatalf("%d accounts rest after a drawing was refused", rests)
+	}
+	postImages(t, s, "/v1/images/generations", "application/json", `{"prompt":"a magpie"}`)
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(tried, ",") != "acct-1,acct-2" {
+		t.Fatalf("second drawing tried %v", tried)
+	}
+}
+
+// grokSignedIn gives the test's HOME the Grok CLI's sign-in, and a CLI to find.
+func grokSignedIn(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("GROK_HOME", filepath.Join(home, ".grok"))
+	os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
+	os.WriteFile(filepath.Join(home, ".grok", "auth.json"), mustJSON(map[string]any{
+		"https://auth.x.ai": map[string]any{"key": "k-me", "email": "me@x.ai", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}}), 0o600)
+	was := provider.GrokExecutable
+	provider.GrokExecutable = func() string { return "/nonexistent/grok" }
+	t.Cleanup(func() { provider.GrokExecutable = was })
+}
+
+// A Grok subscription draws at the Imagine API of the backend Grok Build talks
+// to: the aspect ratio replaces the size, the image comes back as base64, an
+// edit is JSON with the images as data URLs.
+func TestGrokAccountDraws(t *testing.T) {
+	grokSignedIn(t)
+	var mu sync.Mutex
+	var paths, bodies []string
+	var head http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		paths, bodies, head = append(paths, r.URL.Path), append(bodies, string(b)), r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"b64_json":"`+base64.StdEncoding.EncodeToString(pngBytes)+`"}]}`)
+	}))
+	defer up.Close()
+	was := provider.GrokBase
+	provider.GrokBase = up.URL + "/v1"
+	defer func() { provider.GrokBase = was }()
+	p, err := provider.Find("grok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds := Drawers(*p); len(ds) != 2 || ds[0].ID != "grok-imagine-image" || ds[1].ID != "grok-imagine-image-quality" || ds[0].Provider != "grok" {
+		t.Fatalf("drawers %v", ds)
+	}
+	if m, ok := drawer(); !ok || m != "grok/grok-imagine-image" {
+		t.Fatalf("drawer = %q %v", m, ok)
+	}
+	s := New()
+	code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"grok/grok-imagine-image","prompt":"a magpie","size":"1792x1024"}`)
+	if code != 200 || len(a.Data) != 1 {
+		t.Fatalf("%d %s", code, raw)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if paths[0] != "/v1/images/generations" || !strings.Contains(bodies[0], `"model":"grok-imagine-image"`) ||
+		!strings.Contains(bodies[0], `"response_format":"b64_json"`) || !strings.Contains(bodies[0], `"aspect_ratio":"16:9"`) || strings.Contains(bodies[0], `"size"`) {
+		t.Fatalf("asked %v %v", paths, bodies)
+	}
+	if head.Get("Authorization") != "Bearer k-me" || head.Get("x-grok-client-identifier") != "grok-shell" || !strings.HasPrefix(head.Get("User-Agent"), "grok-shell/") {
+		t.Fatalf("headers %v", head)
+	}
+	mu.Unlock()
+	img := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
+	code, _, raw = postImages(t, s, "/v1/images/edits", "application/json", `{"model":"grok/grok-imagine-image","prompt":"bluer","images":[{"image_url":"`+img+`"}]}`)
+	mu.Lock()
+	if code != 200 || paths[1] != "/v1/images/edits" || head.Get("Content-Type") != "application/json" || !strings.Contains(bodies[1], `"images":[{"type":"image_url","url":"data:image/png;base64,`) {
+		t.Fatalf("%d %s; asked %v %s", code, raw, paths, bodies[1])
+	}
+}
+
+func TestAspectAmong(t *testing.T) {
+	for size, want := range map[string]string{
+		"1792x1024": "16:9", "1024x1792": "9:16", "1024x1024": "1:1", "2048x1024": "2:1", "1536x1024": "3:2",
+		"16:9": "16:9", "garbage": "", "": "", "0x10": "",
+	} {
+		if got := aspectAmong(size, grokAspects); got != want {
+			t.Errorf("aspectAmong(%q, grok) = %q, want %q", size, got, want)
+		}
+	}
+	// the ratios the other vendors take are unchanged
+	if got := aspectOf("1024x1280"); got != "4:5" {
+		t.Errorf("aspectOf(1024x1280) = %q, want 4:5", got)
+	}
+}
+
+// What a Grok account's image requests meet beyond the first drawing: several
+// images at once, fields its Imagine API has no use for, and the ways the
+// vendor says no.
+func TestGrokDrawsSeveralAndIgnoresWhatItHasNoFieldFor(t *testing.T) {
+	grokSignedIn(t)
+	up := newGrokMedia(t)
+	s := New()
+	code, a, raw := postImages(t, s, "/v1/images/generations", "application/json",
+		`{"model":"grok/grok-imagine-image","prompt":"two magpies","n":2,"quality":"high","background":"transparent","output_format":"png","size":"1024x1024"}`)
+	if code != 200 || len(a.Data) != 2 {
+		t.Fatalf("%d %s", code, raw)
+	}
+	sent := up.body("/v1/images/generations", 0)
+	for _, no := range []string{`"quality"`, `"background"`, `"output_format"`, `"size"`} {
+		if strings.Contains(sent, no) {
+			t.Fatalf("Grok was sent %s: %s", no, sent)
+		}
+	}
+	if !strings.Contains(sent, `"n":2`) || !strings.Contains(sent, `"aspect_ratio":"1:1"`) {
+		t.Fatalf("asked %s", sent)
+	}
+}
+
+func TestGrokVendorFailuresAreSaid(t *testing.T) {
+	grokSignedIn(t)
+	newGrokMedia(t)
+	s := New()
+	for _, c := range []struct {
+		prompt string
+		code   int
+		want   string
+	}{
+		{"RATELIMITED", 429, "image generation limit"},
+		{"REFUSED", 400, "content moderation"},
+		{"BROKEN", 500, "upstream exploded"},
+	} {
+		code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"grok/grok-imagine-image","prompt":"`+c.prompt+`"}`)
+		if code != c.code || !strings.Contains(raw, c.want) {
+			t.Errorf("%s: %d %s", c.prompt, code, raw)
+		}
 	}
 }

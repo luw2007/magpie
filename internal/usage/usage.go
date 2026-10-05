@@ -1,13 +1,13 @@
 // Package usage keeps the token count of every call the gateway serves, so
 // magpie can show what each agent and model consumed and roughly what it cost.
-// Records go to one JSON-lines file next to providers.json; nothing leaves
-// the machine.
+// Records go to one JSON-lines file next to providers.json. Metadata leaves
+// the machine only when OTLP export is explicitly enabled.
 package usage
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,25 +22,105 @@ import (
 
 // Record is one call.
 type Record struct {
-	Time       time.Time `json:"t"`
-	Agent      string    `json:"agent"` // magpie agent id, or the client's product name
-	Provider   string    `json:"provider"`
-	Host       string    `json:"host,omitempty"` // where the call went: provider.Where then
-	Model      string    `json:"model"`          // the provider's model id
-	Input      int       `json:"in"`
-	Output     int       `json:"out"`
-	CacheRead  int       `json:"cache_read,omitempty"`
-	CacheWrite int       `json:"cache_write,omitempty"`
-	Reasoning  int       `json:"reasoning,omitempty"`
+	Operation       string    `json:"operation,omitempty"`
+	RouteID         int64     `json:"route_id,omitempty"` // the gateway Route, shared by its attempts
+	Time            time.Time `json:"t"`
+	Agent           string    `json:"agent"` // magpie agent id, or the client's product name
+	Provider        string    `json:"provider"`
+	Host            string    `json:"host,omitempty"`          // where the call went: provider.Where then
+	ProviderKeyID   string    `json:"providerKeyId,omitempty"` // fingerprint of the API key actually used
+	ProviderKeyName string    `json:"providerKeyName,omitempty"`
+	// ProviderAccount is the subscription account that answered the call,
+	// as the Routing trace names it (provider.Account.User: an email, a
+	// login): the one that took over after a failover, the one pinned by
+	// X-Magpie-Account. Never a token. "" for a key or a provider without
+	// an account, and in a record written before it was kept (#557).
+	ProviderAccount string `json:"providerAccount,omitempty"`
+	CallerKeyID     string `json:"callerKeyId,omitempty"`
+	CallerKeyName   string `json:"callerKeyName,omitempty"`
+	// SessionProvider is the provider ID recorded by the agent. SessionAccount
+	// identifies the session's creator, not the account used for an API request.
+	// Neither field establishes an upstream route from today's configuration.
+	SessionProvider string `json:"session_provider,omitempty"`
+	SessionAccount  string `json:"session_account,omitempty"`
+	// SessionOfficialLogin marks a matched account's explicit official login
+	// metadata, not this call's endpoint or billing authentication.
+	SessionOfficialLogin bool   `json:"session_official_login,omitempty"`
+	Model                string `json:"model"` // the provider's model id
+	// Requested is the model id the agent asked for (a magpie alias, a
+	// routing group, provider/model…), and Served the model the vendor's
+	// reply says answered, when it named one: a ledger to set beside the
+	// vendor's own bill. Neither is in a record written before they were.
+	Requested  string `json:"req,omitempty"`
+	Served     string `json:"served,omitempty"`
+	Input      int    `json:"in"`
+	Output     int    `json:"out"`
+	CacheRead  int    `json:"cache_read,omitempty"`
+	CacheWrite int    `json:"cache_write,omitempty"`
+	Reasoning  int    `json:"reasoning,omitempty"`
 	// Effort is the reasoning the model was asked for — a routing group's
 	// pick for the turn, or the agent's own — as it takes it; "" for none
 	Effort string `json:"effort,omitempty"`
 	Millis int64  `json:"ms"`
-	Status int    `json:"status"`
+	// TTFT: ms from the request to its reply's first content — text,
+	// reasoning or a tool call — and FirstText to its first text, counted
+	// as Millis is, so Millis-TTFT is how long the reply took to write;
+	// none for a reply that wasn't streamed (#196)
+	TTFT      int64 `json:"ttft_ms,omitempty"`
+	FirstText int64 `json:"first_text_ms,omitempty"`
+	// Sent: ms from the request to its answering try going out to the
+	// vendor, its body written, as TTFT is counted: magpie's own time and
+	// the tries that failed first are before it, and TTFT-Sent is how
+	// long the vendor took to its first content. 0 where it isn't known
+	// (a reply not streamed, or a vendor magpie doesn't reach over HTTP).
+	Sent   int64 `json:"sent_ms,omitempty"`
+	Status int   `json:"status"`
+	// Error is why a call failed, in the vendor's words and cut short;
+	// ErrType what its body called the error (rate_limit_error,
+	// usage_limit_reached); RequestID the id the vendor gave the call; and
+	// Endpoint the path the agent called, with the one it was sent to when
+	// it went out in another protocol (/v1/messages → /v1/chat/completions)
+	Error     string `json:"err,omitempty"`
+	ErrType   string `json:"err_type,omitempty"`
+	RequestID string `json:"rid,omitempty"`
+	// ResponseID is the response object ID actually sent to the client.
+	ResponseID string `json:"response_id,omitempty"`
+	Endpoint   string `json:"ep,omitempty"`
 	// Session is the conversation the call was part of, as its agent names
 	// it (X-Magpie-Session, or the session header Claude Code, Codex or
 	// OpenCode sends): several sessions on one model told apart
 	Session string `json:"session,omitempty"`
+	// NativeSession retains the client header when X-Magpie-Session overrides it.
+	NativeSession string `json:"native_session,omitempty"`
+	// Rejected is a request refused locally before an upstream was contacted.
+	Rejected bool `json:"rejected,omitempty"`
+	// Kind is what the agent made the call for when it isn't a turn of
+	// the conversation: a Codex subagent's (review, compact, guardian…)
+	Kind string `json:"kind,omitempty"`
+	// Via is the computer whose magpie passed the call on to this one (a
+	// Remote magpie provider there), Agent being the agent's on it; "" when
+	// no other magpie forwarded it (including direct LAN/container clients).
+	Via string `json:"via,omitempty"`
+	// Archive is where the request archive keeps the call, "<date>/<id>"
+	// (gateway/archive.go), when it was on: the Usage page reads it back
+	// by it long after Recent calls has let the call go (#447)
+	Archive string `json:"archive,omitempty"`
+	// Computer is the other computer the call was made on, by its id, for
+	// a call brought here by sync (#542); "" for one made here, as every
+	// call in usage.jsonl is
+	Computer string `json:"computer,omitempty"`
+	// OTel is transient trace context; SkipOTel avoids exporting ledger records
+	// when the gateway exports its attempts separately. Neither is persisted.
+	OTel     *OTelSpan `json:"-"`
+	SkipOTel bool      `json:"-"`
+	// Local is true only for verified loopback gateway requests. It is used
+	// for local-session deduplication, never persisted or exported.
+	Local bool `json:"-"`
+	// BodyIn and BodyOut are the request and reply as the gateway
+	// captured them, filled only for an OTLP export with bodies on (#538)
+	// and never written to usage.jsonl.
+	BodyIn  string `json:"-"`
+	BodyOut string `json:"-"`
 }
 
 // Path is the log file: ~/.config/magpie/usage.jsonl (XDG-aware).
@@ -54,6 +134,7 @@ func Append(r Record) {
 	if r.Time.IsZero() {
 		r.Time = time.Now()
 	}
+	offerOTel(r)
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
@@ -68,34 +149,37 @@ func Append(r Record) {
 		return
 	}
 	defer f.Close()
-	f.Write(append(b, '\n'))
+	before, _ := statLogHandle(f)
+	if _, err := f.Write(append(b, '\n')); err == nil {
+		after, _ := statLogHandle(f)
+		noteLogAppend(Path(), before, after)
+	}
 }
 
-// Load reads every record since a time (zero means all), oldest first.
+// IsRejected also recognizes local rejections written before the explicit flag.
+func (r Record) IsRejected() bool { return r.Rejected || r.Provider == "" && r.Status >= 400 }
+
+// Load streams complete records from the log. Historical request bodies are
+// not retained by a global cache after the caller finishes with this snapshot.
 func Load(since time.Time) []Record {
 	mu.Lock()
-	defer mu.Unlock()
 	f, err := os.Open(Path())
+	mu.Unlock()
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
 	var out []Record
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 {
-			continue
-		}
+	reader := bufio.NewReaderSize(f, 64<<10)
+	for {
+		b, err := reader.ReadBytes('\n')
+		if err != nil {
+			break
+		} // an unfinished line is left for the next read
 		var r Record
-		if json.Unmarshal(line, &r) != nil {
-			continue
+		if json.Unmarshal(b, &r) == nil && (since.IsZero() || !r.Time.Before(since)) {
+			out = append(out, r)
 		}
-		if !since.IsZero() && r.Time.Before(since) {
-			continue
-		}
-		out = append(out, r)
 	}
 	return out
 }
@@ -125,8 +209,15 @@ func AgentOf(ua string) string {
 	name, _, _ := strings.Cut(ua, "/")
 	name, _, _ = strings.Cut(name, " ")
 	l := strings.ToLower(name)
+	// a name first: cursor-local is its own, though Cursor's UA (cursor)
+	// begins it
 	for _, k := range knownAgents() {
-		if slices.Contains(k.Names, l) || slices.ContainsFunc(k.UA, func(p string) bool { return strings.HasPrefix(l, p) }) {
+		if slices.Contains(k.Names, l) {
+			return k.ID
+		}
+	}
+	for _, k := range knownAgents() {
+		if slices.ContainsFunc(k.UA, func(p string) bool { return strings.HasPrefix(l, p) }) {
 			return k.ID
 		}
 	}
@@ -160,16 +251,92 @@ type Totals struct {
 	CacheRead  int     `json:"cache_read"`
 	CacheWrite int     `json:"cache_write"`
 	Reasoning  int     `json:"reasoning"`
-	Cost       float64 `json:"cost"`     // USD at list prices, for the priced calls
+	Cost       float64 `json:"cost"`     // USD at the effective price, for the priced calls
 	Unpriced   int     `json:"unpriced"` // calls with tokens but no known price
+	// Timed: the answered calls whose first token was timed (streamed),
+	// TTFT the sum of their ttft_ms; DecodeMs the time from it to the end
+	// of those that wrote any, over which DecodeOut tokens came: their
+	// mean wait, and how fast they wrote (#196)
+	Timed     int   `json:"timed,omitempty"`
+	TTFT      int64 `json:"ttft_ms,omitempty"`
+	DecodeMs  int64 `json:"decode_ms,omitempty"`
+	DecodeOut int   `json:"decode_out,omitempty"`
 }
 
 // Tokens is what went in and out, excluding cache traffic.
 func (t Totals) Tokens() int { return t.Input + t.Output }
 
+// MeanTTFT is the mean ms to the first token of the timed calls, 0 for none.
+func (t Totals) MeanTTFT() int64 {
+	if t.Timed == 0 {
+		return 0
+	}
+	return t.TTFT / int64(t.Timed)
+}
+
+// Speed is how fast the timed calls wrote, in tokens a second after their
+// first: 0 for none.
+func (t Totals) Speed() float64 {
+	if t.DecodeMs <= 0 {
+		return 0
+	}
+	return float64(t.DecodeOut) / (float64(t.DecodeMs) / 1000)
+}
+
+// A reply's speed is its output tokens over its decode window, the ms
+// from its first content to its end (#196); a window counts only when it
+// timed the writing (#731). One that is shorter than MinDecodeMs, or over
+// which the tokens would have come faster than MaxDecodeSpeed a second,
+// didn't: the reply came in one burst at its end, written before the
+// window opened — a turn that is one big tool call from Gemini, whose
+// functionCall comes whole, has its first content a millisecond before
+// its end, and 8264 tokens in 1 ms read 8,264,000 tok/s. Such a reply
+// tells no speed and is left out of the summed one, where its tokens
+// over next to no time would lift everyone's; its TTFT still counts.
+// The bounds are wide of any real stream: the fastest vendors write a few
+// thousand tokens a second, and a tenth of a second is the least a
+// stream's timing tells anything by. routing.js's speedOf has the same.
+const (
+	MinDecodeMs    = 100
+	MaxDecodeSpeed = 10000
+)
+
+// DecodeWindow is the ms a reply of out tokens, ms long with its first
+// content at ttft, took to write them: 0 when it wasn't timed, wrote
+// nothing, or came too fast to tell a speed by (above).
+func DecodeWindow(out int, ms, ttft int64) int64 {
+	w := ms - ttft
+	if out <= 0 || ttft <= 0 || w < MinDecodeMs || int64(out)*1000 > MaxDecodeSpeed*w {
+		return 0
+	}
+	return w
+}
+
+// FormatCost renders an effective-price cost, kept in USD everywhere it's
+// stored, as the CLI and TUI show it: at amountUSD's own price when
+// currency isn't "cny", else converted at rate (CNY per one USD, from
+// internal/fx; a rate of 0 or below also falls back to USD, a stale or
+// missing rate being no reason to hide the number). Whole dollars or yuan
+// above 100, cents above 1, else thousandths, so a fraction of a cent
+// still shows as something.
+func FormatCost(amountUSD float64, currency string, rate float64) string {
+	amount, sign := amountUSD, "$"
+	if currency == "cny" && rate > 0 {
+		amount, sign = amountUSD*rate, "¥"
+	}
+	switch {
+	case amount >= 100:
+		return fmt.Sprintf("%s%.0f", sign, amount)
+	case amount >= 1:
+		return fmt.Sprintf("%s%.2f", sign, amount)
+	default:
+		return fmt.Sprintf("%s%.3f", sign, amount)
+	}
+}
+
 func (t *Totals) add(r Record, price *catalog.Price) {
 	t.Calls++
-	if r.Status >= 400 {
+	if r.Failed() {
 		t.Errors++
 	}
 	t.Input += r.Input
@@ -177,6 +344,14 @@ func (t *Totals) add(r Record, price *catalog.Price) {
 	t.CacheRead += r.CacheRead
 	t.CacheWrite += r.CacheWrite
 	t.Reasoning += r.Reasoning
+	if r.TTFT > 0 && !r.Failed() {
+		t.Timed++
+		t.TTFT += r.TTFT
+		if w := DecodeWindow(r.Output, r.Millis, r.TTFT); w > 0 {
+			t.DecodeMs += w
+			t.DecodeOut += r.Output
+		}
+	}
 	if r.Input+r.Output == 0 {
 		return
 	}
@@ -189,9 +364,16 @@ func (t *Totals) add(r Record, price *catalog.Price) {
 
 // Group is the share of one agent or model.
 type Group struct {
-	ID       string `json:"id"`
-	Provider string `json:"provider,omitempty"` // models only
-	Model    string `json:"model,omitempty"`
+	ID              string `json:"id"`
+	Provider        string `json:"provider,omitempty"` // models only
+	Model           string `json:"model,omitempty"`
+	ProviderKeyID   string `json:"providerKeyId,omitempty"`
+	ProviderKeyName string `json:"providerKeyName,omitempty"`
+	// Account is the subscription account of an Accounts group: "" for
+	// the calls of an account's provider whose record names none
+	Account       string `json:"account,omitempty"`
+	CallerKeyID   string `json:"callerKeyId,omitempty"`
+	CallerKeyName string `json:"callerKeyName,omitempty"`
 	// Host is where the calls went, when the provider's id has gone to
 	// more than one place, or elsewhere than the provider goes now: its
 	// calls are then told apart by it, not summed under the id.
@@ -199,6 +381,33 @@ type Group struct {
 	// Agent is the agent a session is of (sessions only).
 	Agent string `json:"agent,omitempty"`
 	Totals
+}
+
+// who is where a subscription's calls went as the account signed in
+// ("dee@example.com" of "api.factory.ai as dee@example.com"), the host
+// alone for the rest. The account is what tells one place from another: a
+// built-in moved onto its plugin sends the same account's calls through
+// plugin://…, which isn't another place.
+func who(where string) string {
+	if i := strings.LastIndex(where, " as "); i >= 0 {
+		return where[i+4:]
+	}
+	return where
+}
+
+// Account is the subscription account that answered the call: the one the
+// record names, or, in a record written before it named one, the account
+// its Host said the call went out as then ("chatgpt.com as dee@example.com")
+// — what the record itself says, never today's sign-in. "" when neither
+// tells (#557).
+func (r Record) Account() string {
+	if r.ProviderAccount != "" {
+		return r.ProviderAccount
+	}
+	if i := strings.LastIndex(r.Host, " as "); i >= 0 {
+		return r.Host[i+4:]
+	}
+	return ""
 }
 
 // Point is one bar of the timeline.
@@ -213,128 +422,116 @@ type Summary struct {
 	Period Period    `json:"period"`
 	Since  time.Time `json:"since"`
 	Totals
-	Bucket string  `json:"bucket"` // hour | day | week
-	Series []Point `json:"series"`
-	Agents []Group `json:"agents"`
-	Models []Group `json:"models"`
+	Bucket       string  `json:"bucket"` // hour | day | week
+	Series       []Point `json:"series"`
+	Agents       []Group `json:"agents"`
+	Models       []Group `json:"models"`
+	ProviderKeys []Group `json:"providerKeys"`
+	// Accounts are the subscription accounts' calls, by provider and the
+	// account that answered (#557)
+	Accounts   []Group `json:"accounts"`
+	CallerKeys []Group `json:"callerKeys"`
 	// Sessions are the calls that named their session, by session.
 	Sessions []Group `json:"sessions"`
 }
 
-// Summarize sums the log over a period, as of now.
+// Summarize caches the four periods over an indexed log snapshot. Callers
+// receive their own result slices, without retaining historical Records.
 func Summarize(p Period) Summary {
-	return summarize(p, time.Now(), Load(time.Time{}))
+	return indexedSummary(p)
 }
 
 func summarize(p Period, now time.Time, recs []Record) Summary {
-	// a provider renamed since is counted under the id it has now
-	if renamed := provider.Renamed(); len(renamed) > 0 {
-		recs = slices.Clone(recs)
-		for i, r := range recs {
-			if id, ok := renamed[r.Provider]; ok {
-				recs[i].Provider = id
+	var first time.Time
+	keys := map[string]bool{}
+	for _, r := range recs {
+		if !r.IsRejected() && (first.IsZero() || r.Time.Before(first)) {
+			first = r.Time
+		}
+		if r.ProviderKeyID != "" {
+			keys[r.Provider] = true
+		}
+	}
+	return summarizeFrom(p, now, first, keys, func(fn func(Record)) {
+		for _, r := range recs {
+			fn(r)
+		}
+	})
+}
+
+func summarizeFrom(p Period, now time.Time, first time.Time, historicalKeys map[string]bool, read func(func(Record))) Summary {
+	renamed := provider.Renamed()
+	normalizedKeys := map[string]bool{}
+	for id := range historicalKeys {
+		if next, ok := renamed[id]; ok {
+			id = next
+		}
+		normalizedKeys[id] = true
+	}
+	historicalKeys = normalizedKeys
+	visit := func(fn func(Record)) {
+		read(func(r Record) {
+			if next, ok := renamed[r.Provider]; ok {
+				r.Provider = next
 			}
-		}
+			fn(r)
+		})
 	}
-	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	s := Summary{Period: p, Bucket: "day", Agents: []Group{}, Models: []Group{}, Sessions: []Group{}, Series: []Point{}}
-	var n int
-	switch p {
-	case Today:
-		s.Since, s.Bucket = day, "hour"
-	case Week:
-		s.Since, n = day.AddDate(0, 0, -6), 7
-	case Month:
-		s.Since, n = day.AddDate(0, 0, -29), 30
-	default:
+	s := Summary{Period: p, Bucket: "day", Agents: []Group{}, Models: []Group{}, ProviderKeys: []Group{}, Accounts: []Group{}, CallerKeys: []Group{}, Sessions: []Group{}, Series: []Point{}}
+	s.Since, s.Bucket, s.Series = timeline(p, now, first)
+	if p != Today && p != Week && p != Month {
 		s.Period = All
-		if len(recs) > 0 {
-			first := recs[0].Time.In(now.Location())
-			s.Since = time.Date(first.Year(), first.Month(), first.Day(), 0, 0, 0, 0, now.Location())
-		} else {
-			s.Since = day
-		}
-		if n = int(day.Sub(s.Since).Hours()/24) + 1; n > 60 {
-			s.Bucket = "week"
-			// start on the Monday of the first week
-			off := (int(s.Since.Weekday()) + 6) % 7
-			s.Since = s.Since.AddDate(0, 0, -off)
-			n = int(day.Sub(s.Since).Hours()/(24*7)) + 1
-		}
-	}
-	// the empty timeline, so quiet days still take their place
-	switch s.Bucket {
-	case "hour":
-		for h := 0; h < 24; h++ {
-			t := day.Add(time.Duration(h) * time.Hour)
-			s.Series = append(s.Series, Point{Label: t.Format("15"), Time: t})
-		}
-	case "day":
-		for i := 0; i < n; i++ {
-			t := s.Since.AddDate(0, 0, i)
-			s.Series = append(s.Series, Point{Label: t.Format("Jan 2"), Time: t})
-		}
-	case "week":
-		for i := 0; i < n; i++ {
-			t := s.Since.AddDate(0, 0, 7*i)
-			s.Series = append(s.Series, Point{Label: t.Format("Jan 2"), Time: t})
-		}
 	}
 
-	prices := map[string]*catalog.Price{}
-	priceOf := func(r Record) *catalog.Price {
-		k := r.Provider + "/" + r.Model
-		if pr, ok := prices[k]; ok {
-			return pr
-		}
-		var pr *catalog.Price
-		for _, p := range provider.All() {
-			if p.ID == r.Provider {
-				for _, c := range p.Catalogs() {
-					if v, ok := catalog.PriceOf(c, r.Model); ok {
-						pr = &v
-						break
-					}
-				}
-				break
-			}
-		}
-		prices[k] = pr
-		return pr
-	}
+	priceOf := pricer()
 	// the places each provider id went in the period, and goes now
 	hosts := map[string]map[string]bool{}
-	for _, r := range recs {
+	// the providers whose calls are told apart by account: those an
+	// account answered for in the period, and those signed in now
+	accountProviders := map[string]bool{}
+	visit(func(r Record) {
+		if r.IsRejected() {
+			return
+		}
+		if r.Account() != "" && !r.Time.Before(s.Since) {
+			accountProviders[r.Provider] = true
+		}
 		if r.Host != "" && !r.Time.Before(s.Since) {
 			if hosts[r.Provider] == nil {
 				hosts[r.Provider] = map[string]bool{}
 			}
-			hosts[r.Provider][r.Host] = true
+			hosts[r.Provider][who(r.Host)] = true
+		}
+	})
+	goesNow := map[string]string{}
+	keyProviders := map[string]bool{}
+	for _, p := range provider.All() {
+		goesNow[p.ID] = who(p.Where())
+		keyProviders[p.ID] = p.Account == nil && p.Key != ""
+		if p.Account != nil {
+			accountProviders[p.ID] = true
 		}
 	}
-	goesNow := map[string]string{}
-	for _, p := range provider.All() {
-		goesNow[p.ID] = p.Where()
+	for id := range historicalKeys {
+		keyProviders[id] = true
 	}
 	agents := map[string]*Group{}
 	models := map[string]*Group{}
+	keys := map[string]*Group{}
+	accounts := map[string]*Group{}
+	callerKeys := map[string]*Group{}
 	sessions := map[string]*Group{}
-	for _, r := range recs {
+	visit(func(r Record) {
+		if r.IsRejected() {
+			return
+		}
 		t := r.Time.In(now.Location())
 		if t.Before(s.Since) {
-			continue
+			return
 		}
 		pr := priceOf(r)
 		s.Totals.add(r, pr)
-		var i int
-		switch s.Bucket {
-		case "hour":
-			i = int(t.Sub(s.Since).Hours())
-		case "day":
-			i = int(t.Sub(s.Since).Hours() / 24)
-		case "week":
-			i = int(t.Sub(s.Since).Hours() / (24 * 7))
-		}
+		i := bucketIndex(s.Bucket, s.Since, t)
 		if i >= 0 && i < len(s.Series) {
 			s.Series[i].add(r, pr)
 		}
@@ -346,8 +543,8 @@ func summarize(p Period, now time.Time, recs []Record) Summary {
 		}
 		a.add(r, pr)
 		k, host := r.Provider+"/"+r.Model, ""
-		if r.Host != "" && (len(hosts[r.Provider]) > 1 || r.Host != goesNow[r.Provider]) {
-			k, host = k+" @ "+r.Host, r.Host
+		if w := who(r.Host); w != "" && (len(hosts[r.Provider]) > 1 || w != goesNow[r.Provider]) {
+			k, host = k+" @ "+w, w
 		}
 		m := models[k]
 		if m == nil {
@@ -355,6 +552,35 @@ func summarize(p Period, now time.Time, recs []Record) Summary {
 			models[k] = m
 		}
 		m.add(r, pr)
+		if r.CallerKeyID != "" {
+			g := callerKeys[r.CallerKeyID]
+			if g == nil {
+				g = &Group{ID: r.CallerKeyID, CallerKeyID: r.CallerKeyID}
+				callerKeys[r.CallerKeyID] = g
+			}
+			g.CallerKeyName = r.CallerKeyName
+			g.add(r, pr)
+		}
+		if keyProviders[r.Provider] {
+			id := r.Provider + "#" + r.ProviderKeyID
+			g := keys[id]
+			if g == nil {
+				g = &Group{ID: id, Provider: r.Provider, ProviderKeyID: r.ProviderKeyID}
+				keys[id] = g
+			}
+			g.ProviderKeyName = r.ProviderKeyName
+			g.add(r, pr)
+		}
+		if accountProviders[r.Provider] {
+			who := r.Account()
+			id := r.Provider + "@" + who
+			g := accounts[id]
+			if g == nil {
+				g = &Group{ID: id, Provider: r.Provider, Account: who}
+				accounts[id] = g
+			}
+			g.add(r, pr)
+		}
 		if r.Session != "" {
 			g := sessions[id+"|"+r.Session]
 			if g == nil {
@@ -363,7 +589,7 @@ func summarize(p Period, now time.Time, recs []Record) Summary {
 			}
 			g.add(r, pr)
 		}
-	}
+	})
 	for _, g := range agents {
 		s.Agents = append(s.Agents, *g)
 	}
@@ -383,6 +609,18 @@ func summarize(p Period, now time.Time, recs []Record) Summary {
 	}
 	byTokens(s.Agents)
 	byTokens(s.Models)
+	for _, g := range keys {
+		s.ProviderKeys = append(s.ProviderKeys, *g)
+	}
+	byTokens(s.ProviderKeys)
+	for _, g := range accounts {
+		s.Accounts = append(s.Accounts, *g)
+	}
+	byTokens(s.Accounts)
+	for _, g := range callerKeys {
+		s.CallerKeys = append(s.CallerKeys, *g)
+	}
+	byTokens(s.CallerKeys)
 	for _, g := range sessions {
 		s.Sessions = append(s.Sessions, *g)
 	}
@@ -411,9 +649,9 @@ type Via struct {
 // agent id and the session's id ("codex|<id>"), the most calls first.
 func Vias(since time.Time) map[string][]Via {
 	out := map[string][]Via{}
-	for _, r := range Load(since) {
-		if r.Session == "" || r.Model == "" {
-			continue
+	readLogSnapshot().visit(since, func(r Record) {
+		if r.IsRejected() || r.Session == "" || r.Model == "" {
+			return
 		}
 		k := AgentOf(r.Agent) + "|" + r.Session
 		vs := out[k]
@@ -427,7 +665,7 @@ func Vias(since time.Time) map[string][]Via {
 			vs[i].Last = r.Time
 		}
 		out[k] = vs
-	}
+	})
 	for _, vs := range out {
 		sort.SliceStable(vs, func(i, j int) bool { return vs[i].Calls > vs[j].Calls })
 	}
@@ -459,7 +697,7 @@ func LastSeen(agent string) time.Time {
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		var r Record
-		if json.Unmarshal(sc.Bytes(), &r) == nil && r.Agent == agent && r.Time.After(last) {
+		if json.Unmarshal(sc.Bytes(), &r) == nil && r.Agent == agent && r.Via == "" && r.Time.After(last) {
 			last = r.Time
 		}
 	}

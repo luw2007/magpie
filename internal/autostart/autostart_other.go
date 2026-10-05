@@ -1,4 +1,4 @@
-//go:build !darwin && !windows
+//go:build !darwin && !windows && !android
 
 package autostart
 
@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 func record() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
+	dir := appdir.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".config")
@@ -41,3 +43,6 @@ func disable() error {
 	}
 	return nil
 }
+
+// refresh: nothing an older magpie wrote here needs writing again
+func refresh() error { return nil }

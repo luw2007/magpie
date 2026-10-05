@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // Codex signed in to an account out of its allowance is signed in to the
@@ -35,7 +38,7 @@ func TestCodexSwitchedWhenUsedUp(t *testing.T) {
 	switched := func() string {
 		t.Helper()
 		fresh()
-		to, err := SwitchCodexWhenUsedUp(context.Background())
+		to, err := SwitchWhenSpent(context.Background(), "codex")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,4 +84,90 @@ func TestCodexSwitchedWhenUsedUp(t *testing.T) {
 	if to := switched(); to != "" {
 		t.Fatalf("switched to %s, not knowing", to)
 	}
+}
+
+// Claude Code signed in to an account Smart counts spent (98%) is signed
+// in to the next account that is on and has room — its credentials and
+// .claude.json's account both — and not before (#208, #209). What it
+// goes by is what Claude Code told as it answered: Anthropic's usage
+// endpoint isn't read for it.
+func TestClaudeSwitchedWhenSpent(t *testing.T) {
+	home := claudeHome(t)
+	cred := claudeSignIn(t, home, time.Now().Add(time.Hour)) // sk-ant-oat01-old
+	profile := filepath.Join(home, ".claude.json")
+	writeFile(t, profile, map[string]any{"oauthAccount": map[string]any{"emailAddress": "a@example.com", "accountUuid": "u-a"}})
+	rememberLogins(true)
+	loginsMu.Lock()
+	ls := upsertLogin(readLogins(), savedLogin{Agent: "claude", User: "b@example.com", Plan: "max", On: true, Seen: time.Now().UTC(),
+		Auth: mustJSONRaw(t, map[string]any{"claudeAiOauth": map[string]any{"accessToken": "sk-ant-oat01-b", "refreshToken": "sk-ant-ort01-b",
+			"expiresAt": time.Now().Add(time.Hour).UnixMilli(), "subscriptionType": "max", "scopes": []string{"user:inference", "user:profile"}}}),
+		Profile: mustJSONRaw(t, map[string]any{"emailAddress": "b@example.com", "accountUuid": "u-b"})})
+	if err := writeLogins(ls); err != nil {
+		t.Fatal(err)
+	}
+	loginsMu.Unlock()
+
+	used := map[string]float64{"a@example.com": 97, "b@example.com": 10}
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("usage endpoint read: %s", r.URL)
+	}))
+	defer fake.Close()
+	claudeBase = fake.URL // isolate puts it back
+	switched := func() string {
+		t.Helper()
+		loginUsageCache.Lock()
+		loginUsageCache.m = nil
+		loginUsageCache.Unlock()
+		claudeUsage.Lock()
+		claudeUsage.m = nil
+		claudeUsage.Unlock()
+		for user, u := range used {
+			NoteClaudeLimits(user, []ClaudeLimit{{Kind: "five_hour", Used: u / 100, ResetsAt: time.Now().Add(time.Hour).Unix()}})
+		}
+		to, err := SwitchWhenSpent(context.Background(), "claude")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return to
+	}
+
+	// 97%: Smart still counts it low, not spent
+	if to := switched(); to != "" {
+		t.Fatalf("switched to %s at 97%%", to)
+	}
+	used["a@example.com"] = 98
+	if to := switched(); to != "b@example.com" {
+		t.Fatalf("switched to %q at 98%%", to)
+	}
+	var c map[string]any
+	readJSON(cred, &c)
+	if o, _ := c["claudeAiOauth"].(map[string]any); o["refreshToken"] != "sk-ant-ort01-b" {
+		t.Fatalf("Claude Code is signed in with %v", o)
+	}
+	b, _ := os.ReadFile(profile)
+	if !strings.Contains(string(b), "b@example.com") {
+		t.Fatalf(".claude.json: %s", b)
+	}
+	for _, l := range Logins("claude") {
+		if l.User == "a@example.com" && (!l.On || l.Active) || l.User == "b@example.com" && !l.Active {
+			t.Fatalf("after: %+v", l)
+		}
+	}
+	// on one with room it stays; with none left, too
+	if to := switched(); to != "" {
+		t.Fatalf("switched again, to %s", to)
+	}
+	used["b@example.com"] = 99
+	if to := switched(); to != "" {
+		t.Fatalf("switched to %s, spent as well", to)
+	}
+}
+
+func mustJSONRaw(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

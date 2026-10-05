@@ -28,7 +28,18 @@ func Rename(from, to string) error {
 	if to == from {
 		return nil
 	}
-	if _, ok := find(Accounts(), from); ok || slices.Contains(accountIDs, from) {
+	f, err := read()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(f.Providers, func(p Provider) bool { return p.ID == from })
+	// one of the user's own saved on a subscription's id before that was one
+	// (a "WorkBuddy" key before v0.1.261) can be moved off it; the
+	// subscription itself can't
+	custom := i >= 0 && hasEndpoint(f.Providers[i])
+	_, signedIn := find(Accounts(), from)
+	sub := subscriptionID(from)
+	if (signedIn || sub) && !custom {
 		return fmt.Errorf("%s is a subscription: its id is its agent's", from)
 	}
 	switch {
@@ -36,11 +47,9 @@ func Rename(from, to string) error {
 		return errors.New(`"magpie" is what agents call the gateway itself; pick another id`)
 	case to == strings.TrimSuffix(GroupPrefix, "/"):
 		return errors.New(`"group" starts the ids of routing groups; pick another id`)
-	case slices.Contains(accountIDs, to):
+	case subscriptionID(to):
 		return fmt.Errorf("%q is the id of the %s subscription; pick another", to, to)
 	}
-	f := load()
-	i := slices.IndexFunc(f.Providers, func(p Provider) bool { return p.ID == from })
 	if i < 0 {
 		return fmt.Errorf("no provider %q", from)
 	}
@@ -53,12 +62,19 @@ func Rename(from, to string) error {
 	}
 	p := &f.Providers[i]
 	p.ID = to
-	if !slices.Contains(p.Was, from) {
+	// the subscription's id is the subscription's: an old ref to it isn't
+	// taken for this one
+	if !sub && !slices.Contains(p.Was, from) {
 		p.Was = append(p.Was, from)
 	}
 	for j := range f.Providers {
 		for k, m := range f.Providers[j].Fallback {
 			f.Providers[j].Fallback[k] = renamedRef(m, from, to)
+		}
+	}
+	for j, id := range f.Order {
+		if id == from {
+			f.Order[j] = to
 		}
 	}
 	for j := range f.Groups {
@@ -69,10 +85,18 @@ func Rename(from, to string) error {
 		for k, r := range g.Rules {
 			g.Rules[k].Use = renamedRef(r.Use, from, to)
 		}
+		for k, m := range g.Fast {
+			g.Fast[k] = renamedRef(m, from, to)
+		}
+		for k, m := range g.Off {
+			g.Off[k] = renamedRef(m, from, to)
+		}
 		g.Classifier = renamedRef(g.Classifier, from, to)
+		g.Pick = renamedRef(g.Pick, from, to)
 	}
 	// the vendor's list last fetched goes with it
 	os.Rename(catalog.LivePath(from), catalog.LivePath(to))
+	os.Rename(catalog.LivePath(decisionsID(from)), catalog.LivePath(decisionsID(to)))
 	if err := store(f); err != nil {
 		return err
 	}
@@ -124,4 +148,26 @@ func Renamed() map[string]string {
 		}
 	}
 	return out
+}
+
+// OnAccountIDs are the user's own providers saved on a subscription's id,
+// which hide that subscription once it is signed in (All lists the one
+// saved): made before the id was a subscription's, as a WorkBuddy key was
+// before WorkBuddy's plan was one. MoveOffAccountIDs moves them.
+func OnAccountIDs() []string {
+	var out []string
+	for _, p := range load().Providers {
+		if slices.Contains(accountIDs, p.ID) && hasEndpoint(p) {
+			out = append(out, p.ID)
+		}
+	}
+	return out
+}
+
+// FreeID is id, or id-2, id-3… whichever no provider or subscription has.
+func FreeID(id string) string { return freeID(id) }
+
+// hasEndpoint: a provider of the user's, not a subscription's model picks.
+func hasEndpoint(p Provider) bool {
+	return p.Chat != "" || p.Responses != "" || p.Anthropic != "" || p.Decide != ""
 }

@@ -102,6 +102,7 @@ type model struct {
 	ask       ask
 	confirm   string // what a second d removes
 	provs     []provider.Provider
+	provsErr  error // providers.json can't be read: said, not "none yet"
 	prow      int
 	bal       map[string]string
 	asked     bool // balances were asked for
@@ -112,6 +113,7 @@ type model struct {
 	gsel      int    // its member or rule picked: the members, then the rules
 	period    usage.Period
 	sum       usage.Summary
+	direct    usage.Summary                // the agents' own calls, read from their session files
 	quotas    []provider.SubscriptionQuota // nil while the vendors are asked
 	qasked    bool                         // quotas were asked for
 	qleft     bool                         // windows read as what is left, not what is used
@@ -137,9 +139,15 @@ type flashMsg struct {
 
 type syncedMsg struct{ err error }
 
-// Run starts magpie in the terminal.
-func Run() error {
+// Run starts magpie in the terminal. ready is called once the model is
+// made: making it asks agents' CLIs (claude auth status, up to seconds),
+// and a signal then is the caller's to handle, as bubbletea starts
+// listening only as the program runs.
+func Run(ready func()) error {
 	m := newModel()
+	if ready != nil {
+		ready()
+	}
 	if len(m.agents) == 0 {
 		return fmt.Errorf("no supported agents found on this machine")
 	}
@@ -180,7 +188,7 @@ func (m *model) reload() {
 			m.gsel = clamp(m.gsel, len(g.Members)+len(g.Rules))
 		}
 	case pageUsage:
-		m.sum = usage.Summarize(m.period)
+		m.sum, m.direct = usage.Summarize(m.period), usage.Direct(m.period)
 	case pageSessions:
 		m.reloadSessions()
 	case pageLibrary:
@@ -236,6 +244,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case quotaMsg:
 		m.quotas = msg
+		return m, nil
+	case checkinMsg:
+		m.flash, m.flashOK = msg.text, msg.ok
+		// the accounts' lines say today's check-in now, with nothing asked
+		if m.quotas != nil {
+			m.quotas = provider.WithCheckins(m.quotas)
+		}
 		return m, nil
 	case sessFilterMsg:
 		m.ssel = 0
@@ -663,7 +678,7 @@ func (m model) View() string {
 		switch m.page {
 		case pageProviders:
 			body = m.viewProviders()
-			footer = hints("↑↓", "provider", "↵", "models", "e", "key", "a", "add", "f", "family", "u", "list/groups only", "o", "on/off", "t", "test", "b", "balances", "d", "remove", "1–6", "pages")
+			footer = hints("↑↓", "provider", "↵", "models", "e", "key", "w", "address", "a", "add", "f", "family", "u", "list/groups only", "o", "on/off", "m", "fetch models", "t", "test", "b", "balances", "d", "remove", "1–6", "pages")
 		case pageGroups:
 			body = m.viewGroups()
 			footer = hints("↑↓", "group", "↵", "open", "n", "new", "o", "routing", "d", "remove", "u", "bring back", "1–6", "pages", "q", "quit")
@@ -679,7 +694,7 @@ func (m model) View() string {
 			}
 		case pageUsage:
 			body = m.viewUsage()
-			footer = hints("←→", "period", "t w m A", "today · 7 days · 30 days · all", "u", "used / left", "r", "reload", "1–6", "pages", "q", "quit")
+			footer = hints("←→", "period", "t w m A", "today · 7 days · 30 days · all", "u", "used / left", "c", "daily check-in", "r", "reload", "1–6", "pages", "q", "quit")
 		default:
 			body = m.viewList()
 			footer = hints("↑↓", "agent", "←→", "field", "↵", "change", "s", "save profile", "p", "profiles", "1–6", "pages", "q", "quit")
@@ -701,7 +716,7 @@ func (m model) View() string {
 		body = m.viewGroup()
 		// two lines: there is more to do to a group than one holds
 		footer = hints("↑↓", "model / rule", "J K", "move", "a", "add model", "n", "new rule", "↵", "edit rule", "d", "take out", "esc", "back") + "\n" +
-			pad + hints("c", "classifier", "o", "routing", "s", "stays", "x", "context", "f", "family", "R", "rename")
+			pad + hints("E", "effort", "F", "fast", "c", "classifier", "o", "routing", "s", "stays", "x", "context", "l", "levels", "f", "family", "R", "rename")
 	case modeName:
 		body = m.viewName()
 		footer = hints("↵", "save", "esc", "cancel")

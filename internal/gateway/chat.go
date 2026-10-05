@@ -1,10 +1,15 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // ---- OpenAI Chat Completions --------------------------------------------------
@@ -17,6 +22,9 @@ type cToolCall struct {
 		Name      string `json:"name,omitempty"`
 		Arguments string `json:"arguments,omitempty"`
 	} `json:"function"`
+	// Gemini's OpenAI-compatible API gives a call's thought signature
+	// here, and wants it back (gemini_signature.go)
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 type cRequest struct {
@@ -34,6 +42,7 @@ type cRequest struct {
 			Name        string          `json:"name"`
 			Description string          `json:"description,omitempty"`
 			Parameters  json.RawMessage `json:"parameters,omitempty"`
+			Strict      *bool           `json:"strict,omitempty"`
 		} `json:"function"`
 	} `json:"tools,omitempty"`
 	ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
@@ -64,6 +73,7 @@ func parseChat(body []byte) (*Request, error) {
 	if r.Effort != "" {
 		r.Thinking = true
 	}
+	r.ThinkOff = strings.EqualFold(strings.TrimSpace(c.ReasoningEffort), "none")
 	var stop string
 	if json.Unmarshal(c.Stop, &stop) == nil && stop != "" {
 		r.Stop = []string{stop}
@@ -84,7 +94,8 @@ func parseChat(body []byte) (*Request, error) {
 			}
 			msg.Parts = append(msg.Parts, chatParts(m.Content)...)
 			for _, tc := range m.ToolCalls {
-				msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: tc.ID, Name: tc.Function.Name, Args: parseArgs(tc.Function.Arguments)})
+				msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: tc.ID, Name: tc.Function.Name, Args: parseArgs(tc.Function.Arguments),
+					Signature: googleSignature(tc.ExtraContent)})
 			}
 			r.Messages = append(r.Messages, msg)
 		case "tool":
@@ -101,7 +112,7 @@ func parseChat(body []byte) (*Request, error) {
 		if t.Type != "" && t.Type != "function" {
 			continue
 		}
-		r.Tools = append(r.Tools, Tool{Name: t.Function.Name, Description: t.Function.Description, Schema: t.Function.Parameters})
+		r.Tools = append(r.Tools, Tool{Name: t.Function.Name, Description: t.Function.Description, Schema: t.Function.Parameters, Strict: t.Function.Strict != nil && *t.Function.Strict})
 	}
 	var tc string
 	if json.Unmarshal(c.ToolChoice, &tc) == nil {
@@ -173,7 +184,13 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	if r.System != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": r.System})
 	}
-	deepseek := strings.Contains(host, "deepseek")
+	// DeepSeek takes a turn's reasoning back, wherever its models are
+	// served (#388), as Command Code's plugin does for a Go key, as the
+	// built-in replayed it to /alpha/generate
+	replay := strings.Contains(host, "deepseek") || strings.Contains(strings.ToLower(model), "deepseek") || host == provider.CommandCodePlanID
+	// Gemini wants each step's thought signature back on its first call
+	// (#687), and one it can't check for a step it didn't sign
+	gemini := geminiCompat(host, model)
 	// A tool message holds text only, so the images tools returned go to
 	// the model in a user message after the tool messages, as the start of
 	// the user's own message when one comes next: some models' chat
@@ -207,6 +224,12 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			am := map[string]any{"role": "assistant"}
 			var calls []map[string]any
 			var think string
+			signed := false
+			for _, p := range m.Parts {
+				if p.Kind == ToolCall && p.Signature != "" {
+					signed = true
+				}
+			}
 			for _, p := range m.Parts {
 				switch p.Kind {
 				case ToolCall:
@@ -215,8 +238,18 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 						id = "call_" + newID()
 					}
 					names[id] = p.Name
-					calls = append(calls, map[string]any{"id": id, "type": "function",
-						"function": map[string]any{"name": p.Name, "arguments": argsString(p)}})
+					call := map[string]any{"id": id, "type": "function",
+						"function": map[string]any{"name": p.Name, "arguments": argsString(p)}}
+					if gemini {
+						// a later call of a signed step goes without: Gemini
+						// signs the first
+						if sig := p.Signature; sig != "" {
+							call["extra_content"] = googleExtra(sig)
+						} else if !signed {
+							call["extra_content"] = googleExtra(skipSignature)
+						}
+					}
+					calls = append(calls, call)
 				case Thinking:
 					think += p.Text
 				}
@@ -228,7 +261,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			if len(calls) > 0 {
 				am["tool_calls"] = calls
 			}
-			if deepseek && think != "" {
+			if replay && think != "" {
 				am["reasoning_content"] = think
 			}
 			msgs = append(msgs, am)
@@ -255,6 +288,11 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			}
 			content, plain = nil, true
 		}
+		// A turn's tool results all go ahead of its own text and images: a
+		// tool message must immediately follow the assistant message whose
+		// tool_calls it answers — a strict upstream (Kimi) refuses the
+		// request otherwise, 400 "tool_call_id is not found".
+		var tools []map[string]any
 		for _, p := range m.Parts {
 			switch p.Kind {
 			case Text:
@@ -265,7 +303,6 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 				plain = false
 				content = append(content, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL(p)}})
 			case ToolResult:
-				flush()
 				out := p.Text
 				if n := len(p.Images); n > 0 {
 					note := fmt.Sprintf("[The tool returned %d images; they follow in the next message.]", n)
@@ -277,19 +314,26 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 					}
 					out += note
 				}
-				msgs = append(msgs, map[string]any{"role": "tool", "tool_call_id": p.CallID, "content": out})
+				tools = append(tools, map[string]any{"role": "tool", "tool_call_id": p.CallID, "content": out})
 				seeLater(p)
 			}
 		}
+		msgs = append(msgs, tools...)
 		flush()
 	}
 	showSeen()
+	msgs = pairToolMessages(msgs)
 	out := map[string]any{"model": model, "messages": msgs, "stream": r.Stream}
 	if r.CacheKey != "" {
 		out["prompt_cache_key"] = r.CacheKey
 	}
 	if r.Stream {
 		out["stream_options"] = map[string]any{"include_usage": true}
+	}
+	// Cursor's plugin reads fast mode here, as the built-in told Cursor;
+	// another's chat upstream may not know the tier
+	if r.Fast && host == "cursor" {
+		out["service_tier"] = "priority"
 	}
 	if r.MaxTokens > 0 {
 		if strings.HasSuffix(host, "openai.com") {
@@ -309,7 +353,19 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	if len(r.Stop) > 0 {
 		out["stop"] = r.Stop
 	}
-	if r.Effort != "" {
+	if r.GeminiCompat {
+		// Gemini thinks silently unless asked for its thoughts, and a long
+		// think read as the first word coming late (Claude Desktop waited
+		// 20 s for 你好); reasoning_effort can't be sent with them
+		if tc := aiStudioThinking(r, model); tc != nil {
+			out["extra_body"] = map[string]any{"google": map[string]any{"thinking_config": tc}}
+		} else if r.ThinkOff {
+			// Gemini 3 can't stop thinking; it thinks least at minimal
+			out["reasoning_effort"] = "minimal"
+		} else if r.Effort != "" {
+			out["reasoning_effort"] = r.Effort
+		}
+	} else if r.Effort != "" {
 		out["reasoning_effort"] = r.Effort
 	}
 	if len(r.Tools) > 0 {
@@ -338,6 +394,228 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+// pairToolMessages mends the tool exchange of a Chat request's messages
+// for upstreams that validate it strictly — Kimi answers a mismatch with
+// 400 "tool_call_id is not found" or "an assistant message with
+// 'tool_calls' must be followed by tool messages…", and OpenAI-style
+// upstreams refuse the same shapes. It runs on every request built for a
+// Chat upstream (Zed's xAI path included); Chat→Chat traffic relays
+// as-is and never reaches this path.
+//
+//   - the tool messages answering an assistant's tool_calls go in the
+//     calls' order (an agent returns parallel results out of order);
+//   - a second answer to the same call is dropped: the first answer
+//     stands;
+//   - a tool message answering no pending call — its call was answered
+//     and flushed already, compacted away, or never there — becomes a
+//     user message, so the result survives with no made-up call and no
+//     id used twice, the way the Responses path's orphanedToolOutputs
+//     turns an output without a call into a user message;
+//   - a call left unanswered gets a synthetic error result, so the turn
+//     can go on (an interrupted turn leaves its call pending);
+//   - an assistant message with nothing in it — no text, no calls, no
+//     reasoning, what a thinking-only turn becomes — is dropped inside a
+//     pending exchange, where it would sit between calls and their
+//     answers; outside an exchange it passes through, as on main.
+func pairToolMessages(msgs []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(msgs))
+	var pending []string          // calls of the last assistant message with tool_calls
+	order := map[string]int{}     // a pending call's place among them
+	answered := map[string]bool{} // pending calls a tool message answered
+	var tools []map[string]any    // answers to pending, held for sorting
+
+	flushTools := func() {
+		if len(tools) == 0 {
+			return
+		}
+		sort.SliceStable(tools, func(i, j int) bool {
+			return order[toolMsgID(tools[i])] < order[toolMsgID(tools[j])]
+		})
+		out = append(out, tools...)
+		tools = nil
+	}
+	flushPending := func() {
+		flushTools()
+		for _, id := range pending {
+			if !answered[id] {
+				out = append(out, map[string]any{"role": "tool", "tool_call_id": id,
+					"content": "[The result of this tool call is unavailable: the turn was interrupted.]"})
+			}
+		}
+		pending, order, answered = nil, map[string]int{}, map[string]bool{}
+	}
+	// toolAsUser turns a tool message that answers no pending call into a
+	// user message carrying its result. A user message just emitted takes
+	// the text in, so two user messages never stand in a row (some
+	// models' chat templates turn them away).
+	toolAsUser := func(m map[string]any) {
+		text, _ := m["content"].(string)
+		if strings.TrimSpace(text) == "" {
+			text = "Tool result received."
+		}
+		if n := len(out); n > 0 && out[n-1]["role"] == "user" {
+			if s, ok := out[n-1]["content"].(string); ok {
+				out[n-1]["content"] = s + "\n\n" + text
+				return
+			}
+		}
+		out = append(out, map[string]any{"role": "user", "content": text})
+	}
+
+	for _, m := range msgs {
+		switch m["role"] {
+		case "assistant":
+			calls, _ := m["tool_calls"].([]map[string]any)
+			if len(calls) == 0 {
+				if len(pending) > 0 && emptyAssistant(m) {
+					// dropped before it can sit between the pending
+					// calls and their answers; the exchange stays open
+					continue
+				}
+				flushPending()
+				out = append(out, m)
+				continue
+			}
+			flushPending()
+			out = append(out, m)
+			for i, c := range calls {
+				id, _ := c["id"].(string)
+				pending = append(pending, id)
+				order[id] = i
+			}
+		case "tool":
+			id := toolMsgID(m)
+			if _, ok := order[id]; !ok {
+				// answers no pending call: the exchange in flight
+				// closes first, so the user message never breaks its
+				// adjacency, and the id is used nowhere else
+				flushPending()
+				toolAsUser(m)
+				continue
+			}
+			if answered[id] {
+				continue // a second answer: the first stands
+			}
+			answered[id] = true
+			tools = append(tools, m)
+		default:
+			flushPending()
+			out = append(out, m)
+		}
+	}
+	flushPending()
+	return out
+}
+
+// toolMsgID is a tool message's tool_call_id.
+func toolMsgID(m map[string]any) string {
+	id, _ := m["tool_call_id"].(string)
+	return id
+}
+
+// emptyAssistant reports whether an assistant message carries nothing:
+// no text, no tool calls, no reasoning.
+func emptyAssistant(m map[string]any) bool {
+	if calls, ok := m["tool_calls"].([]map[string]any); ok && len(calls) > 0 {
+		return false
+	}
+	if s, _ := m["reasoning_content"].(string); strings.TrimSpace(s) != "" {
+		return false
+	}
+	s, _ := m["content"].(string)
+	return strings.TrimSpace(s) == ""
+}
+
+// aiStudioHost is Google AI Studio's Gemini API, whose OpenAI-compatible
+// endpoint gives the model's thoughts only when asked for them.
+const aiStudioHost = "generativelanguage.googleapis.com"
+
+// geminiCompat reports whether a Chat upstream at host serving model is
+// Gemini's OpenAI-compatible API: AI Studio's own, or for a Gemini model a
+// proxy on this machine or the LAN, which is most often one in front of it
+// (X @saoyan25's). A relay elsewhere is not assumed to pass thinking_config
+// on, or to take it.
+func geminiCompat(host, model string) bool {
+	if host == aiStudioHost {
+		return true
+	}
+	if !strings.Contains(strings.ToLower(model), "gemini") {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+// thinkingEffort moves the level the new Kimi Code (2.x) asks a Chat
+// request for, inside its thinking switch ({"type":"enabled","effort":
+// "high"}, #333), to reasoning_effort: where kimi-cli put it, beside
+// thinking's type, and where the gateway and every other Chat API read it.
+// A request that says reasoning_effort itself is left as it is.
+func thinkingEffort(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"effort"`)) {
+		return body
+	}
+	var v struct {
+		ReasoningEffort *string        `json:"reasoning_effort"`
+		Thinking        map[string]any `json:"thinking"`
+	}
+	if json.Unmarshal(body, &v) != nil || v.ReasoningEffort != nil {
+		return body
+	}
+	effort, _ := v.Thinking["effort"].(string)
+	if effort == "" {
+		return body
+	}
+	delete(v.Thinking, "effort")
+	return withFields(body, map[string]any{"reasoning_effort": effort, "thinking": v.Thinking})
+}
+
+// thinkingConfigField is Gemini's thinking_config as unfit remembers a
+// provider that refused it.
+const thinkingConfigField = "thinking_config"
+
+// refusesThinkingConfig recognizes an upstream turning a request away for
+// the thinking_config it was sent, by its error naming it.
+func refusesThinkingConfig(status int, body []byte) bool {
+	if !badRequest(status) {
+		return false
+	}
+	b := bytes.ToLower(body)
+	return bytes.Contains(b, []byte("extra_body")) || bytes.Contains(b, []byte("thinking")) || bytes.Contains(b, []byte("include_thoughts"))
+}
+
+// aiStudioThinking is the thinking_config asking Gemini for its thoughts at
+// the effort the client asked, for a client that asked to see them: a level
+// for Gemini 3 and later, a budget for 2.x (the steps Google maps
+// reasoning_effort to).
+func aiStudioThinking(r *Request, model string) map[string]any {
+	if !r.Thinking || r.ThinkOff || r.Effort == "none" {
+		return nil
+	}
+	tc := map[string]any{"include_thoughts": true}
+	level := r.Effort
+	switch level {
+	case "xhigh", "max":
+		level = "high"
+	case "minimal", "low", "medium", "high":
+	default:
+		return tc // the model's own
+	}
+	if strings.Contains(strings.ToLower(model), "gemini-2") {
+		tc["thinking_budget"] = map[string]int{"minimal": 1024, "low": 1024, "medium": 8192, "high": 24576}[level]
+	} else {
+		tc["thinking_level"] = level
+	}
+	return tc
 }
 
 type cUsage struct {
@@ -390,7 +668,7 @@ func (u cUsage) usage() Usage {
 func (u Usage) chat() map[string]any {
 	in := u.prompt()
 	return map[string]any{"prompt_tokens": in, "completion_tokens": u.Output, "total_tokens": in + u.Output,
-		"prompt_tokens_details":     map[string]any{"cached_tokens": u.CacheRead},
+		"prompt_tokens_details":     map[string]any{"cached_tokens": u.CacheRead, "cache_write_tokens": u.CacheWrite},
 		"completion_tokens_details": map[string]any{"reasoning_tokens": u.Reasoning}}
 }
 
@@ -399,7 +677,76 @@ func (u Usage) chat() map[string]any {
 type chatDecoder struct {
 	started bool
 	tool    int    // index of the open tool call, -1 for none
+	toolID  string // id of the open tool call, as some relays repeat it on every fragment
 	choice  string // index of the first choice seen; an empty string means none yet
+	// Gemini's OpenAI-compatible API, asked for thoughts, may give them
+	// in the text as a leading <thought>…</thought>: lead holds the text
+	// while it could still be that tag's start, thought is being inside it
+	lead    string
+	thought bool
+	past    bool // the reply's text has begun; no tag is looked for now
+}
+
+const thoughtOpen, thoughtClose = "<thought>", "</thought>"
+
+// text sends a piece of the reply's text, a leading <thought> block of it
+// as thinking.
+func (d *chatDecoder) text(s string, emit func(Event)) {
+	if !d.past && !d.thought {
+		d.lead += s
+		lead := strings.TrimLeft(d.lead, " \n")
+		if len(lead) < len(thoughtOpen) && strings.HasPrefix(thoughtOpen, lead) {
+			return
+		}
+		if !strings.HasPrefix(lead, thoughtOpen) {
+			d.past = true
+			s, d.lead = d.lead, ""
+			emit(Event{Kind: KText, Text: s})
+			return
+		}
+		s, d.lead, d.thought = strings.TrimPrefix(lead, thoughtOpen), "", true
+	}
+	if d.thought {
+		s = d.lead + s
+		d.lead = ""
+		if i := strings.Index(s, thoughtClose); i >= 0 {
+			if i > 0 {
+				emit(Event{Kind: KThink, Text: s[:i]})
+			}
+			d.thought, d.past = false, true
+			s = strings.TrimLeft(s[i+len(thoughtClose):], "\n")
+		} else {
+			// the end of it may be the close tag begun
+			keep := 0
+			for n := min(len(thoughtClose)-1, len(s)); n > 0; n-- {
+				if strings.HasSuffix(s, thoughtClose[:n]) {
+					keep = n
+					break
+				}
+			}
+			if t := s[:len(s)-keep]; t != "" {
+				emit(Event{Kind: KThink, Text: t})
+			}
+			d.lead = s[len(s)-keep:]
+			return
+		}
+	}
+	if s != "" {
+		emit(Event{Kind: KText, Text: s})
+	}
+}
+
+// end gives back what text was held to see whether a tag began.
+func (d *chatDecoder) end(emit func(Event)) {
+	if d.lead == "" {
+		return
+	}
+	k := KText
+	if d.thought {
+		k = KThink
+	}
+	emit(Event{Kind: k, Text: d.lead})
+	d.lead = ""
 }
 
 func (d *chatDecoder) decode(data string, emit func(Event)) error {
@@ -412,10 +759,10 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 		Choices []struct {
 			Index json.RawMessage `json:"index"`
 			Delta struct {
-				Content          *string     `json:"content"`
-				ReasoningContent string      `json:"reasoning_content"`
-				Reasoning        string      `json:"reasoning"`
-				ToolCalls        []cToolCall `json:"tool_calls"`
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent string          `json:"reasoning_content"`
+				Reasoning        string          `json:"reasoning"`
+				ToolCalls        []cToolCall     `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -428,7 +775,7 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 		return nil
 	}
 	if ch.Error != nil {
-		emit(Event{Kind: KError, Text: ch.Error.Message})
+		emit(Event{Kind: KError, Text: ch.Error.Message, Code: refusedCode(data)})
 		return nil
 	}
 	if !d.started {
@@ -452,28 +799,46 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 		if t == "" {
 			t = c.Delta.Reasoning
 		}
+		// Mistral's content may be typed parts, its thinking among them
+		// (#483): a chunk that couldn't be read as a string lost both
+		var content string
+		if text, think, ok := partsText(c.Delta.Content); ok {
+			t += think
+			content = text
+		} else {
+			json.Unmarshal(c.Delta.Content, &content)
+		}
 		if t != "" {
 			emit(Event{Kind: KThink, Text: t})
 		}
-		if c.Delta.Content != nil && *c.Delta.Content != "" {
-			emit(Event{Kind: KText, Text: *c.Delta.Content})
+		if content != "" {
+			d.text(content, emit)
+		}
+		if len(c.Delta.ToolCalls) > 0 {
+			d.end(emit)
 		}
 		for i, tc := range c.Delta.ToolCalls {
 			idx := i
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
-			if tc.ID != "" || tc.Function.Name != "" || idx != d.tool {
-				if idx != d.tool || tc.ID != "" {
-					d.tool = idx
-					emit(Event{Kind: KToolStart, ID: tc.ID, Name: tc.Function.Name})
-				}
+			// A delta carrying the id the open call already goes by — some
+			// relays repeat it on every fragment, where the spec sends it
+			// only on the first — or one more fragment of the open index,
+			// continues that call; only a new id or a new index starts the
+			// next one.
+			if idx != d.tool || (tc.ID != "" && tc.ID != d.toolID) {
+				d.tool, d.toolID = idx, tc.ID
+				// a call Gemini signed goes to the client with an id
+				// carrying the signature, which comes back with it
+				emit(Event{Kind: KToolStart, ID: signedID(tc.ID, googleSignature(tc.ExtraContent)), Name: tc.Function.Name})
 			}
 			if tc.Function.Arguments != "" {
 				emit(Event{Kind: KToolArgs, Text: tc.Function.Arguments})
 			}
 		}
 		if c.FinishReason != "" {
+			d.end(emit)
 			emit(Event{Kind: KStop, Stop: stopFromChat(c.FinishReason)})
 		}
 	}
@@ -606,10 +971,18 @@ func (e *chatEncoder) event(ev Event) {
 				"function": map[string]any{"arguments": ev.Text}}}}, nil, nil)
 		}
 	case KError:
-		e.w.event("", map[string]any{"error": map[string]any{"message": ev.Text, "type": "api_error"}})
+		failed := map[string]any{"message": ev.Text, "type": "api_error"}
+		if ev.Code != "" {
+			failed["code"] = ev.Code // preserve the upstream error type, including refusals
+		}
+		e.w.event("", map[string]any{"error": failed})
 	}
 	e.col.add(ev)
 }
+
+// keepalive is an SSE comment, as OpenAI-compatible servers keep a Chat
+// Completions stream alive; its readers skip one.
+func (e *chatEncoder) keepalive() { e.w.comment("keepalive") }
 
 func (e *chatEncoder) finish() {
 	if !e.started {

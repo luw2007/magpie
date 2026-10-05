@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -145,9 +146,10 @@ func TestCodeAssistDecoder(t *testing.T) {
 }
 
 // On Antigravity a model that is one of its families of levels is asked
-// for as the variant the effort picks, with no thinking level that could
-// say otherwise; an old variant id moves with an effort asked; Gemini 3
-// Flash takes medium as medium, Pro as high.
+// for as the variant the effort picks, told the level that variant is at
+// (with none, a variant gave no thinking back once tools came in, #636);
+// an old variant id moves with an effort asked; Gemini 3 Flash takes
+// medium as medium, Pro as high.
 func TestCodeAssistAntigravityLevels(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	var raw []catalog.Model
@@ -160,15 +162,15 @@ func TestCodeAssistAntigravityLevels(t *testing.T) {
 	if err := catalog.SaveLive("antigravity", "", raw); err != nil {
 		t.Fatal(err)
 	}
-	// level: "" no thinkingConfig, "-" thinking at the level the id says
+	// level: "" no thinkingConfig, "-" thinking with no level
 	for _, c := range []struct{ model, effort, agent, want, level string }{
-		{"gemini-3.7-flash", "low", "antigravity", "gemini-3.7-flash-low", "-"},
-		{"gemini-3.7-flash", "medium", "antigravity", "gemini-3.7-flash-medium", "-"},
-		{"gemini-3.7-flash", "xhigh", "antigravity", "gemini-3.7-flash-high", "-"},
+		{"gemini-3.7-flash", "low", "antigravity", "gemini-3.7-flash-low", "low"},
+		{"gemini-3.7-flash", "medium", "antigravity", "gemini-3.7-flash-medium", "medium"},
+		{"gemini-3.7-flash", "xhigh", "antigravity", "gemini-3.7-flash-high", "high"},
 		{"gemini-3.7-flash", "", "antigravity", "gemini-3.7-flash-high", ""},
 		{"gemini-3.7-flash-high", "", "antigravity", "gemini-3.7-flash-high", ""},
-		{"gemini-3.7-flash-high", "low", "antigravity", "gemini-3.7-flash-low", "-"},
-		{"gemini-3.1-pro", "medium", "antigravity", "gemini-3.1-pro-high", "-"},
+		{"gemini-3.7-flash-high", "low", "antigravity", "gemini-3.7-flash-low", "low"},
+		{"gemini-3.1-pro", "medium", "antigravity", "gemini-3.1-pro-high", "high"},
 		{"gemini-3-flash", "medium", "antigravity", "gemini-3-flash", "medium"},
 		{"gemini-pro-agent", "medium", "antigravity", "gemini-pro-agent", "high"},
 		{"gemini-pro-agent", "low", "antigravity", "gemini-pro-agent", "low"},
@@ -189,6 +191,74 @@ func TestCodeAssistAntigravityLevels(t *testing.T) {
 		}
 		if env.Model != c.want || level != c.level {
 			t.Errorf("%s at %q on %s: %s at %q, want %s at %q", c.model, c.effort, c.agent, env.Model, level, c.want, c.level)
+		}
+	}
+}
+
+// A call Antigravity's model writes out in its reply's text,
+// call:default_api:<tool>{...}, is the call it meant, however the stream
+// cuts it up, and a call named with Gemini's namespace is the client's
+// tool (#636). Text that only looks like one stays text.
+func TestCodeAssistTextCalls(t *testing.T) {
+	chunk := func(parts string, finish string) string {
+		f := ""
+		if finish != "" {
+			f = `,"finishReason":"` + finish + `"`
+		}
+		return `{"response":{"candidates":[{"content":{"role":"model","parts":[` + parts + `]}` + f + `}]}}`
+	}
+	text := func(s string) string { b, _ := json.Marshal(map[string]string{"text": s}); return string(b) }
+	type call struct{ name, args string }
+	for _, c := range []struct {
+		name   string
+		chunks []string
+		text   string
+		calls  []call
+		stop   string
+	}{
+		{"whole", []string{chunk(text("Let's see what `shims/three.ts` imports!call:default_api:bash{command:cat /tmp/w/shims/three.ts}"), "STOP")},
+			"Let's see what `shims/three.ts` imports!", []call{{"bash", `{"command":"cat /tmp/w/shims/three.ts"}`}}, "tool"},
+		{"cut up", []string{chunk(text("And lines 240-270:cal"), ""), chunk(text("l:default_api:ba"), ""),
+			chunk(text(`sh{command:sed -n '241,275p' a.ts}`), ""), chunk(text(""), "STOP")},
+			"And lines 240-270:", []call{{"bash", `{"command":"sed -n '241,275p' a.ts"}`}}, "tool"},
+		{"quoted", []string{chunk(text(`call:default_api:edit{path:<ctrl46>a.go<ctrl46>,new:<ctrl46>func f() {<ctrl46>,n:2}`), "STOP")},
+			"", []call{{"edit", `{"path":"a.go","new":"func f() {","n":2}`}}, "tool"},
+		{"json", []string{chunk(text(`ok.call:default_api:read{"path":"a","limit":3}`), "STOP")},
+			"ok.", []call{{"read", `{"path":"a","limit":3}`}}, "tool"},
+		{"named", []string{chunk(`{"functionCall":{"name":"default_api:bash","args":{"command":"ls"}}}`, "STOP")},
+			"", []call{{"bash", `{"command":"ls"}`}}, "tool"},
+		{"unfinished", []string{chunk(text("look call:default_api:bash{command:ls"), "MAX_TOKENS")},
+			"look call:default_api:bash{command:ls", nil, "length"},
+		{"not a call", []string{chunk(text("say call:default_api: or recall"), ""), chunk(text(" ca"), "STOP")},
+			"say call:default_api: or recall ca", nil, "stop"},
+	} {
+		var col collector
+		dec := (&codeAssistDecoder{}).decode
+		for _, ch := range c.chunks {
+			dec(ch, col.add)
+		}
+		res := col.finish()
+		var got string
+		var calls []call
+		for _, p := range res.Parts {
+			switch p.Kind {
+			case Text:
+				got += p.Text
+			case ToolCall:
+				calls = append(calls, call{p.Name, string(p.Args)})
+			}
+		}
+		if got != c.text || res.Stop != c.stop || len(calls) != len(c.calls) {
+			t.Errorf("%s: text %q, calls %v, stop %q; want %q, %v, %q", c.name, got, calls, res.Stop, c.text, c.calls, c.stop)
+			continue
+		}
+		for i, cl := range calls {
+			var a, b any
+			json.Unmarshal([]byte(cl.args), &a)
+			json.Unmarshal([]byte(c.calls[i].args), &b)
+			if cl.name != c.calls[i].name || !reflect.DeepEqual(a, b) {
+				t.Errorf("%s: call %v, want %v", c.name, cl, c.calls[i])
+			}
 		}
 	}
 }

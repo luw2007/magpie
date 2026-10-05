@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // The trace tells what routing did as it did it: who was to answer in what
@@ -30,7 +32,10 @@ func TestTraceTellsTheRoute(t *testing.T) {
 	}
 	s := New()
 	send := func() {
-		s.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatReq)))
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatReq))
+		req.Header.Set("session_id", "native-session")
+		req.Header.Set(SessionHeader, "chosen-session")
+		s.Handler().ServeHTTP(httptest.NewRecorder(), req)
 	}
 
 	// one waiting for a route hears of it
@@ -46,12 +51,19 @@ func TestTraceTellsTheRoute(t *testing.T) {
 
 	st := s.Trace(context.Background(), 0, 0)
 	r := st.Routes[len(st.Routes)-1]
+	if r.Session != "chosen-session" {
+		t.Fatalf("session %q", r.Session)
+	}
 	if !r.Done || r.Status != 200 || r.Provider != "plan" || len(r.Order) != 2 || r.Order[0].Who != "Personal" || r.Order[1].Kind != "key" {
 		t.Fatalf("route %+v", r)
 	}
 	if len(r.Tries) != 2 || r.Tries[0].Status != 429 || r.Tries[0].Fail != failRate || r.Tries[0].Rest == nil ||
 		r.Tries[0].Rest.By != "cooldown" || r.Tries[1].Status != 200 || r.Tries[1].Rest != nil {
 		t.Fatalf("tries %+v", r.Tries)
+	}
+
+	if recs := usage.Load(time.Time{}); len(recs) != 1 || recs[0].RouteID != r.ID || r.ID == 0 {
+		t.Fatalf("usage: %+v, route %d", recs, r.ID)
 	}
 
 	// the next finds the limited key resting, and says why
@@ -100,5 +112,28 @@ func TestRetryAfterRests(t *testing.T) {
 	r := rs[0].Tries[0].Rest
 	if r.By != "retry-after" || time.Until(r.Until).Round(time.Minute) != 5*time.Minute {
 		t.Fatalf("rest %+v", r)
+	}
+}
+
+// A route weighed with no seats tells its order as [], not null: the
+// Routing page reads it as a list, and a null one left a refused request
+// that couldn't be opened (Discord, mythfish on v0.1.810).
+func TestTraceOrderIsAList(t *testing.T) {
+	s := New()
+	r := s.trace.begin(Route{Model: "workbuddy-ai/deepseek-v4.1-flash"})
+	s.trace.update(r, func(r *Route) {
+		r.Tries = append(r.Tries, Try{ID: "workbuddy-ai", Status: 400, Error: "WorkBuddy AI: Invalid request parameters"})
+		r.Status, r.Error, r.Done = 400, "WorkBuddy AI: Invalid request parameters", true
+	})
+	st := s.Trace(context.Background(), 0, 0)
+	b, err := json.Marshal(st.Routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"order":[]`) || strings.Contains(string(b), `"order":null`) {
+		t.Fatalf("trace routes = %s, want order []", b)
+	}
+	if _, c := s.trace.sessionLatest(context.Background(), "", 0, 0); c == nil || c.Order == nil {
+		t.Fatalf("session's latest route = %+v, want a non-nil order", c)
 	}
 }

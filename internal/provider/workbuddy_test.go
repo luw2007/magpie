@@ -147,10 +147,11 @@ func TestWorkBuddyAccounts(t *testing.T) {
 	if q.Error != "" || len(q.Windows) != 1 || q.Windows[0].Name != "Credits" || q.Windows[0].Used != 25 {
 		t.Fatalf("usage: %+v", q)
 	}
-
-	if err := ForgetLogin("workbuddy", "旅行者"); err == nil {
-		t.Fatal("forgot the one in use")
+	// the credits themselves, for the GUI to say used or left (#659)
+	if w := q.Windows[0]; w.Amount != 2500 || w.Limit != 10000 || w.Unit != "credits" {
+		t.Fatalf("credits: %+v", w)
 	}
+
 	if err := SwitchLogin("workbuddy", "Two"); err != nil {
 		t.Fatal(err)
 	}

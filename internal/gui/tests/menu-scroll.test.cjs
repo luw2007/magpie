@@ -30,9 +30,12 @@ async function serve(route) {
   if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: 'window.bootPrefs = {lang:"en",theme:"light",web:true};' });
   if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
   if (url.pathname === "/api/state") return json(state);
+  if (url.pathname === "/api/sessions/progress") return json({ indexing: false });
   if (url.pathname === "/api/sessions") return json({ sessions, dirs: ["/test/sessions"] });
   if (url.pathname === "/api/sessions/stats") return json({ from: date, to: date, days: [{ date, usage, active: [] }], agents: { fixture: "Fixture" } });
+  if (url.pathname === "/api/sessions/overview") return json({ count: sessions.length, days: [sessions.length], top: { tokens: [], cost: [], active: [] } });
   if (url.pathname === "/api/update" || url.pathname === "/api/drift") return json({});
+  if (url.pathname === "/api/agents/cli") return json({ agents: {}, pending: false });
   if (url.pathname === "/api/groups") return json({ groups: [] });
   if (url.pathname === "/api/gateway/trace") return json({ mine: false, now: date, totals: { requests: 0, rerouted: 0, errors: 0 } });
   assert(!url.pathname.startsWith("/api/"), "Unexpected API: " + url.pathname);
@@ -139,7 +142,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await reset();
         await anchor.click();
         await page.locator(".sess-menu").waitFor();
-        if (dismiss === "outside") await page.locator("#sessQ").click();
+        if (dismiss === "outside") { const bar = await page.locator("#sessionsPane .sess-tools").boundingBox(); await page.mouse.click(bar.x + bar.width - 6, bar.y + bar.height / 2); }
         else if (dismiss === "page scroll") {
           await page.mouse.move(1000, 650);
           await page.mouse.wheel(0, 200);
@@ -158,6 +161,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator("#q").press("Escape");
         assert(await page.locator("#pop").isHidden());
       }
+    });
+    await t.test("main model picker closes on a second click", async () => {
+      const anchor = page.locator('#agents [data-key="model"]');
+      await anchor.click();
+      assert(await page.locator("#pop").isVisible());
+      await anchor.click();
+      assert(await page.locator("#pop").isHidden());
+      await anchor.click();
+      assert(await page.locator("#pop").isVisible(), "a third click opens it again");
+      await page.locator("#q").press("Escape");
     });
     assert.deepEqual(errors, [], "page runtime errors");
   });

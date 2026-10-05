@@ -18,6 +18,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tidwall/jsonc"
+
+	"github.com/yetone/magpie/internal/agentenv"
 )
 
 // sandbox is a home with every agent magpie can give the library to, and
@@ -28,12 +30,27 @@ func sandbox(t *testing.T) string {
 	t.Setenv("HOME", h)
 	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
-	t.Setenv("PATH", "")
+	// Gemini CLI is found by its binary alone
+	bin := filepath.Join(h, "bin")
+	write(t, filepath.Join(bin, "gemini"), "#!/bin/sh\n")
+	os.Chmod(filepath.Join(bin, "gemini"), 0o755)
+	write(t, filepath.Join(bin, "gemini.exe"), "")
+	t.Setenv("PATH", bin)
 	// never the machine's global node_modules
 	roots := piGlobalRoots
 	piGlobalRoots = func() []string { return nil }
 	t.Cleanup(func() { piGlobalRoots = roots })
-	for _, k := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "COPILOT_HOME", "APPDATA", "LOCALAPPDATA", "DSH_HOME"} {
+	// a terminal's PATH is the test's, never the developer's login shell's
+	up := userPath
+	userPath = func() []string { return filepath.SplitList(os.Getenv("PATH")) }
+	t.Cleanup(func() { userPath = up })
+	for _, k := range agentenv.Vars {
+		t.Setenv(k, "")
+	}
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", "")
+	// never the developer's own GitHub token, sent to a fake GitHub
+	for _, k := range GitHubTokenEnv {
 		t.Setenv(k, "")
 	}
 	for _, f := range []string{
@@ -115,14 +132,18 @@ func TestCrushInstructionsWhereCrushReadsThem(t *testing.T) {
 	}
 }
 
-// Alma is wired through its API for models only: the library has no place
-// in it, and says so rather than recording it as given anything.
+// Alma takes skills, in ~/.config/alma/skills (#824), but has no
+// user-wide place for instructions or MCP servers, and the library says so
+// rather than recording it as given any.
 func TestTakesRefusesAlma(t *testing.T) {
 	sandbox(t)
-	for _, kind := range []string{"instructions", "mcp", "skills"} {
+	for _, kind := range []string{"instructions", "mcp"} {
 		if id, err := Takes("alma", kind); err == nil || !strings.Contains(err.Error(), "Alma has no user-wide place") {
 			t.Errorf("%s: %q %v", kind, id, err)
 		}
+	}
+	if id, err := Takes("alma", "skills"); err != nil || id != "alma" {
+		t.Errorf("skills: %q %v", id, err)
 	}
 }
 
@@ -1038,5 +1059,157 @@ func TestDshImportKeepsJS(t *testing.T) {
 	s := read(t, p)
 	if !strings.Contains(s, "- insert: # magpie") || !strings.Contains(s, `cwd: !!js "process.cwd()"`) || strings.Count(s, "serverName") != 1 {
 		t.Errorf("patch list:\n%s", s)
+	}
+}
+
+// Every skill on for the agents named at once, and off again; an agent not
+// named keeps what it has (#443).
+func TestEverySkillAgents(t *testing.T) {
+	h := sandbox(t)
+	src := filepath.Join(h, "src/skills")
+	skill(t, filepath.Join(src, "pdf"), "pdf", "Read PDFs")
+	skill(t, filepath.Join(src, "xlsx"), "xlsx", "Sheets")
+	ok(t)(InstallSkills(src, []string{"pdf"}, []string{"gemini"}))
+	ok(t)(InstallSkills(src, []string{"xlsx"}, nil))
+	has := func(d string) bool { _, err := os.Stat(filepath.Join(h, d, "SKILL.md")); return err == nil }
+	ok(t)(EverySkillAgents([]string{"claude", "codex"}, true))
+	for _, d := range []string{".claude/skills/pdf", ".codex/skills/pdf", ".gemini/skills/pdf", ".claude/skills/xlsx", ".codex/skills/xlsx"} {
+		if !has(d) {
+			t.Errorf("%s isn't there", d)
+		}
+	}
+	ok(t)(EverySkillAgents([]string{"claude", "codex"}, false))
+	for _, d := range []string{".claude/skills/pdf", ".codex/skills/pdf", ".claude/skills/xlsx", ".codex/skills/xlsx"} {
+		if has(d) {
+			t.Errorf("%s is still there", d)
+		}
+	}
+	if !has(".gemini/skills/pdf") {
+		t.Error("gemini, not named, lost pdf")
+	}
+	v, _ := Read(nil)
+	for _, s := range v.Skills {
+		if want := map[string][]string{"pdf": {"gemini"}, "xlsx": {}}[s.Name]; !slices.Equal(s.Agents, want) {
+			t.Errorf("%s: %v, want %v", s.Name, s.Agents, want)
+		}
+	}
+	if _, err := EverySkillAgents(nil, true); err == nil {
+		t.Error("no agents named was taken")
+	}
+}
+
+// A repository's skills on for an agent at once, and off again, from its
+// group's chips; a skill not named, and an agent not named, keep theirs (#787).
+func TestSomeSkillsAgents(t *testing.T) {
+	h := sandbox(t)
+	src := filepath.Join(h, "src/skills")
+	for _, n := range []string{"pdf", "xlsx", "docx"} {
+		skill(t, filepath.Join(src, n), n, n)
+	}
+	ok(t)(InstallSkills(src, []string{"pdf", "xlsx"}, []string{"gemini"}))
+	ok(t)(InstallSkills(src, []string{"docx"}, []string{"claude"}))
+	has := func(d string) bool { _, err := os.Stat(filepath.Join(h, d, "SKILL.md")); return err == nil }
+	agents := func() map[string][]string {
+		v, _ := Read(nil)
+		m := map[string][]string{}
+		for _, s := range v.Skills {
+			m[s.Name] = s.Agents
+		}
+		return m
+	}
+	ok(t)(SomeSkillsAgents([]string{"pdf", "xlsx"}, []string{"claude"}, true))
+	if m := agents(); !slices.Equal(m["pdf"], []string{"claude", "gemini"}) || !slices.Equal(m["xlsx"], []string{"claude", "gemini"}) || !slices.Equal(m["docx"], []string{"claude"}) {
+		t.Errorf("on for claude: %v", m)
+	}
+	if !has(".claude/skills/pdf") || !has(".claude/skills/xlsx") {
+		t.Error("claude wasn't given pdf and xlsx")
+	}
+	ok(t)(SomeSkillsAgents([]string{"pdf", "xlsx"}, []string{"claude", "gemini"}, false))
+	if m := agents(); len(m["pdf"]) != 0 || len(m["xlsx"]) != 0 || !slices.Equal(m["docx"], []string{"claude"}) {
+		t.Errorf("off: %v", m)
+	}
+	if has(".claude/skills/pdf") || has(".gemini/skills/xlsx") || !has(".claude/skills/docx") {
+		t.Error("the agents' folders don't match")
+	}
+	if _, err := SomeSkillsAgents([]string{"nope"}, []string{"claude"}, true); err == nil {
+		t.Error("a skill not in the library was taken")
+	}
+	if _, err := SomeSkillsAgents(nil, []string{"claude"}, true); err == nil {
+		t.Error("no skills named was taken as every skill")
+	}
+}
+
+// Every server on for one agent at once, and off again; the others keep
+// theirs, and an agent isn't given a server it can't reach (#475).
+func TestEveryServerAgents(t *testing.T) {
+	h := sandbox(t)
+	ok(t)(SaveServer("", Server{Name: "fs", Transport: "stdio", Command: "fs", Agents: []string{"claude"}}))
+	ok(t)(SaveServer("", Server{Name: "web", Transport: "sse", URL: "http://localhost:9/sse", Agents: []string{"claude"}}))
+	ok(t)(EveryServerAgents([]string{"codex"}, true))
+	agents := func() map[string][]string {
+		v, _ := Read(nil)
+		m := map[string][]string{}
+		for _, s := range v.Servers {
+			m[s.Name] = s.Agents
+		}
+		return m
+	}
+	if m := agents(); !slices.Equal(m["fs"], []string{"claude", "codex"}) || !slices.Equal(m["web"], []string{"claude"}) {
+		t.Errorf("on for codex: %v", m)
+	}
+	if c := read(t, filepath.Join(h, ".codex/config.toml")); !strings.Contains(c, "[mcp_servers.fs]") || strings.Contains(c, "web") {
+		t.Errorf("codex's config:\n%s", c)
+	}
+	ok(t)(EveryServerAgents([]string{"claude"}, false))
+	if m := agents(); !slices.Equal(m["fs"], []string{"codex"}) || len(m["web"]) != 0 {
+		t.Errorf("off for claude: %v", m)
+	}
+	if c := read(t, filepath.Join(h, ".claude.json")); strings.Contains(c, `"fs"`) || strings.Contains(c, `"web"`) {
+		t.Errorf("claude still has them:\n%s", c)
+	}
+	if !strings.Contains(read(t, filepath.Join(h, ".codex/config.toml")), "[mcp_servers.fs]") {
+		t.Error("codex, not named, lost fs")
+	}
+	if _, err := EveryServerAgents(nil, false); err == nil {
+		t.Error("no agents named was taken")
+	}
+}
+
+// Fate on Discord: with the Default set empty, a set made and written and
+// Claude Code switched on left CLAUDE.md as it was, since the agents read
+// the empty Default. A set added, or one given text, while the set in use
+// is empty is the one the agents read; one in use with text stays so.
+func TestInstructionSetTakesAnEmptyOnesPlace(t *testing.T) {
+	h := sandbox(t)
+	md := filepath.Join(h, ".claude/CLAUDE.md")
+	write(t, md, "# Mine\n")
+	ok(t)(SaveInstructions(InstructionsChange{Create: &InstrSet{ID: "work", Name: "Work"}}))
+	work := "Company rules."
+	ok(t)(SaveInstructions(InstructionsChange{Texts: map[string]*string{"work": &work}}))
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{"claude"}}))
+	if s := read(t, md); !strings.HasPrefix(s, "# Mine\n\n"+blockBegin+"\nCompany rules.\n"+blockEnd) {
+		t.Errorf("CLAUDE.md:\n%s", s)
+	}
+	// off: magpie's part out, the user's own as it was
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{}}))
+	if s := read(t, md); s != "# Mine\n" {
+		t.Errorf("switched off:\n%q", s)
+	}
+	ok(t)(SaveInstructions(InstructionsChange{Agents: []string{"claude"}}))
+
+	// a set in use with text isn't left for a new one
+	ok(t)(SaveInstructions(InstructionsChange{Create: &InstrSet{ID: "home", Name: "Home"}}))
+	home := "Home rules."
+	ok(t)(SaveInstructions(InstructionsChange{Texts: map[string]*string{"home": &home}}))
+	if s := read(t, md); !strings.Contains(s, "Company rules.") || strings.Contains(s, "Home") {
+		t.Errorf("a set with text was left for another:\n%s", s)
+	}
+
+	// an existing set given text while the set in use is emptied
+	empty := ""
+	ok(t)(SaveInstructions(InstructionsChange{Texts: map[string]*string{"work": &empty}}))
+	ok(t)(SaveInstructions(InstructionsChange{Texts: map[string]*string{"home": &home}}))
+	if s := read(t, md); !strings.Contains(s, "Home rules.") {
+		t.Errorf("the set given text wasn't read:\n%s", s)
 	}
 }

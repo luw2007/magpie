@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,12 @@ type fakeGoogle struct {
 	onboard   string // onboardUser's reply
 	quota     string // retrieveUserQuota's reply
 	flags     string // listExperiments' reply
+	models    string // fetchAvailableModels' reply
+	summary   string // retrieveUserQuotaSummary's reply
+	// fetchAvailableModels' status and reply for the body asked, in place
+	// of models
+	modelsFor func(body map[string]any) (int, string)
+	fetches   []map[string]any
 	exps      []map[string]any
 	heads     map[string]http.Header
 }
@@ -61,6 +68,15 @@ func (f *fakeGoogle) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, f.onboard)
 	case strings.HasSuffix(r.URL.Path, ":retrieveUserQuota") && f.quota != "":
 		io.WriteString(w, f.quota)
+	case strings.HasSuffix(r.URL.Path, ":retrieveUserQuotaSummary") && f.summary != "":
+		io.WriteString(w, f.summary)
+	case strings.HasSuffix(r.URL.Path, ":fetchAvailableModels") && f.modelsFor != nil:
+		f.fetches = append(f.fetches, body)
+		code, reply := f.modelsFor(body)
+		w.WriteHeader(code)
+		io.WriteString(w, reply)
+	case strings.HasSuffix(r.URL.Path, ":fetchAvailableModels") && f.models != "":
+		io.WriteString(w, f.models)
 	case strings.HasSuffix(r.URL.Path, ":listExperiments") && f.flags != "":
 		f.exps = append(f.exps, body)
 		io.WriteString(w, f.flags)
@@ -75,6 +91,7 @@ func googleSandbox(t *testing.T, f *fakeGoogle) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows's home
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	srv := httptest.NewServer(f)
@@ -382,5 +399,255 @@ func TestAntigravityProjectAndEnvelope(t *testing.T) {
 	json.Unmarshal(b2, &env2)
 	if env2["request"].(map[string]any)["sessionId"] != r["sessionId"] {
 		t.Error("session changed between turns")
+	}
+}
+
+// An Antigravity account's windows are one a model, each naming its family
+// (01huadalang on Discord: several accounts, every level of every model,
+// read as bloat), so the GUI can show one figure a family; the windows
+// themselves, and the model each counts for routing, stay as they were.
+func TestAntigravityQuotaFamilies(t *testing.T) {
+	f := &fakeGoogle{
+		load:    `{"allowedTiers":[{"id":"free-tier","name":"Antigravity","isDefault":true}]}`,
+		onboard: `{"done":true,"response":{"cloudaicompanionProject":"ag-proj"}}`,
+		models: `{"models":{
+			"gemini-3.1-pro-high":{"displayName":"Gemini 3.1 Pro (High)","quotaInfo":{"remainingFraction":0.4,"resetTime":"2099-01-01T00:00:00Z"}},
+			"gemini-3.1-pro-low":{"displayName":"Gemini 3.1 Pro (Low)","quotaInfo":{"remainingFraction":1}},
+			"gemini-3.7-flash-medium":{"displayName":"Gemini 3.7 Flash (Medium)","quotaInfo":{}},
+			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","quotaInfo":{"remainingFraction":0.75}},
+			"claude-sonnet-4-6":{"quotaInfo":{"remainingFraction":0.9}},
+			"gpt-oss-120b-medium":{"displayName":"GPT-OSS 120B (Medium)","quotaInfo":{"remainingFraction":1}},
+			"tab_flash_lite_preview":{"quotaInfo":{"remainingFraction":1}}}}`,
+	}
+	googleSandbox(t, f)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ag", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	if err := addGoogleLogin("antigravity", "ag@example.com", "", auth); err != nil {
+		t.Fatal(err)
+	}
+	q := googleLogins("antigravity")[0].acct.quota(context.Background(), "")
+	var got []string
+	for _, w := range q.Windows {
+		got = append(got, fmt.Sprintf("%s|%s|%s|%.0f", w.Model, w.Name, w.Family, w.Used))
+	}
+	want := []string{
+		"claude-opus-4-6-thinking|Claude Opus 4.6 (Thinking)|Claude|25",
+		"claude-sonnet-4-6|claude-sonnet-4-6|Claude|10",
+		"gemini-3.1-pro-high|Gemini 3.1 Pro (High)|Gemini|60",
+		"gemini-3.1-pro-low|Gemini 3.1 Pro (Low)|Gemini|0",
+		"gemini-3.7-flash-medium|Gemini 3.7 Flash (Medium)|Gemini|100",
+		"gpt-oss-120b-medium|GPT-OSS 120B (Medium)|GPT-OSS|0",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("windows\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	b, _ := json.Marshal(q.Windows[0])
+	if !strings.Contains(string(b), `"family":"Claude"`) {
+		t.Errorf("json %s", b)
+	}
+	// a family Antigravity may add later goes by its name's first word
+	for _, m := range []catalog.Model{{ID: "gemini-3-flash"}, {ID: "claude-x", Name: "Other"}, {ID: "kimi-k2", Name: "Kimi K2"}, {ID: "glm-5"}} {
+		fam := antigravityVendor(m)
+		if want := map[string]string{"gemini-3-flash": "Gemini", "claude-x": "Claude", "kimi-k2": "Kimi", "glm-5": "glm"}[m.ID]; fam != want {
+			t.Errorf("family of %s = %q, want %q", m.ID, fam, want)
+		}
+	}
+}
+
+// An Antigravity account's models draw on a quota a group, each with a
+// 5-hour and a weekly window (a user on Discord: 这3个模型都是一样的，没必
+// 要分开…多加个7day 条就好); fetchAvailableModels tells only the 5-hour one,
+// model by model. The groups' windows, from retrieveUserQuotaSummary, come
+// after the models', each model naming its group, and a page of text shows
+// the groups' windows in place of the models'.
+func TestAntigravityQuotaPools(t *testing.T) {
+	f := &fakeGoogle{
+		load:    `{"allowedTiers":[{"id":"free-tier","name":"Antigravity","isDefault":true}]}`,
+		onboard: `{"done":true,"response":{"cloudaicompanionProject":"ag-proj"}}`,
+		models: `{"models":{
+			"gemini-3.1-pro-high":{"displayName":"Gemini 3.1 Pro (High)","quotaInfo":{"remainingFraction":0.9545545,"resetTime":"2099-01-01T05:00:00Z"}},
+			"gemini-3-flash":{"displayName":"Gemini 3 Flash","quotaInfo":{"remainingFraction":0.9545545,"resetTime":"2099-01-01T05:00:00Z"}},
+			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","quotaInfo":{"remainingFraction":0.7}},
+			"gpt-oss-120b-medium":{"displayName":"GPT-OSS 120B (Medium)","quotaInfo":{"remainingFraction":0.7}}}}`,
+		// as Antigravity answers (Antigravity-Manager#3185)
+		summary: `{"groups":[
+			{"displayName":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[
+				{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.75,"resetTime":"2099-01-07T00:00:00Z","displayName":"Weekly Limit"},
+				{"bucketId":"gemini-5h","window":"5h","remainingFraction":0.9545545,"resetTime":"2099-01-01T05:00:00Z","displayName":"Five Hour Limit"}]},
+			{"displayName":"Claude and GPT models","description":"Models within this group: Claude Opus, Claude Sonnet, GPT-OSS","buckets":[
+				{"bucketId":"3p-weekly","window":"weekly","resetTime":"2099-01-06T00:00:00Z"},
+				{"bucketId":"3p-5h","window":"5h","remainingFraction":0.7,"resetTime":"2099-01-01T03:00:00Z"},
+				{"bucketId":"3p-x","window":"5h","remainingFraction":1,"disabled":true}]}]}`,
+	}
+	googleSandbox(t, f)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ag", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	if err := addGoogleLogin("antigravity", "ag@example.com", "", auth); err != nil {
+		t.Fatal(err)
+	}
+	q := googleLogins("antigravity")[0].acct.quota(context.Background(), "")
+	line := func(w QuotaWindow) string {
+		at := ""
+		if w.ResetsAt != nil {
+			at = w.ResetsAt.UTC().Format("01-02T15")
+		}
+		return fmt.Sprintf("%s|%s|%s|%s|%.0f|%s|%v", w.Model, w.Name, w.Family, w.Pool, w.Used, at, w.Aside)
+	}
+	var got []string
+	for _, w := range q.Windows {
+		got = append(got, line(w))
+	}
+	want := []string{
+		"claude-opus-4-6-thinking|Claude Opus 4.6 (Thinking)|Claude|Claude & GPT|30||false",
+		"gemini-3-flash|Gemini 3 Flash|Gemini|Gemini|5|01-01T05|false",
+		"gemini-3.1-pro-high|Gemini 3.1 Pro (High)|Gemini|Gemini|5|01-01T05|false",
+		"gpt-oss-120b-medium|GPT-OSS 120B (Medium)|GPT-OSS|Claude & GPT|30||false",
+		"|7 days||Gemini|25|01-07T00|true",
+		"|5 hours||Gemini|5|01-01T05|true",
+		"|7 days||Claude & GPT|100|01-06T00|true", // none left: no fraction
+		"|5 hours||Claude & GPT|30|01-01T03|true",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("windows\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	b, _ := json.Marshal(q.Windows[4])
+	if !strings.Contains(string(b), `"pool":"Gemini"`) {
+		t.Errorf("json %s", b)
+	}
+	// routing reads the models' windows as it did; the pools' are aside
+	if a := allowanceOf(q.Windows, time.Now()); len(a) != 4 {
+		t.Errorf("allowance has %d limits, want the 4 models'", len(a))
+	}
+	// a model not enabled leaves its pool's windows as they were
+	kept := chosenWindows(q.Windows, map[string]bool{"gemini-3.1-pro-high": true}, nil)
+	if len(kept) != 5 {
+		t.Errorf("chosen windows: %d, want 1 model's and 4 pools'", len(kept))
+	}
+	if len(chosenWindows(q.Windows, map[string]bool{}, nil)) != len(q.Windows) {
+		t.Error("no model enabled: every window is kept")
+	}
+	got = nil
+	for _, w := range PooledWindows(q.Windows) {
+		got = append(got, w.Name)
+	}
+	if strings.Join(got, ",") != "Gemini · 7 days,Gemini · 5 hours,Claude & GPT · 7 days,Claude & GPT · 5 hours" {
+		t.Errorf("pooled = %v", got)
+	}
+
+	// no summary to be had: the models' windows alone, as before
+	f.mu.Lock()
+	f.summary = ""
+	f.mu.Unlock()
+	q = googleLogins("antigravity")[0].acct.quota(context.Background(), "")
+	if len(q.Windows) != 4 || q.Windows[0].Pool != "" || len(PooledWindows(q.Windows)) != 4 {
+		t.Errorf("without a summary: %+v", q.Windows)
+	}
+
+	// a summary with a group's week and not its 5 hours (#745): the
+	// group's models aren't put in it, so their 5 hours stay beside its week
+	f.mu.Lock()
+	f.summary = `{"groups":[
+		{"displayName":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[
+			{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.75,"resetTime":"2099-01-07T00:00:00Z"},
+			{"bucketId":"gemini-5h","window":"5h","remainingFraction":1,"disabled":true}]}]}`
+	f.mu.Unlock()
+	q = googleLogins("antigravity")[0].acct.quota(context.Background(), "")
+	got = nil
+	for _, w := range PooledWindows(q.Windows) {
+		got = append(got, w.Name+"|"+w.Pool)
+	}
+	if strings.Join(got, ",") != "Claude Opus 4.6 (Thinking)|,Gemini 3 Flash|,Gemini 3.1 Pro (High)|,GPT-OSS 120B (Medium)|,Gemini · 7 days|Gemini" {
+		t.Errorf("week alone: pooled = %v", got)
+	}
+}
+
+// #745 (werldl517-cyber): a pool's windows stand in for its models' only
+// for the spans the pool has; with only its week, a model's 5 hours stay.
+func TestPooledWindowsPartialAggregateKeepsModelFallback(t *testing.T) {
+	ws := []QuotaWindow{
+		{Name: "Gemini 3 Flash", Model: "gemini-3-flash", Pool: "Gemini", Span: 5 * time.Hour, Used: 40},
+		{Name: "7 days", Pool: "Gemini", Span: 7 * 24 * time.Hour, Aside: true, Used: 80},
+	}
+	got := PooledWindows(ws)
+	for _, w := range got {
+		t.Logf("name=%q model=%q pool=%q span=%s used=%.0f aside=%v", w.Name, w.Model, w.Pool, w.Span, w.Used, w.Aside)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d windows, want the 5h model fallback plus the 7d pool aggregate", len(got))
+	}
+
+	model := func(id string, span time.Duration) QuotaWindow {
+		return QuotaWindow{Name: id, Model: id, Pool: "Gemini", Span: span}
+	}
+	five := QuotaWindow{Name: "5 hours", Pool: "Gemini", Span: 5 * time.Hour, Aside: true}
+	week := QuotaWindow{Name: "7 days", Pool: "Gemini", Span: 7 * 24 * time.Hour, Aside: true}
+	for _, c := range []struct {
+		name string
+		ws   []QuotaWindow
+		want string
+	}{
+		{"5 hours and week", []QuotaWindow{model("a", 0), model("b", 0), week, five}, "Gemini · 7 days,Gemini · 5 hours"},
+		{"week alone", []QuotaWindow{model("a", 0), model("b", 5*time.Hour), week}, "a,b,Gemini · 7 days"},
+		{"5 hours alone", []QuotaWindow{model("a", 0), model("b", 0), five}, "Gemini · 5 hours"},
+		{"no pool windows", []QuotaWindow{model("a", 0), model("b", 0)}, "a,b"},
+	} {
+		var names []string
+		for _, w := range PooledWindows(c.ws) {
+			names = append(names, w.Name)
+		}
+		if strings.Join(names, ",") != c.want {
+			t.Errorf("%s: %v, want %s", c.name, names, c.want)
+		}
+	}
+}
+
+// Antigravity's list is taken as Antigravity gives it (0000FF on Discord:
+// Claude Opus 5.5 and Sonnet 5.5 in Antigravity, not in magpie): in its
+// picker's order, so a model it adds comes where it puts it, not after
+// older ones by id; with the context, output and images it says, so a
+// model it adds isn't given those of a model of that name elsewhere
+// (Anthropic's 1M for Claude), nor said to see when it doesn't.
+func TestAntigravityModelsAsItListsThem(t *testing.T) {
+	f := &fakeGoogle{
+		load:    `{"allowedTiers":[{"id":"free-tier","name":"Antigravity","isDefault":true}]}`,
+		onboard: `{"done":true,"response":{"cloudaicompanionProject":"ag-proj"}}`,
+		models: `{"models":{
+			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","maxTokens":250000,"maxOutputTokens":64000,"supportsImages":true,"quotaInfo":{"remainingFraction":1}},
+			"claude-opus-5-5":{"displayName":"Claude Opus 5.5","maxTokens":250000,"maxOutputTokens":64000,"supportsImages":true,"quotaInfo":{"remainingFraction":1}},
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","maxTokens":1048576,"maxOutputTokens":65536,"supportsImages":true,"quotaInfo":{"remainingFraction":1}},
+			"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","maxTokens":1048576,"maxOutputTokens":65536,"supportsImages":true,"quotaInfo":{"remainingFraction":1}},
+			"gemini-3.1-flash-lite":{"displayName":"Gemini 3.1 Flash Lite","maxTokens":1048576,"maxOutputTokens":65535,"quotaInfo":{"remainingFraction":1}},
+			"text-only-x":{"displayName":"Text Only","maxTokens":131072,"supportsImages":false,"quotaInfo":{"remainingFraction":1}}},
+			"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-3.8-flash-high","gemini-3.8-flash-low","claude-opus-5-5","claude-opus-4-6-thinking","text-only-x"]}]}]}`,
+	}
+	googleSandbox(t, f)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-ag", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	if err := addGoogleLogin("antigravity", "ag@example.com", "", auth); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := googleLogins("antigravity")[0].acct.models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range ms {
+		got = append(got, fmt.Sprintf("%s|%d|%d|%v", m.ID, m.Context, m.Output, m.Images))
+	}
+	want := []string{
+		"gemini-3.8-flash-high|1048576|65536|true",
+		"gemini-3.8-flash-low|1048576|65536|true",
+		"claude-opus-5-5|250000|64000|true",
+		"claude-opus-4-6-thinking|250000|64000|true",
+		"text-only-x|131072|0|false",
+		"gemini-3.1-flash-lite|1048576|65535|true", // not in the picker: after, and it says nothing of images
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("models\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// what magpie offers: the family first, Claude 5.5 before 4.6, Antigravity's 250k kept
+	var offered []string
+	for _, m := range collapseAntigravityModels(catalog.Decorate(ms, []catalog.Model{{ID: "claude-opus-5-5", Context: 1000000, Output: 128000}})) {
+		offered = append(offered, fmt.Sprintf("%s|%d", m.ID, m.Context))
+	}
+	if w := "gemini-3.8-flash|1048576 claude-opus-5-5|250000 claude-opus-4-6-thinking|250000 text-only-x|131072 gemini-3.1-flash-lite|1048576"; strings.Join(offered, " ") != w {
+		t.Errorf("offered %v\nwant %s", offered, w)
 	}
 }

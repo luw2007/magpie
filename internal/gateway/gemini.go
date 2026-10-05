@@ -82,6 +82,29 @@ type gRequest struct {
 	} `json:"generationConfig,omitempty"`
 }
 
+// buildGemini is a generateContent body for an upstream that speaks Gemini
+// itself (Factory's /api/llm/g). The contents are the ones Code Assist
+// sends inside its envelope. systemInstruction has no role: droid sends
+// {parts:[{text}]}. droid sends no stream field; Factory answers SSE either
+// way, and a client that asked for JSON is given it after the fact.
+func buildGemini(r *Request, model string) ([]byte, error) {
+	var wrap struct {
+		Request map[string]any `json:"request"`
+	}
+	if err := json.Unmarshal(buildCodeAssistSent(r, model, "gemini"), &wrap); err != nil {
+		return nil, err
+	}
+	if wrap.Request == nil {
+		return nil, fmt.Errorf("empty Gemini request")
+	}
+	if si, ok := wrap.Request["systemInstruction"].(map[string]any); ok {
+		delete(si, "role")
+	}
+	wrap.Request["model"] = model
+	delete(wrap.Request, "stream")
+	return json.Marshal(wrap.Request)
+}
+
 func parseGemini(body []byte) (*Request, error) {
 	var g gRequest
 	if err := json.Unmarshal(body, &g); err != nil {
@@ -123,7 +146,24 @@ func parseGemini(body []byte) (*Request, error) {
 			role = "assistant"
 		}
 		msg := Message{Role: role}
+		// a function's result is the user's side of the turn whatever role
+		// it came under: Antigravity CLI sends its tools' results as
+		// "model" (#650), and kept there the request ends with the model's
+		// turn, which Antigravity turns away
+		turn := func(role string) {
+			if msg.Role != role {
+				if len(msg.Parts) > 0 {
+					r.Messages = append(r.Messages, msg)
+				}
+				msg = Message{Role: role}
+			}
+		}
 		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				turn("user")
+			} else {
+				turn(role)
+			}
 			switch {
 			case p.FunctionCall != nil:
 				fc := p.FunctionCall
@@ -380,6 +420,10 @@ func geminiParts(parts []Part) []map[string]any {
 			if p.Text != "" {
 				out = append(out, map[string]any{"text": p.Text, "thought": true})
 			}
+		case Image:
+			if p.Data != "" {
+				out = append(out, map[string]any{"inlineData": map[string]any{"mimeType": p.MediaType, "data": p.Data}})
+			}
 		case ToolCall:
 			id := p.ID
 			if id == "" {
@@ -420,6 +464,11 @@ func (e *geminiEncoder) chunk(parts []map[string]any, finish string, usage map[s
 	e.w.event("", msg)
 }
 
+// keepalive sends nothing: Google's SDK takes a stream's "data: " lines
+// one after another from the front and gets stuck on anything else, a
+// comment too, and there is no event without content to send instead.
+func (e *geminiEncoder) keepalive() {}
+
 func (e *geminiEncoder) start(ev Event) {
 	if e.started {
 		return
@@ -459,6 +508,9 @@ func (e *geminiEncoder) event(ev Event) {
 	case KThink:
 		e.flushTool()
 		e.chunk(geminiParts([]Part{{Kind: Thinking, Text: ev.Text}}), "", nil)
+	case KImage:
+		e.flushTool()
+		e.chunk(geminiParts([]Part{{Kind: Image, MediaType: ev.Name, Data: ev.Text}}), "", nil)
 	case KToolStart:
 		e.flushTool()
 		e.tool = &Part{Kind: ToolCall, ID: ev.ID, Name: ev.Name}

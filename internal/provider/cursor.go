@@ -1,5 +1,14 @@
 package provider
 
+// PLUGIN-SERVED (see AGENTS.md): Cursor ("cursor") is a deprecated built-in
+// subscription served by its plugin, @magpie-community/opencode-cursor-auth,
+// once moved onto it (provider.Moved; the default for a new sign-in). A
+// moved one's sign-ins, models, requests and usage are all the plugin's,
+// never this code's (only the move, in migrate*.go, still reads its
+// accounts). A fix here alone doesn't reach those users; fix the plugin
+// (github.com/magpie-community/plugins, packages/cursor) and raise the
+// mover's min in internal/provider/migrate_side.go.
+
 // A Cursor subscription is served through the API cursor-agent talks to
 // (gateway/cursor.go), with the account it is signed in to; here is who that
 // account is, the models it offers, the sign-in, which is cursor-agent's own
@@ -11,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/proc"
 )
@@ -53,7 +64,13 @@ var cursorStatus = &cliIdentity{name: "cursor", exe: func() string { return Curs
 // cursorIdentity is who Cursor's CLI says is signed in; see cliIdentity.
 func cursorIdentity() (user, plan string, ok bool) { return cursorStatus.get() }
 
-func forgetCursorStatus() { cursorStatus.forget() }
+// forgetCursorStatus has who is signed in, and the token, read afresh.
+func forgetCursorStatus() {
+	cursorStatus.forget()
+	cursorTok.Lock()
+	cursorTok.at = time.Time{}
+	cursorTok.Unlock()
+}
 
 func askCursorIdentity() (user, plan string, ok bool) {
 	user, plan, ok, _ = askCursorStatus()
@@ -71,7 +88,7 @@ func askCursorStatus() (user, plan string, ok bool, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := agentCommand(ctx, path, "about", "--format", "json").Output()
+	out, err := agentProbe(ctx, path, "about", "--format", "json").Output()
 	user, plan, said := parseCursorAbout(out)
 	switch {
 	case user != "":
@@ -118,6 +135,10 @@ func cursorAccount() (Provider, bool) {
 		if err != nil {
 			return nil, err
 		}
+		// and the picker's models `cursor-agent models` leaves out
+		if tok, err := cursorToken(); err == nil {
+			ms = append(ms, cursorPickerModels(ctx, tok, ms)...)
+		}
 		return ms, catalog.SaveLive("cursor", "", ms)
 	}
 	return Provider{ID: "cursor", Name: "Cursor", Icon: "cursor", Website: "https://cursor.com", Account: acct}, true
@@ -137,7 +158,7 @@ func cursorModels(ctx context.Context) ([]catalog.Model, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := agentCommand(ctx, path, "models").Output()
+	out, err := agentProbe(ctx, path, "models").Output()
 	if err != nil {
 		return nil, errorf("cursor-agent models: %v", err)
 	}
@@ -223,8 +244,27 @@ func startCursorSignIn(s *signInFlow) error {
 	return runCLISignIn(s, "cursor-agent login", append(os.Environ(), "NO_OPEN_BROWSER=1"), true, nil, func() (string, string, bool) {
 		forgetCursorStatus()
 		return askCursorIdentity()
-	}, path, "login")
+	}, cursorLinkWhole, path, "login")
 }
+
+// cursorLinkWhole says a link from `cursor-agent login` carries what
+// cursor.com/loginDeepControl signs in with: a link cut short where the
+// CLI broke its line (#261: "https://cursor.com/loginDeepControl?") gets
+// "This sign-in link is incomplete or has expired" from the page.
+func cursorLinkWhole(link string) bool {
+	u, err := url.Parse(link)
+	if err != nil {
+		return false
+	}
+	q := u.Query()
+	// The CLI may wrap after the UUID, with the remaining login parameters
+	// arriving in another pipe write. Credentials alone do not finish its URL.
+	return q.Get("challenge") != "" && cursorLoginUUID.MatchString(q.Get("uuid")) &&
+		q.Get("mode") == "login" && q.Get("redirectTarget") == "cli" &&
+		(q.Get("supportsSelectedTeamLogin") == "true" || q.Get("supportsSelectedTeamLogin") == "false")
+}
+
+var cursorLoginUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // cursorVersionFallback is the CLI version said when no install names one.
 const cursorVersionFallback = "2026.09.23-86fc751"
@@ -247,7 +287,7 @@ func CursorClientVersion() string {
 		home, _ := os.UserHomeDir()
 		dirs := []string{filepath.Join(home, ".local", "share", "cursor-agent", "versions")}
 		if runtime.GOOS == "windows" {
-			dirs = append(dirs, filepath.Join(os.Getenv("LOCALAPPDATA"), "cursor-agent", "versions"))
+			dirs = append(dirs, filepath.Join(appdir.Getenv("LOCALAPPDATA"), "cursor-agent", "versions"))
 		}
 		for _, dir := range dirs {
 			es, _ := os.ReadDir(dir)
@@ -269,7 +309,7 @@ func cursorAuthFile() string {
 	home, _ := os.UserHomeDir()
 	switch runtime.GOOS {
 	case "windows":
-		dir := os.Getenv("APPDATA")
+		dir := appdir.Getenv("APPDATA")
 		if dir == "" {
 			dir = filepath.Join(home, "AppData", "Roaming")
 		}
@@ -277,18 +317,50 @@ func cursorAuthFile() string {
 	case "darwin":
 		return filepath.Join(home, ".cursor", "auth.json")
 	}
-	dir := os.Getenv("XDG_CONFIG_HOME")
+	dir := appdir.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
 		dir = filepath.Join(home, ".config")
 	}
 	return filepath.Join(dir, "cursor", "auth.json")
 }
 
+// cursorTok is the token cursor-agent keeps in the Keychain as last read,
+// and when: every look at whether Cursor is signed in ran `security`, a
+// plugin's accounts for each build of the providers (#746).
+var cursorTok struct {
+	sync.Mutex
+	tok string
+	at  time.Time
+}
+
+// cursorTokenTTL is how long a token read from the Keychain is taken as
+// it: a sign-in or out in magpie reads it afresh (forgetCursorStatus), one
+// made in cursor-agent is seen within it.
+const cursorTokenTTL = 10 * time.Second
+
+// cursorKeychainToken is cursor-agent's token in the Keychain, "" for none;
+// fresh reads it whatever was read last.
+func cursorKeychainToken(fresh bool) string {
+	cursorTok.Lock()
+	defer cursorTok.Unlock()
+	if !fresh && time.Since(cursorTok.at) < cursorTokenTTL {
+		return cursorTok.tok
+	}
+	out, err := proc.Command("security", "find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w").Output()
+	cursorTok.tok, cursorTok.at = "", time.Now()
+	if err == nil {
+		cursorTok.tok = strings.TrimSpace(string(out))
+	}
+	return cursorTok.tok
+}
+
 // readCursorToken is the access token cursor-agent signed in with.
-func readCursorToken() string {
+func readCursorToken() string { return cursorTokenOf(false) }
+
+// cursorTokenOf is readCursorToken, fresh from the Keychain when asked.
+func cursorTokenOf(fresh bool) string {
 	if runtime.GOOS == "darwin" {
-		out, err := proc.Command("security", "find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w").Output()
-		if t := strings.TrimSpace(string(out)); err == nil && t != "" {
+		if t := cursorKeychainToken(fresh); t != "" {
 			return t
 		}
 	}
@@ -333,13 +405,13 @@ func CursorToken() (string, error) {
 	}
 	if path := CursorExecutable(); path != "" {
 		cursorRefresh.Lock()
-		if t := readCursorToken(); t != tok && t != "" {
+		if t := cursorTokenOf(true); t != tok && t != "" {
 			tok = t // renewed while this waited
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = agentCommand(ctx, path, "status").Run()
+			_ = agentProbe(ctx, path, "status").Run()
 			cancel()
-			tok = readCursorToken()
+			tok = cursorTokenOf(true)
 		}
 		cursorRefresh.Unlock()
 	}

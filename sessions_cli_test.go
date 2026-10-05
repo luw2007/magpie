@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // sessionsHome is a sandbox HOME with the sessions package's fixtures as
@@ -19,14 +21,17 @@ func sessionsHome(t *testing.T) time.Time {
 	t.Helper()
 	h := t.TempDir()
 	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
 	// OpenCode's and Pi's folders in the sandbox too (HOME isn't the home
 	// on Windows)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(h, ".local", "share"))
+	for _, k := range agentenv.Vars {
+		t.Setenv(k, "")
+	}
 	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(h, ".pi", "agent"))
-	t.Setenv("OPENCODE_DB", "")
-	t.Setenv("PI_CODING_AGENT_SESSION_DIR", "")
+
 	for from, env := range map[string]string{"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"} {
 		dir := filepath.Join(h, "."+from)
 		if err := os.CopyFS(dir, os.DirFS(filepath.Join("internal", "sessions", "testdata", from))); err != nil {
@@ -36,7 +41,7 @@ func sessionsHome(t *testing.T) time.Time {
 	}
 	oldZone, oldPrice := time.Local, sessions.PriceOf
 	time.Local = time.UTC
-	sessions.PriceOf = func(m string) (catalog.Price, bool) {
+	sessions.PriceOf = func(_ settings.Settings, m string) (catalog.Price, bool) {
 		switch m {
 		case "claude-opus-5-5":
 			return catalog.Price{Input: 4, Output: 20, CacheRead: 0.2, CacheWrite: 5}, true
@@ -46,8 +51,10 @@ func sessionsHome(t *testing.T) time.Time {
 		return catalog.Price{}, false
 	}
 	t.Cleanup(func() {
-		time.Local, sessions.PriceOf = oldZone, oldPrice
+		// the index is written behind the page: let that write finish before
+		// the zone it reads (a stat of the file it writes) goes back
 		sessions.Reset()
+		time.Local, sessions.PriceOf = oldZone, oldPrice
 	})
 	sessions.Reset()
 	return time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
@@ -121,5 +128,14 @@ func TestSessionsCmd(t *testing.T) {
 	}
 	if err := sessionsTo(&b, []string{"--days", "week"}, now); err == nil {
 		t.Error("--days week taken")
+	}
+}
+
+// The hit rate is of all the prompts came to: what was written to the
+// cache counts in it, as Input leaves it out — a prompt written again at
+// every turn showed near 100% otherwise.
+func TestHitRateCountsCacheWrites(t *testing.T) {
+	if got := hitRate(sessions.Tokens{Input: 10, CacheRead: 20, CacheWrite: 70}); !strings.Contains(got, "(20% hit)") {
+		t.Errorf("hitRate = %q, want 20%%", got)
 	}
 }

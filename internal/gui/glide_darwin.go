@@ -4,9 +4,26 @@ package gui
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework Cocoa -framework QuartzCore
+#cgo LDFLAGS: -framework Cocoa -framework QuartzCore -framework WebKit
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#import <WebKit/WebKit.h>
+
+// The text size is the webview's page zoom, Safari's Cmd-+: the page is laid
+// out again in larger CSS pixels. Wails' own zoom on the Mac is the
+// webview's magnification, a pinch that lays nothing out again and scrolls
+// the page sideways.
+static void setPageZoom(void *w, double z) {
+	NSWindow *win = (NSWindow *)w;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if (![win respondsToSelector:@selector(webView)]) return;
+		id web = [win performSelector:@selector(webView)];
+		if (![web isKindOfClass:[WKWebView class]]) return;
+		if (@available(macOS 11.0, *)) {
+			((WKWebView *)web).pageZoom = z;
+		}
+	});
+}
 
 // The panel hangs from the menu bar, so its top edge stays where it is and
 // the bottom moves; the system animates the frame on its own display clock.
@@ -94,7 +111,11 @@ static void setDock(int on, int front) {
 */
 import "C"
 
-import "github.com/wailsapp/wails/v3/pkg/application"
+import (
+	"unsafe"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
+)
 
 // glidePanel moves the shown panel to height, its top edge held under the
 // menu bar. It says false when it can't, for the caller to size it plainly.
@@ -110,7 +131,16 @@ func (h *host) glidePanel(height int, g Glide) bool {
 
 // TintPanel paints the panel's tint under the page, fading to it over ms.
 func (h *host) TintPanel(c [4]uint8, ms int) bool {
-	w := h.panel.NativeWindow()
+	// tintPanel waits for the main thread, so it can't run on it; winMu
+	// keeps lightweight mode from letting the panel go meanwhile
+	h.winMu.Lock()
+	defer h.winMu.Unlock()
+	w := application.InvokeSyncWithResult(func() unsafe.Pointer {
+		if h.panel == nil {
+			return nil
+		}
+		return h.panel.NativeWindow()
+	})
 	if w == nil {
 		return false
 	}
@@ -133,4 +163,11 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// setPageZoom zooms w's page to z, the text size.
+func setPageZoom(w *application.WebviewWindow, z float64) {
+	if p := w.NativeWindow(); p != nil {
+		C.setPageZoom(p, C.double(z))
+	}
 }

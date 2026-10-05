@@ -2,7 +2,6 @@ package provider
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -43,18 +42,7 @@ type QuotaPool struct {
 }
 
 func usageConfig() (file, error) {
-	var f file
-	b, err := os.ReadFile(Path())
-	if errors.Is(err, os.ErrNotExist) {
-		return f, nil
-	}
-	if err != nil {
-		return f, err
-	}
-	if err = json.Unmarshal(b, &f); err != nil {
-		return f, fmt.Errorf("read providers configuration: %w", err)
-	}
-	return f, nil
+	return read()
 }
 
 func UsageSources() []UsageSource { return load().Sources }

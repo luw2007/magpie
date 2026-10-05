@@ -71,6 +71,45 @@ func TestResponsesEffortReachesChatVendor(t *testing.T) {
 	}
 }
 
+// A model its maker lists with a thinking switch alone — Xiaomi's
+// mimo-v2.6-flash, served here by a relay — is sent no more than high: an
+// agent asking max or xhigh of it got Xiaomi's 400 (#214). What it may take
+// below that goes as asked, as does max to a model no one lists.
+func TestSwitchModelSentNoMoreThanHigh(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"id":"c1","model":"mimo-v2.6-flash","choices":[{"delta":{"role":"assistant","content":"hi"}}]}`,
+		`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`)}
+	up := setup(t, provider.Chat, f)
+	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755)
+	os.WriteFile(catalog.CachePath(), []byte(`{
+	  "xiaomi":{"models":{"mimo-v2.6-flash":{"id":"mimo-v2.6-flash","reasoning":true,"reasoning_options":[{"type":"toggle"}]}}},
+	  "llmgateway":{"models":{"mimo-v2.6-flash":{"id":"mimo-v2.6-flash","reasoning_options":[{"type":"effort","values":["none","low","medium","high","xhigh","max"]}]}}},
+	  "zai":{"models":{"glm-5.3-flash":{"id":"glm-5.3-flash","reasoning_options":[{"type":"effort","values":["low","high","max"]}]}}}}`), 0o644)
+	catalog.Reset()
+	t.Cleanup(catalog.Reset)
+	if err := provider.Save(provider.Provider{ID: "volc", Name: "Volc", Key: "k", Chat: up.URL + "/v1", Models: []string{"mimo-v2.6-flash", "glm-5.3-flash", "other"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ model, effort, sent string }{
+		{"volc/mimo-v2.6-flash", "max", "high"},
+		{"volc/mimo-v2.6-flash", "xhigh", "high"},
+		{"volc/mimo-v2.6-flash", "low", "low"},
+		{"volc/glm-5.3-flash", "medium", "high"},
+		{"volc/other", "max", "max"},
+	} {
+		code, body := post(t, "/v1/responses", `{"model":"`+c.model+`","stream":true,"input":"hi","reasoning":{"effort":"`+c.effort+`"}}`)
+		if code != 200 {
+			t.Fatalf("status %d: %s", code, body)
+		}
+		var got map[string]any
+		json.Unmarshal(f.got, &got)
+		if got["reasoning_effort"] != c.sent {
+			t.Errorf("%s at %s: sent %s", c.model, c.effort, f.got)
+		}
+	}
+}
+
 // Each request's route keeps the reasoning the agent asked for, and each
 // try the reasoning its model was sent at, fitted to the model's levels;
 // the usage keeps what the model was sent at, by session.

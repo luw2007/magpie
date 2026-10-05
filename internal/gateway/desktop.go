@@ -122,9 +122,16 @@ func claudeModel(e provider.Entry) string {
 // gets its effort picker when the model has reasoning levels, else as it is
 // when it already reads as a Claude model's, else its alias (unprefixed
 // serves each again).
+//
+// A routing group is never listed as the Claude model its first member
+// is: Desktop names an id it finds in its own model catalog by the
+// catalog's name, so two groups led by claude-opus-5-5 read "Opus 5.5"
+// there like the model itself, and the group's id would change each time
+// its members are reordered. Its mythos-magpie-<n> keeps the picker and
+// the group's own name.
 func claudeLooking(e provider.Entry) string {
 	if len(e.Efforts) > 0 {
-		if m := claudeModel(e); m != "" {
+		if m := claudeModel(e); m != "" && e.Group == "" {
 			return "magpie-" + aliasNumber(e.ID) + desktopClaudeInfix + m
 		}
 		return desktopEffortAlias + aliasNumber(e.ID)
@@ -135,28 +142,129 @@ func claudeLooking(e provider.Entry) string {
 	return aliasFor(e.ID)
 }
 
-// desktopModels is /v1/models as Claude Desktop is shown it: every model by
-// an id it keeps (claudeLooking), named so the picker tells them apart —
-// it shows the name, not the id, and folds rows of one name into one entry.
+// DesktopID is the id Claude Desktop is shown e by, and its Code tab hands
+// Claude Code (claudeLooking).
+func DesktopID(e provider.Entry) string { return claudeLooking(e) }
+
+// desktopModels is /v1/models as Claude Desktop is shown it: every model
+// picked for it (provider.CatalogFor, the Agents page's model list) by an id
+// it keeps (claudeLooking), named by its own name alone (蓝猫: "DeepSeek
+// V4.1 Flash", not with its provider's beside it). Desktop shows the name,
+// not the id, and its description after it, so none is given; it folds rows
+// of one name into one entry, so two models of one name keep their
+// provider's after it (desktopNames).
 func desktopModels(entries []provider.Entry) []map[string]any {
-	names := map[string]int{}
-	for _, e := range entries {
-		names[desktopName(e)]++
+	names := desktopNames(entries)
+	// the tier each model stands in for: the user's pick (a model picked
+	// for two is tagged with the first, desktopTierTurn sends the other),
+	// else a Claude model's own
+	picked := DesktopTiers()
+	tierOf := map[string]string{}
+	for _, t := range DesktopTierNames {
+		if id := picked[t]; id != "" && tierOf[id] == "" {
+			tierOf[id] = t
+		}
 	}
 	data := make([]map[string]any, 0, len(entries))
-	for _, e := range entries {
+	for i, e := range entries {
 		m := modelObject(e)
-		name := desktopName(e)
-		if names[name] > 1 && name != e.ID {
-			name += " (" + e.ID + ")"
-		}
-		m["display_name"] = name
-		if m["id"] = claudeLooking(e); m["id"] != e.ID {
-			m["description"] = e.ID + " in magpie"
+		m["display_name"] = names[i]
+		m["id"] = claudeLooking(e)
+		if t := tierOf[e.ID]; t != "" {
+			m["anthropic_family_tier"], m["is_family_default"] = t, true
+		} else if t := claudeTier(e.ID); t != "" && picked[t] == "" {
+			m["anthropic_family_tier"] = t
 		}
 		data = append(data, m)
 	}
 	return data
+}
+
+// Claude Desktop's Code tab runs Claude Code with ANTHROPIC_DEFAULT_<TIER>_MODEL
+// set to "" for every tier, unless the gateway's /v1/models tags a model
+// with anthropic_family_tier (shortnameIdentityOverrides in its app.asar,
+// 2.7032: the first so tagged, or the one also is_family_default). Untagged,
+// a subagent on "sonnet" or "haiku" asked for Claude Code's own
+// claude-sonnet-… and that, unserved, went to the chat's model: every
+// subagent ran on it, whatever its tier (WilianWeng on Discord). The user
+// picks a model per tier in magpie; a Claude model magpie serves stands in
+// for its own tier while its tier has none picked.
+var DesktopTierNames = []string{"opus", "sonnet", "haiku", "fable"}
+
+func desktopTiersPath() string { return filepath.Join(settings.Dir(), "claude-desktop.tiers.json") }
+
+// DesktopTiers is the catalog id picked for each of Claude Desktop's tiers.
+func DesktopTiers() map[string]string {
+	out := map[string]string{}
+	b, err := os.ReadFile(desktopTiersPath())
+	if err == nil {
+		json.Unmarshal(b, &out)
+	}
+	return out
+}
+
+// SetDesktopTier picks the model (a catalog id) Claude Desktop runs a tier
+// on; "" takes the pick away.
+func SetDesktopTier(tier, id string) error {
+	tiers := DesktopTiers()
+	if id == "" {
+		delete(tiers, tier)
+	} else {
+		tiers[tier] = id
+	}
+	if len(tiers) == 0 {
+		if err := os.Remove(desktopTiersPath()); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	b, _ := json.MarshalIndent(tiers, "", "  ")
+	if err := os.MkdirAll(settings.Dir(), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(desktopTiersPath(), append(b, '\n'), 0o600)
+}
+
+// DesktopCatalogID is the catalog id of a model as Claude Desktop names it:
+// one of its aliases or the catalog id itself.
+func DesktopCatalogID(id string) string {
+	if c, ok := aliased(id); ok {
+		return c
+	}
+	return id
+}
+
+// claudeTier is the tier a model id is a Claude model of (claude-opus-4-8,
+// a provider's anthropic/claude-sonnet-5), "" when it is none.
+func claudeTier(id string) string {
+	m := strings.ToLower(strings.TrimSuffix(id, "[1m]"))
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	if !claudeFamily.MatchString(m) {
+		return ""
+	}
+	for _, t := range DesktopTierNames {
+		if strings.Contains(m, t) {
+			return t
+		}
+	}
+	return ""
+}
+
+// desktopTierTurn is the model picked for the tier of a Claude model
+// Desktop's Claude Code asked for by Claude Code's own id, which magpie
+// doesn't serve: a subagent on a tier no model is tagged for, or on one a
+// model picked for two tiers isn't tagged with. "" when there is none.
+func desktopTierTurn(asked string) string {
+	if !unserved(asked) || strings.Contains(asked, "/") {
+		return ""
+	}
+	t := claudeTier(asked)
+	if t == "" {
+		return ""
+	}
+	return DesktopTiers()[t]
 }
 
 func desktopName(e provider.Entry) string {
@@ -164,6 +272,41 @@ func desktopName(e provider.Entry) string {
 		return e.Name
 	}
 	return e.ID
+}
+
+// desktopNames are the names Claude Desktop is shown entries by, in order:
+// each its own name, but for two or more of one name (case aside), which
+// get their provider's id after it — "DeepSeek V4.1 Flash (opencode-go)" —
+// or, where that still leaves two alike (two accounts of one provider), the
+// whole catalog id.
+func desktopNames(entries []provider.Entry) []string {
+	count := func(names []string) map[string]int {
+		n := map[string]int{}
+		for _, s := range names {
+			n[strings.ToLower(s)]++
+		}
+		return n
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = desktopName(e)
+	}
+	same := count(out)
+	by := make([]string, len(entries))
+	for i, e := range entries {
+		by[i] = out[i]
+		if same[strings.ToLower(out[i])] > 1 && out[i] != e.ID {
+			whose, _, _ := strings.Cut(e.ID, "/")
+			by[i] += " (" + whose + ")"
+		}
+	}
+	still := count(by)
+	for i, e := range entries {
+		if by[i] != out[i] && still[strings.ToLower(by[i])] > 1 {
+			by[i] = out[i] + " (" + e.ID + ")"
+		}
+	}
+	return by
 }
 
 // aliased is the catalog id an alias Claude Desktop was given stands for:
@@ -230,6 +373,9 @@ func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-d
 func desktopTurn(asked string, body []byte) string {
 	if asked == "" {
 		return asked
+	}
+	if m := desktopTierTurn(asked); m != "" {
+		return m
 	}
 	tools := hasTools(body)
 	desktopPicked.Lock()

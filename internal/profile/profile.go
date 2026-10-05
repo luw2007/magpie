@@ -6,12 +6,12 @@ package profile
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/provider"
@@ -73,13 +73,7 @@ func (p *Profile) UnmarshalJSON(b []byte) error {
 }
 
 // Path is the profiles file.
-func Path() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "magpie", "profiles.json")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "magpie", "profiles.json")
-}
+func Path() string { return filepath.Join(appdir.Config(), "profiles.json") }
 
 // Load reads every profile.
 func Load() (map[string]Profile, error) {
@@ -115,14 +109,13 @@ func store(ps map[string]Profile) error {
 	return edit.WriteAtomic(Path(), append(b, '\n'))
 }
 
-// Fields captures the current value of every detected agent's fields.
+// Fields captures the current value of every detected agent's fields,
+// including empty values that restore the agent's own defaults.
 func Fields() map[string]string {
 	p := map[string]string{}
 	for _, a := range agent.Detected() {
 		for k, v := range a.Values() {
-			if v != "" {
-				p[a.ID+"."+k] = v
-			}
+			p[a.ID+"."+k] = v
 		}
 	}
 	return p
@@ -253,11 +246,11 @@ func ApplyFields(p map[string]string) (int, error) {
 	return changed, nil
 }
 
-// Summary renders a profile's models as a short one-line description.
+// Summary renders a profile's non-default models as a short one-line description.
 func Summary(p Profile) string {
 	keys := make([]string, 0, len(p.Fields))
 	for k := range p.Fields {
-		if strings.HasSuffix(k, ".model") {
+		if strings.HasSuffix(k, ".model") && p.Fields[k] != "" {
 			keys = append(keys, k)
 		}
 	}

@@ -40,7 +40,11 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 		}
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("originator", "codex_cli_rs")
-		req.Header.Set("User-Agent", codexUserAgent())
+		// the version and the User-Agent name one Codex, never older than
+		// the client whose request this is (its version header, relayed)
+		ver := newerVersion(codexVersion(), req.Header.Get("version"))
+		req.Header.Set("version", ver)
+		req.Header.Set("User-Agent", codexUserAgent(ver))
 		if body == nil {
 			return nil
 		}
@@ -65,10 +69,9 @@ var codexUA struct {
 	os string
 }
 
-// codexUserAgent is the User-Agent Codex CLI sends, of the version magpie
-// asks the model list with:
+// codexUserAgent is the User-Agent Codex CLI of version v sends:
 // "codex_cli_rs/0.155.1 (Mac OS 26.6.0; arm64) Apple_Terminal/455".
-func codexUserAgent() string {
+func codexUserAgent(v string) string {
 	codexUA.Do(func() { codexUA.os = codexOS() })
 	arch := map[string]string{"arm64": "arm64", "amd64": "x86_64"}[runtime.GOARCH]
 	if arch == "" {
@@ -78,7 +81,7 @@ func codexUserAgent() string {
 	if term == "" {
 		term = "xterm-256color"
 	}
-	return "codex_cli_rs/" + codexVersion() + " (" + codexUA.os + "; " + arch + ") " + term
+	return "codex_cli_rs/" + v + " (" + codexUA.os + "; " + arch + ") " + term
 }
 
 var versionRE = regexp.MustCompile(`\d+(\.\d+)+`)
@@ -224,12 +227,7 @@ func codexInstructions(model string) string {
 	}); ok {
 		return s
 	}
-	dir := os.Getenv("CODEX_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".codex")
-	}
-	if s, ok := codexCLIPrompts.get(filepath.Join(dir, "models_cache.json"), model, codexPrompts); ok {
+	if s, ok := codexCLIPrompts.get(catalog.CodexModelsCache(), model, codexPrompts); ok {
 		return s
 	}
 	return codexcat.Prompt
@@ -348,6 +346,20 @@ func conversationKey(instructions string, input []any) string {
 	return s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32]
 }
 
+// BoundCallID is a call's id as the ChatGPT backend takes one: as it is
+// when it fits its 64 characters, else the sha256 of it (trimmed, as calls
+// and their outputs are paired), 64 hex characters. Foreign providers can
+// join two ids into one longer than that (#732, congee949: 86 and 87); the
+// same id gives the same hash on every request, so a call and its output
+// stay paired, and two ids that differ are never cut down alike.
+func BoundCallID(id string) string {
+	if len(id) <= 64 {
+		return id
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(id)))
+	return hex.EncodeToString(sum[:])
+}
+
 // codexInput makes input items fit a request that keeps nothing: no
 // references to stored items, no ids, a tool's output without its call
 // kept as a message saying what it was, and no system role, which the
@@ -357,6 +369,13 @@ func codexInput(input []any) []any {
 	for _, item := range input {
 		it, _ := item.(map[string]any)
 		id, _ := it["call_id"].(string)
+		switch it["type"] {
+		case "function_call", "function_call_output", "local_shell_call", "local_shell_call_output", "custom_tool_call", "custom_tool_call_output", "tool_search_call", "tool_search_output":
+			if b := BoundCallID(id); b != id {
+				id = b
+				it["call_id"] = id
+			}
+		}
 		switch it["type"] {
 		case "function_call":
 			calls[strings.TrimSpace(id)] = "function_call_output"
@@ -374,6 +393,13 @@ func codexInput(input []any) []any {
 			continue
 		}
 		if it["type"] == "item_reference" {
+			continue
+		}
+		// Codex delivers standalone notifications without a call ID. The
+		// native backend understands their name/namespace and item ID;
+		// they are not historical results whose calls have gone missing.
+		if (it["type"] == "function_call_output" || it["type"] == "custom_tool_call_output") && (it["call_id"] == nil || it["call_id"] == "") {
+			out = append(out, it)
 			continue
 		}
 		delete(it, "id")

@@ -10,11 +10,13 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/provider"
+	"gopkg.in/yaml.v3"
 )
 
 func TestConfiguredModelsAdvertiseImageInput(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	if err := provider.Save(provider.Provider{
@@ -86,6 +88,34 @@ func TestConfiguredModelsAdvertiseImageInput(t *testing.T) {
 			t.Fatalf("unexpected Pi model: %v", entry)
 		}
 	}
+
+	// omp: an entry written before input was, brought up to date by Sync
+	ompModels := filepath.Join(home, ".omp", "agent", "models.yml")
+	os.MkdirAll(filepath.Dir(ompModels), 0o755)
+	os.WriteFile(ompModels, []byte("providers:\n  magpie:\n    baseUrl: x\n    models:\n      - id: vision/image\n"), 0o644)
+	if err := omp(home).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(ompModels)
+	var om struct {
+		Providers map[string]struct {
+			Models []struct {
+				ID    string
+				Input []string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(b, &om); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"vision/image": {"text", "image"}, "vision/text": {"text"}, "vision/unknown": nil}
+	got := map[string][]string{}
+	for _, m := range om.Providers["magpie"].Models {
+		got[m.ID] = m.Input
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("omp input: %v\n%s", got, b)
+	}
 }
 
 func imageInputBool(v bool) *bool { return &v }
@@ -93,6 +123,7 @@ func imageInputBool(v bool) *bool { return &v }
 func TestInferredGroupImagesReachAgentCatalogs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	if err := os.MkdirAll(filepath.Dir(catalog.CachePath()), 0o755); err != nil {

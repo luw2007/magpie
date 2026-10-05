@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,7 +69,7 @@ func (l *Library) active() string {
 func (l *Library) sharedPath() string { return setPath(l.active()) }
 
 func extraPath(agent string) string {
-	return filepath.Join(Dir(), "instructions", agent+".md")
+	return filepath.Join(Dir(), "instructions", fileName(agent)+".md")
 }
 
 func readText(path string) string {
@@ -79,7 +80,7 @@ func readText(path string) string {
 func writeText(path, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := edit.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
@@ -187,7 +188,7 @@ func (l *Library) syncInstructions(t *Target, b *backups, res *Result) {
 		return
 	}
 	if strings.TrimSpace(next) == "" && len(raw) > 0 && own(file) == "" {
-		err = os.Remove(t.Instructions)
+		err = edit.Remove(t.Instructions)
 	} else if next != "" {
 		err = edit.WriteAtomic(t.Instructions, []byte(next))
 	}
@@ -298,7 +299,7 @@ func SaveInstructions(c InstructionsChange) (*Result, error) {
 			if x == nil {
 				continue
 			}
-			if err := checkName("agent", id); err != nil {
+			if err := checkAgent(id); err != nil {
 				return err
 			}
 			if err := writeText(extraPath(id), *x); err != nil {
@@ -348,7 +349,7 @@ func ImportInstructions(id string) (*Result, error) {
 			next = withBlock("", block)
 		}
 		if next == "" {
-			err = os.Remove(t.Instructions)
+			err = edit.Remove(t.Instructions)
 		} else {
 			err = edit.WriteAtomic(t.Instructions, []byte(next))
 		}
@@ -409,6 +410,23 @@ func (l *Library) changeSets(c InstructionsChange) error {
 			return err
 		}
 		l.Instructions.Sets = slices.DeleteFunc(l.Instructions.Sets, func(s InstrSet) bool { return s.ID == id })
+	}
+	// an empty set in use gives the agents nothing, so a set added, or one
+	// given text, is the one they read from then on (Fate on Discord: a new
+	// set was written into no agent while the Default set read was empty)
+	if c.Activate == "" && c.Shared == nil && readText(setPath(l.active())) == "" {
+		if x := c.Create; x != nil {
+			l.Instructions.Active = x.ID
+		}
+		for _, id := range slices.Sorted(maps.Keys(c.Texts)) {
+			if x := c.Texts[id]; x != nil && strings.TrimSpace(*x) != "" && id != l.active() {
+				l.Instructions.Active = id
+				break
+			}
+		}
+		if l.Instructions.Active == defaultSet {
+			l.Instructions.Active = ""
+		}
 	}
 	if id := c.Activate; id != "" {
 		if !l.hasSet(id) {

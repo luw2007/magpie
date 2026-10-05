@@ -130,7 +130,14 @@ func TestDriftUnwiredEveryAgent(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".hanako", "agents", "hana"), 0o755)
 	os.WriteFile(filepath.Join(home, ".hanako", "agents", "hana", "config.yaml"), []byte("agent:\n  name: Hana\n"), 0o644)
 	for _, a := range All() {
-		if a.Check == nil {
+		// agy's gateway is in the command that starts it, in no file (its
+		// Check is TestAgy's)
+		if a.Check == nil || a.Launch != nil {
+			continue
+		}
+		// a WSL agent's files live in the distro, beyond the sandbox home:
+		// picking a model here writes the user's real configs
+		if a.WSL != "" {
 			continue
 		}
 		t.Run(a.ID, func(t *testing.T) {

@@ -121,3 +121,59 @@ func TestWorkBuddySignInSameAsOwn(t *testing.T) {
 		t.Fatalf("logins: %+v", ls)
 	}
 }
+
+// A provider of the user's saved as workbuddy before WorkBuddy's plan was a
+// subscription (v0.1.261) took its id: signing in to WorkBuddy said done,
+// and the Providers page said "凌一 signed in, but magpie can't list it"
+// (LingYi on X, WorkBuddy 5.6.2). Moved to a free id, as start-up does
+// (agent.MoveOffAccountIDs), both are listed and what named it follows.
+func TestWorkBuddyUnderUsersOwnID(t *testing.T) {
+	signIn(t)
+	wbTokens.Lock()
+	wbTokens.m = map[string]wbCreds{}
+	wbTokens.Unlock()
+	wbFakeSignIn(t)
+	f := load()
+	f.Providers = append(f.Providers,
+		Provider{ID: "workbuddy", Name: "WorkBuddy", Chat: "https://relay.example/v1", Key: "k", Models: []string{"m1"}},
+		Provider{ID: "other", Name: "Other", Chat: "https://other.example/v1", Key: "k", Fallback: []string{"workbuddy/m1"}})
+	if err := store(f); err != nil {
+		t.Fatal(err)
+	}
+	if ids := OnAccountIDs(); len(ids) != 1 || ids[0] != "workbuddy" {
+		t.Fatalf("on account ids: %v", ids)
+	}
+	if st := wbSignInNow(t); st.State != "done" {
+		t.Fatalf("sign-in: %+v", st)
+	}
+	if p, _ := find(All(), "workbuddy"); p.Account != nil {
+		t.Fatal("listed before the move: the case isn't the one reported")
+	}
+	to := FreeID("workbuddy")
+	if to != "workbuddy-2" {
+		t.Fatalf("free id %q", to)
+	}
+	if err := Rename("workbuddy", to); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := find(All(), "workbuddy"); !ok || p.Account == nil || p.Account.User != "Me" {
+		t.Fatalf("subscription not listed: %v %+v", ok, p)
+	}
+	mine, ok := find(All(), "workbuddy-2")
+	if !ok || mine.Account != nil || mine.Chat != "https://relay.example/v1" || len(mine.Was) != 0 {
+		t.Fatalf("own provider: %v %+v", ok, mine)
+	}
+	if q, _ := Find("other"); len(q.Fallback) != 1 || q.Fallback[0] != "workbuddy-2/m1" {
+		t.Fatalf("fallback %v", q.Fallback)
+	}
+	if q, err := Find("workbuddy"); err != nil || q.Account == nil {
+		t.Fatalf("workbuddy is %+v %v", q, err)
+	}
+	if ids := OnAccountIDs(); len(ids) != 0 {
+		t.Fatalf("still on account ids: %v", ids)
+	}
+	// the subscription itself still keeps its id
+	if err := Rename("workbuddy", "wb"); err == nil {
+		t.Fatal("renamed the subscription")
+	}
+}

@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/yetone/magpie/internal/library"
 )
@@ -19,11 +23,15 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library mcp rm <name>
   magpie library skill agents <name> <a,b…|none>
   magpie library skill rm <name>     (skills are installed from the app's Library page)
+  magpie library skill rm --all [--yes]   every skill out of the library and the agents (asks first; --yes doesn't)
   magpie library skill update [name] fetch a skill from GitHub again; with no name, every one from there
+  magpie library skill use-library <name> <agent>   an agent's own skill by that name is in the way: set it aside, link the library's
+  magpie library skill keep-own <name> <agent>      …or keep the agent's, and take the agent off the library's
   magpie library rtk                 which agents run their shell commands through RTK (rtk-ai.app), to save tokens
   magpie library rtk on|off <agent>  switch it (on with RTK's own installer; off works with RTK gone)
   magpie library rtk install         install RTK (Homebrew, winget, or RTK's own script)
   magpie library rtk upgrade         bring RTK up to its latest release, the way it was installed
+  magpie library rtk path            put RTK on the PATH the agents get, when it isn't (their hooks run it by name)
 `
 
 // libraryCmd is magpie library …: the instructions, MCP servers and skills
@@ -110,8 +118,16 @@ func libraryCmd(args []string) error {
 			if as, err = libraryAgents(rest[2], "skills"); err == nil {
 				res, err = library.SkillAgents(rest[1], as)
 			}
+		case len(rest) >= 2 && rest[0] == "rm" && slices.Contains(rest[1:], "--all"):
+			if res, err = removeEverySkill(rest[1:]); res == nil && err == nil {
+				return nil
+			}
 		case len(rest) == 2 && rest[0] == "rm":
 			res, err = library.RemoveSkill(rest[1])
+		case len(rest) == 3 && rest[0] == "use-library":
+			res, err = library.UseLibrarySkill(rest[1], rest[2])
+		case len(rest) == 3 && rest[0] == "keep-own":
+			res, err = library.KeepAgentSkill(rest[1], rest[2])
 		case len(rest) == 2 && rest[0] == "update":
 			if res, err = library.UpdateSkill(rest[1]); err == nil {
 				fmt.Println(green.Render("✓"), rest[1], "is up to date")
@@ -134,6 +150,58 @@ func libraryCmd(args []string) error {
 	}
 	printLibraryResult(res)
 	return nil
+}
+
+// removeEverySkill is magpie library skill rm --all [--yes] (#449): every
+// skill out of the library, each as rm takes one. It asks first on a
+// terminal; with no terminal to ask on, only --yes takes them. A library
+// with no skills is said, and answers a nil result.
+func removeEverySkill(args []string) (*library.Result, error) {
+	yes := false
+	for _, a := range args {
+		switch a {
+		case "--all":
+		case "--yes", "-y":
+			yes = true
+		default:
+			return nil, fmt.Errorf("usage:\n  %s", libraryUsage)
+		}
+	}
+	v, err := library.Read(nil)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, s := range v.Skills {
+		names = append(names, s.Name)
+	}
+	if len(names) == 0 {
+		fmt.Println(green.Render("✓"), "the library has no skills")
+		return nil, nil
+	}
+	if !yes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return nil, fmt.Errorf("this removes all %s; run it with --yes to do so without being asked", plural(len(names), "skill"))
+		}
+		fmt.Printf("Remove all %s (%s) from the library and every agent? Folders magpie keeps go to its backups; folders of your own are only unlinked. [y/N] ",
+			plural(len(names), "skill"), strings.Join(names, ", "))
+		line, _ := stdin.ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			return nil, fmt.Errorf("nothing removed")
+		}
+	}
+	res, err := library.RemoveSkills(names)
+	if err != nil {
+		return nil, err
+	}
+	gone := 0
+	for _, n := range names {
+		if !slices.ContainsFunc(res.Unremoved, func(p library.Problem) bool { return p.What == "skill:"+n }) {
+			gone++
+		}
+	}
+	fmt.Println(green.Render("✓"), plural(gone, "skill"), "removed")
+	return res, nil
 }
 
 // agentList is a comma list of agents; none (or nothing) is no agent.
@@ -169,12 +237,19 @@ func printLibraryResult(res *library.Result) {
 	}
 	for _, p := range res.Problems {
 		fmt.Println(amber.Render("!"), p.Agent, muted.Render(p.What+":"), p.Error)
+		if n, ok := strings.CutPrefix(p.What, "skill:"); ok && p.Own {
+			fmt.Println(muted.Render("  use the library's (the agent's kept aside): magpie library skill use-library " + n + " " + p.Agent))
+			fmt.Println(muted.Render("  or keep the agent's:                       magpie library skill keep-own " + n + " " + p.Agent))
+		}
 	}
 	if len(res.Updated) > 0 {
 		fmt.Println(green.Render("✓"), "up to date:", strings.Join(res.Updated, ", "))
 	}
 	for _, p := range res.Unupdated {
 		fmt.Println(amber.Render("!"), strings.TrimPrefix(p.What, "skill:"), muted.Render("not updated:"), p.Error)
+	}
+	for _, p := range res.Unremoved {
+		fmt.Println(amber.Render("!"), strings.TrimPrefix(p.What, "skill:"), muted.Render("not removed:"), p.Error)
 	}
 	for _, m := range res.Missing {
 		fmt.Println(amber.Render("!"), "the library no longer has", m)
@@ -266,6 +341,11 @@ func rtkCmd(args []string) error {
 		if v, err = library.InstallRTK(); err != nil {
 			return err
 		}
+	case len(args) == 1 && args[0] == "path":
+		var err error
+		if v, err = library.PathRTK(); err != nil {
+			return err
+		}
 	case len(args) == 1 && args[0] == "upgrade":
 		fmt.Println(muted.Render("upgrading rtk…"))
 		var err error
@@ -303,8 +383,28 @@ func rtkCmd(args []string) error {
 		case len(args) == 1 && args[0] == "upgrade":
 			fmt.Println(green.Render("  up to date"))
 		}
-		if g := v.Gain; g != nil {
+		if v.OffPath {
+			fmt.Println(amber.Render("  rtk isn't on your PATH"), muted.Render("— the agents' hooks run it by name, so RTK does nothing for them"))
+			switch {
+			case v.PathDir == "":
+				fmt.Println(muted.Render("  add " + filepath.Dir(v.Path) + " to PATH in your shell profile"))
+			case v.PathLink:
+				fmt.Println(muted.Render("  magpie library rtk path links it into " + v.PathDir))
+			default:
+				fmt.Println(muted.Render("  magpie library rtk path adds " + v.PathDir + " to your user PATH"))
+			}
+		}
+		switch g := v.Gain; {
+		case g != nil:
 			fmt.Printf("  %d tokens saved over %d commands (%.0f%% on average)\n", g.Saved, g.Commands, g.Pct)
+		case v.GainErr != "":
+			fmt.Println(amber.Render("  what rtk saved isn't known:"), muted.Render(v.GainErr))
+		}
+		switch v.CodexSandbox {
+		case "elevated":
+			fmt.Println(muted.Render("  Codex runs its commands in its Windows sandbox as its own account, so what RTK saves there isn't counted"))
+		case "unelevated":
+			fmt.Println(muted.Render("  Codex runs its commands in its Windows sandbox, which can't write RTK's history, so what RTK saves there isn't counted"))
 		}
 	}
 	for _, a := range v.Agents {
@@ -314,6 +414,8 @@ func rtkCmd(args []string) error {
 			mark = green.Render("on ")
 			if v.Path == "" {
 				mark, note = amber.Render("on "), muted.Render(" — its hook calls rtk, which isn't installed: install it, or switch this off")
+			} else if v.OffPath {
+				mark, note = amber.Render("on "), muted.Render(" — its hook can't find rtk on PATH, so it does nothing")
 			}
 		}
 		fmt.Println(" ", mark, a.Name+note)

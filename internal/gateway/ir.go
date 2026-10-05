@@ -43,9 +43,10 @@ type Part struct {
 	Args json.RawMessage // a JSON object
 
 	// tool_result
-	CallID  string
-	IsError bool
-	Images  []Part // the images the tool returned beside its text
+	CallID     string
+	IsError    bool
+	Images     []Part         // the images the tool returned beside its text
+	Standalone map[string]any // native Responses notification with no call ID
 
 	// thinking
 	Signature string
@@ -58,6 +59,8 @@ type Part struct {
 type Hit struct {
 	Title string `json:"title"`
 	URL   string `json:"url"`
+	// PageAge is how old the search said the page is, "" when it didn't
+	PageAge string `json:"page_age,omitempty"`
 }
 
 // attachmentText is the fallback when a protocol cannot carry a Gemini file.
@@ -80,6 +83,7 @@ type Tool struct {
 	Name        string
 	Description string
 	Schema      json.RawMessage // JSON schema of the arguments
+	Strict      bool            // the client asked for its arguments held to the schema
 }
 
 // Request is a call to a model, whichever API it arrived in.
@@ -96,21 +100,58 @@ type Request struct {
 	Stream     bool
 	Effort     string // low | medium | high | xhigh | max, when the client asked
 	Thinking   bool   // the client asked for visible reasoning
-	Parallel   *bool  // parallel tool calls allowed
-	WebSearch  bool   // the client offered its provider's own web search
-	Fast       bool   // the client asked for priority processing: service_tier priority (Codex's Fast mode)
+	// ThinkOff is the client turning reasoning off: effort "none" (which
+	// Effort reads as low, for vendors with no way to turn it off) or an
+	// Anthropic request with thinking disabled.
+	ThinkOff  bool
+	Parallel  *bool // parallel tool calls allowed
+	WebSearch bool  // the client offered its provider's own web search
+	Fast      bool  // the client asked for priority processing: service_tier priority (Codex's Fast mode)
 	// CacheKey is the client's prompt_cache_key (Codex sends its thread's
 	// id), which OpenAI, and relays in front of it, route a conversation by
 	// to where its prompt is cached.
 	CacheKey string
+	// Include is a Responses client's include, the extra output it asked
+	// for (Codex's reasoning.encrypted_content), which a Responses upstream
+	// is asked for too: a relay may refuse a request without it (#315).
+	Include []string
+	// ClientMetadata and Text are a Responses client's client_metadata
+	// (Codex's installation and session ids, which a relay may check, #374)
+	// and text (its verbosity, and the schema an answer must fit), which go
+	// on as they were sent when the request is built again for a Responses
+	// upstream; no other API takes them.
+	ClientMetadata json.RawMessage
+	Text           json.RawMessage
+	// Metadata is an Anthropic client's metadata (Claude Code's user_id),
+	// which goes on as it was sent when the request is built again for an
+	// Anthropic upstream: a relay that serves only Claude Code turns a
+	// request without it away (#359).
+	Metadata json.RawMessage
+	// Safeguards are the caller's safety context, opaque to the gateway.
+	Safeguards    json.RawMessage
+	SafeguardBeta string
+	// Schema is the JSON schema an Anthropic client asked the answer to fit
+	// (output_config.format, of type json_schema).
+	Schema json.RawMessage
+	// GeminiCompat is the upstream being Gemini's OpenAI-compatible API
+	// (AI Studio's, or a proxy in front of it on this machine or the LAN),
+	// which gives the model's thoughts only when asked in thinking_config.
+	GeminiCompat bool
 	// Namespaced are the tools a Responses client offered inside a
 	// namespace, by the flat name the model is offered them under.
 	Namespaced map[string]nsTool
 }
 
 // nsTool is a tool as a Responses client knows it: by its namespace and its
-// name in it (Codex's collaboration.spawn_agent).
-type nsTool struct{ Namespace, Name string }
+// name in it (Codex's collaboration.spawn_agent). Search is Codex's own
+// tool search, offered to the model as a function and handed back as the
+// tool_search_call Codex runs. Custom is a custom (freeform) tool, offered
+// as a function taking its input, its call handed back as the
+// custom_tool_call Codex runs.
+type nsTool struct {
+	Namespace, Name string
+	Search, Custom  bool
+}
 
 // EventKind is what a streamed event carries.
 type EventKind int
@@ -126,19 +167,27 @@ const (
 	KUsage                      // Usage
 	KError                      // Text
 	KSearch                     // Text (the query), Hits: a web search run for the model
+	KImage                      // Name (media type), Text (base64): an image the model made
 )
 
 // Event is one thing a streaming reply said.
 type Event struct {
-	Kind  EventKind
-	Text  string
-	ID    string
-	Name  string
-	MsgID string
-	Model string
-	Stop  string // stop | length | tool | filter
-	Usage Usage
-	Hits  []Hit
+	Kind   EventKind
+	Status int // upstream HTTP status for KError, when known
+	Text   string
+	ID     string
+	Name   string
+	MsgID  string
+	Model  string
+	Stop   string // stop | length | tool | filter
+	// Code: for KError, the source error or safety-filter code (rate_limit,
+	// server_error, bio_policy, content_filter…); RequestID: the vendor's id for the
+	// request the event is of, when it is known by then
+	Code             string
+	RequestID        string
+	Usage            Usage
+	Hits             []Hit
+	SafeguardResults json.RawMessage
 }
 
 // Usage counts tokens.
@@ -148,6 +197,16 @@ type Usage struct {
 	CacheRead  int `json:"cache_read"`
 	CacheWrite int `json:"cache_write"`
 	Reasoning  int `json:"reasoning"`
+	// Served: the model the vendor's reply says answered, when it named
+	// one — which may not be the one it was asked for
+	Served string `json:"served,omitempty"`
+	// RequestID: the id the vendor gave the request, from its reply's
+	// headers (Claude Code's own for a subscription); ErrType: what a
+	// failed request's error body called the error
+	RequestID string `json:"request_id,omitempty"`
+	// ResponseID is the final client response ID, independent of request headers.
+	ResponseID string `json:"response_id,omitempty"`
+	ErrType    string `json:"err_type,omitempty"`
 }
 
 // prompt is every token the prompt came to, as OpenAI's and Gemini's
@@ -173,15 +232,28 @@ func (u *Usage) add(v Usage) {
 	if v.Reasoning > 0 {
 		u.Reasoning = v.Reasoning
 	}
+	if v.Served != "" {
+		u.Served = v.Served
+	}
+	if v.RequestID != "" {
+		u.RequestID = v.RequestID
+	}
+	if v.ResponseID != "" {
+		u.ResponseID = v.ResponseID
+	}
+	if v.ErrType != "" {
+		u.ErrType = v.ErrType
+	}
 }
 
 // Result is a whole reply, for non-streaming clients.
 type Result struct {
-	ID    string
-	Model string
-	Parts []Part
-	Stop  string
-	Usage Usage
+	ID               string
+	Model            string
+	Parts            []Part
+	Stop             string
+	Usage            Usage
+	SafeguardResults json.RawMessage
 }
 
 // collector assembles a Result from events. Encoders use the same logic to
@@ -190,6 +262,9 @@ type collector struct {
 	res  Result
 	args strings.Builder // arguments of the open tool call
 	err  string
+	// the error's status and kind, as its event gave them
+	errStatus int
+	errCode   string
 }
 
 func (c *collector) last(k Kind) *Part {
@@ -211,6 +286,9 @@ func (c *collector) closeTool() {
 }
 
 func (c *collector) add(ev Event) {
+	if len(ev.SafeguardResults) > 0 {
+		c.res.SafeguardResults = ev.SafeguardResults
+	}
 	switch ev.Kind {
 	case KStart:
 		c.res.ID, c.res.Model = ev.MsgID, ev.Model
@@ -243,11 +321,15 @@ func (c *collector) add(ev Event) {
 		c.res.Stop = ev.Stop
 	case KUsage:
 		c.res.Usage.add(ev.Usage)
+		c.res.Usage.add(Usage{RequestID: ev.RequestID})
 	case KError:
-		c.err = ev.Text
+		c.err, c.errStatus, c.errCode = ev.Text, ev.Status, ev.Code
 	case KSearch:
 		c.closeTool()
 		c.res.Parts = append(c.res.Parts, Part{Kind: Search, Text: ev.Text, Hits: ev.Hits})
+	case KImage:
+		c.closeTool()
+		c.res.Parts = append(c.res.Parts, Part{Kind: Image, MediaType: ev.Name, Data: ev.Text})
 	}
 }
 
@@ -262,6 +344,18 @@ func (c *collector) finish() Result {
 		}
 	}
 	return c.res
+}
+
+// saidAnything reports whether a reply has more than thinking: text, a
+// call, a search or an image. A turn that only thought and then failed is
+// the failure, not an answer with nothing in it.
+func saidAnything(parts []Part) bool {
+	for _, p := range parts {
+		if p.Kind != Thinking {
+			return true
+		}
+	}
+	return false
 }
 
 // hasTool reports whether a result calls any tool.
@@ -398,6 +492,8 @@ func effortOf(s string) string {
 		return "low"
 	case "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(s)
+	case "ultra": // Codex's max, with its own agents to hand work to
+		return "max"
 	}
 	return ""
 }
@@ -405,12 +501,34 @@ func effortOf(s string) string {
 // effortRank orders the reasoning levels agents and vendors name.
 var effortRank = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 
+// ByStrength is efforts weakest first, in effortRank's order; a level it
+// doesn't know keeps its place among the others of its kind, after them.
+func ByStrength(efforts []string) []string {
+	rank := func(e string) int {
+		if i := slices.Index(effortRank, e); i >= 0 {
+			return i
+		}
+		return len(effortRank)
+	}
+	out := slices.Clone(efforts)
+	slices.SortStableFunc(out, func(a, b string) int { return rank(a) - rank(b) })
+	return out
+}
+
 // fitEffort is the level of the model's own nearest the one asked for — a
 // tie goes up — or the one asked for when the model's aren't known. Codex
 // asks "medium" of a model it was given no levels for, and an agent's
 // setting can outlive the model it was picked for; GLM-5.3 takes low, high
 // and max only.
+//
+// Codex's ultra is no API's level, whatever a list says (ChatGPT's lists
+// it for Codex's picker; magpie offers it on Copilot's gpt-6.1-sol, #656):
+// it is sent as max, or the nearest the model has below it.
 func fitEffort(want string, levels []string) string {
+	if want == "ultra" {
+		want = "max"
+		levels = slices.DeleteFunc(slices.Clone(levels), func(l string) bool { return l == "ultra" })
+	}
 	if len(levels) == 0 || slices.Contains(levels, want) {
 		return want
 	}

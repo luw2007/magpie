@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,9 +35,9 @@ func TestGrokSigns(t *testing.T) {
 		w.Write([]byte(`{"data":[{"id":"grok-4.7","api_backend":"responses"}]}`))
 	}))
 	defer up.Close()
-	base := grokBase
-	grokBase = up.URL
-	defer func() { grokBase = base }()
+	base := GrokBase
+	GrokBase = up.URL
+	defer func() { GrokBase = base }()
 	home := t.TempDir()
 	grokSignedIn(t, home, "me@x.ai")
 	acct := &Account{Agent: "grok"}
@@ -79,9 +80,11 @@ func TestGrokTokenReadsTheCLIsSignIn(t *testing.T) {
 }
 
 // Codex's freeform apply_patch is left out: Grok's backend turns away a
-// request with a tool type it doesn't know.
+// request with a tool type it doesn't know, a namespace among them. A
+// namespace's functions go as functions of their own, under their flat
+// names (#404); one with none to give goes whole.
 func TestGrokBodyLeavesOutCustomTools(t *testing.T) {
-	in := []byte(`{"model":"grok-4.7","tools":[{"type":"function","name":"shell"},{"type":"custom","name":"apply_patch","format":{"type":"grammar"}},{"type":"namespace","name":"multi_agent_v1","tools":[]},{"type":"web_search","external_web_access":false}],"tool_choice":{"type":"custom","name":"apply_patch"},"max_output_tokens":100}`)
+	in := []byte(`{"model":"grok-4.7","tools":[{"type":"function","name":"shell"},{"type":"custom","name":"apply_patch","format":{"type":"grammar"}},{"type":"namespace","name":"multi_agent_v1","tools":[]},{"type":"namespace","name":"collaboration","description":"agents","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object"}},{"type":"custom","name":"freeform"}]},{"type":"namespace","name":"odd","tools":[{"type":"custom","name":"x"}]},{"type":"web_search","external_web_access":false}],"tool_choice":{"type":"custom","name":"apply_patch"},"max_output_tokens":100}`)
 	var got struct {
 		Tools  []map[string]any `json:"tools"`
 		Choice any              `json:"tool_choice"`
@@ -90,12 +93,67 @@ func TestGrokBodyLeavesOutCustomTools(t *testing.T) {
 	if err := json.Unmarshal(grokBody(in), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Tools) != 2 || got.Tools[0]["type"] != "function" || len(got.Tools[1]) != 1 || got.Tools[1]["type"] != "web_search" || got.Choice != nil || got.Max != 100 {
+	if len(got.Tools) != 3 || got.Tools[0]["type"] != "function" || got.Tools[0]["name"] != "shell" ||
+		got.Tools[1]["type"] != "function" || got.Tools[1]["name"] != "collaboration__spawn_agent" || got.Tools[1]["parameters"] == nil ||
+		len(got.Tools[2]) != 1 || got.Tools[2]["type"] != "web_search" || got.Choice != nil || got.Max != 100 {
 		t.Fatalf("%+v", got)
 	}
 	same := []byte(`{"tools":[{"type":"function","name":"x"}],"tool_choice":"auto"}`)
 	if string(grokBody(same)) != string(same) {
 		t.Fatal("a body Grok takes was changed")
+	}
+}
+
+// A call to a namespaced function handed back, and a tool_choice naming
+// one, go under the flat name Grok was offered it by; its output keeps its
+// call_id. Responses Lite's "functions" namespace is no namespace at all.
+func TestGrokBodyFlattensNamespacedCalls(t *testing.T) {
+	in := []byte(`{"tools":[{"type":"function","name":"exec_command"},{"type":"namespace","name":"codex_app","tools":[{"type":"function","name":"set_thread_title"}]},{"type":"namespace","name":"functions","tools":[{"type":"function","name":"view_image"}]}],"tool_choice":{"type":"function","name":"set_thread_title","namespace":"codex_app"},"input":[
+		{"type":"function_call","call_id":"c1","name":"spawn_agent","namespace":"collaboration","arguments":"{}"},
+		{"type":"function_call_output","call_id":"c1","output":"ok"},
+		{"type":"function_call","call_id":"c2","name":"exec_command","arguments":"{}"},
+		{"type":"function_call","call_id":"c3","name":"view_image","namespace":"functions","arguments":"{}"}]}`)
+	var got struct {
+		Tools  []map[string]any `json:"tools"`
+		Choice map[string]any   `json:"tool_choice"`
+		Input  []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(grokBody(in), &got); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tl := range got.Tools {
+		names = append(names, fmt.Sprint(tl["name"]))
+	}
+	if strings.Join(names, ",") != "exec_command,codex_app__set_thread_title,view_image" {
+		t.Fatalf("tools %v", names)
+	}
+	if got.Choice["name"] != "codex_app__set_thread_title" || got.Choice["namespace"] != nil {
+		t.Fatalf("tool_choice %v", got.Choice)
+	}
+	if c := got.Input[0]; c["name"] != "collaboration__spawn_agent" || c["namespace"] != nil || c["call_id"] != "c1" {
+		t.Fatalf("call %v", c)
+	}
+	if got.Input[1]["call_id"] != "c1" || got.Input[2]["name"] != "exec_command" || got.Input[3]["name"] != "view_image" || got.Input[3]["namespace"] != nil {
+		t.Fatalf("input %v", got.Input)
+	}
+}
+
+// A tool_choice with no tools beside it goes: the backend turns the
+// request away over it, as it did Codex's compaction summary (#378).
+func TestGrokBodyDropsLoneToolChoice(t *testing.T) {
+	for _, in := range []string{
+		`{"model":"grok-4.7","reasoning":{"effort":"low"},"tool_choice":"auto","parallel_tool_calls":false,"input":[]}`,
+		`{"model":"grok-4.7","tool_choice":"auto"}`,
+		`{"model":"grok-4.7","tools":[{"type":"custom","name":"apply_patch"}],"tool_choice":"auto"}`,
+	} {
+		if got := string(grokBody([]byte(in))); strings.Contains(got, "tool_choice") {
+			t.Errorf("%s\n-> %s", in, got)
+		}
+	}
+	same := []byte(`{"tools":[{"type":"function","name":"x"}],"tool_choice":"required","reasoning":{"effort":"low"}}`)
+	if string(grokBody(same)) != string(same) {
+		t.Fatal("a tool_choice with tools was changed")
 	}
 }
 
@@ -196,5 +254,52 @@ func TestGrokExecutableFinds(t *testing.T) {
 	t.Setenv("GROK_BIN_DIR", filepath.Dir(custom))
 	if p := GrokExecutable(); p != custom {
 		t.Fatalf("GROK_BIN_DIR: %q", p)
+	}
+}
+
+// A function whose parameters are an anyOf (or oneOf) at the root, as
+// Codex's codex_app automation_update, goes to Grok as an object: Grok's
+// backend turns the request away otherwise ("[invalid_client_tool_schema]
+// ... tool parameter root must be an object type", Fate on Discord). The
+// object branches' properties are merged, $refs to $defs read, a field all
+// of them require stays required, the non-object branches go. One that is
+// an object already is left as it is.
+func TestGrokBodyObjectRoot(t *testing.T) {
+	in := []byte(`{"tools":[
+		{"type":"function","name":"mcp__codex_app__automation_update","parameters":{"anyOf":[
+			{"type":"object","properties":{"id":{"type":"string"},"prompt":{"type":"string"}},"required":["id","prompt"]},
+			{"$ref":"#/$defs/pause"},
+			{"type":"null"}],"$defs":{"pause":{"type":"object","properties":{"id":{"type":"string"},"paused":{"type":"boolean"}},"required":["id"]}}}},
+		{"type":"namespace","name":"codex_app","tools":[{"type":"function","name":"pick","parameters":{"oneOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}}]},
+		{"type":"function","name":"plain","parameters":{"type":"object","properties":{"x":{"type":"string"}}}}]}`)
+	var got struct {
+		Tools []struct {
+			Name       string         `json:"name"`
+			Parameters map[string]any `json:"parameters"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(grokBody(in), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 3 {
+		t.Fatalf("%+v", got)
+	}
+	for _, tl := range got.Tools {
+		p := tl.Parameters
+		if p["type"] != "object" || p["anyOf"] != nil || p["oneOf"] != nil {
+			t.Fatalf("%s: %v", tl.Name, p)
+		}
+	}
+	p := got.Tools[0].Parameters
+	props, _ := p["properties"].(map[string]any)
+	if len(props) != 3 || props["paused"] == nil || props["prompt"] == nil || fmt.Sprint(p["required"]) != "[id]" {
+		t.Fatalf("merged %v", p)
+	}
+	if got.Tools[1].Name != "codex_app__pick" || got.Tools[1].Parameters["properties"].(map[string]any)["a"] == nil {
+		t.Fatalf("namespaced %+v", got.Tools[1])
+	}
+	same := []byte(`{"tools":[{"type":"function","name":"x","parameters":{"type":"object","properties":{}}}]}`)
+	if string(grokBody(same)) != string(same) {
+		t.Fatal("an object root was changed")
 	}
 }

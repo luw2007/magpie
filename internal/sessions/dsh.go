@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/klauspost/compress/zstd"
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 // DeepSeek Harness (dsh) keeps a session in a folder of its own, under
@@ -36,7 +36,7 @@ import (
 
 // DshDir is dsh's folder: $DSH_HOME, else ~/.dsh.
 func DshDir() string {
-	if d := os.Getenv("DSH_HOME"); d != "" {
+	if d := appdir.Getenv("DSH_HOME"); d != "" {
 		return expandHome(d)
 	}
 	home, _ := os.UserHomeDir()
@@ -126,28 +126,7 @@ func dshFiles() []file {
 }
 
 // dshOpen reads a session file's lines, decompressed.
-func dshOpen(path string) (io.ReadCloser, error) {
-	f, err := os.Open(path)
-	if err != nil || !strings.HasSuffix(path, ".zstd") {
-		return f, err
-	}
-	d, err := zstd.NewReader(f, zstd.WithDecoderConcurrency(1))
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return dshZstd{d.IOReadCloser(), f}, nil
-}
-
-type dshZstd struct {
-	io.ReadCloser
-	f *os.File
-}
-
-func (z dshZstd) Close() error {
-	z.ReadCloser.Close()
-	return z.f.Close()
-}
+func dshOpen(path string) (io.ReadCloser, error) { return openLines(path) }
 
 func dshReadHead(path string) (dshHead, bool) {
 	var h dshHead

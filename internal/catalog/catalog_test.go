@@ -180,6 +180,59 @@ func TestEffortsOf(t *testing.T) {
 	}
 }
 
+// A gateway listing a model under each host it routes to votes once for
+// the levels it gives: llmgateway's deepinfra/… and xiaomi/… made its
+// none…max the levels of mimo-v2.6-flash over two others giving none, high
+// (#214).
+func TestEffortsOfOneVoteAProvider(t *testing.T) {
+	writeCatalog(t, `{
+	  "llmgateway": {"models": {
+	    "deepinfra/mimo-v2.6-flash": {"id":"deepinfra/mimo-v2.6-flash","reasoning_options":[{"type":"effort","values":["none","minimal","low","medium","high","xhigh","max"]}]},
+	    "xiaomi/mimo-v2.6-flash": {"id":"xiaomi/mimo-v2.6-flash","reasoning_options":[{"type":"effort","values":["none","minimal","low","medium","high","xhigh","max"]}]},
+	    "novita/mimo-v2.6-flash": {"id":"novita/mimo-v2.6-flash","reasoning_options":[{"type":"effort","values":["none","minimal","low","medium","high","xhigh","max"]}]}}},
+	  "kilo": {"models": {"xiaomi/mimo-v2.6-flash": {"id":"xiaomi/mimo-v2.6-flash","reasoning_options":[{"type":"effort","values":["none","high"]}]}}},
+	  "nano-gpt": {"models": {"xiaomi/mimo-v2.6-flash": {"id":"xiaomi/mimo-v2.6-flash","reasoning_options":[{"type":"effort","values":["none","high"]}]}}}
+	}`)
+	if got := strings.Join(EffortsOf("mimo-v2.6-flash"), ","); got != "none,high" {
+		t.Fatalf("EffortsOf = %q, want none,high", got)
+	}
+}
+
+// ListedBy is what the first of the providers named listing a model says of
+// its levels: a thinking switch alone or nothing is none, a budget without
+// levels says nothing, and a model none of them lists isn't theirs to say.
+func TestListedBy(t *testing.T) {
+	writeCatalog(t, `{
+	  "xiaomi": {"models": {"mimo-v2.6-flash": {"id":"mimo-v2.6-flash","reasoning_options":[{"type":"toggle"}]},
+	                        "mimo-v2-omni": {"id":"mimo-v2-omni"}}},
+	  "anthropic": {"models": {"claude-sonnet-4-5": {"id":"claude-sonnet-4-5","reasoning_options":[{"type":"budget_tokens"}]}}},
+	  "zai": {"models": {"glm-5.3-flash": {"id":"glm-5.3-flash","reasoning_options":[{"type":"effort","values":["low","high","max"]}]}}},
+	  "relay": {"models": {"mimo-v2.6-flash": {"id":"mimo-v2.6-flash","reasoning_options":[{"type":"effort","values":["none","low","medium","high","max"]}]},
+	                       "claude-sonnet-4-5": {"id":"claude-sonnet-4-5","reasoning_options":[{"type":"effort","values":["low","medium","high","max"]}]}}}
+	}`)
+	makers := []string{"anthropic", "xiaomi", "zai"}
+	for _, c := range []struct {
+		id, want string
+		ok       bool
+	}{
+		{"mimo-v2.6-flash", "", true},
+		{"xiaomi/MiMo-V2.6-Flash", "", true},
+		{"mimo-v2.6-flash:free", "", true},
+		{"mimo-v2-omni", "", true},
+		{"relay/glm-5.3-flash", "low,high,max", true},
+		{"claude-sonnet-4-5", "", false},
+		{"unknown-model", "", false},
+	} {
+		got, ok := ListedBy(makers, c.id)
+		if strings.Join(got, ",") != c.want || ok != c.ok {
+			t.Errorf("ListedBy(%q) = %v, %v; want %q, %v", c.id, got, ok, c.want, c.ok)
+		}
+	}
+	if got, ok := ListedBy([]string{"relay", "xiaomi"}, "mimo-v2.6-flash"); !ok || len(got) != 5 {
+		t.Errorf("the first provider listing it: %v %v", got, ok)
+	}
+}
+
 func TestFetchedImageCapabilityOverridesCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

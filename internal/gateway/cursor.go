@@ -1,5 +1,14 @@
 package gateway
 
+// PLUGIN-SERVED (see AGENTS.md): Cursor ("cursor") is a deprecated built-in
+// subscription served by its plugin, @magpie-community/opencode-cursor-auth,
+// once moved onto it (provider.Moved; the default for a new sign-in). A
+// moved one's sign-ins, models, requests and usage are all the plugin's,
+// never this code's (only the move, in migrate*.go, still reads its
+// accounts). A fix here alone doesn't reach those users; fix the plugin
+// (github.com/magpie-community/plugins, packages/cursor) and raise the
+// mover's min in internal/provider/migrate_side.go.
+
 // A Cursor subscription is served through the API cursor-agent talks to —
 // AgentService/Run, a Connect stream both ways over HTTP/2 — with the CLI's
 // sign-in, the way a Devin one is (devin.go).
@@ -17,6 +26,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -31,6 +41,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -200,9 +211,12 @@ func (s *Server) serveCursor(w http.ResponseWriter, r *http.Request, from provid
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
 	req.Model = model
+	if conv := cursorConversation(r.Header, req.CacheKey, body); conv != "" {
+		r = r.WithContext(context.WithValue(r.Context(), cursorConvKey{}, conv))
+	}
 	ask := s.askCursor(model)
 	if req.WebSearch && !searching(r.Context()) {
-		if _, _, ok := searcher(); ok {
+		if canSearch() {
 			return s.searchReply(w, r, from, "Cursor", req, usage, ask)
 		}
 	}
@@ -227,23 +241,49 @@ func (s *Server) askCursor(model string) round {
 			id = "default"
 		}
 		base := s.cursorAgentURL(ctx, tok, false)
-		events, status, msg := s.cursorRun(ctx, req, model, id, tok, base)
+		_, maxMode := cursorMaxOnly.Load(id)
+		events, status, msg := s.cursorRun(ctx, req, model, id, tok, base, maxMode)
 		if events == nil && cursorRegional(msg) {
 			// the team moved, or the config was kept from before: once more
 			// with what the config says now
 			if fresh := s.cursorAgentURL(ctx, tok, true); fresh != base {
-				events, status, msg = s.cursorRun(ctx, req, model, id, tok, fresh)
+				base = fresh
+				events, status, msg = s.cursorRun(ctx, req, model, id, tok, base, maxMode)
 			}
+		}
+		if events == nil && !maxMode && cursorMaxRequired(msg) {
+			// a model Cursor serves only in Max Mode: in Max Mode, as
+			// cursor-agent turns it on for such a model, and so from now
+			// on. An account Max Mode isn't open to gets Cursor's answer.
+			cursorMaxOnly.Store(id, true)
+			events, status, msg = s.cursorRun(ctx, req, model, id, tok, base, true)
 		}
 		return events, status, msg
 	}
 }
 
-// cursorRun is one Run of the request on the agent API at base.
-func (s *Server) cursorRun(ctx context.Context, req *Request, model, id, tok, base string) (<-chan Event, int, string) {
+// cursorMaxOnly are the ids Cursor said it serves in Max Mode only.
+var cursorMaxOnly sync.Map
+
+// cursorMaxRequired is Cursor's refusal of a model asked for without Max
+// Mode (cursor-agent's MAX_MODE_REQUIRED): "Max Mode Required: The model
+// "gpt-5.6-luna-low" requires Max Mode to be enabled. …" (ARNO on Discord).
+func cursorMaxRequired(msg string) bool {
+	low := strings.ToLower(msg)
+	return strings.Contains(low, "max mode required") || strings.Contains(low, "max_mode_required") || strings.Contains(low, "requires max mode")
+}
+
+// cursorRun is one Run of the request on the agent API at base, in Max
+// Mode when maxMode is set.
+func (s *Server) cursorRun(ctx context.Context, req *Request, model, id, tok, base string, maxMode bool) (<-chan Event, int, string) {
 	tools := bridgeTools(req)
 	msgs := cursorMessages(req, tools)
-	run, blobs := buildCursorRun(msgs, cursorLastUser(req), tools, id)
+	conv, _ := ctx.Value(cursorConvKey{}).(string)
+	if conv == "" { // a new one: the Run's usage event is found by it
+		conv = cursorUUID()
+	}
+	since := time.Now()
+	run, blobs := buildCursorRun(msgs, cursorLastUser(req), tools, id, conv, maxMode)
 
 	// the Run ends with the turn, or once the calls are made
 	rctx, cancel := context.WithCancel(ctx)
@@ -280,6 +320,13 @@ func (s *Server) cursorRun(ctx context.Context, req *Request, model, id, tok, ba
 		return nil, status, "Cursor: " + msg
 	}
 	raw := make(chan Event, 16)
+	st.done = func() {
+		res.Body.Close()
+		pw.Close()
+	}
+	st.step = func(ctx context.Context) (Usage, bool) {
+		return s.cursorStepUsage(ctx, tok, conv, since)
+	}
 	go func() {
 		defer res.Body.Close()
 		defer pw.Close()
@@ -315,7 +362,9 @@ func (s *Server) cursorRun(ctx context.Context, req *Request, model, id, tok, ba
 			return
 		}
 		for ev := range raw {
-			if ev.Kind == KUsage && ev.Usage.Input == 0 {
+			// a guess only when Cursor counted nothing: a prompt read whole
+			// from the cache leaves no uncached rest
+			if u := ev.Usage; ev.Kind == KUsage && u.Input == 0 && u.CacheRead == 0 && u.CacheWrite == 0 {
 				ev.Usage.Input = estimate(req)
 			}
 			if !send(ev) {
@@ -436,8 +485,8 @@ func cursorMessages(r *Request, tools []bridgeTool) [][]byte {
 					}
 				case ToolCall:
 					var args any = map[string]any{}
-					if len(p.Args) > 0 {
-						json.Unmarshal(p.Args, &args)
+					if json.Valid(p.Args) {
+						args = json.RawMessage(p.Args)
 					}
 					content = append(content, map[string]any{"type": "tool-call", "toolCallId": cursorCallID(p.ID), "toolName": cursorCall,
 						"args": map[string]any{"namespace": "magpie", "toolName": p.Name, "arguments": args}})
@@ -493,9 +542,8 @@ func indexOf(ids []string, id string) int {
 // cursorResult is a tool's result, as the model is shown it.
 func cursorResult(id, text string, isError bool) map[string]any {
 	var result any = text
-	var j any
-	if json.Unmarshal([]byte(text), &j) == nil {
-		result = j
+	if json.Valid([]byte(text)) {
+		result = json.RawMessage(text)
 	}
 	r := map[string]any{"type": "tool-result", "toolCallId": cursorCallID(id), "toolName": cursorCall, "result": result,
 		"experimental_content": []any{map[string]any{"type": "text", "text": text}}}
@@ -555,16 +603,61 @@ func cursorBlobID(b []byte) []byte {
 
 func cursorUUID() string {
 	b, _ := hex.DecodeString(randomToken()[:32])
+	return uuidOf(b)
+}
+
+// uuidOf is 16 bytes as a version 4 UUID, the shape of every id Cursor's
+// own client sends.
+func uuidOf(b []byte) string {
+	b = slices.Clone(b[:16])
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b)
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
+// cursorConvKey holds, in a request's context, the conversation_id its
+// Runs go with.
+type cursorConvKey struct{}
+
+// cursorConversation is the AgentRunRequest's conversation_id for a
+// conversation: the same on every request of it, so that Cursor's backend
+// keeps sending it to the machine that has its prompt cached — the
+// x-grok-conv-id grokSigned sends xAI for Grok, which caches by machine
+// (#498). Cursor's own client keeps one conversationId per agent session,
+// so it is made from what names the session — the client's
+// prompt_cache_key (Codex's thread id), else the agent's own session
+// header (Claude Code's, OpenCode's) — together with the conversation's
+// first user message, which every later request repeats: subagents
+// running at once under one session (Claude Code's Task agents share its
+// session id) are separate conversations to Cursor, as they are to its
+// own client, and never one conversation sent twice at the same time.
+// With nothing naming the session it is "", and each Run gets a new id
+// as before: a first message alone ("hi") would put strangers'
+// conversations under one id.
+func cursorConversation(in http.Header, cacheKey string, body []byte) string {
+	key := cacheKey
+	if key == "" {
+		key = nativeSessionOf(in)
+	}
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("cursor conversation\x00" + key + "\x00" + conversationID(http.Header{}, body)))
+	return uuidOf(sum[:])
+}
+
 // buildCursorRun is the Run's first message, an AgentClientMessage with its
 // run_request, and the blobs it names. The conversation state is the
 // messages and one turn, which the server wants there to sample at all.
-func buildCursorRun(msgs [][]byte, lastUser string, tools []bridgeTool, model string) ([]byte, map[string][]byte) {
+// conv is the conversation_id (cursorConversation), a new one when "".
+// maxMode asks for the model in Max Mode, as cursor-agent does for a model
+// Cursor serves only that way: ModelDetails' max_mode (7) and
+// RequestedModel's (2).
+func buildCursorRun(msgs [][]byte, lastUser string, tools []bridgeTool, model, conv string, maxMode bool) ([]byte, map[string][]byte) {
+	if conv == "" {
+		conv = cursorUUID()
+	}
 	blobs := map[string][]byte{}
 	put := func(b []byte) []byte {
 		id := cursorBlobID(b)
@@ -592,12 +685,151 @@ func buildCursorRun(msgs [][]byte, lastUser string, tools []bridgeTool, model st
 		mcp = mcp.bytes(1, d)
 	}
 	action := pb{}.bytes(2, pb{}.bytes(2, rc)) // resume_action
+	details, requested := pb{}.str(1, model).str(3, model).str(4, model), pb{}.str(1, model)
+	if maxMode {
+		details, requested = details.varint(7, 1), requested.varint(2, 1)
+	}
 	rr := pb{}.bytes(1, state).bytes(2, action).
-		bytes(3, pb{}.str(1, model).str(3, model).str(4, model)).
-		bytes(4, mcp).str(5, cursorUUID()).
-		bytes(9, pb{}.str(1, model)).
+		bytes(3, details).
+		bytes(4, mcp).str(5, conv).
+		bytes(9, requested).
 		varint(19, 1) // inline images
 	return pb{}.bytes(1, rr), blobs
+}
+
+// cursorUsage is a TurnEndedUpdate as magpie counts usage. Its
+// input_tokens is the whole prompt, what was read from the cache and
+// written to it included, as Cursor's own client has it (it takes both out
+// to get the prompt's uncached rest); Usage.Input is that rest, as
+// Anthropic's count and every other provider here has it, prompt() adding
+// the cache back (#498). Its reasoning_tokens is kept as Reasoning.
+func cursorUsage(uf []pbField) Usage {
+	in, cr, cw := int(pbNum(uf, 1)), int(pbNum(uf, 3)), int(pbNum(uf, 4))
+	return Usage{Input: max(in-cr-cw, 0), Output: int(pbNum(uf, 2)), CacheRead: cr, CacheWrite: cw, Reasoning: int(pbNum(uf, 5))}
+}
+
+// A step that calls the caller's tools has no TurnEndedUpdate: Cursor ends
+// the turn, and tells what it used, only once the client has run the tools
+// and sent their results in the same Run, and the caller runs them after
+// the Run is closed (#676). Before that it sends nothing more than the
+// conversation's checkpoint and heartbeats, and a cancelled Run ends with
+// an error and no usage either. The dashboard's usage events count every
+// Run, by its conversation_id, the uncached input apart from what was read
+// from the cache and written to it, as TurnEndedUpdate does; one shows
+// about 2.5 s after the Run is closed. cursorStepWait is how long a step's
+// is looked for: first after that long, then every so often until the
+// end, after which it is guessed as before.
+var cursorStepWait = struct{ first, every, until time.Duration }{1500 * time.Millisecond, 500 * time.Millisecond, 6 * time.Second}
+
+// cursorClaimed are the usage events already counted, by conversation and
+// time, so that two steps of one conversation never count the same one.
+var cursorClaimed = struct {
+	sync.Mutex
+	at map[string]time.Time
+}{at: map[string]time.Time{}}
+
+// cursorStepUsage is the usage of the Run of conversation conv started at
+// since, as the dashboard's usage events count it; false when none shows
+// in time.
+func (s *Server) cursorStepUsage(ctx context.Context, tok, conv string, since time.Time) (Usage, bool) {
+	end := time.Now().Add(cursorStepWait.until)
+	cursorClaimed.Lock()
+	for k, at := range cursorClaimed.at {
+		if time.Since(at) > 10*time.Minute {
+			delete(cursorClaimed.at, k)
+		}
+	}
+	cursorClaimed.Unlock()
+	wait := func(d time.Duration) bool {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	if !wait(cursorStepWait.first) {
+		return Usage{}, false
+	}
+	for {
+		u, ok, stop := s.cursorUsageEvent(ctx, tok, conv, since)
+		if ok {
+			return u, true
+		}
+		if stop || time.Now().Add(cursorStepWait.every).After(end) || !wait(cursorStepWait.every) {
+			return Usage{}, false
+		}
+	}
+}
+
+// cursorUsageEvent is one look for the Run's usage event: the earliest of
+// conv's not counted yet since the Run began; stop when the account can't
+// read them.
+func (s *Server) cursorUsageEvent(ctx context.Context, tok, conv string, since time.Time) (u Usage, ok, stop bool) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	q, _ := json.Marshal(map[string]any{
+		"teamId": 0, "page": 1, "pageSize": 50,
+		"startDate": strconv.FormatInt(since.Add(-time.Minute).UnixMilli(), 10),
+		"endDate":   strconv.FormatInt(time.Now().Add(time.Minute).UnixMilli(), 10),
+	})
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorAPI+"/aiserver.v1.DashboardService/GetFilteredUsageEvents", bytes.NewReader(q))
+	if err != nil {
+		return Usage{}, false, true
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	hr.Header.Set("Connect-Protocol-Version", "1")
+	hr.Header.Set("Authorization", "Bearer "+tok)
+	hr.Header.Set("x-cursor-client-version", cursorVersion())
+	hr.Header.Set("x-cursor-client-type", "cli")
+	hr.Header.Set("x-ghost-mode", "true")
+	res, err := s.client.Do(hr)
+	if err != nil {
+		return Usage{}, false, false
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 == 4 && res.StatusCode != http.StatusTooManyRequests {
+		return Usage{}, false, true // not this account's to read
+	}
+	var out struct {
+		Events []struct {
+			Timestamp      string `json:"timestamp"`
+			ConversationID string `json:"conversationId"`
+			TokenUsage     *struct {
+				Input      float64 `json:"inputTokens"`
+				Output     float64 `json:"outputTokens"`
+				CacheRead  float64 `json:"cacheReadTokens"`
+				CacheWrite float64 `json:"cacheWriteTokens"`
+			} `json:"tokenUsage"`
+		} `json:"usageEventsDisplay"`
+	}
+	if res.StatusCode/100 != 2 || json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(&out) != nil {
+		return Usage{}, false, false
+	}
+	cursorClaimed.Lock()
+	defer cursorClaimed.Unlock()
+	best, bestAt := -1, int64(0)
+	for i, e := range out.Events {
+		at, err := strconv.ParseInt(e.Timestamp, 10, 64)
+		if err != nil || e.ConversationID != conv || e.TokenUsage == nil || at < since.UnixMilli()-1000 {
+			continue
+		}
+		if _, taken := cursorClaimed.at[conv+"\x00"+e.Timestamp]; taken {
+			continue
+		}
+		if best < 0 || at < bestAt {
+			best, bestAt = i, at
+		}
+	}
+	if best < 0 {
+		return Usage{}, false, false
+	}
+	e := out.Events[best]
+	cursorClaimed.at[conv+"\x00"+e.Timestamp] = time.Now()
+	t := e.TokenUsage
+	return Usage{Input: int(t.Input), Output: int(t.Output), CacheRead: int(t.CacheRead), CacheWrite: int(t.CacheWrite)}, true, false
 }
 
 // cursorToolDef is an McpToolDefinition.
@@ -702,6 +934,10 @@ type cursorStream struct {
 	pw     *io.PipeWriter
 	blobs  map[string][]byte
 	status int // the status an error at the head is answered with
+	// done closes the Run; step is the usage of a step that called tools,
+	// which Cursor never tells the Run (cursorStepUsage)
+	done func()
+	step func(context.Context) (Usage, bool)
 }
 
 func (st *cursorStream) send(msg []byte) {
@@ -747,7 +983,22 @@ func (st *cursorStream) decode(ctx context.Context, br *bufio.Reader, out chan<-
 	}
 	var calls, listed, said int
 	var usage Usage
-	finish := func() {
+	ended := false // Cursor said what the turn used
+	var finish func()
+	// settle is finish once a step that called tools has its usage: the
+	// dashboard's count, the Run closed first, when the turn didn't end
+	settle := func() {
+		if calls > 0 && !ended && st.step != nil {
+			if st.done != nil {
+				st.done()
+			}
+			if u, ok := st.step(ctx); ok {
+				usage = u
+			}
+		}
+		finish()
+	}
+	finish = func() {
 		if usage.Output == 0 {
 			usage.Output = (said + 3) / 4
 		}
@@ -763,7 +1014,7 @@ func (st *cursorStream) decode(ctx context.Context, br *bufio.Reader, out chan<-
 		if err != nil {
 			if ctx.Err() == nil {
 				if errors.Is(err, io.EOF) && calls > 0 {
-					finish()
+					settle()
 					return
 				}
 				fail(502, "the reply broke off: "+err.Error())
@@ -776,7 +1027,7 @@ func (st *cursorStream) decode(ctx context.Context, br *bufio.Reader, out chan<-
 			} else if said == 0 && calls == 0 {
 				fail(502, "an empty reply")
 			} else {
-				finish()
+				settle()
 			}
 			return
 		}
@@ -801,14 +1052,14 @@ func (st *cursorStream) decode(ctx context.Context, br *bufio.Reader, out chan<-
 							}
 						}
 					case 14: // turn ended, with what it used
-						usage = Usage{Input: int(pbNum(uf, 1)), Output: int(pbNum(uf, 2)), CacheRead: int(pbNum(uf, 3)), CacheWrite: int(pbNum(uf, 4))}
+						usage, ended = cursorUsage(uf), true
 						if calls == 0 {
 							finish()
 							return
 						}
 					case 27: // how many tool calls the step makes, sent before them
 						if listed = int(pbNum(uf, 1)); listed > 0 && calls >= listed {
-							finish()
+							settle()
 							return
 						}
 					}
@@ -822,7 +1073,7 @@ func (st *cursorStream) decode(ctx context.Context, br *bufio.Reader, out chan<-
 					return
 				}
 				if listed > 0 && calls >= listed { // every call made: the caller runs them
-					finish()
+					settle()
 					return
 				}
 			case 4: // kv_server_message: a blob wanted, or one to keep

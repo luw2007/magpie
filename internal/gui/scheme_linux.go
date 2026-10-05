@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -16,7 +17,7 @@ func registerScheme() error {
 	if err != nil {
 		return err
 	}
-	data := os.Getenv("XDG_DATA_HOME")
+	data := appdir.Getenv("XDG_DATA_HOME")
 	if data == "" {
 		home, _ := os.UserHomeDir()
 		data = filepath.Join(home, ".local", "share")

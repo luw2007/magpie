@@ -3,14 +3,18 @@
 package agent
 
 import (
+	"debug/buildinfo"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -28,6 +32,32 @@ type Option struct {
 	GroupIcon string `json:"groupIcon,omitempty"`
 	Ref       string `json:"ref,omitempty"`  // the catalog model, the same in every agent
 	Free      bool   `json:"free,omitempty"` // costs its subscription nothing
+	// Rate and RateWas are the credits a request costs its subscription,
+	// as a multiple, and before a discount running now (Qoder's 0.5×,
+	// WorkBuddy's x0.03), when its vendor lists them
+	Rate    float64 `json:"rate,omitempty"`
+	RateWas float64 `json:"rateWas,omitempty"`
+	// Context is the tokens the model takes, when known; the picker marks
+	// the large ones
+	Context int `json:"context,omitempty"`
+	// Direct names who the agent asks for this model itself, on its own
+	// sign-in or key, with magpie not in the way ("Anthropic"): its config
+	// then names no magpie endpoint, which is right, not a failed setup
+	Direct string `json:"direct,omitempty"`
+	// Same is a model magpie serves on the very account the agent is
+	// signed in to itself, so the agent reaches it on its own too: the
+	// picker folds these into one row a click opens (Claude Code, #496)
+	Same bool `json:"same,omitempty"`
+	// Alias is the value of the option a dated id is another name of
+	// (claude-opus-4-5-20251101 → claude-opus-4-5): the picker shows one
+	// row for the two, the alias, unless the dated one is the value set
+	Alias string `json:"alias,omitempty"`
+
+	// own: served on the agent's own sign-in (viaMagpie), for Same
+	own bool
+	// sub: served on a subscription signed in in magpie, not a key; a
+	// Claude account only for Claude Code, which alone may use it safely
+	sub bool
 }
 
 // Field is one tunable setting of an agent. Set with an empty value puts
@@ -42,6 +72,9 @@ type Field struct {
 	// Quiet fields are left out of listings while empty: they follow
 	// another field until set (Claude Code's per-tier models).
 	Quiet bool
+	// Follows is the key of the field a Quiet one takes after while empty
+	// ("model" for Claude Code's tiers), for a profile's details to say so.
+	Follows string
 }
 
 // Agent is one supported coding agent.
@@ -60,10 +93,44 @@ type Agent struct {
 	// UA is what the agent's User-Agent begins with, lower-case: how the
 	// gateway tells its requests from others'
 	UA []string
+	// ListsModels: the agent's own model menu is the gateway's /v1/models
+	// as asked with its key, so the models picked on the Agents page for it
+	// (settings.HiddenModels) are its menu, though no field of its picks
+	// among the catalog (Cursor Private Inference)
+	ListsModels bool
 	// Sync, for an agent that reads magpie's models from a file of its own
 	// rather than asking the gateway, rewrites that list as the catalog is
 	// now — where magpie wrote one; nothing else changes (see SyncCatalog).
 	Sync func() error
+	// Unwire, for an agent whose fields' default is the agent as installed
+	// rather than what it had before magpie (Codex, Claude Code, Gemini
+	// CLI), takes magpie out of its config and puts back what the stash
+	// kept: the endpoint, provider and model the user had. Disconnect runs
+	// it before the fields' defaults.
+	Unwire func() error
+	// Join, for an agent that can have magpie's models in its own list
+	// while it stays on the model it was on (Codex signed in with ChatGPT),
+	// connects it so, its model left as its own last pick; false where it
+	// can't, and Connect then picks one of magpie's.
+	Join func() (bool, error)
+	// Joined reports an agent Join connected: magpie is in its config
+	// though no field is on one of magpie's models.
+	Joined func() bool
+	// Routed reports that the agent's config sends whatever model it
+	// names to magpie's gateway (Codex's openai_base_url or magpie as its
+	// provider), so a model's name the gateway takes as a routing group
+	// is that group's (#750).
+	Routed func() bool
+	// Follow, for an agent whose own picker moves its main model where
+	// magpie keeps other settings following it (Claude Code's /model and
+	// its tiers), brings those along to the model picked there. Run as the
+	// Agents page is drawn.
+	Follow func() error
+	// RenameRefs, for an agent whose config names magpie's models beyond
+	// its fields (omp's other roles and fallback chains), moves those names
+	// off provider from onto to, the rest of each kept; it answers whether
+	// any moved. The fields themselves are RenameProvider's.
+	RenameRefs func(from, to string) (bool, error)
 	// Check, for an agent magpie wires in beyond its model field, says what
 	// of that wiring is gone while the model is still one of magpie's —
 	// something else rewrote the config — or "" when it is all there
@@ -80,11 +147,42 @@ type Agent struct {
 	// WSL is the distro an agent inside WSL lives in, "" for this
 	// machine's own (see wsl.go).
 	WSL string
+	// Home is a WSL agent's $HOME in its distro as magpie opens it
+	// (\\wsl.localhost\<distro>\home\me), where its other files are; ""
+	// for this machine's, and while the distro is stopped: opening it
+	// would start it.
+	Home string
+	// Gateway is the gateway's address as the agent reaches it, a WSL
+	// distro's own way to it; nil is gateway.URL.
+	Gateway func() string
 	// Import, for an app that takes magpie only through an import link of
 	// its own, which the user confirms there (Cindy), is that link; the app
 	// has no fields magpie sets. Added says whether it has magpie already.
 	Import func() string
 	Added  func() bool
+	// Launch, for an agent that takes the gateway only from its
+	// environment (agy), is the command that starts it on magpie, while
+	// it is on one of magpie's models; "" otherwise.
+	Launch func() string
+	// SplitSuffix, for an agent whose model values carry something of its
+	// own after the model that varies from value to value (omp's thinking
+	// level, "…:max"), splits a value into the model the picker offers and
+	// that suffix, "" when there is none. What matches a value against the
+	// picker (drift, Reseat, RenameProvider, Spell) matches the model and
+	// puts the suffix back after the one it moves to. A mark that is always
+	// the same for a model (Claude Code's [1m]) rides on the option instead.
+	// one is false for a value that is no one model but a list the agent
+	// falls back through (omp's "a,b"): that is the user's own whatever it
+	// names, never taken for one of magpie's models nor moved by what
+	// matches the picker (RenameRefs moves the names in it).
+	SplitSuffix func(v string) (model, suffix string, one bool)
+	// Spelled, when set, says whether a value of the agent's fields is
+	// spelled as one of magpie's there (prefixed: it starts with
+	// "magpie/", its provider in the agent): one that isn't is a model of
+	// one of the agent's own providers, never magpie's, even when magpie
+	// has a provider of the same name (OpenHanako's own
+	// deepseek/deepseek-v4-pro read as magpie's deepseek, #835).
+	Spelled func(v string) bool
 	// detect, when set, says whether the agent is here in place of looking
 	// for its files and binary: a distro's, probed once.
 	detect func() bool
@@ -109,13 +207,16 @@ func (a *Agent) Detected() bool {
 	if a.detect != nil {
 		return a.detect()
 	}
+	// a file where the agent keeps its folder is another tool's (a shell's
+	// ~/.dsh), and the agent can't be here: it couldn't make its folder
+	if a.Dir != "" && Taken(a.Dir) {
+		return false
+	}
 	if _, err := os.Stat(a.Path); err == nil {
 		return true
 	}
-	if a.Dir != "" {
-		if _, err := os.Stat(a.Dir); err == nil {
-			return true
-		}
+	if a.Dir != "" && isDir(a.Dir) {
+		return true
 	}
 	if a.Bin != "" {
 		if _, err := exec.LookPath(a.Bin); err == nil {
@@ -123,6 +224,56 @@ func (a *Agent) Detected() bool {
 		}
 	}
 	return false
+}
+
+// Taken reports whether something that isn't a folder is where the folder
+// p, or one it is in, would be: nothing can be written under it.
+func Taken(p string) bool {
+	for d := filepath.Clean(p); ; {
+		if st, err := os.Stat(d); err == nil {
+			return !st.IsDir()
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			return false
+		}
+		d = up
+	}
+}
+
+// goProgram reports whether bin was built by Go: another tool of the same
+// name, not the agent, when the agent is not written in Go. Reading a
+// binary's build info parses its whole symbol table (~150ms for a large
+// one), and detection runs on every state the window asks for, so the
+// answer is kept while the file is the same.
+func goProgram(bin string) bool {
+	st, err := os.Stat(bin)
+	if err != nil {
+		return false
+	}
+	key := goProgramKey{bin, st.Size(), st.ModTime()}
+	goPrograms.Lock()
+	defer goPrograms.Unlock()
+	if v, ok := goPrograms.m[key]; ok {
+		return v
+	}
+	_, err = buildinfo.ReadFile(bin)
+	if goPrograms.m == nil {
+		goPrograms.m = map[goProgramKey]bool{}
+	}
+	goPrograms.m[key] = err == nil
+	return err == nil
+}
+
+type goProgramKey struct {
+	path string
+	size int64
+	mod  time.Time
+}
+
+var goPrograms struct {
+	sync.Mutex
+	m map[goProgramKey]bool
 }
 
 // Field looks a field up by key.
@@ -201,19 +352,25 @@ func ids(as []*Agent) []string {
 // in others, and either is taken in both. A value the picker offers as is
 // stays, and so does one it doesn't know (a model the agent reaches on its
 // own that isn't listed); a "magpie/…" value the catalog doesn't have is an
-// error rather than a model the agent would ask its own vendor for.
+// error rather than a model the agent would ask its own vendor for. The
+// agent's suffix after the model (SplitSuffix) stays as typed, and so does
+// a list of models, the user's own.
 func (a *Agent) Spell(key, v string) (string, error) {
 	f := a.Field(key)
 	if f == nil || f.Options == nil || v == "" {
 		return v, nil
 	}
+	model, suffix, one := a.split(v)
+	if !one {
+		return v, nil
+	}
 	opts := f.Options(a.Values())
 	for _, o := range opts {
-		if o.Value == v {
+		if o.Value == model {
 			return v, nil
 		}
 	}
-	ref, prefixed := strings.CutPrefix(v, magpieID+"/")
+	ref, prefixed := strings.CutPrefix(model, magpieID+"/")
 	// a provider renamed since (a profile saved before) is the same one
 	refs := []string{ref}
 	if r := provider.RenamedRef(ref); r != ref {
@@ -222,7 +379,7 @@ func (a *Agent) Spell(key, v string) (string, error) {
 	for _, r := range refs {
 		for _, o := range opts {
 			if o.Ref != "" && o.Ref == r {
-				return o.Value, nil
+				return o.Value + suffix, nil
 			}
 		}
 	}
@@ -230,4 +387,38 @@ func (a *Agent) Spell(key, v string) (string, error) {
 		return "", fmt.Errorf("%s isn't a model in magpie's catalog (magpie models lists them)", ref)
 	}
 	return v, nil
+}
+
+// split is v as the model the picker offers and the agent's suffix after
+// it (SplitSuffix), one false for a list of models; the whole of v for an
+// agent without one.
+func (a *Agent) split(v string) (model, suffix string, one bool) {
+	if a.SplitSuffix == nil {
+		return v, "", true
+	}
+	return a.SplitSuffix(v)
+}
+
+// atomic makes each of an agent's field sets, and its Sync, one edit of the
+// files at paths: one that fails part way puts them all back as they were,
+// rather than leaving, say, Codex's config.toml with magpie's provider table
+// written but its model not (#253).
+func atomic(a *Agent, paths ...string) *Agent {
+	for i := range a.Fields {
+		if set := a.Fields[i].Set; set != nil {
+			a.Fields[i].Set = func(v string) error {
+				return edit.Atomically(func() error { return set(v) }, paths...)
+			}
+		}
+	}
+	if sync := a.Sync; sync != nil {
+		a.Sync = func() error { return edit.Atomically(sync, paths...) }
+	}
+	if follow := a.Follow; follow != nil {
+		a.Follow = func() error { return edit.Atomically(follow, paths...) }
+	}
+	if unwire := a.Unwire; unwire != nil {
+		a.Unwire = func() error { return edit.Atomically(unwire, paths...) }
+	}
+	return a
 }

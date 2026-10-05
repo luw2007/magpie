@@ -13,7 +13,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Prompt is Codex's generic system prompt (Apache-2.0, openai/codex,
@@ -80,13 +83,48 @@ func Entries(ms []catalog.Model, after int) []any {
 		Tools      []string `json:"experimental_supported_tools"`
 		Modalities []string `json:"input_modalities"`
 		Context    *int     `json:"context_window,omitempty"`
-		Tiers      []tier   `json:"service_tiers"`
+		// the model's whole window when Context is the working one
+		// (settings.Working): Codex's model_context_window may raise it
+		// that far, as it does OpenAI's own models'
+		MaxContext *int   `json:"max_context_window,omitempty"`
+		Tiers      []tier `json:"service_tiers"`
+		// Without the search, Codex puts every MCP tool's schema (a
+		// ChatGPT sign-in's apps' among them) in every request, 190K
+		// tokens before the first word (#258); with it, they are named in
+		// tool_search's description and handed over when searched for,
+		// as Codex does for its own models. Magpie serves the search to
+		// any model as a function (gateway/toolsearch.go). Code mode and
+		// Responses Lite stay off: the one has the model write JavaScript
+		// against Codex's tools, the other moves the tools and
+		// instructions into the input, neither for a model not trained on
+		// them.
+		SearchTool bool `json:"supports_search_tool"`
+		// Required from Codex 0.147 (#298: without it the whole catalog
+		// fails to load); later Codex ask for parallel calls whatever it
+		// says, so it says what they do.
+		Parallel bool `json:"supports_parallel_tool_calls"`
+		// "v1" only with settings.CodexAgentsV1, on an OpenAI model's
+		// entry (see V1); "v2" on a model offering Ultra that no ChatGPT
+		// account answers for (catalog.Model.AgentsV2), as Codex's own
+		// entry for it says: Ultra hands work to Codex's agents in V2
+		// alone, and a magpie-served lead writes their tasks as text.
+		MultiAgent string `json:"multi_agent_version,omitempty"`
 	}
 	own := CacheEntries()
+	v1 := V1()
+	work := settings.Load()
 	var entries []any
 	for i, m := range ms {
 		if raw, ok := own[strings.TrimPrefix(m.ID, "codex/")]; ok && strings.HasPrefix(m.ID, "codex/") {
-			entries = append(entries, ownEntry(raw, m.ID, m.Name, after+i+1))
+			e := ownEntry(raw, m.ID, m.Name, after+i+1)
+			// the window as magpie resolves it — the one the user set,
+			// else the account's list's — not the cache's, which is what
+			// magpie last handed Codex (#674)
+			Window(e, m.Context, 0)
+			if v1 {
+				Stamp(e)
+			}
+			entries = append(entries, e)
 			continue
 		}
 		e := model{
@@ -94,7 +132,7 @@ func Entries(ms []catalog.Model, after int) []any {
 			Instructions: Prompt, Efforts: []level{},
 			Shell: "unified_exec", Visibility: "list", InAPI: true, Priority: after + i + 1,
 			ApplyPatch: "freeform", Tools: []string{}, Modalities: []string{"text"},
-			Tiers: []tier{},
+			Tiers: []tier{}, SearchTool: true, Parallel: true,
 		}
 		// Fast mode: a ChatGPT account's GPT model Codex has no entry for,
 		// or a group one is in, gets the tier Codex's own catalog gives its
@@ -102,11 +140,22 @@ func Entries(ms []catalog.Model, after int) []any {
 		if slug, ok := strings.CutPrefix(m.ID, "codex/"); m.Fast || ok && strings.HasPrefix(slug, "gpt-") {
 			e.Tiers = append(e.Tiers, tier{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"})
 		}
+		// an OpenAI model: a ChatGPT account's (codex/), or a group one is
+		// in (Fast, see provider.codexListed)
+		if v1 && (strings.HasPrefix(m.ID, "codex/") || m.Fast) {
+			e.MultiAgent = "v1"
+		} else if m.AgentsV2 {
+			e.MultiAgent = "v2"
+		}
 		if m.Images {
 			e.Modalities = append(e.Modalities, "image")
 		}
 		if c := m.Context; c > 0 {
-			e.Context = &c
+			w := work.Working(c)
+			e.Context = &w
+			if w < c {
+				e.MaxContext = &c
+			}
 		}
 		e.Truncation.Mode, e.Truncation.Limit = "tokens", 10000
 		for _, ef := range m.Efforts {
@@ -124,12 +173,12 @@ func Entries(ms []catalog.Model, after int) []any {
 // CacheEntries is Codex's own models, as models_cache.json describes them
 // for the ChatGPT account it last asked with, by slug.
 func CacheEntries() map[string]map[string]any {
-	home, _ := os.UserHomeDir()
-	b, err := os.ReadFile(filepath.Join(home, ".codex", "models_cache.json"))
+	b, err := os.ReadFile(catalog.CodexModelsCache())
 	if err != nil {
 		return nil
 	}
 	var cache struct {
+		ETag   string           `json:"etag"`
 		Models []map[string]any `json:"models"`
 	}
 	if json.Unmarshal(b, &cache) != nil {
@@ -137,11 +186,108 @@ func CacheEntries() map[string]map[string]any {
 	}
 	out := map[string]map[string]any{}
 	for _, m := range cache.Models {
-		if slug, _ := m["slug"].(string); slug != "" {
+		desc, _ := m["description"].(string)
+		if slug, _ := m["slug"].(string); slug != "" && !catalog.MagpieAdded(cache.ETag, slug, desc) {
 			out[slug] = m
 		}
 	}
+	if MarkedV1(cache.ETag) {
+		// the versions in it are magpie's, written over the backend's: the
+		// backend's go back, so a list made from this cache after the
+		// setting is turned off says what the backend did
+		was := originals()
+		for slug, m := range out {
+			if v, ok := was[slug]; ok {
+				unstamp(m, v)
+			}
+		}
+	} else {
+		// as the backend gave them
+		Remember(slices.Collect(func(yield func(any) bool) {
+			for _, m := range out {
+				if !yield(m) {
+					return
+				}
+			}
+		}))
+	}
 	return out
+}
+
+// Codex picks a thread's multi-agent tools by its model's entry: its
+// multi_agent_version ("v1", "v2") unless features.multi_agent_v2 is on,
+// which makes it V2 whatever the entry says. In V2 OpenAI's server seals a
+// subagent's task, so a GPT lead can't hand one to a magpie-served
+// subagent; in V1 the task goes as text (#141). With settings.CodexAgentsV1
+// the OpenAI entries magpie hands Codex say "v1"; nothing else in them
+// changes. Codex keeps what it was handed in models_cache.json, versions
+// and all, so what the backend itself said is kept aside (originals) and
+// put back when the cache is read again (CacheEntries).
+
+// V1 reports whether the OpenAI models magpie hands Codex say "v1".
+func V1() bool { return settings.Load().CodexAgentsV1 }
+
+// Stamp has an entry say multi-agent V1.
+func Stamp(e map[string]any) { e["multi_agent_version"] = "v1" }
+
+// unstamp puts back the version an entry had: was, or none when "".
+func unstamp(e map[string]any, was string) {
+	if was == "" {
+		delete(e, "multi_agent_version")
+	} else {
+		e["multi_agent_version"] = was
+	}
+}
+
+// v1Mark starts the tag of a list whose OpenAI models say V1. It goes before
+// the tag's hash, so neither tag is found inside the other (Tagged).
+const v1Mark = "v1."
+
+// PolicyTag is a list's tag with the V1 setting in it.
+func PolicyTag(tag string) string {
+	if V1() {
+		return v1Mark + tag
+	}
+	return tag
+}
+
+// MarkedV1 reports whether an ETag is of a list magpie stamped V1.
+func MarkedV1(etag string) bool { return strings.Contains(etag, tagMark+v1Mark) }
+
+// versionsPath keeps the multi_agent_version the backend gave each of the
+// account's models, "" for none, by slug.
+func versionsPath() string { return filepath.Join(appdir.Config(), "codex-agent-versions.json") }
+
+func originals() map[string]string {
+	out := map[string]string{}
+	if b, err := os.ReadFile(versionsPath()); err == nil {
+		json.Unmarshal(b, &out)
+	}
+	return out
+}
+
+// Remember keeps the versions of entries as the backend gave them, before
+// any is stamped: those of slugs it names are replaced, the rest kept.
+func Remember(entries []any) {
+	was := originals()
+	changed := false
+	for _, e := range entries {
+		m, _ := e.(map[string]any)
+		slug, _ := m["slug"].(string)
+		if slug == "" {
+			continue
+		}
+		v, _ := m["multi_agent_version"].(string)
+		if cur, ok := was[slug]; !ok || cur != v {
+			was[slug], changed = v, true
+		}
+	}
+	if !changed {
+		return
+	}
+	if b, err := json.MarshalIndent(was, "", "  "); err == nil {
+		edit.WriteAtomic(versionsPath(), b)
+	}
 }
 
 // ownEntry is one of Codex's own models, reached through magpie with the
@@ -160,6 +306,27 @@ func ownEntry(raw map[string]any, id, name string, priority int) map[string]any 
 		e["base_instructions"] = Prompt
 	}
 	return e
+}
+
+// Window has one of Codex's own entries say a context window of n tokens
+// (none: as it says), and most at the most it may be raised to (0: as it
+// says). Only those two fields change. An entry whose max_context_window is
+// below its window — one the user set past what OpenAI lists — would say
+// two things at once, and Codex may hold the window to the max, so the max
+// is raised to it.
+func Window(e map[string]any, n, most int) {
+	if n <= 0 {
+		return
+	}
+	e["context_window"] = n
+	if most > 0 {
+		e["max_context_window"] = most
+	}
+	if cur, ok := e["max_context_window"].(float64); ok && int(cur) < n {
+		e["max_context_window"] = n
+	} else if cur, ok := e["max_context_window"].(int); ok && cur < n {
+		e["max_context_window"] = n
+	}
 }
 
 // Codex keeps the model list it was handed in models_cache.json, with the

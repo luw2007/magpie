@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/library"
@@ -44,21 +45,51 @@ const (
 	iterations = 600_000
 )
 
+// isBackupJSON says whether data begins like a sealed backup: Seal writes
+// the envelope with MarshalIndent, so its head is a { then the format
+// field. Whitespace is dropped so the check holds whatever the indent. A
+// body that starts this way but won't parse whole is a backup cut short,
+// not some other answer a server gave.
+func isBackupJSON(data []byte) bool {
+	head := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, string(data))
+	return strings.HasPrefix(head, `{"format":"`+format+`"`)
+}
+
 // Bundle is what a backup holds.
 type Bundle struct {
-	Version    int                        `json:"version"`
-	Created    time.Time                  `json:"created"`
-	App        string                     `json:"app,omitempty"` // the magpie that made it
-	Keys       bool                       `json:"keys"`          // whether the providers carry their keys
-	Providers  []provider.Provider        `json:"providers"`
-	Icons      map[string][]byte          `json:"icons,omitempty"`       // pictures picked for providers, by file name
-	Groups     []provider.Group           `json:"groups,omitempty"`      // the user's model groups
-	Sources    []provider.UsageSource     `json:"sources,omitempty"`     // usage collectors, including their credentials
-	QuotaPools []provider.QuotaPool       `json:"quota_pools,omitempty"` // shared quota identities
-	Settings   *settings.Settings         `json:"settings,omitempty"`
-	Profiles   map[string]profile.Profile `json:"profiles,omitempty"`
-	Agents     map[string]string          `json:"agents,omitempty"`  // every agent's fields as they are now
-	Library    *library.Bundle            `json:"library,omitempty"` // nil from a magpie before it, or with none
+	Version     int                        `json:"version"`
+	Created     time.Time                  `json:"created"`
+	App         string                     `json:"app,omitempty"` // the magpie that made it
+	Keys        bool                       `json:"keys"`          // whole-backup credential policy
+	Providers   []provider.Provider        `json:"providers"`
+	Icons       map[string][]byte          `json:"icons,omitempty"`       // pictures picked for providers, by file name
+	Groups      []provider.Group           `json:"groups,omitempty"`      // the user's model groups
+	Sources     []provider.UsageSource     `json:"sources,omitempty"`     // usage collectors, including their credentials
+	QuotaPools  []provider.QuotaPool       `json:"quota_pools,omitempty"` // shared quota identities
+	Settings    *settings.Settings         `json:"settings,omitempty"`
+	GatewayKeys *[]access.Key              `json:"gatewayKeys,omitempty"`
+	Profiles    map[string]profile.Profile `json:"profiles,omitempty"`
+	Agents      map[string]string          `json:"agents,omitempty"`  // every agent's fields as they are now
+	Library     *library.Bundle            `json:"library,omitempty"` // nil from a magpie before it, or with none
+	// Searches are the web search APIs (#419), their keys with the
+	// providers'; nil from a magpie before them.
+	Searches *[]provider.SearchAPI `json:"searches,omitempty"`
+	// Order is the order the user put the providers in (#499), by id;
+	// none from a magpie before it went, or when they were never arranged.
+	Order []string `json:"order,omitempty"`
+	// GroupOrder is the order the user put the routing groups in (#779),
+	// by id; none from a magpie before it, or when never arranged.
+	GroupOrder []string `json:"groupOrder,omitempty"`
+	// Sync can carry one part's credentials without changing the others'
+	// Keys policy; these are absent from older backups and whole collects.
+	ProvidersKeys *bool `json:"providersKeys,omitempty"`
+	SettingsKeys  *bool `json:"settingsKeys,omitempty"`
+	LibraryKeys   *bool `json:"libraryKeys,omitempty"`
 }
 
 type envelope struct {
@@ -74,12 +105,75 @@ type envelope struct {
 // ErrPassphrase is a passphrase that does not open the backup.
 var ErrPassphrase = errors.New("wrong passphrase, or the file was changed")
 
+// ErrCorrupt is a file that isn't a backup at all, or one cut short: its
+// JSON, format, or key-derivation fields don't read. It is told from a
+// wrong passphrase and from a newer magpie's file, so a sync can rebuild
+// the damaged one from this computer rather than fail on it forever.
+var ErrCorrupt = errors.New("not a magpie backup")
+
+// BundleVersion is the bundle's structure: 2 carries the per-part
+// credential markers (ProvidersKeys, SettingsKeys, LibraryKeys) as their
+// own three-state flags; 1 and before had the whole-bundle Keys alone.
+const BundleVersion = 2
+
+// Flag is a per-part credential marker as a bundle field takes one: the
+// part's own, written when a sync merged it. Absent (nil) is a whole
+// collect's or an older magpie's.
+func Flag(keys bool) *bool { return &keys }
+
+// scopedKeys is whether a part's credentials are in the bundle: the part's
+// own marker when the bundle carries one — a sync writes it for every part
+// it merges — and the whole-bundle bit for a whole collect or an older
+// file, which have no per-part ones. An older writer can also drop the markers
+// from a v2 file, so a version number alone never implies a credential scope.
+func (b Bundle) scopedKeys(part string) bool {
+	var own *bool
+	switch part {
+	case "settings":
+		own = b.SettingsKeys
+	case "library":
+		own = b.LibraryKeys
+	}
+	if own != nil {
+		return *own
+	}
+	return b.Keys
+}
+
 // Collect gathers the bundle; without keys, providers carry none, nor any
 // header that looks like one, and the library's servers no environment
 // variable or header that looks like one (their names stay).
 func Collect(keys bool, app string) (Bundle, error) {
 	b := Bundle{Version: 1, Created: time.Now().UTC(), App: app, Keys: keys}
-	for _, p := range provider.Stored() {
+	// a providers.json that can't be read stops the backup: carried as no
+	// providers, it would take them all away where it is put back, or where
+	// sync mirrors it
+	stored, err := provider.Stored()
+	if err != nil {
+		return b, err
+	}
+	if b.Groups, err = provider.StoredGroups(); err != nil {
+		return b, err
+	}
+	if b.Order, err = provider.StoredOrder(); err != nil {
+		return b, err
+	}
+	if b.GroupOrder, err = provider.StoredGroupOrder(); err != nil {
+		return b, err
+	}
+	if keys {
+		access.MigrateLegacyLANKeyBestEffort()
+		if _, err := os.Stat(access.Path()); err == nil {
+			gatewayKeys, err := access.Export()
+			if err != nil {
+				return b, err
+			}
+			b.GatewayKeys = &gatewayKeys
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return b, err
+		}
+	}
+	for _, p := range stored {
 		if !keys {
 			p = withoutKeys(p)
 		}
@@ -95,7 +189,6 @@ func Collect(keys bool, app string) (Bundle, error) {
 			}
 		}
 	}
-	b.Groups = provider.StoredGroups()
 	b.Sources = provider.UsageSources()
 	b.QuotaPools = provider.QuotaPools()
 	if !keys {
@@ -103,8 +196,21 @@ func Collect(keys bool, app string) (Bundle, error) {
 			b.Sources[i].Credential = ""
 		}
 	}
+	searches := []provider.SearchAPI{}
+	for _, a := range provider.StoredSearchAPIs() {
+		if !keys {
+			a.Key = ""
+		}
+		searches = append(searches, a)
+	}
+	b.Searches = &searches
 	if _, err := os.Stat(settings.Path()); err == nil {
 		s := settings.Load()
+		if !keys {
+			s.LANKey, s.LANKeyID = "", ""
+			s.OTel.Headers = nil
+			s.GitHubToken = ""
+		}
 		b.Settings = &s
 	}
 	ps, err := profile.Load()
@@ -138,6 +244,7 @@ func withoutKeys(p provider.Provider) provider.Provider {
 	for i := range p.Keys {
 		p.Keys[i].Key = ""
 	}
+	p.BalanceToken = ""
 	if len(p.Headers) > 0 {
 		h := map[string]string{}
 		for k, v := range p.Headers {
@@ -174,14 +281,26 @@ func Seal(b Bundle, pass string) ([]byte, error) {
 // Open decrypts a backup.
 func Open(data []byte, pass string) (Bundle, error) {
 	var e envelope
-	if json.Unmarshal(data, &e) != nil || e.Format != format {
+	if json.Unmarshal(data, &e) != nil {
+		// The JSON doesn't read whole. A backup a relay cut short ends in
+		// the middle of its sealed data and fails here, so this is the
+		// damaged-backup case — but so does any other non-JSON body a
+		// server answers with (a captive portal's sign-in page), and that
+		// isn't damage to rebuild over. Only a body that begins like a
+		// magpie backup counts as one; anything else is what it is.
+		if isBackupJSON(data) {
+			return Bundle{}, ErrCorrupt
+		}
+		return Bundle{}, errors.New("not a magpie backup")
+	}
+	if e.Format != format {
 		return Bundle{}, errors.New("not a magpie backup")
 	}
 	if e.Version != 1 || e.KDF != "pbkdf2-sha256" {
 		return Bundle{}, errors.New("this backup was made by a newer magpie; update magpie to open it")
 	}
 	if e.Iterations < 100_000 || e.Iterations > 10_000_000 || len(e.Nonce) != 12 || len(e.Salt) < 16 {
-		return Bundle{}, errors.New("not a magpie backup")
+		return Bundle{}, ErrCorrupt
 	}
 	gcm, err := aead(pass, e)
 	if err != nil {
@@ -205,10 +324,18 @@ func header(e envelope) []byte {
 }
 
 func aead(pass string, e envelope) (cipher.AEAD, error) {
-	key, err := pbkdf2.Key(sha256.New, pass, e.Salt, e.Iterations, 32)
+	key, err := deriveKey(pass, e)
 	if err != nil {
 		return nil, err
 	}
+	return gcmOf(key)
+}
+
+func deriveKey(pass string, e envelope) ([]byte, error) {
+	return pbkdf2.Key(sha256.New, pass, e.Salt, e.Iterations, 32)
+}
+
+func gcmOf(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -254,18 +381,75 @@ func Restore(b Bundle, parts Parts) (Result, error) {
 		if r.Added, r.Replaced, err = provider.RestoreConfiguration(b.Providers, b.Groups, b.Sources, b.QuotaPools); err != nil {
 			return r, err
 		}
-		for _, p := range provider.Stored() {
+		if err := provider.MirrorOrder(b.Order); err != nil {
+			return r, err
+		}
+		if err := provider.MirrorGroupOrder(b.GroupOrder); err != nil {
+			return r, err
+		}
+		if b.Searches != nil {
+			if err := provider.RestoreSearchAPIs(*b.Searches); err != nil {
+				return r, err
+			}
+			for _, a := range provider.StoredSearchAPIs() {
+				if !a.Ready() && slices.ContainsFunc(*b.Searches, func(x provider.SearchAPI) bool { return x.Vendor == a.Vendor }) {
+					r.NeedKey = append(r.NeedKey, a.Name())
+				}
+			}
+		}
+		stored, err := provider.Stored()
+		if err != nil {
+			return r, err
+		}
+		for _, p := range stored {
 			if !p.Ready() && slices.ContainsFunc(b.Providers, func(q provider.Provider) bool { return q.ID == p.ID }) {
 				r.NeedKey = append(r.NeedKey, p.Name)
 			}
 		}
 	}
-	if parts.Settings && b.Settings != nil {
-		// the window's size and the proxy are this machine's own
-		s, cur := *b.Settings, settings.Load()
-		s.Window, s.Proxy, s.Dock, s.DockWindow = cur.Window, cur.Proxy, cur.Dock, cur.DockWindow
+	if parts.Settings && (b.Settings != nil || b.GatewayKeys != nil) {
+		keys := b.scopedKeys("settings")
+		// the window's size, the proxy, the menu bar's usage are this machine's own
+		cur := settings.Load()
+		s := cur
+		if b.Settings != nil {
+			s = *b.Settings
+		}
+		s.KeepOwn(cur)
+		if !keys {
+			s.LANKey, s.LANKeyID = cur.LANKey, cur.LANKeyID
+			s.GitHubToken = cur.GitHubToken
+			s.OTel.Headers = nil
+			if strings.TrimRight(strings.TrimSpace(s.OTel.Endpoint), "/") == cur.OTel.Endpoint {
+				s.OTel.Headers = cur.OTel.Headers
+			}
+		} else if b.GatewayKeys == nil {
+			// An older backup may carry a marker without its named-key store.
+			s.LANKeyID = ""
+			keys, err := access.List()
+			if err != nil {
+				return r, err
+			}
+			if slices.ContainsFunc(keys, func(k access.Key) bool { return k.LAN }) {
+				// Its missing store must not detach this machine's default key.
+				s.LANKey, s.LANKeyID = cur.LANKey, cur.LANKeyID
+			}
+		}
 		if err := settings.Save(s); err != nil {
 			return r, err
+		}
+		if keys && b.GatewayKeys != nil {
+			if err := access.Restore(*b.GatewayKeys); err != nil {
+				// Settings must be writable before replacing credentials. If the
+				// store refuses the write, restore their original association.
+				if rollback := settings.Save(cur); rollback != nil {
+					return r, errors.Join(err, fmt.Errorf("could not restore original settings after gateway-key restore failed: %w", rollback))
+				}
+				return r, err
+			}
+		}
+		if keys && b.GatewayKeys == nil {
+			access.MigrateLegacyLANKeyBestEffort()
 		}
 		r.Settings = true
 	}
@@ -299,14 +483,15 @@ func Restore(b Bundle, parts Parts) (Result, error) {
 		}
 	}
 	if parts.Library && b.Library != nil {
-		lib := b.Library
-		if !b.Keys { // the servers' keys kept here stay
-			have, err := library.Collect()
-			if err != nil {
-				return r, err
-			}
-			lib = lib.WithSecrets(have, Secret)
+		// Even a keyed uploader can carry a redaction it downloaded and never
+		// held a value for. Fill blanks from this computer at apply time: the
+		// remote may never have held its private token. Nonempty replacements
+		// and removed entries still take effect.
+		have, err := library.Collect()
+		if err != nil {
+			return r, err
 		}
+		lib := b.Library.WithSecrets(have, Secret)
 		res, err := library.Put(lib)
 		if err != nil {
 			return r, fmt.Errorf("the library: %w", err)

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -21,9 +23,9 @@ type aBlock struct {
 	// image
 	Source *struct {
 		Type      string `json:"type"`
-		MediaType string `json:"media_type"`
-		Data      string `json:"data"`
-		URL       string `json:"url"`
+		MediaType string `json:"media_type,omitempty"`
+		Data      string `json:"data,omitempty"`
+		URL       string `json:"url,omitempty"`
 	} `json:"source,omitempty"`
 	// tool_use
 	ID    string          `json:"id,omitempty"`
@@ -72,7 +74,14 @@ type aRequest struct {
 	} `json:"thinking,omitempty"`
 	OutputConfig *struct {
 		Effort string `json:"effort,omitempty"`
+		Format *struct {
+			Type   string          `json:"type"`
+			Schema json.RawMessage `json:"schema"`
+		} `json:"format,omitempty"`
 	} `json:"output_config,omitempty"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	Speed      string          `json:"speed,omitempty"` // "fast": Claude's fast mode
+	Safeguards json.RawMessage `json:"safeguards,omitempty"`
 }
 
 func parseAnthropic(body []byte) (*Request, error) {
@@ -81,7 +90,17 @@ func parseAnthropic(body []byte) (*Request, error) {
 		return nil, fmt.Errorf("invalid request: %v", err)
 	}
 	r := &Request{Model: a.Model, System: stringOrText(a.System), MaxTokens: a.MaxTokens,
-		Temp: a.Temperature, TopP: a.TopP, Stop: a.StopSequences, Stream: a.Stream}
+		Temp: a.Temperature, TopP: a.TopP, Stop: a.StopSequences, Stream: a.Stream, Fast: a.Speed == "fast"}
+	r.Safeguards = a.Safeguards
+	if string(r.Safeguards) == "null" {
+		r.Safeguards = nil
+	}
+	if len(a.Metadata) > 0 && string(a.Metadata) != "null" {
+		r.Metadata = a.Metadata
+	}
+	if oc := a.OutputConfig; oc != nil && oc.Format != nil && oc.Format.Type == "json_schema" && len(oc.Format.Schema) > 0 {
+		r.Schema = oc.Format.Schema
+	}
 	for _, m := range a.Messages {
 		msg := Message{Role: m.Role}
 		var s string
@@ -146,7 +165,9 @@ func parseAnthropic(body []byte) (*Request, error) {
 	// output_config's effort sets how hard the model thinks only when it
 	// was asked to think: Claude Code's title requests carry effort but no
 	// thinking, and reasoning_effort would turn it on upstream
-	if th := a.Thinking; th != nil && (th.Type == "enabled" || th.Type == "adaptive") {
+	if th := a.Thinking; th != nil && th.Type == "disabled" {
+		r.ThinkOff = true
+	} else if th != nil && (th.Type == "enabled" || th.Type == "adaptive") {
 		r.Thinking = true
 		r.Effort = effortOfBudget(th.BudgetTokens)
 		if oc := a.OutputConfig; oc != nil {
@@ -169,12 +190,37 @@ func thinkingOffUnlessAsked(body []byte) []byte {
 	if json.Unmarshal(body, &v) != nil || v.Thinking != nil {
 		return body
 	}
-	return withFields(body, map[string]any{"thinking": map[string]any{"type": "disabled"}})
+	// added at the end, the rest left byte for byte as the agent sent it
+	b := bytes.TrimRight(body, " \t\r\n")
+	if len(b) < 2 || b[len(b)-1] != '}' {
+		return withFields(body, map[string]any{"thinking": map[string]any{"type": "disabled"}})
+	}
+	out := append([]byte{}, b[:len(b)-1]...)
+	if len(bytes.TrimSpace(out)) > 1 {
+		out = append(out, ',')
+	}
+	return append(out, `"thinking":{"type":"disabled"}}`...)
 }
 
+// anthropicModel is one of Anthropic's own models, which think only when asked,
+// so a request for one is left as the agent sent it.
+var anthropicModel = regexp.MustCompile(`(?i)(?:^|[/.:-])claude-`)
+
 // alwaysThinks is a vendor refusing to turn a model's thinking off: Z.ai's
-// GLM-5.3 answers 1210, "…always engages in thinking…".
-var alwaysThinks = regexp.MustCompile(`(?i)always engages in thinking|thinking (?:can ?not|can't) be (?:disabled|turned off)`)
+// GLM-5.3 answers 1210, "…always engages in thinking…", or, in Chinese
+// (ZCode's GLM-5.3-Flash), "该模型始终支持思考，不可关闭" (#699); DashScope's
+// own glm-5.3 answers "The value of the enable_thinking parameter is
+// restricted to True."
+var alwaysThinks = regexp.MustCompile(`(?i)always engages in thinking|thinking (?:can ?not|can't) be (?:disabled|turned off)|enable_thinking[^"]{0,60}restricted to true|始终(?:支持|开启|启用)?思考|思考[^"]{0,20}(?:不可|无法|不能)关闭`)
+
+// ThinksOnlyWhenAsked is a model that takes thinking turned off on the
+// Messages API whatever its levels: one of Anthropic's own (anthropicModel,
+// or a relay's opus-5.5). Another vendor's model there takes it off only
+// when none is among its levels; without it, it always thinks, and GLM-5.3
+// turns thinking disabled away (#699).
+func ThinksOnlyWhenAsked(model string) bool {
+	return anthropicModel.MatchString(model) || claudeVersion.MatchString(strings.ToLower(model))
+}
 
 // withoutThinkingOff is body with its thinking left to the model, when it
 // says thinking is off; false when it doesn't.
@@ -192,8 +238,9 @@ func withoutThinkingOff(body []byte) ([]byte, bool) {
 }
 
 // claudeVersion finds the family's version in a Claude model id however a
-// relay spells it: claude-opus-4-6, claude-opus-5, anthropic.claude-sonnet-4.6-v1.
-var claudeVersion = regexp.MustCompile(`claude-(?:opus|sonnet|haiku)-(\d+)(?:[-.](\d{1,2}))?(?:[^0-9]|$)`)
+// relay spells it: claude-opus-4-6, claude-opus-5, anthropic.claude-sonnet-4.6-v1,
+// a relay's opus-5.5, or the old order, claude-3-7-sonnet.
+var claudeVersion = regexp.MustCompile(`(?:^|[^a-z0-9])(?:claude-)?(?:opus|sonnet|haiku)-(\d{1,2})(?:[-.](\d{1,2}))?(?:[^0-9]|$)|claude-(\d+)(?:[-.](\d))?-(?:opus|sonnet|haiku)`)
 
 // adaptiveOnly is a Claude model from 4.6 on, which thinks adaptively:
 // claude-opus-5-5 refuses thinking.type=enabled with a budget ("requires
@@ -203,9 +250,48 @@ func adaptiveOnly(model string) bool {
 	if m == nil {
 		return false
 	}
-	major, _ := strconv.Atoi(m[1])
-	minor, _ := strconv.Atoi(m[2])
+	v := m[1:3]
+	if m[3] != "" {
+		v = m[3:5]
+	}
+	major, _ := strconv.Atoi(v[0])
+	minor, _ := strconv.Atoi(v[1])
 	return major > 4 || major == 4 && minor >= 6
+}
+
+// adaptiveThinking is an Anthropic request as a model that thinks only
+// adaptively takes it: thinking.type=enabled with a budget — sent by an
+// agent that doesn't know the model (its name in magpie, an alias, or a
+// group's member, mapped to the vendor's later), or by magpie fitting an
+// effort to it — goes as thinking.type=adaptive, with the budget as the
+// effort it is nearest in output_config.effort unless one is there (Keenc
+// on Discord: claude-opus-5-5 answered 400). Read off the model the body
+// is sent with, the vendor's own name; any other request, older Claudes'
+// included, goes as it came, and "disabled" stays.
+func adaptiveThinking(body []byte) []byte {
+	th := gjson.GetBytes(body, "thinking")
+	if th.Get("type").String() != "enabled" || !adaptiveOnly(gjson.GetBytes(body, "model").String()) {
+		return body
+	}
+	thinking := map[string]any{"type": "adaptive"}
+	if d := th.Get("display"); d.Exists() {
+		thinking["display"] = d.Value()
+	}
+	fields := map[string]any{"thinking": thinking}
+	if gjson.GetBytes(body, "output_config.effort").String() == "" {
+		if e := effortOfBudget(int(th.Get("budget_tokens").Int())); e != "" {
+			if e == "xhigh" {
+				e = "max" // as buildAnthropic asks it: 4.6 has no xhigh
+			}
+			oc, _ := gjson.GetBytes(body, "output_config").Value().(map[string]any)
+			if oc == nil {
+				oc = map[string]any{}
+			}
+			oc["effort"] = e
+			fields["output_config"] = oc
+		}
+	}
+	return withFields(body, fields)
 }
 
 // AdaptiveThinking is adaptiveOnly for agents told how to ask a model: a
@@ -241,9 +327,9 @@ func imageBlock(p Part) aBlock {
 	b := aBlock{Type: "image"}
 	b.Source = &struct {
 		Type      string `json:"type"`
-		MediaType string `json:"media_type"`
-		Data      string `json:"data"`
-		URL       string `json:"url"`
+		MediaType string `json:"media_type,omitempty"`
+		Data      string `json:"data,omitempty"`
+		URL       string `json:"url,omitempty"`
 	}{}
 	if p.URL != "" && p.Data == "" {
 		b.Source.Type, b.Source.URL = "url", p.URL
@@ -363,9 +449,20 @@ func buildAnthropic(r *Request, model string) []byte {
 	} else if r.TopP != nil {
 		out["top_p"] = *r.TopP
 	}
+	if len(r.Schema) > 0 {
+		oc, _ := out["output_config"].(map[string]any)
+		if oc == nil {
+			oc = map[string]any{}
+		}
+		oc["format"] = map[string]any{"type": "json_schema", "schema": r.Schema}
+		out["output_config"] = oc
+	}
 	out["max_tokens"] = maxTokens
 	if len(r.Stop) > 0 {
 		out["stop_sequences"] = r.Stop
+	}
+	if len(r.Metadata) > 0 {
+		out["metadata"] = r.Metadata
 	}
 	if len(r.Tools) > 0 || r.WebSearch {
 		var tools []map[string]any
@@ -373,6 +470,8 @@ func buildAnthropic(r *Request, model string) []byte {
 			schema := t.Schema
 			if len(schema) == 0 {
 				schema = json.RawMessage(`{"type":"object","properties":{}}`)
+			} else {
+				schema = objectSchema(schema)
 			}
 			tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "input_schema": schema})
 		}
@@ -494,7 +593,7 @@ func decodeAnthropic(data string, emit func(Event)) error {
 		}
 		emit(Event{Kind: KUsage, Usage: ev.Usage.usage()})
 	case "error":
-		emit(Event{Kind: KError, Text: ev.Error.Message})
+		emit(Event{Kind: KError, Text: ev.Error.Message, Code: refusedCode(data)})
 	}
 	return nil
 }
@@ -542,6 +641,7 @@ func stopToAnthropic(s string) string {
 
 // anthropicEncoder writes events as an Anthropic event stream.
 type anthropicEncoder struct {
+	id      string
 	w       *sseWriter
 	model   string
 	index   int
@@ -551,15 +651,26 @@ type anthropicEncoder struct {
 	col     collector
 }
 
+// anthropicID is a reply's id as Anthropic's API gives one, msg_…: an
+// OpenAI-shaped upstream's chatcmpl-… (a plugin's provider, a relay) reads
+// as a built-in's does.
+func anthropicID(id string) string {
+	if id == "" {
+		return "msg_" + newID()
+	}
+	if strings.HasPrefix(id, "msg_") {
+		return id
+	}
+	return "msg_" + strings.TrimPrefix(id, "chatcmpl-")
+}
+
 func (e *anthropicEncoder) start(ev Event) {
 	if e.started {
 		return
 	}
 	e.started = true
-	id := ev.MsgID
-	if id == "" {
-		id = "msg_" + newID()
-	}
+	id := anthropicID(ev.MsgID)
+	e.id = id
 	model := ev.Model
 	if model == "" {
 		model = e.model
@@ -648,9 +759,19 @@ func (e *anthropicEncoder) event(ev Event) {
 		e.index++
 	case KError:
 		e.close()
-		e.w.event("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": ev.Text}})
+		failed := map[string]any{"type": "api_error", "message": ev.Text}
+		if ev.Code != "" {
+			failed["code"] = ev.Code // preserve the upstream error type, including refusals
+		}
+		e.w.event("error", map[string]any{"type": "error", "error": failed})
 	}
 	e.col.add(ev)
+}
+
+// keepalive is Anthropic's own: a ping event, which its SDKs skip and
+// Claude Code's stream watchdog counts.
+func (e *anthropicEncoder) keepalive() {
+	e.w.event("ping", map[string]any{"type": "ping"})
 }
 
 func (e *anthropicEncoder) finish() {
@@ -659,8 +780,12 @@ func (e *anthropicEncoder) finish() {
 	}
 	e.close()
 	res := e.col.finish()
+	delta := map[string]any{"stop_reason": stopToAnthropic(res.Stop), "stop_sequence": nil}
+	if len(res.SafeguardResults) > 0 {
+		delta["safeguard_results"] = res.SafeguardResults
+	}
 	e.w.event("message_delta", map[string]any{"type": "message_delta",
-		"delta": map[string]any{"stop_reason": stopToAnthropic(res.Stop), "stop_sequence": nil},
+		"delta": delta,
 		"usage": res.Usage.anthropic()})
 	e.w.event("message_stop", map[string]any{"type": "message_stop"})
 }
@@ -687,15 +812,16 @@ func renderAnthropic(res Result, model string) []byte {
 				searchResultBlock(id, p.Hits))
 		}
 	}
-	id := res.ID
-	if id == "" {
-		id = "msg_" + newID()
-	}
+	id := anthropicID(res.ID)
 	if res.Model != "" {
 		model = res.Model
 	}
-	b, _ := json.Marshal(map[string]any{"id": id, "type": "message", "role": "assistant", "model": model,
-		"content": content, "stop_reason": stopToAnthropic(res.Stop), "stop_sequence": nil, "usage": res.Usage.anthropic()})
+	reply := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model,
+		"content": content, "stop_reason": stopToAnthropic(res.Stop), "stop_sequence": nil, "usage": res.Usage.anthropic()}
+	if len(res.SafeguardResults) > 0 {
+		reply["safeguard_results"] = res.SafeguardResults
+	}
+	b, _ := json.Marshal(reply)
 	return b
 }
 
@@ -704,8 +830,14 @@ func renderAnthropic(res Result, model string) []byte {
 func searchResultBlock(id string, hits []Hit) map[string]any {
 	results := []map[string]any{}
 	for _, h := range hits {
+		// never the searcher's encrypted_content: it is sealed for the
+		// vendor that searched, and the client would send it to another
+		var age any
+		if h.PageAge != "" {
+			age = h.PageAge
+		}
 		results = append(results, map[string]any{"type": "web_search_result", "title": h.Title, "url": h.URL,
-			"encrypted_content": "", "page_age": nil})
+			"encrypted_content": "", "page_age": age})
 	}
 	return map[string]any{"type": "web_search_tool_result", "tool_use_id": id, "content": results}
 }
@@ -721,4 +853,25 @@ var idClock = time.Now
 
 func newID() string {
 	return fmt.Sprintf("%x%08x", idClock().UnixNano(), idSeq.Add(1))
+}
+
+// objectSchema is a tool's input schema with no anyOf, oneOf or allOf at
+// its root, which Anthropic's API refuses ("input_schema does not support
+// oneOf, allOf, or anyOf at the top level"): Codex's codex_app
+// automation_update has one, and Claude models behind Factory answered 400
+// to every request offering it (#646). A schema that has none is sent as
+// it came.
+func objectSchema(schema json.RawMessage) json.RawMessage {
+	if !bytes.Contains(schema, []byte(`Of"`)) {
+		return schema
+	}
+	var m map[string]any
+	if json.Unmarshal(schema, &m) != nil || !provider.ObjectRoot(m) {
+		return schema
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return schema
+	}
+	return b
 }

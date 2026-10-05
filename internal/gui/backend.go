@@ -11,6 +11,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/update"
 )
 
 // served is the gateway this process serves, nil while another magpie
@@ -52,22 +53,12 @@ func startBackend() (gw *gateway.Server) {
 		cancel()
 		// A signed-in agent's list exists only at the vendor; fill it in the
 		// first time so the picker never shows a stale snapshot.
-		for _, p := range provider.All() {
-			if p.Account == nil || !p.Ready() {
-				continue
-			}
-			if _, ok := p.Fetched(); ok {
-				continue
-			}
-			c, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			if _, err := p.Fetch(c); err != nil {
-				log.Println(p.ID + ": " + err.Error())
-			}
-			cancel()
-		}
+		provider.FetchNew(20 * time.Second)
 		// lists an older magpie wrote into agents' files, without what
 		// it has learnt since (context windows, providers added)
 		agent.SyncCatalog()
+		// and fetched again each day it stays open, for new models' prices
+		catalog.KeepFresh()
 	}()
 	return gw
 }
@@ -89,8 +80,13 @@ func watchGateway() {
 func serveGateway() *gateway.Server {
 	// handing over, the one there is this one's predecessor, which lets go
 	// once this one listens beside it
-	if !gateway.Handover && gateway.Running() {
-		return nil
+	if !gateway.Handover {
+		if o := gateway.ServedBy(); o.Running {
+			if update.Newer(gateway.Version, o.Version) {
+				log.Printf("gateway: magpie %s serves %s, older than this one (%s); agents' requests go through it until it quits", o.Version, gateway.URL(), gateway.Version)
+			}
+			return nil
+		}
 	}
 	gw := gateway.New()
 	served.Store(gw)

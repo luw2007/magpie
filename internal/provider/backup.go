@@ -6,8 +6,27 @@ import (
 	"slices"
 )
 
-func Stored() []Provider    { return load().Providers }
-func StoredGroups() []Group { return load().Groups }
+// Stored is the providers as providers.json keeps them: keys included,
+// signed-in accounts only as the model picks the user made for them. A
+// file that can't be read is an error, never none: a backup or a sync
+// carrying none would take every provider away where it is put back.
+func Stored() ([]Provider, error) {
+	f, err := read()
+	return f.Providers, err
+}
+
+// StoredGroups is the groups as saved: the user's own, and the found ones
+// the user removed. As with Stored, a file that can't be read is an error.
+func StoredGroups() ([]Group, error) {
+	f, err := read()
+	return f.Groups, err
+}
+
+// StoredUsageSources returns the usage sources configured.
+func StoredUsageSources() []UsageSource { return load().Sources }
+
+// StoredQuotaPools returns the quota pools configured.
+func StoredQuotaPools() []QuotaPool { return load().QuotaPools }
 
 // RestoreConfiguration merges a complete configuration before validating any
 // references. A backup without credentials retains those already stored here.
@@ -80,6 +99,10 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 }
 
 func preserveBackupKeys(p *Provider, h Provider) {
+	keyless := p.Key == "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key != "" })
+	if keyless && p.BalanceToken == "" {
+		p.BalanceToken = h.BalanceToken
+	}
 	if p.Key == "" && len(p.Keys) == 0 {
 		p.Keys = slices.Clone(h.Keys)
 	}
@@ -88,6 +111,13 @@ func preserveBackupKeys(p *Provider, h Provider) {
 		if p.Keys[i].Key == "" {
 			if j := slices.IndexFunc(h.Keys, func(k KeyAccount) bool { return k.ID == p.Keys[i].ID }); j >= 0 {
 				p.Keys[i].Key = h.Keys[j].Key
+			}
+		}
+	}
+	if keyless {
+		for _, k := range h.Keys {
+			if !slices.ContainsFunc(p.Keys, func(in KeyAccount) bool { return in.ID == k.ID }) {
+				p.Keys = append(p.Keys, k)
 			}
 		}
 	}

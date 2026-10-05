@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Codex's own models, routed through magpie, keep what Codex knows of them
@@ -15,6 +16,7 @@ import (
 func TestCodexCatalogKeepsOwnEntries(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
 	os.WriteFile(filepath.Join(home, ".codex", "models_cache.json"), []byte(`{"models":[
 		{"slug":"gpt-5.5","display_name":"GPT-5.5","priority":3,"visibility":"list","input_modalities":["text","image"],
@@ -51,6 +53,7 @@ func TestCodexCatalogKeepsOwnEntries(t *testing.T) {
 // A model that takes images says so, and Codex lets images be attached.
 func TestCodexCatalogImages(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
 	var got struct {
 		Models []struct {
 			Modalities []string `json:"input_modalities"`
@@ -65,11 +68,70 @@ func TestCodexCatalogImages(t *testing.T) {
 	}
 }
 
+// A model magpie describes has Codex search its MCP tools rather than send
+// every one in each request (#258), with its prompt, context window, and
+// neither code mode nor Responses Lite. A window above the working window
+// is told as that, the whole one as its max, unless settings.FullContext.
+func TestCodexCatalogToolSearch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	var got struct {
+		Models []map[string]any `json:"models"`
+	}
+	json.Unmarshal(Catalog([]catalog.Model{
+		{ID: "group/auto-gemini-3-8-flash", Name: "auto", Context: 996147, Efforts: []string{"low", "medium", "high"}, Images: true},
+	}), &got)
+	if len(got.Models) != 1 {
+		t.Fatalf("%v", got)
+	}
+	e := got.Models[0]
+	if e["supports_search_tool"] != true || e["base_instructions"] != Prompt || e["context_window"] != float64(settings.WorkingWindow) || e["max_context_window"] != float64(996147) {
+		t.Errorf("entry: %v", e)
+	}
+	if err := settings.Save(settings.Settings{FullContext: true}); err != nil {
+		t.Fatal(err)
+	}
+	var full struct {
+		Models []map[string]any `json:"models"`
+	}
+	json.Unmarshal(Catalog([]catalog.Model{
+		{ID: "group/auto-gemini-3-8-flash", Name: "auto", Context: 996147},
+	}), &full)
+	if e := full.Models[0]; e["context_window"] != float64(996147) || e["max_context_window"] != nil {
+		t.Errorf("full context: %v", e)
+	}
+	for _, off := range []string{"tool_mode", "use_responses_lite", "multi_agent_version", "model_messages"} {
+		if v, ok := e[off]; ok {
+			t.Errorf("%s = %v", off, v)
+		}
+	}
+}
+
+// Codex 0.147 refuses a catalog whose entries don't say whether a model
+// takes parallel tool calls (#298), and later Codex ask for them anyway.
+func TestCodexCatalogParallelToolCalls(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	var got struct {
+		Models []map[string]any `json:"models"`
+	}
+	json.Unmarshal(Catalog([]catalog.Model{{ID: "fake/m1", Name: "m1"}, {ID: "group/auto", Name: "auto"}}), &got)
+	if len(got.Models) != 2 {
+		t.Fatalf("%v", got)
+	}
+	for _, e := range got.Models {
+		if e["supports_parallel_tool_calls"] != true {
+			t.Errorf("%v: supports_parallel_tool_calls = %v", e["slug"], e["supports_parallel_tool_calls"])
+		}
+	}
+}
+
 // Fast mode is offered for a ChatGPT account's GPT models, with Codex's own
 // tiers when it lists the model, and for no one else's.
 func TestCodexCatalogServiceTiers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
 	os.WriteFile(filepath.Join(home, ".codex", "models_cache.json"), []byte(`{"models":[
 		{"slug":"gpt-6-astra","display_name":"GPT-6 Astra","service_tiers":[{"id":"priority","name":"Fast","description":"2x speed, increased usage"}]}]}`), 0o644)

@@ -11,7 +11,8 @@ package provider
 // Once per reset: what it saw and did is kept in codex-warmup.json, so a
 // restart doesn't send it again. A window still not started after one —
 // the read from before it, a request that didn't start it, or warm-ups
-// given up on — is sent another later, each wait twice the last.
+// given up on — is sent another later, each wait twice the last, even if
+// the backend keeps reporting a full window's reset time for an idle one.
 
 import (
 	"bytes"
@@ -129,6 +130,8 @@ func (c codexWarmer) warmNow(ctx context.Context, which, at string) []CodexWarm 
 		prev, next := st[key], map[string]warmWindow{}
 		var due []string
 		onReset, days := map[string]bool{}, map[string]string{}
+		unstarted, long := map[string]bool{}, map[string]bool{}
+		waitDay := false
 		for _, w := range withExpected(q.Windows, c.expect) {
 			// the weekly windows on their reset while it is on, the 5-hour
 			// ones with "all" and for the day's start
@@ -138,11 +141,13 @@ func (c codexWarmer) warmNow(ctx context.Context, which, at string) []CodexWarm 
 				continue
 			}
 			cur := asOf(w, now)
+			unstarted[w.Name] = idle(cur, now)
 			p, seen := prev[w.Name]
 			n := warmWindow{Used: cur.Used, Warmed: p.Warmed, Daily: p.Daily}
 			if cur.ResetsAt != nil {
 				n.ResetsAt = *cur.ResetsAt
-			} else {
+			}
+			if unstarted[w.Name] {
 				n.Idle, n.Retry = p.Idle, p.Retry // not started yet: it waits on
 			}
 			reset := onItsReset && warmDue(p, seen, cur, now)
@@ -155,6 +160,11 @@ func (c codexWarmer) warmNow(ctx context.Context, which, at string) []CodexWarm 
 				// it waits for the day's start, kept as it was till then
 				reset = false
 			}
+			if short && unstarted[w.Name] && !daily && heldForDay(at, w.Span, now) {
+				// any request now would start it, to run past the day's start
+				waitDay = true
+			}
+			long[w.Name] = !short
 			if reset || daily {
 				due = append(due, w.Name)
 				onReset[w.Name] = reset
@@ -167,6 +177,10 @@ func (c codexWarmer) warmNow(ctx context.Context, which, at string) []CodexWarm 
 				n = p
 			}
 			next[w.Name] = n
+		}
+		if waitDay {
+			// the weekly windows wait for the day's start too, kept as they were
+			due = slices.DeleteFunc(due, func(name string) bool { return long[name] })
 		}
 		if len(due) > 0 {
 			r := CodexWarm{User: user, Windows: due}
@@ -188,7 +202,7 @@ func (c codexWarmer) warmNow(ctx context.Context, which, at string) []CodexWarm 
 				default:
 					n.Pending, n.Failed = true, p.Failed+1
 				}
-				if onReset[name] && !n.Pending && n.ResetsAt.IsZero() && n.Used == 0 {
+				if onReset[name] && !n.Pending && unstarted[name] {
 					// not started as far as is known: another later
 					n.Idle = p.Idle + 1
 					n.Retry = now.Add(min(warmRetry<<min(p.Idle, 8), warmRetryMax))
@@ -275,14 +289,16 @@ func asOf(w QuotaWindow, now time.Time) QuotaWindow {
 // now as cur wants starting: it is unused, and has started over since p —
 // or is seen for the first time. Use falling back is a reset whatever the
 // window says, OpenAI resetting everyone's limits early among them. One
-// whose warm-up failed is still due, and one still not started, its reset
-// never known, is due again once its Retry comes.
+// whose warm-up failed is still due, and one still not started is due
+// again once its Retry comes, even with a reset time reported.
 func warmDue(p warmWindow, seen bool, cur QuotaWindow, now time.Time) bool {
 	switch {
 	case seen && p.Pending:
 		return true
 	case !seen:
 		return idle(cur, now)
+	case p.Idle > 0 && idle(cur, now):
+		return !now.Before(p.Retry)
 	case p.Used-cur.Used >= 1:
 		return true
 	case !p.ResetsAt.IsZero() && !now.Before(p.ResetsAt):
@@ -330,11 +346,11 @@ func warmCodexLogin(ctx context.Context, user string) error {
 	if err != nil {
 		return err
 	}
-	return warmCodex(ctx, codexSign(token), model, effort)
+	return warmCodex(ViaLogin(ctx, "codex", user), codexSign(token), model, effort)
 }
 
 // warmModel is the model a warm-up asks, and at what effort: the account's
-// smallest (a mini) or else the first it lists, at low.
+// cheapest (warmPick), at low.
 func warmModel(user string) (model, effort string, err error) {
 	ms, _, ok := catalog.Live(accountModels("codex", user))
 	if !ok {
@@ -346,10 +362,7 @@ func warmModel(user string) (model, effort string, err error) {
 	if len(ms) == 0 {
 		return "", "", errors.New("no Codex model is known yet")
 	}
-	m := ms[0]
-	if i := slices.IndexFunc(ms, func(m catalog.Model) bool { return strings.Contains(m.ID, "mini") }); i >= 0 {
-		m = ms[i]
-	}
+	m := warmPick(ms, func(id string) (catalog.Price, bool) { return catalog.PricedBy([]string{"openai"}, id) })
 	switch {
 	case slices.Contains(m.Efforts, "low"):
 		effort = "low"
@@ -357,6 +370,34 @@ func warmModel(user string) (model, effort string, err error) {
 		effort = m.Efforts[0]
 	}
 	return m.ID, effort, nil
+}
+
+// warmPick is the cheapest of an account's models, by its list price where
+// models.dev has one (#604: GPT-6's cheap one is gpt-6-luna; the list
+// has no mini and starts with the flagship gpt-6.1-sol); with no price
+// known, a mini, else a luna, else the first it lists.
+func warmPick(ms []catalog.Model, price func(id string) (catalog.Price, bool)) catalog.Model {
+	best, cost := -1, 0.0
+	for i, m := range ms {
+		p, ok := catalog.Price{}, false
+		if m.Price != nil {
+			p, ok = *m.Price, true
+		} else {
+			p, ok = price(m.ID)
+		}
+		if c := p.Input + p.Output; ok && c > 0 && (best < 0 || c < cost) {
+			best, cost = i, c
+		}
+	}
+	if best >= 0 {
+		return ms[best]
+	}
+	for _, word := range []string{"mini", "luna"} {
+		if i := slices.IndexFunc(ms, func(m catalog.Model) bool { return strings.Contains(m.ID, word) }); i >= 0 {
+			return ms[i]
+		}
+	}
+	return ms[0]
 }
 
 // warmCodex sends one "hi" to the ChatGPT backend as a Codex account's

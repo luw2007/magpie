@@ -1,11 +1,18 @@
 package tui
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/fx"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // The Usage page lists the accounts' windows and balances as the app's
@@ -56,5 +63,74 @@ func TestQuotaLines(t *testing.T) {
 	}
 	if got := plain(quotaLines(nil, true, false, 80, now)); !strings.Contains(got, "asking the vendors") {
 		t.Errorf("asking: %q", got)
+	}
+}
+
+// fmtCost shows a computed cost at Settings' currency choice — $ (its own,
+// unconverted) by default, ¥ at the cached exchange rate once cny is chosen
+// — never touching a vendor's own balance string (that's quotaLines above).
+func TestFmtCostShowsChosenCurrency(t *testing.T) {
+	home(t)
+
+	if got := fmtCost(usage.Totals{Cost: 1.23}); got != "≈$1.23" {
+		t.Fatalf("default currency: %q", got)
+	}
+
+	if err := settings.Save(settings.Settings{Currency: "cny"}); err != nil {
+		t.Fatal(err)
+	}
+	// pre-seed the fx cache so fmtCost's rate lookup hits no network
+	if err := os.MkdirAll(filepath.Dir(fx.CachePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(fx.Rate{CNYPerUSD: 7.2, At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fx.CachePath(), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.Reset()
+	// costCurrency() only rereads settings once a second; force it stale
+	costAt = time.Time{}
+
+	if got := fmtCost(usage.Totals{Cost: 1.23}); got != "≈¥8.86" {
+		t.Fatalf("cny: %q", got)
+	}
+	if got := fmtCost(usage.Totals{Cost: 0, Unpriced: 1}); got != "no price" {
+		t.Fatalf("unpriced: %q", got)
+	}
+}
+
+func TestUnlimitedQuotaCell(t *testing.T) {
+	for _, left := range []bool{false, true} {
+		got := quotaCell(provider.QuotaWindow{Name: "Chat", Unlimited: true}, left, time.Now())
+		if !strings.Contains(got, "Unlimited") || strings.Contains(got, "%") || strings.Contains(got, "░") {
+			t.Fatalf("unlimited: %q", got)
+		}
+	}
+}
+
+// The Usage page shows, under the gateway's calls, those the agents made
+// on their own, read from their session files, as the app's Usage page
+// counts them (Kumo31 on Discord: Codex used outside magpie wasn't in the
+// TUI).
+func TestUsagePageShowsCallsNotThroughMagpie(t *testing.T) {
+	home(t)
+	now := time.Now()
+	usage.Append(usage.Record{Time: now.Add(-time.Minute), Agent: "claude", Provider: "relay", Model: "m", Input: 5, Status: 200})
+	old := usage.LogCalls
+	usage.LogCalls = func(time.Time) []sessions.Call {
+		return []sessions.Call{{Time: now.Add(-2 * time.Minute), Agent: "codex", Session: "c1", Model: "gpt-6-luna", Tokens: sessions.Tokens{Input: 1200, Output: 300}}}
+	}
+	t.Cleanup(func() { usage.LogCalls = old })
+	m := press(t, model{w: 160, h: 60, page: pageUsage}, "t")
+	v := m.viewUsage()
+	gw, own, ok := strings.Cut(v, "not through magpie")
+	if !ok || !strings.Contains(gw, "relay/m") || strings.Contains(gw, "gpt-6-luna") || !strings.Contains(own, "gpt-6-luna") {
+		t.Fatal(v)
+	}
+	if strings.Contains(own, usage.UnknownProvider) {
+		t.Fatalf("the unknown provider's id is shown:\n%s", own)
 	}
 }

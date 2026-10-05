@@ -13,10 +13,16 @@ func codexHome(t *testing.T, auth, config string) (home string, read func() stri
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("HANA_HOME", "")
+	// folders an agent's own variable moves out of the sandbox home
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("OPENCHAMBER_DATA_DIR", "")
+	t.Setenv("MIMOCODE_HOME", "")
+	t.Setenv("MINIMAX_DATA_DIR", "")
 	// Windows' own folders too: Claude Desktop's are in LOCALAPPDATA
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
@@ -73,7 +79,7 @@ func TestCodexSignedInRoutesByBaseURL(t *testing.T) {
 // URL the next time a magpie model is picked, and its table stays: threads
 // started on it name it, and without it Codex can't open them (#129).
 func TestCodexSignedInLeavesProviderTable(t *testing.T) {
-	home, read := codexHome(t, `{"OPENAI_API_KEY":"sk-x"}`,
+	home, read := codexHome(t, `{"tokens":{"access_token":"x","id_token":"x.e30.x"}}`,
 		"model = \"fake/m1\"\nmodel_provider = \"magpie\"\nmodel_catalog_json = \"/x/magpie-models.json\"\n\n[model_providers.magpie]\nname = \"magpie\"\nbase_url = \"http://127.0.0.1:3425/v1\"\nwire_api = \"responses\"\n")
 	if err := codex(home).Fields[0].Set("fake/m1"); err != nil {
 		t.Fatal(err)
@@ -109,7 +115,8 @@ func TestCodexSpacedProviderTable(t *testing.T) {
 }
 
 // Not signed in, Codex's OpenAI provider can't run, so magpie is a provider
-// of its own.
+// of its own; the base URL is magpie's too, for the threads started on the
+// built-in provider (#259).
 func TestCodexSignedOutUsesProvider(t *testing.T) {
 	home, read := codexHome(t, "", "")
 	cx := codex(home)
@@ -117,14 +124,14 @@ func TestCodexSignedOutUsesProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := read()
-	if strings.Contains(cfg, "openai_base_url") || !strings.Contains(cfg, `model_provider = "magpie"`) ||
+	if !strings.Contains(cfg, `openai_base_url = "`+codexGatewayURL()+`"`) || !strings.Contains(cfg, `model_provider = "magpie"`) ||
 		!strings.Contains(cfg, "[model_providers.magpie]") || !strings.Contains(cfg, "model_catalog_json") {
 		t.Fatalf("\n%s", cfg)
 	}
 	if err := cx.Fields[0].Set(""); err != nil {
 		t.Fatal(err)
 	}
-	if cfg = read(); strings.Contains(cfg, "model =") || strings.Contains(cfg, "model_provider =") ||
+	if cfg = read(); strings.Contains(cfg, "model =") || strings.Contains(cfg, "openai_base_url") || strings.Contains(cfg, "model_provider =") ||
 		strings.Contains(cfg, "model_catalog_json") || !strings.Contains(cfg, "[model_providers.magpie]") {
 		t.Fatalf("reset:\n%s", cfg)
 	}
@@ -142,7 +149,7 @@ func TestCodexUsedUpUsesProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := read()
-	if strings.Contains(cfg, "openai_base_url") || !strings.Contains(cfg, `model_provider = "magpie"`) ||
+	if !strings.Contains(cfg, "openai_base_url") || !strings.Contains(cfg, `model_provider = "magpie"`) ||
 		!strings.Contains(cfg, "[model_providers.magpie]") || !strings.Contains(cfg, `model = "fake/m1"`) {
 		t.Fatalf("\n%s", cfg)
 	}
@@ -198,6 +205,57 @@ func TestCodexSubagentModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg := read(); strings.Contains(cfg, "default_subagent_model") {
+		t.Fatalf("\n%s", cfg)
+	}
+}
+
+// Subagents can start at an effort of their own (#469): Codex's [agents]
+// default_subagent_reasoning_effort, used when a spawn names none. Codex
+// refuses a spawn at a level the subagents' model lacks, so magpie takes
+// only one it has, and drops one a new subagent model doesn't.
+func TestCodexSubagentEffort(t *testing.T) {
+	home, read := codexHome(t, "", "model = \"gpt-a\"\n\n[agents]\nmax_threads = 6\n")
+	os.WriteFile(filepath.Join(home, ".codex", "models_cache.json"), []byte(`{"models":[
+		{"slug":"gpt-a","display_name":"A","priority":1,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}]},
+		{"slug":"gpt-mini","display_name":"Mini","priority":2,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}]}]}`), 0o644)
+	cx := codex(home)
+	eff := cx.Field("subagent_effort")
+	if eff == nil {
+		t.Fatal("no subagent effort field")
+	}
+	if eff.Get() != "" {
+		t.Fatalf("unset effort = %q", eff.Get())
+	}
+	if err := eff.Set("xhigh"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := read(); !strings.Contains(cfg, `default_subagent_reasoning_effort = "xhigh"`) || !strings.Contains(cfg, "max_threads = 6") {
+		t.Fatalf("\n%s", cfg)
+	}
+	// on a model that stops at medium, xhigh would fail every spawn
+	if err := cx.Field("subagent").Set("gpt-mini"); err != nil {
+		t.Fatal(err)
+	}
+	if got := eff.Get(); got != "" {
+		t.Fatalf("effort the subagent model lacks kept: %q\n%s", got, read())
+	}
+	if err := eff.Set("high"); err == nil {
+		t.Error("an effort gpt-mini lacks was taken")
+	}
+	var levels []string
+	for _, o := range eff.Options(nil) {
+		levels = append(levels, o.Value)
+	}
+	if strings.Join(levels, ",") != "low,medium" {
+		t.Fatalf("options = %v", levels)
+	}
+	if err := eff.Set("low"); err != nil {
+		t.Fatal(err)
+	}
+	if err := eff.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if cfg := read(); strings.Contains(cfg, "default_subagent_reasoning_effort") || !strings.Contains(cfg, `default_subagent_model = "gpt-mini"`) {
 		t.Fatalf("\n%s", cfg)
 	}
 }
@@ -268,7 +326,7 @@ func TestCodexLoginAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := read()
-	if strings.Contains(cfg, "openai_base_url") || !strings.Contains(cfg, `model_provider = "magpie"`) ||
+	if !strings.Contains(cfg, "openai_base_url") || !strings.Contains(cfg, `model_provider = "magpie"`) ||
 		!strings.Contains(cfg, "[model_providers.magpie]") || !strings.Contains(cfg, "model_catalog_json") {
 		t.Fatalf("api:\n%s", cfg)
 	}
@@ -284,7 +342,7 @@ func TestCodexLoginAPI(t *testing.T) {
 	if err := login.Set("api"); err != nil {
 		t.Fatal(err)
 	}
-	if cfg = read(); !strings.Contains(cfg, `model_provider = "magpie"`) || strings.Contains(cfg, "openai_base_url") {
+	if cfg = read(); !strings.Contains(cfg, `model_provider = "magpie"`) || strings.Count(cfg, "openai_base_url") != 1 {
 		t.Fatalf("api again:\n%s", cfg)
 	}
 	if err := cx.Fields[0].Set(""); err != nil {

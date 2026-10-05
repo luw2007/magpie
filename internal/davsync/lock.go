@@ -48,8 +48,8 @@ func lock(ctx context.Context) (unlock func(), err error) {
 	}
 }
 
-// wait is how long Configure, Off and Dismiss wait for a sync in progress:
-// less than the Settings page gives a request.
+// wait is how long Configure, Off, Dismiss and a sync wait for a sync in
+// progress, which itself has no time limit (see stallAfter).
 const wait = 30 * time.Second
 
 // locked runs fn holding the lock, then mu, after a sync in progress: it

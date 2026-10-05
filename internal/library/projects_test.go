@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -71,7 +72,7 @@ func TestProjectSkillsLinked(t *testing.T) {
 	}
 
 	// removing the project takes away all it placed, and its lines
-	ok(t)(RemoveProject(proj))
+	ok(t)(RemoveProject(proj, false))
 	gone(t, filepath.Join(proj, ".agents"))
 	if g := read(t, filepath.Join(proj, ".gitignore")); g != "node_modules/\n" {
 		t.Errorf(".gitignore after: %q", g)
@@ -111,8 +112,9 @@ func TestProjectSkillsCopied(t *testing.T) {
 		t.Error("the copy wasn't made again")
 	}
 	// back to links: the copy becomes a link
+	// (not on Windows, where a copy as fresh as the library's stands for one)
 	ok(t)(ProjectCopy(proj, false))
-	if !isLink(t, p) {
+	if runtime.GOOS != "windows" && !isLink(t, p) {
 		t.Error("still a copy")
 	}
 }
@@ -138,7 +140,7 @@ func TestProjectRefusesForeignFolder(t *testing.T) {
 	}
 	// removing the project leaves the folder that isn't magpie's
 	ok(t)(ProjectSkill(proj, "pdf", nil))
-	ok(t)(RemoveProject(proj))
+	ok(t)(RemoveProject(proj, false))
 	if _, err := os.Stat(filepath.Join(proj, ".claude/skills/pdf/SKILL.md")); err != nil {
 		t.Error("the project's own went")
 	}
@@ -152,8 +154,8 @@ func TestProjectRefusesHomeAndUnknownAgents(t *testing.T) {
 	if _, err := AddProject(proj); err == nil {
 		t.Error("added twice")
 	}
-	if _, err := ProjectSkill(proj, "pdf", []string{"goose"}); err == nil {
-		t.Error("goose given a project skill")
+	if _, err := ProjectSkill(proj, "pdf", []string{"crush"}); err == nil {
+		t.Error("crush given a project skill")
 	}
 }
 

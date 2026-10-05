@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
@@ -49,7 +50,7 @@ var hanakoProbe = &http.Client{Timeout: 1500 * time.Millisecond}
 var hanakoClient = &http.Client{Timeout: 15 * time.Second}
 
 func hanakoHome(home string) string {
-	dir := os.Getenv("HANA_HOME")
+	dir := appdir.Getenv("HANA_HOME")
 	if dir == "" {
 		return filepath.Join(home, ".hanako")
 	}
@@ -90,6 +91,9 @@ func hanako(home string) *Agent {
 		// what its provider client sends, though the key names it first
 		UA:  []string{"hanaagent"},
 		Dir: dir, Path: path,
+		// its own providers' models are provider/id as magpie's are: one
+		// is magpie's only on magpie's provider
+		Spelled: prefixed,
 		Sync: func() error {
 			cur, ok := hanakoCurrent(dir)
 			if !ok || hanakoSame(cur, hanakoProvider()) {
@@ -200,7 +204,7 @@ type hanakoProviderEntry struct {
 func hanakoProvider() hanakoProviderEntry {
 	ms := []hanakoModel{}
 	for _, m := range magpieModels("hanako") {
-		ms = append(ms, hanakoModel{ID: m.ID, Name: m.Name, Context: m.Context, MaxOutput: m.Output,
+		ms = append(ms, hanakoModel{ID: m.ID, Name: m.Name, Context: m.Context, MaxOutput: maxTokens(m),
 			Image: m.Images, Reasoning: len(m.Efforts) > 0, XHigh: slices.Contains(m.Efforts, "xhigh")})
 	}
 	return hanakoProviderEntry{DisplayName: magpieID, BaseURL: gatewayV1(), API: "openai-completions",

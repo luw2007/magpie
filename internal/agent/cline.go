@@ -45,6 +45,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 )
@@ -53,11 +54,11 @@ import (
 const clineSlot = "openai-compatible"
 
 func cline(home string) *Agent {
-	dir := os.Getenv("CLINE_DIR")
+	dir := appdir.Getenv("CLINE_DIR")
 	if dir == "" {
 		dir = filepath.Join(home, ".cline")
 	}
-	data := os.Getenv("CLINE_DATA_DIR")
+	data := appdir.Getenv("CLINE_DATA_DIR")
 	if data == "" {
 		data = filepath.Join(dir, "data")
 	}
@@ -156,7 +157,7 @@ func cline(home string) *Agent {
 		return "cline"
 	}
 	return &Agent{
-		ID: "cline", Name: "Cline", Icon: "cline", Aliases: []string{"cline-cli"},
+		ID: "cline", Name: "Cline", Icon: "cline", Aliases: []string{"cline-cli"}, Spelled: prefixed,
 		UA:  []string{"cline"},
 		Bin: "cline", Dir: dir, Path: path,
 		Sync: func() error {
@@ -375,7 +376,7 @@ func clineModels(model string) map[string]any {
 			e["contextWindow"] = m.Context
 		}
 		if m.Output > 0 {
-			e["maxTokens"] = m.Output
+			e["maxTokens"] = maxTokens(m)
 		}
 		ms[m.ID] = e
 	}

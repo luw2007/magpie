@@ -91,6 +91,7 @@ type devinDecoded struct {
 	model  string
 	msgs   [][]pbField
 	tools  []string
+	descs  []string
 	max    uint64
 }
 
@@ -106,7 +107,9 @@ func decodeDevinRequest(t *testing.T, b []byte) devinDecoded {
 		case 3:
 			d.msgs = append(d.msgs, pbFields(f.data))
 		case 10:
-			d.tools = append(d.tools, string(pbFields(f.data)[0].data))
+			fs := pbFields(f.data)
+			d.tools = append(d.tools, string(fs[0].data))
+			d.descs = append(d.descs, string(fs[1].data))
 		case 8:
 			for _, g := range pbFields(f.data) {
 				if g.num == 2 {
@@ -172,7 +175,7 @@ func TestBuildDevin(t *testing.T) {
 		got = append(got, devinSummary(m))
 	}
 	want := []string{
-		"1:Be brief.\n\nlook at a",
+		"1:Be brief.\n\n<tool_descriptions>\n<tool name=\"read\">\nRead a file\n</tool>\n</tool_descriptions>\n\nlook at a",
 		`2:Reading. call c1/read {"p":"a"} call c2/gone {} signed`,
 		"4:Error: A for c1",
 		"4:" + devinNoResult + " for c2",
@@ -184,6 +187,21 @@ func TestBuildDevin(t *testing.T) {
 	if strings.Join(d.tools, ",") != "read,gone" {
 		t.Fatalf("tools = %v", d.tools)
 	}
+	// a tool is sent with a pointer to its description, which is in the
+	// instructions: Devin answers "an internal error occurred" to some
+	// agents' tools as they describe themselves (silenx on X: WorkBuddy
+	// on Devin, 502 every time)
+	if d.descs[0] != `Described under <tool name="read"> in <tool_descriptions>, in the instructions.` || d.descs[1] != "Tool" {
+		t.Fatalf("descriptions = %q", d.descs)
+	}
+
+	// none to be called: no tools, nor their descriptions
+	d = decodeDevinRequest(t, buildDevin(&Request{ToolChoice: "none", Tools: r.Tools, Messages: []Message{
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "hi"}}},
+	}}, "m", "k"))
+	if len(d.tools) != 0 || devinSummary(d.msgs[0]) != "1:hi" {
+		t.Fatalf("%+v", d)
+	}
 
 	// a conversation ending on a reply goes on with a nudge
 	d = decodeDevinRequest(t, buildDevin(&Request{MaxTokens: 50, Messages: []Message{
@@ -192,6 +210,38 @@ func TestBuildDevin(t *testing.T) {
 	}}, "m", "k"))
 	if n := len(d.msgs); n != 3 || devinSummary(d.msgs[2]) != "1:Please proceed with the task." || d.max != 50 {
 		t.Fatalf("%d %+v", n, d)
+	}
+}
+
+func TestBuildDevinKeepsImagesAToolReturned(t *testing.T) {
+	r := &Request{Messages: []Message{
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "look at it"}}},
+		{Role: "assistant", Parts: []Part{
+			{Kind: ToolCall, ID: "c1", Name: "read", Args: json.RawMessage(`{"p":"a.png"}`)},
+			{Kind: ToolCall, ID: "c2", Name: "read", Args: json.RawMessage(`{"p":"b.png"}`)},
+		}},
+		{Role: "user", Parts: []Part{
+			// Read gives a picture back with no text beside it
+			{Kind: ToolResult, CallID: "c1", Images: []Part{
+				{Kind: Image, MediaType: "image/png", Data: "AAAA"},
+				{Kind: Image, URL: "https://example.com/x.png"}, // Devin takes no URL
+			}},
+			{Kind: ToolResult, CallID: "c2", Text: "B", Images: []Part{{Kind: Image, MediaType: "image/jpeg", Data: "BBBB"}}},
+		}},
+	}}
+	d := decodeDevinRequest(t, buildDevin(r, "swe-2", "k"))
+	var got []string
+	for _, m := range d.msgs {
+		got = append(got, devinSummary(m))
+	}
+	want := []string{
+		"1:look at it",
+		"2: call c1/read {\"p\":\"a.png\"} call c2/read {\"p\":\"b.png\"}",
+		"4:(no output) for c1 image image/png",
+		"4:B for c2 image image/jpeg",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -211,7 +261,7 @@ func devinUpstream(t *testing.T, reply []byte) func() {
 		w.Write(reply)
 	}))
 	auth, variant := devinAuth, devinVariant
-	devinAuth = func() (string, string, error) { return "devin-session-token$k", up.URL, nil }
+	devinAuth = func(string) (string, string, error) { return "devin-session-token$k", up.URL, nil }
 	devinVariant = func(ctx context.Context, model, effort string) string { return model + "-high" }
 	return func() { up.Close(); devinAuth, devinVariant = auth, variant }
 }
@@ -222,7 +272,7 @@ func serveDevinOnce(t *testing.T, from provider.Protocol, body string) *httptest
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	var u Usage
-	s.serveDevin(w, r, from, "swe-2", []byte(body), &u)
+	s.serveDevin(w, r, from, "", "swe-2", []byte(body), &u)
 	return w
 }
 

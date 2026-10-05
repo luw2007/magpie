@@ -16,6 +16,14 @@ func Quotas(ctx context.Context) []SubscriptionQuota {
 	return append(append(subs, plans...), balances...)
 }
 
+// Allotted is Quotas without the keys' balances: the accounts and plans
+// whose allowance runs out and starts again, which is what magpie quota
+// wait waits on; no key's balance is asked for.
+func Allotted(ctx context.Context) []SubscriptionQuota {
+	subs := SubscriptionUsage(ctx)
+	return append(subs, notShown(PlanQuotas(ctx), subs)...)
+}
+
 func quotas(ctx context.Context) (subs, plans, balances []SubscriptionQuota) {
 	b := make(chan []SubscriptionQuota, 1)
 	p := make(chan []SubscriptionQuota, 1)
@@ -74,7 +82,6 @@ type Quota struct {
 	Status      string      `json:"status,omitempty"`
 	DisplayName string      `json:"displayName,omitempty"`
 	LoadPercent *float64    `json:"loadPercent,omitempty"`
-	AsOf        *time.Time  `json:"asOf,omitempty"`
 	Provider    string      `json:"provider"`
 	Name        string      `json:"name"`
 	Kind        string      `json:"kind"` // subscription, plan (bought with a key) or balance (a key's money)
@@ -83,27 +90,48 @@ type Quota struct {
 	Windows     []QuotaSpan `json:"windows"`
 	Balance     string      `json:"balance,omitempty"`
 	Error       string      `json:"error,omitempty"`
+	AsOf        *time.Time  `json:"asOf,omitempty"` // the cached reading's time, nil for a new one
+	// ReadAt is when the windows or balance shown were read, nil when not
+	// known; a Claude account's can be well before now (claudeReadAt).
+	ReadAt *time.Time `json:"readAt,omitempty"`
 	// Until is when the plan's paid time ends, renewed then when Renew is
 	// "auto", over when "off", either when "".
 	Until *time.Time `json:"until,omitempty"`
 	Renew string     `json:"renew,omitempty"`
 	// Resets are a Codex account's rate-limit resets, when it holds any.
 	Resets *ResetCredits `json:"resets,omitempty"`
+	// LastServedAt is when the account, plan or key last answered a
+	// request through the gateway, nil when it hasn't in the last 30 days
+	// (served.go); Last is on the latest of them (#570).
+	LastServedAt *time.Time `json:"lastServedAt,omitempty"`
+	Last         bool       `json:"last,omitempty"`
 }
 
 // QuotaSpan is one window of an allowance: how much of it is used and
 // left, in percent, and when it starts again.
 type QuotaSpan struct {
+	Unlimited bool       `json:"unlimited,omitempty"`
 	Name      string     `json:"name"`
 	Used      float64    `json:"used"`
 	Remaining float64    `json:"remaining"`
 	ResetsAt  *time.Time `json:"resetsAt,omitempty"`
 	Display   string     `json:"display,omitempty"` // the vendor's own count, "1.2k / 3k"
+	// Amount of Limit in Unit: the window's count, used, when the vendor
+	// counts it so ("credits")
+	Amount float64 `json:"amount,omitempty"`
+	Limit  float64 `json:"limit,omitempty"`
+	Unit   string  `json:"unit,omitempty"`
+	Pool   string  `json:"pool,omitempty"` // the shared pool the window draws on ("Gemini")
 }
 
 // QuotaReport is Quotas as Quota, the reset times made absolute from now.
 func QuotaReport(ctx context.Context, now time.Time) []Quota {
 	subs, plans, balances := quotas(ctx)
+	return withServed(quotaReport(subs, plans, balances, now), LastServed())
+}
+
+// quotaReport assembles the cards from readings the tests feed directly.
+func quotaReport(subs, plans, balances []SubscriptionQuota, now time.Time) []Quota {
 	out := []Quota{}
 	for _, g := range []struct {
 		kind string
@@ -114,14 +142,16 @@ func QuotaReport(ctx context.Context, now time.Time) []Quota {
 			if kind == "subscription" && q.Balance != "" && len(q.Windows) == 0 {
 				kind = "balance"
 			}
-			r := Quota{Provider: q.Provider, Name: q.Name, Kind: kind, Plan: q.Plan, User: q.User,
+			r := Quota{Provider: q.Provider, Name: q.Name, Kind: kind, Plan: q.Plan, User: q.User, AsOf: q.AsOf, ReadAt: q.ReadAt,
 				Windows: []QuotaSpan{}, Balance: q.Balance, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets}
 			r.PoolRef, r.SourceRef, r.AccountID = q.PoolRef, q.SourceRef, q.AccountID
 			r.KeyRefs, r.DisplayName, r.Status = q.KeyRefs, q.DisplayName, quotaStatus(q, now)
 			r.LoadPercent = q.LoadPercent
-			r.AsOf = q.AsOf
-			for _, w := range q.Windows {
-				s := QuotaSpan{Name: w.Name, Used: w.Used, Remaining: max(0, 100-w.Used), ResetsAt: w.ResetsAt, Display: w.Display}
+			// a pool's own windows stand in for the models' drawing on it,
+			// as the usage page shows them
+			for _, w := range PooledWindows(q.Windows) {
+				s := QuotaSpan{Unlimited: w.Unlimited, Name: w.Name, Used: w.Used, Remaining: max(0, 100-w.Used), ResetsAt: w.ResetsAt, Display: w.Display,
+					Amount: w.Amount, Limit: w.Limit, Unit: w.Unit, Pool: w.Pool}
 				if s.ResetsAt == nil && w.ResetSecs > 0 {
 					t := now.Add(time.Duration(w.ResetSecs) * time.Second)
 					s.ResetsAt = &t

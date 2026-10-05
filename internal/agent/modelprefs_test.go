@@ -26,7 +26,7 @@ func TestModelNameAndLevelsReachAgentFiles(t *testing.T) {
 	writeFile(t, piModels, `{"providers":{"magpie":{"name":"magpie","models":[]}}}`)
 	codexDir := filepath.Join(home, ".codex")
 	codexCat := filepath.Join(codexDir, "magpie-models.json")
-	writeFile(t, filepath.Join(codexDir, "config.toml"), "model = \"relay/glm-4.6\"\nmodel_provider = \"magpie\"\nmodel_catalog_json = \""+codexCat+"\"\n")
+	writeFile(t, filepath.Join(codexDir, "config.toml"), "model = \"relay/glm-4.6\"\nmodel_provider = \"magpie\"\nmodel_catalog_json = '"+codexCat+"'\n")
 	writeFile(t, codexCat, `{"models":[]}`)
 	catalog.Changed = SyncCatalog
 	t.Cleanup(func() { catalog.Changed = nil })
@@ -46,7 +46,10 @@ func TestModelNameAndLevelsReachAgentFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	ms := pi.Providers["magpie"].Models
-	if len(ms) != 1 || ms[0]["id"] != "relay/glm-4.6" || ms[0]["name"] != "GLM" {
+	// a custom name still carries its provider, the same as GLM-4.6's own
+	// name would, so a picker full of renamed models can still be told
+	// apart by vendor
+	if len(ms) != 1 || ms[0]["id"] != "relay/glm-4.6" || ms[0]["name"] != "GLM · Relay" {
 		t.Fatalf("pi models.json: %v", ms)
 	}
 	var cx struct {
@@ -61,7 +64,7 @@ func TestModelNameAndLevelsReachAgentFiles(t *testing.T) {
 	if err := json.Unmarshal([]byte(readFile(codexCat)), &cx); err != nil {
 		t.Fatal(err)
 	}
-	if len(cx.Models) != 1 || cx.Models[0].Slug != "relay/glm-4.6" || cx.Models[0].Name != "GLM" {
+	if len(cx.Models) != 1 || cx.Models[0].Slug != "relay/glm-4.6" || cx.Models[0].Name != "GLM · Relay" {
 		t.Fatalf("codex catalog: %+v", cx.Models)
 	}
 	var levels []string
@@ -70,6 +73,14 @@ func TestModelNameAndLevelsReachAgentFiles(t *testing.T) {
 	}
 	if strings.Join(levels, ",") != "low,high" {
 		t.Fatalf("codex levels: %v", levels)
+	}
+
+	// unless the custom name already says the provider: it isn't repeated
+	if err := provider.SetModelName("relay/glm-4.6", "GLM via Relay"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(codexCat); !strings.Contains(got, `"GLM via Relay"`) || strings.Contains(got, `"GLM via Relay · Relay"`) {
+		t.Fatalf("codex catalog, provider repeated:\n%s", got)
 	}
 
 	if err := provider.SetModelName("relay/glm-4.6", ""); err != nil {

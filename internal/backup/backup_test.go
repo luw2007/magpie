@@ -1,31 +1,63 @@
 package backup
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/profile"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
 
+func TestRestoreKeepsCorruptSettings(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"truncated", `{"theme":"dark","proxy":"direct","githubToken":"SYNTHETIC_PRIVATE_TOKEN"`},
+		{"theme type", `{"theme":7,"proxy":"direct","githubToken":"SYNTHETIC_PRIVATE_TOKEN"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home(t)
+			if err := os.MkdirAll(settings.Dir(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte(tc.body)
+			if err := os.WriteFile(settings.Path(), original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			b := Bundle{Version: 1, Settings: &settings.Settings{Theme: "light"}}
+			result, err := Restore(b, Parts{Settings: true})
+			if err == nil || result.Settings {
+				t.Errorf("restore accepted corrupt local settings: %+v, %v", result, err)
+			}
+			if after, err := os.ReadFile(settings.Path()); err != nil || !bytes.Equal(after, original) {
+				t.Errorf("restore overwrote the corrupt settings: %v", err)
+			}
+		})
+	}
+}
+
 // home gives the test a machine of its own: no agents, no magpie files.
 func home(t *testing.T) {
 	t.Helper()
 	h := t.TempDir()
 	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
 	t.Setenv("PATH", h)
-	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "GEMINI_CLI_HOME", "OPENCODE_CONFIG",
-		"PI_CODING_AGENT_DIR", "COPILOT_HOME", "CLINE_DIR", "GROK_HOME", "HERMES_HOME", "HANA_HOME", "APPDATA", "LOCALAPPDATA"} {
+	for _, v := range agentenv.Vars {
 		t.Setenv(v, "")
 	}
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", "")
 }
 
 func setUp(t *testing.T) {
@@ -36,9 +68,10 @@ func setUp(t *testing.T) {
 	}
 	for _, p := range []provider.Provider{
 		{ID: "acme", Name: "Acme", Chat: "https://acme.example.com/v1", Key: "sk-acme", Icon: icon,
-			Keys:    []provider.KeyAccount{{Name: "second", Key: "sk-acme-2"}},
-			Headers: map[string]string{"X-Team": "a", "X-Api-Key": "hdr-secret"}},
-		{ID: "beta", Name: "Beta", Chat: "https://beta.example.com/v1", Key: "sk-beta"},
+			BalanceToken: "balance-acme",
+			Keys:         []provider.KeyAccount{{Name: "second", Key: "sk-acme-2"}},
+			Headers:      map[string]string{"X-Team": "a", "X-Api-Key": "hdr-secret"}},
+		{ID: "beta", Name: "Beta", Chat: "https://beta.example.com/v1", Key: "sk-beta", BalanceToken: "balance-beta"},
 	} {
 		if err := provider.Save(p); err != nil {
 			t.Fatal(err)
@@ -67,7 +100,7 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"sk-acme", "hdr-secret", "acme.example.com", "work"} {
+	for _, secret := range []string{"sk-acme", "balance-acme", "hdr-secret", "acme.example.com", "work"} {
 		if strings.Contains(string(data), secret) {
 			t.Fatalf("%q readable in the file", secret)
 		}
@@ -89,7 +122,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("result: %+v", r)
 	}
 	p, err := provider.Find("acme")
-	if err != nil || p.Key != "sk-acme" || p.Headers["X-Api-Key"] != "hdr-secret" {
+	if err != nil || p.Key != "sk-acme" || len(p.Keys) != 2 || p.BalanceToken != "balance-acme" || p.Headers["X-Api-Key"] != "hdr-secret" {
 		t.Fatalf("acme: %+v %v", p, err)
 	}
 	if !slices.EqualFunc(p.Keys, original.Keys, func(a, b provider.KeyAccount) bool {
@@ -209,18 +242,24 @@ func TestNoKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range b.Providers {
-		if p.Key != "" || slices.ContainsFunc(p.Keys, func(k provider.KeyAccount) bool { return k.Key != "" }) {
+		if p.Key != "" || slices.ContainsFunc(p.Keys, func(k provider.KeyAccount) bool { return k.Key != "" }) || p.BalanceToken != "" {
 			t.Fatalf("key in a keyless backup: %+v", p)
 		}
 		if _, ok := p.Headers["X-Api-Key"]; ok {
 			t.Fatalf("auth header in a keyless backup: %+v", p.Headers)
 		}
 	}
-	data, _ := Seal(b, "pw")
+	if p, _ := provider.Find("acme"); p.Key != "sk-acme" || p.BalanceToken != "balance-acme" || p.Headers["X-Api-Key"] != "hdr-secret" {
+		t.Fatalf("export changed the stored credentials: %+v", p)
+	}
+	data, err := Seal(b, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	home(t)
 	oldKeyID := b.Providers[0].Keys[0].ID
-	if err := provider.Save(provider.Provider{ID: "acme", Name: "Acme old", Chat: "https://old.example.com/v1", Keys: []provider.KeyAccount{{ID: oldKeyID, Key: "sk-here"}}}); err != nil {
+	if err := provider.Save(provider.Provider{ID: "acme", Name: "Acme old", Chat: "https://old.example.com/v1", Keys: []provider.KeyAccount{{ID: oldKeyID, Key: "sk-here"}}, BalanceToken: "balance-here"}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Open(data, "pw")
@@ -234,8 +273,135 @@ func TestNoKeys(t *testing.T) {
 	if r.Added != 1 || r.Replaced != 1 || !slices.Equal(r.NeedKey, []string{"Beta"}) || r.Settings || r.Profiles != 0 {
 		t.Fatalf("result: %+v", r)
 	}
-	if p, _ := provider.Find("acme"); p.Key != "sk-here" || p.Chat != "https://acme.example.com/v1" || p.Headers["X-Team"] != "a" {
+	if p, _ := provider.Find("acme"); p.Key != "sk-here" || p.BalanceToken != "balance-here" || p.Chat != "https://acme.example.com/v1" || p.Headers["X-Team"] != "a" {
 		t.Fatalf("acme: %+v", p)
+	}
+	if p, _ := provider.Find("beta"); p.BalanceToken != "" {
+		t.Fatalf("balance token reached a new machine: %+v", p)
+	}
+}
+
+func TestOTelBackupHeaders(t *testing.T) {
+	home(t)
+	config := settings.OTel{Enabled: true, Metrics: true, Endpoint: "https://collector.example.com", Headers: map[string]string{"Authorization": "Basic test-secret", "X-Custom": "custom-secret"}}
+	if err := settings.Save(settings.Settings{OTel: config}); err != nil {
+		t.Fatal(err)
+	}
+	for _, keys := range []bool{false, true} {
+		b, err := Collect(keys, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := Seal(b, "pw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Open(data, "pw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Settings == nil {
+			t.Fatal("settings missing from backup")
+		}
+		o := got.Settings.OTel
+		if o.Enabled != config.Enabled || o.Metrics != config.Metrics || o.Endpoint != config.Endpoint {
+			t.Fatalf("non-secret OTLP preferences changed: %+v", o)
+		}
+		if !keys && len(o.Headers) != 0 {
+			t.Fatalf("OTLP headers in keyless backup: %+v", o.Headers)
+		}
+		if keys && (len(o.Headers) != 2 || o.Headers["Authorization"] != config.Headers["Authorization"] || o.Headers["X-Custom"] != config.Headers["X-Custom"]) {
+			t.Fatal("full backup lost OTLP headers")
+		}
+	}
+	if got := settings.Load().OTel.Headers; got["Authorization"] != config.Headers["Authorization"] || got["X-Custom"] != config.Headers["X-Custom"] {
+		t.Fatal("keyless backup changed saved credentials")
+	}
+}
+
+// The GitHub token the library asks GitHub with is a key: a backup without
+// keys leaves it out, and restoring one keeps the token this machine has.
+func TestGitHubTokenBackup(t *testing.T) {
+	home(t)
+	if err := settings.Save(settings.Settings{GitHubToken: "ghp_local", Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, keys := range []bool{false, true} {
+		b, err := Collect(keys, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := Seal(b, "pw")
+		if !keys && strings.Contains(string(mustOpen(t, data)), "ghp_local") {
+			t.Fatal("the GitHub token is in a backup without keys")
+		}
+		if keys && b.Settings.GitHubToken != "ghp_local" {
+			t.Fatalf("a backup with keys lost the GitHub token: %q", b.Settings.GitHubToken)
+		}
+	}
+	for _, keys := range []bool{false, true} {
+		incoming := settings.Settings{Theme: "light"}
+		if keys {
+			incoming.GitHubToken = "ghp_incoming"
+		}
+		if err := settings.Save(settings.Settings{GitHubToken: "ghp_local"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Restore(Bundle{Version: 1, Keys: keys, Settings: &incoming}, Parts{Settings: true}); err != nil {
+			t.Fatal(err)
+		}
+		want := map[bool]string{false: "ghp_local", true: "ghp_incoming"}[keys]
+		if got := settings.Load(); got.GitHubToken != want || got.Theme != "light" {
+			t.Errorf("keys %v: restored token %q theme %q, want %q", keys, got.GitHubToken, got.Theme, want)
+		}
+	}
+}
+
+func mustOpen(t *testing.T, data []byte) []byte {
+	t.Helper()
+	b, err := Open(data, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, _ := json.Marshal(b)
+	return j
+}
+
+func TestOTelRestoreHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name, endpoint string
+		keys           bool
+		want           map[string]string
+	}{
+		{"keyless-same-endpoint", "https://collector.example.com/otel", false, map[string]string{"Authorization": "Basic local", "X-Custom": "local-secret"}},
+		{"keyless-trailing-slash", "https://collector.example.com/otel/", false, map[string]string{"Authorization": "Basic local", "X-Custom": "local-secret"}},
+		{"keyless-different-host", "https://other.example.com/otel", false, nil},
+		{"keyless-different-path", "https://collector.example.com/other", false, nil},
+		{"full-same-endpoint", "https://collector.example.com/otel", true, map[string]string{"Authorization": "Basic incoming"}},
+		{"full-different-endpoint", "https://other.example.com/otel", true, map[string]string{"Authorization": "Basic incoming"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home(t)
+			local := settings.OTel{Enabled: true, Endpoint: "https://collector.example.com/otel", Headers: map[string]string{"Authorization": "Basic local", "X-Custom": "local-secret"}}
+			if err := settings.Save(settings.Settings{OTel: local}); err != nil {
+				t.Fatal(err)
+			}
+			incoming := settings.Settings{OTel: settings.OTel{Enabled: true, Metrics: true, Endpoint: tc.endpoint}}
+			if tc.keys {
+				incoming.OTel.Headers = map[string]string{"Authorization": "Basic incoming"}
+			}
+			r, err := Restore(Bundle{Version: 1, Keys: tc.keys, Settings: &incoming}, Parts{Settings: true})
+			if err != nil || !r.Settings {
+				t.Fatalf("restore: %+v, %v", r, err)
+			}
+			got := settings.Load().OTel
+			if !reflect.DeepEqual(got.Headers, tc.want) {
+				t.Fatalf("restored headers: %+v, want %+v", got.Headers, tc.want)
+			}
+			if !got.Enabled || !got.Metrics || got.Endpoint != strings.TrimRight(tc.endpoint, "/") {
+				t.Fatalf("restored OTLP settings: %+v", got)
+			}
+		})
 	}
 }
 

@@ -6,6 +6,8 @@ package provider
 // A reading that comes back replaces it at once.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -15,7 +17,9 @@ import (
 	"time"
 )
 
-var lastQuotas struct {
+var lastQuotas lastQuotasT
+
+type lastQuotasT struct {
 	sync.Mutex
 	m      map[string]lastQuota // provider/user
 	loaded bool
@@ -37,8 +41,18 @@ type lastWindow struct {
 func lastQuotasPath() string { return filepath.Join(filepath.Dir(Path()), "quotas.json") }
 
 // passing is an error that says nothing about the account: the vendor
-// rate limiting, failing or out of reach. A sign-in gone bad is not one.
-var passing = regexp.MustCompile(`(?i)rate.?limit|too many requests|429|internal server error|bad gateway|service unavailable|gateway timeout|deadline exceeded|timeout|timed out|connection (refused|reset)|no such host|network is unreachable|EOF|asks again`)
+// rate limiting, failing or out of reach, or a Claude account's usage not
+// read this time (errClaudeNotAsked, errClaudeSaved). A sign-in gone bad
+// is not one.
+var passing = regexp.MustCompile(`(?i)not read yet|doesn't read a saved account|rate.?limit|too many requests|429|internal server error|bad gateway|service unavailable|gateway timeout|deadline exceeded|timeout|timed out|connection (refused|reset)|no such host|network is unreachable|EOF|asks again|fetch failed|unable to connect|ECONN[A-Z]+|ENOTFOUND|EAI_AGAIN|socket hang up|HTTP 5\d\d`)
+
+// keyTag names a key's card among the last readings, by what it is (a
+// plan's windows, a balance) and a digest of the key, never the key: a
+// key's card has no user to go by.
+func keyTag(kind, key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return kind + " " + hex.EncodeToString(sum[:8])
+}
 
 // keepLast is q, or the last reading of its account when q failed in
 // passing; a good reading is kept for next time.
@@ -56,12 +70,7 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 	c := &lastQuotas
 	c.Lock()
 	defer c.Unlock()
-	if !c.loaded {
-		c.loaded = true
-		if b, err := os.ReadFile(lastQuotasPath()); err == nil {
-			json.Unmarshal(b, &c.m)
-		}
-	}
+	c.load()
 	if q.Error == "" {
 		if len(q.Windows) == 0 && q.Balance == "" {
 			return q
@@ -88,9 +97,58 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 		}
 		return q
 	}
-	e, ok := c.m[key]
-	if !ok || !passing.MatchString(q.Error) {
+	if q.Provider == "claude" && claudeUsageDenied.MatchString(q.Error) {
 		return q
+	}
+	claudeUnavailable := q.Provider == "claude" && q.Error == errClaudeUsageUnavailable.Error()
+	if !claudeUnavailable && !passing.MatchString(q.Error) {
+		return q
+	}
+	read := c.reading
+	if claudeUnavailable {
+		read = c.reported // keep the reported values, even after their reset
+	}
+	out, ok := read(key)
+	if !ok {
+		return q
+	}
+	out.Name, out.Icon, out.User = q.Name, q.Icon, q.User
+	if out.PoolRef != "" {
+		out.Status = "stale"
+	}
+	if out.Name == "" {
+		out.Name, out.Icon = c.m[key].Q.Name, c.m[key].Q.Icon
+	}
+	return out
+}
+
+// load reads the last readings from disk, the first time. Called with c
+// held.
+func (c *lastQuotasT) load() {
+	if !c.loaded {
+		c.loaded = true
+		if b, err := os.ReadFile(lastQuotasPath()); err == nil {
+			json.Unmarshal(b, &c.m)
+		}
+	}
+}
+
+// reading is the last reading kept under key, its windows as they stand
+// now. Called with c held.
+func (c *lastQuotasT) reading(key string) (SubscriptionQuota, bool) {
+	out, ok := c.reported(key)
+	if ok {
+		out.Windows = elapsed(out.Windows, time.Now())
+	}
+	return out, ok
+}
+
+// reported is the dated snapshot, without treating a passed reset as a
+// newly read zero. Called with c held.
+func (c *lastQuotasT) reported(key string) (SubscriptionQuota, bool) {
+	e, ok := c.m[key]
+	if !ok {
+		return SubscriptionQuota{}, false
 	}
 	out := e.Q
 	out.Windows = make([]QuotaWindow, len(e.Q.Windows))
@@ -100,20 +158,33 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 			out.Windows[i].Span, out.Windows[i].Model, out.Windows[i].Aside = e.Spans[i].Span, e.Spans[i].Model, e.Spans[i].Aside
 		}
 	}
-	if q.PoolRef == "" {
-		out.Windows = elapsed(out.Windows, time.Now())
-	}
-	out.Name, out.Icon, out.User = q.Name, q.Icon, q.User
-	out.Status = "stale"
-	if q.PoolRef != "" {
-		out.PoolRef, out.SourceRef, out.AccountID = q.PoolRef, q.SourceRef, q.AccountID
-		out.KeyRefs, out.DisplayName = q.KeyRefs, q.DisplayName
-		out.Error = q.Error
-	}
-	if out.Name == "" {
-		out.Name, out.Icon = e.Q.Name, e.Q.Icon
-	}
 	at := e.At
 	out.AsOf = &at
+	return out, true
+}
+
+// lastAllowances is each of an agent's accounts' allowance as it last
+// read, kept on disk: what routing goes by while the first reading since
+// magpie started is still out, rather than by none — with none, every
+// account counts as unused and the first in order went first, until the
+// reading came back and put another first, taking conversations off the
+// account that had them cached (vincentzhang on Discord).
+func lastAllowances(agent string) map[string]Allowance {
+	logins, ok := usageLogins(agent)
+	if !ok {
+		return nil
+	}
+	now := time.Now()
+	out := map[string]Allowance{}
+	c := &lastQuotas
+	c.Lock()
+	defer c.Unlock()
+	c.load()
+	for _, l := range logins {
+		q, ok := c.reading(loginProvider(l) + "/" + strings.ToLower(l.User))
+		if ok && len(q.Windows) > 0 {
+			out[l.User] = allowanceOf(q.Windows, now).restartedBy(resetRunsOut(agent, l.User, q.Windows, q.Resets))
+		}
+	}
 	return out
 }

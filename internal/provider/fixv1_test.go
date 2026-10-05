@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/agentenv"
 )
 
 // A relay given without its /v1 lists its models under /v1 only; fetching
@@ -16,10 +18,11 @@ func TestFetchAddsMissingV1(t *testing.T) {
 	isolate(t)
 	h := t.TempDir()
 	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
 	t.Setenv("PATH", h)
-	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME"} {
+	for _, v := range agentenv.Vars {
 		t.Setenv(v, "")
 	}
 
@@ -74,10 +77,11 @@ func TestArkBaseKeepsItsPath(t *testing.T) {
 	isolate(t)
 	h := t.TempDir()
 	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
 	t.Setenv("PATH", h)
-	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME"} {
+	for _, v := range agentenv.Vars {
 		t.Setenv(v, "")
 	}
 	var asked []string

@@ -2,12 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>magpie</title>
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
 <script src="boot.js"></script>
+<script src="theme.js"></script>
+<script src="omarchy.js"></script>
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="routing.css">
 <link rel="stylesheet" href="library.css">
+<link rel="stylesheet" href="plugins.css">
+<link rel="stylesheet" href="sessions.css">
+<link rel="stylesheet" href="omarchy.css">
 </head>
 <body>
 <header class="top" style="--wails-draggable:drag">
@@ -21,20 +27,27 @@
     <button data-view="gateway" data-t>Gateway</button>
     <button data-view="routing" data-t>Routing</button>
     <button data-view="usage" data-t>Usage</button>
+    <button data-view="sessions" data-t>Sessions</button>
     <button data-view="library" data-t>Library</button>
+    <button data-view="plugins" data-t>Plugins</button>
   </nav>
   <div class="actions" style="--wails-draggable:no-drag">
-    <button class="update" id="update" hidden>
-      <svg viewBox="0 0 16 16" width="11" height="11"><path d="M8 13V3.5M3.75 7.5 8 3.25l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Update</span>
-    </button>
-    <button class="icon" id="sync" title="Refresh model lists (models.dev and every vendor)" data-tt>
+    <span class="update-wrap">
+      <button class="update" id="update" hidden>
+        <svg viewBox="0 0 16 16" width="11" height="11"><path d="M8 13V3.5M3.75 7.5 8 3.25l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Update</span>
+      </button>
+      <button class="update-hide" id="updateHide" title="Hide until the next version" data-tt>
+        <svg viewBox="0 0 10 10" width="8" height="8"><path d="M2.5 2.5l5 5M7.5 2.5l-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    </span>
+    <button class="icon" id="sync" title="Refresh model lists (models.dev and every vendor) and check for a newer magpie" data-tt>
       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <button class="icon" id="open" title="Open as a window" data-tt>
       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8a1.5 1.5 0 0 0 1.5-1.5V10M9 2h5v5M14 2 8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
-    <button class="icon" id="prefs" title="Settings" data-tt>
+    <button class="icon" id="prefs" title="Settings" data-tt data-keys="⌘,|Ctrl+,">
       <svg viewBox="0 0 24 24" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></g></svg>
     </button>
     <button class="icon winclose" id="winclose" title="Close" data-tt>
@@ -45,8 +58,9 @@
 
 <nav class="ptabs" id="ptabs" hidden>
   <button type="button" data-ptab="agents"><span data-t>Agents</span><em id="ptabN"></em></button>
-  <button type="button" data-ptab="usage"><span data-t>Usage</span></button>
-  <button type="button" data-ptab="profiles"><span data-t>Profiles</span></button>
+  <button type="button" data-ptab="usage"><span data-t>Allowances</span></button>
+  <button type="button" data-ptab="stats"><span data-t>Usage</span></button>
+  <button type="button" data-ptab="routing"><span data-t>Routing</span></button>
 </nav>
 
 <main class="view" id="view-agents">
@@ -57,10 +71,16 @@
     <button class="text" id="save" data-t>＋ Save current</button>
   </section>
   <section class="panel-quota" id="panelQuota" hidden></section>
+  <section class="panel-routing" id="panelRouting" hidden></section>
+  <section class="panel-usage" id="panelUsage" hidden></section>
 </main>
 
 <main class="view" id="view-providers" hidden>
+  <div id="fileError" hidden></div>
+  <div id="movable" hidden></div>
   <div class="list" id="providers"></div>
+  <div class="row-head off-head" id="offHead" hidden><button class="fold" id="foldOff" aria-expanded="false" aria-controls="offProviders"><span class="label" data-t>Turned off</span><span class="note" id="offCount"></span></button></div>
+  <div class="list" id="offProviders" hidden></div>
   <div id="excluded"></div>
   <div class="after-list">
     <button class="text" id="addProvider" data-t>＋ Add provider</button>
@@ -72,7 +92,12 @@
   <div class="list gwcard">
     <div class="row gw" id="gateway"></div>
   </div>
-  <div class="row-head"><span class="label" data-t>Connect</span><span class="grow"></span><span class="note" id="connectNote"></span></div>
+  <section id="gatewayKeysBlock" hidden>
+    <div class="row-head"><span class="label" data-t>Gateway keys</span><span class="grow"></span><button class="text" id="addGatewayKey" data-t>Add gateway key</button></div>
+    <p class="usage-note" data-t>Create a gateway key for each client. Usage is counted separately for each key.</p>
+    <section id="gatewayKeys"></section>
+  </section>
+  <div class="row-head"><button class="fold" id="foldConnect" aria-expanded="true" aria-controls="connect"><span class="label" data-t>Connect</span></button><span class="grow"></span><span class="note" id="connectNote"></span></div>
   <section class="list connect" id="connect"></section>
   <div class="row-head"><button class="fold" id="foldModels" aria-expanded="true" aria-controls="gwModels"><span class="label" data-t>Models</span><span class="note" id="modelsCount"></span></button><span class="grow"></span><button class="text" id="copyModels" data-t>Copy all ids</button></div>
   <div class="list" id="gwModels"></div>
@@ -82,7 +107,7 @@
 
 <main class="view" id="view-routing" hidden>
   <div class="row-head"><span class="label" data-t>Routing</span><span class="rt-livedot" aria-hidden="true"></span><span class="note" data-t>live, as the gateway decides</span><span class="grow"></span>
-    <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the email addresses on this page, for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide emails</span></button></div>
+    <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the accounts on this page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
   <section class="rt" id="rt"></section>
   <div class="rt-more" id="rtMore"></div>
 </main>
@@ -93,115 +118,296 @@
     <div class="segs" id="period"></div>
     <div class="segs" id="sessRange" hidden></div>
     <span class="grow"></span>
+    <span class="usage-refresh" id="usageRefresh">
+      <button class="icon" id="usageReload" type="button" aria-label="Refresh now" data-tt><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg></button>
+      <button class="sess-pick" id="usageEvery" type="button"></button>
+    </span>
     <span class="usage-cost" id="usageCost"></span>
   </div>
   <div class="usage-pane" id="usagePane">
     <div class="row-head quota-head" id="quotaHead" hidden>
       <span class="label" data-t>Allowances</span>
       <span class="grow"></span>
-      <button class="text rt-mask" id="usageMask" aria-pressed="false" data-tt="Mask the email addresses on this page, for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide emails</span></button>
+      <button class="sess-pick quota-trend" id="quotaTrend" type="button" hidden></button>
+      <button class="text rt-mask" id="usageMask" aria-pressed="false" data-tt="Mask the accounts on this page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button>
       <div class="segs" id="quotaMode" hidden></div>
     </div>
     <section class="subscription-usage" id="subscriptionUsage"></section>
     <section id="usageConfig"></section>
+    <p class="usage-note" id="usageScope" data-t>Gateway calls only; session-log calls are in Requests. Local rejections are excluded from totals.</p>
     <section class="stats" id="stats"></section>
     <section class="chart" id="chart"></section>
     <div class="row-head"><span class="label" data-t>Agents</span></div>
     <div class="list" id="usageAgents"></div>
     <div class="row-head"><span class="label" data-t>Models</span></div>
     <div class="list" id="usageModels"></div>
+    <div class="row-head" id="usageAccountsHead" hidden><span class="label" data-t>Accounts</span></div>
+    <div class="list" id="usageAccounts" hidden></div>
+    <div class="row-head" id="usageKeysHead" hidden><span class="label" data-t>Gateway keys</span></div>
+    <div class="list" id="usageKeys" hidden></div>
     <p class="usage-note" id="usageNote"></p>
   </div>
-  <div class="usage-pane" id="sessionsPane" hidden>
+  <div class="usage-pane" id="ledgerPane" hidden>
+    <div class="sess-tools">
+      <button class="sess-pick" id="ledComputer" type="button" hidden></button>
+      <button class="sess-pick" id="ledAgent" type="button" hidden></button>
+      <button class="sess-pick" id="ledPurpose" type="button" hidden></button>
+      <button class="sess-pick" id="ledProvider" type="button" hidden></button>
+      <button class="sess-pick" id="ledAccount" type="button" hidden></button>
+      <button class="sess-pick" id="ledKey" type="button" hidden></button>
+      <div class="segs" id="ledStatus"></div>
+      <span id="ledRoute" hidden><span id="ledRouteLabel"></span><button class="text" id="ledRouteClear" type="button" data-tt="Clear filter" aria-label="Clear filter">×</button></span>
+      <span class="grow"></span>
+      <input class="sess-filter" id="ledQ" type="search" spellcheck="false" autocomplete="off" placeholder="Search models, providers, sessions" data-tp>
+      <button class="text" id="ledExport" type="button" title="Save every request listed, all pages, as a CSV file in Downloads" data-tt><span data-t>Export CSV</span></button>
+    </div>
+    <p class="usage-note" id="ledScope" data-t>Gateway and session-log calls; local rejections excluded from totals.</p>
+    <div class="led-dash" id="ledDash" hidden>
+      <div class="led-strip" id="ledKpi"></div>
+      <section class="led-trend">
+        <div class="led-bar">
+          <div class="segs" id="ledMetric"></div>
+          <span class="grow"></span>
+          <span class="led-by" data-t>Split by</span>
+          <div class="segs" id="ledSplit"></div>
+        </div>
+        <div class="led-body">
+          <div class="led-chart" id="ledChart"></div>
+          <div class="led-rank" id="ledRank"></div>
+          <div class="led-rail" id="ledRail" hidden><i></i></div>
+        </div>
+      </section>
+    </div>
+    <div class="led-head"><p class="led-sum" id="ledSum"></p><span class="grow"></span><span class="led-arch" id="ledArchive"></span></div>
+    <div class="led-wrap" id="ledWrap"></div>
+            <div class="led-hscroll" id="ledHScroll" hidden><div></div></div>
+    <div class="led-pager" id="ledPager" hidden></div>
+    <p class="usage-note" id="ledNote"></p>
+  </div>
+  <div class="usage-pane sess-pane" id="sessionsPane" hidden>
     <div class="sess-tools">
       <div class="segs" id="sessAgent"></div>
       <button class="sess-pick" id="sessModel" type="button" hidden></button>
       <button class="sess-pick" id="sessFolder" type="button" hidden></button>
-      <span class="grow"></span>
-      <input class="sess-filter" id="sessQ" type="search" spellcheck="false" autocomplete="off" placeholder="Search sessions" data-tp>
     </div>
     <section class="stats" id="sessStats"></section>
     <section class="chart sess-chart" id="sessChart" hidden></section>
+    <div class="sess-grid" id="sessGrid" hidden>
+      <section class="sess-card" id="sessProjects"></section>
+      <section class="sess-card" id="sessModels"></section>
+      <section class="sess-card" id="sessHours"></section>
+      <section class="sess-card" id="sessTop"></section>
+      <section class="sess-card" id="sessShape"></section>
+      <section class="sess-card" id="sessSkills"></section>
+      <section class="sess-card wide" id="sessTools"></section>
+    </div>
+    <div class="row-head" id="sessListHead" hidden>
+      <span class="label" data-t>Latest sessions</span>
+      <span class="grow"></span>
+      <button class="text sess-all" id="sessAll" type="button" data-t>All sessions</button>
+      <input class="sess-filter" id="sessQ" type="search" spellcheck="false" autocomplete="off" placeholder="Search sessions" data-tp>
+    </div>
     <div class="list sess-list" id="sessList"></div>
     <p class="usage-note" id="sessNote"></p>
   </div>
 </main>
 
+<main class="view" id="view-sessions" hidden></main>
+
 <main class="view" id="view-library" hidden></main>
 
+<main class="view" id="view-plugins" hidden></main>
+
 <main class="view" id="view-settings" hidden>
-  <div class="row-head"><span class="label" data-t>Preferences</span></div>
-  <div class="list prefs">
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Appearance</div><div class="sub" data-t>Light or dark, or whatever the system is showing</div></div>
-      <div id="themeSegs"></div>
+  <div class="row-head set-head"><div class="warm-tabs set-tabs" id="setTabs" role="tablist" aria-label="Settings">
+    <button type="button" role="tab" id="setTab-general" data-set="general" aria-controls="setPage-general" data-t>General</button>
+    <button type="button" role="tab" id="setTab-usage" data-set="usage" aria-controls="setPage-usage" data-t>Allowances</button>
+    <button type="button" role="tab" id="setTab-network" data-set="network" aria-controls="setPage-network" data-t>Network and sharing</button>
+    <button type="button" role="tab" id="setTab-models" data-set="models" aria-controls="setPage-models" data-t>Models</button>
+    <button type="button" role="tab" id="setTab-privacy" data-set="privacy" aria-controls="setPage-privacy" data-t>Privacy</button>
+    <button type="button" role="tab" id="setTab-otel" data-set="otel" aria-controls="setPage-otel" data-t>Observability</button>
+    <button type="button" role="tab" id="setTab-sync" data-set="sync" aria-controls="setPage-sync" data-t>Sync and backup</button>
+    <button type="button" role="tab" id="setTab-about" data-set="about" aria-controls="setPage-about" data-t>About</button>
+  </div></div>
+  <section class="set-page" id="setPage-general" role="tabpanel" aria-labelledby="setTab-general">
+    <div class="list prefs">
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Appearance</div><div class="sub om-hide" data-t>Light or dark, or whatever the system is showing</div><div class="sub om-only" data-t>Follows the Omarchy theme, as picked in Omarchy's menu</div></div>
+        <div id="themeSegs" class="om-hide"></div><span class="om-only om-theme-name"></span>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Language</div><div class="sub" data-t>Applies at once, no restart</div></div>
+        <div id="langSegs"></div>
+      </div>
+      <div class="row pref" id="textSizeRow">
+        <div class="who"><div class="name" data-t>Text size</div><div class="sub" id="textSizeSub"></div></div>
+        <div id="textSizeSegs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Tray icon</div><div class="sub" data-t>What clicking magpie’s icon in the menu bar or tray opens</div></div>
+        <div id="traySegs"></div>
+      </div>
+      <div class="row pref" id="barIconRow" hidden>
+        <div class="who"><div class="name" data-t>Bar icon</div><div class="sub" data-t>magpie’s icon beside Omarchy’s own in the bar; right-click opens the window</div></div>
+        <div id="barIconSegs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Provider in model names</div><div class="sub" data-t>Agents’ lists put each model’s provider after its name, or not after names you set</div></div>
+        <div id="plainNamesSegs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Codex subagents on any model</div><div class="sub" data-t>Codex’s OpenAI models hand subagents their tasks as text (multi-agent V1), so a GPT lead can spawn them on magpie’s other models. New threads only; Codex’s own multi_agent_v2 setting still wins</div></div>
+        <div id="codexAgentsV1Segs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Long conversations</div><div class="sub" data-t>Codex and Claude Code compact a conversation at 272K tokens on a model with a larger window; in Claude Code a Claude model runs to its own window, 1M for a [1m] one, as Anthropic runs it. The model’s full window lets any conversation grow further, with every turn slower and costlier</div></div>
+        <div id="fullContextSegs"></div>
+      </div>
+      <div class="row pref" id="codexTitlesRow">
+        <div class="who"><div class="name" data-t>Codex thread titles</div><div class="sub" id="codexTitlesSub"></div></div>
+        <div class="val" id="codexTitlesPick"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Open at login</div><div class="sub" data-t>Start magpie in the tray when you log in, so agents find the gateway from the start</div></div>
+        <div id="loginSegs"></div>
+      </div>
+      <div class="row pref" id="dockRow" hidden>
+        <div class="who"><div class="name" data-t>Dock</div><div class="sub" data-t>Keep magpie in the Dock too, always or while its window is open, for Cmd-Tab and a menu bar too full to show its icon</div></div>
+        <div id="dockSegs"></div>
+      </div>
+      <div class="row pref" id="lightweightRow" hidden>
+        <div class="who"><div class="name" data-t>Lightweight mode</div><div class="sub" data-t>A closed panel or window frees its page after a minute, about 100 MB each, and loads it anew when opened</div></div>
+        <div id="lightweightSegs"></div>
+      </div>
+      <div class="row pref" id="sessionTerminalRow" hidden>
+        <div class="who"><div class="name" data-t>Session terminal</div><div class="sub" data-t>Used by the terminal button in Sessions; only apps registered for .command files appear</div></div>
+        <button type="button" id="sessionTerminalSelect" class="sess-pick session-terminal-select" aria-label="Session terminal" aria-haspopup="menu" aria-expanded="false" data-ta></button>
+      </div>
     </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Language</div><div class="sub" data-t>Applies at once, no restart</div></div>
-      <div id="langSegs"></div>
+  </section>
+  <section class="set-page" id="setPage-usage" role="tabpanel" aria-labelledby="setTab-usage">
+    <div class="list prefs">
+      <div class="row pref" id="trayUsageRow">
+        <div class="who"><div class="name" data-t>Allowances in the menu bar</div><div class="sub" id="trayUsageSub"></div></div>
+        <div id="trayUsagePick"></div>
+      </div>
+      <div class="row pref" id="trayEveryRow" hidden>
+        <div class="who"><div class="name" data-t>Menu bar refresh</div><div class="sub" data-t>How often the allowances beside the icon are asked for again</div></div>
+        <div id="trayEverySegs"></div>
+      </div>
+      <div class="row pref" id="trayLogosRow" hidden>
+        <div class="who"><div class="name" data-t>Menu bar logos</div><div class="sub" data-t>Each subscription's logo before its numbers; off, the numbers alone with a thin line between subscriptions</div></div>
+        <div id="trayLogosSegs"></div>
+      </div>
+      <div class="row pref" id="trayBirdRow" hidden>
+        <div class="who"><div class="name" data-t>Menu bar magpie icon</div><div class="sub" data-t>magpie's icon before the allowances; off, the allowances alone, and a click on one still opens the panel</div></div>
+        <div id="trayBirdSegs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Allowance display</div><div class="sub" data-t>How much of each window is used, or how much is left, on the Usage page, the panel and the menu bar</div></div>
+        <div id="quotaLeftSegs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Currency</div><div class="sub" id="currencySub"></div></div>
+        <div id="currencySegs"></div>
+      </div>
+      <div class="row pref" id="unitsRow" hidden>
+        <div class="who"><div class="name" data-t>Number units</div><div class="sub" data-t>How a large count of tokens or requests is shortened on the Usage page and the panel</div></div>
+        <div id="unitsSegs"></div>
+      </div>
+      <div class="row pref" id="usageAlertRow">
+        <div class="who"><div class="name" data-t>Allowance alert</div><div class="sub" id="usageAlertSub"></div></div>
+        <div id="usageAlertSegs" class="warm-at"></div>
+      </div>
+      <div class="row pref" id="balanceAlertRow">
+        <div class="who"><div class="name" data-t>Low balance alert</div><div class="sub" id="balanceAlertSub"></div></div>
+        <div id="balanceAlertSegs" class="warm-at"></div>
+      </div>
     </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Tray icon</div><div class="sub" data-t>What clicking magpie’s icon in the menu bar or tray opens</div></div>
-      <div id="traySegs"></div>
+    <div class="row-head warm-head"><div class="warm-tabs" id="warmTabs" role="tablist">
+      <button type="button" role="tab" id="warmTab-codex" data-warm="codex" aria-controls="codexWarmList">Codex</button>
+      <button type="button" role="tab" id="warmTab-claude" data-warm="claude" aria-controls="claudeWarmList">Claude Code</button>
+      <button type="button" role="tab" id="warmTab-wb" data-warm="wb" aria-controls="wbList" hidden>WorkBuddy</button>
+      <button type="button" role="tab" id="warmTab-trae" data-warm="trae" aria-controls="traeList" hidden>Trae CN</button>
+      <button type="button" role="tab" id="warmTab-minimax" data-warm="minimax" aria-controls="minimaxList" hidden>MiniMax Code</button>
+    </div></div>
+    <div class="warm-panes">
+    <div class="list prefs" id="codexWarmList" role="tabpanel" aria-labelledby="warmTab-codex">
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Warm up on reset</div><div class="sub" id="warmSub"></div></div>
+        <div id="warmSegs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Daily warm-up</div><div class="sub" id="warmAtSub"></div></div>
+        <div id="warmAtSegs" class="warm-at"></div>
+      </div>
     </div>
-    <div class="row pref" id="trayUsageRow">
-      <div class="who"><div class="name" data-t>Usage in the menu bar</div><div class="sub" id="trayUsageSub"></div></div>
-      <div id="trayUsagePick"></div>
+    <div class="list prefs" id="claudeWarmList" role="tabpanel" aria-labelledby="warmTab-claude">
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Warm up on reset</div><div class="sub" id="claudeWarmSub"></div></div>
+        <div id="claudeWarmSegs"></div>
+      </div>
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Daily warm-up</div><div class="sub" id="claudeWarmAtSub"></div></div>
+        <div id="claudeWarmAtSegs" class="warm-at"></div>
+      </div>
     </div>
-    <div class="row pref" id="trayEveryRow" hidden>
-      <div class="who"><div class="name" data-t>Menu bar refresh</div><div class="sub" data-t>How often the usage beside the icon is asked for again</div></div>
-      <div id="trayEverySegs"></div>
+    <div class="list prefs" id="wbList" role="tabpanel" aria-labelledby="warmTab-wb">
+      <div class="row pref" id="wbCheckinRow">
+        <div class="who"><div class="name" data-t>Daily check-in</div><div class="sub" id="wbCheckinSub"></div></div>
+        <div id="wbCheckinSegs"></div>
+      </div>
     </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Usage shows</div><div class="sub" data-t>How much of each window is used, or how much is left, on the Usage page, the panel and the menu bar</div></div>
-      <div id="quotaLeftSegs"></div>
+    <div class="list prefs" id="traeList" role="tabpanel" aria-labelledby="warmTab-trae">
+      <div class="row pref" id="traeCheckinRow">
+        <div class="who"><div class="name" data-t>Daily check-in</div><div class="sub" id="traeCheckinSub"></div></div>
+        <div id="traeCheckinSegs"></div>
+      </div>
     </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Open at login</div><div class="sub" data-t>Start magpie in the tray when you log in, so agents find the gateway from the start</div></div>
-      <div id="loginSegs"></div>
+    <div class="list prefs" id="minimaxList" role="tabpanel" aria-labelledby="warmTab-minimax">
+      <div class="row pref" id="minimaxCheckinRow">
+        <div class="who"><div class="name" data-t>Daily check-in</div><div class="sub" id="minimaxCheckinSub"></div></div>
+        <div id="minimaxCheckinSegs"></div>
+      </div>
     </div>
-    <div class="row pref" id="dockRow" hidden>
-      <div class="who"><div class="name" data-t>Dock</div><div class="sub" data-t>Keep magpie in the Dock too, always or while its window is open, for Cmd-Tab and a menu bar too full to show its icon</div></div>
-      <div id="dockSegs"></div>
     </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Proxy</div><div class="sub" id="proxySub"></div></div>
-      <div id="proxySegs" class="proxy-segs"></div>
+  </section>
+  <section class="set-page" id="setPage-network" role="tabpanel" aria-labelledby="setTab-network">
+    <div class="list prefs">
+      <div class="row pref">
+        <div class="who"><div class="name" data-t>Proxy</div><div class="sub" id="proxySub"></div></div>
+        <div id="proxySegs" class="proxy-segs"></div>
+      </div>
     </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Codex warm-up</div><div class="sub" id="warmSub"></div></div>
-      <div id="warmSegs"></div>
-    </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Codex daily warm-up</div><div class="sub" id="warmAtSub"></div></div>
-      <div id="warmAtSegs" class="warm-at"></div>
-    </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Claude Code warm-up</div><div class="sub" id="claudeWarmSub"></div></div>
-      <div id="claudeWarmSegs"></div>
-    </div>
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Claude Code daily warm-up</div><div class="sub" id="claudeWarmAtSub"></div></div>
-      <div id="claudeWarmAtSegs" class="warm-at"></div>
-    </div>
-    <div class="row pref" id="wbCheckinRow" hidden>
-      <div class="who"><div class="name" data-t>Check in to WorkBuddy daily</div><div class="sub" id="wbCheckinSub"></div></div>
-      <div id="wbCheckinSegs"></div>
-    </div>
-  </div>
-  <div class="row-head"><span class="label" data-t>Local network</span></div>
-  <div class="list prefs" id="lanList"></div>
-  <div class="row-head"><span class="label" data-t>Images</span></div>
-  <div class="list prefs" id="imagesList"></div>
-  <div class="row-head"><span class="label" data-t>Privacy</span></div>
-  <div class="list prefs" id="redactList"></div>
-  <div class="row-head"><span class="label" data-t>Sync and backup</span></div>
-  <div class="list prefs" id="syncList"></div>
-  <div class="row-head"><span class="label" data-t>About</span></div>
-  <div class="list prefs" id="about"></div>
+    <div class="row-head"><span class="label">GitHub</span></div>
+    <div class="list prefs" id="githubList"></div>
+    <div class="row-head"><span class="label" data-t>Local network</span></div>
+    <div class="list prefs" id="lanList"></div>
+  </section>
+  <section class="set-page" id="setPage-models" role="tabpanel" aria-labelledby="setTab-models">
+    <div class="row-head"><span class="label" data-t>Images</span></div>
+    <div class="list prefs" id="imagesList"></div>
+    <div class="row-head"><span class="label" data-t>Web search</span></div>
+    <div class="list prefs" id="searchList"></div>
+    <div class="row-head"><span class="label" data-t>Replies</span></div>
+    <div class="list prefs" id="replyList"></div>
+  </section>
+  <section class="set-page" id="setPage-privacy" role="tabpanel" aria-labelledby="setTab-privacy">
+    <div class="list prefs" id="redactList"></div>
+  </section>
+  <section class="set-page" id="setPage-otel" role="tabpanel" aria-labelledby="setTab-otel">
+    <div class="list prefs" id="otelList"></div>
+  </section>
+  <section class="set-page" id="setPage-sync" role="tabpanel" aria-labelledby="setTab-sync">
+    <div class="list prefs" id="syncList"></div>
+  </section>
+  <section class="set-page" id="setPage-about" role="tabpanel" aria-labelledby="setTab-about">
+    <div class="list prefs" id="about"></div>
+  </section>
 </main>
 
 <footer class="foot">
+  <button type="button" class="text prof-btn" id="profBtn" hidden aria-haspopup="dialog" aria-expanded="false"><span data-t>Profiles</span><em id="profN"></em></button>
   <span id="pqAge" class="pq-age" hidden></span>
   <span id="status" class="status"></span>
   <span class="grow"></span>
@@ -230,10 +436,14 @@
   </div>
 </div>
 
+<script src="compat.js"></script>
 <script src="i18n.js"></script>
+<script src="caller-keys.js"></script>
+<script src="usage-config.js"></script>
 <script src="app.js"></script>
 <script src="routing.js"></script>
 <script src="library.js"></script>
-<script src="usage-config.js"></script>
+<script src="plugins.js"></script>
+<script src="sessions.js"></script>
 </body>
 </html>

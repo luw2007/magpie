@@ -32,8 +32,8 @@ const usageHalfLife = time.Hour
 var routed = struct {
 	sync.Mutex
 	turn     map[string]int      // provider → requests routed in turn
-	used     map[string]tokenUse // candidate rest id → tokens it served
-	failures map[string]int      // candidate rest id → failures since it last answered
+	used     map[string]tokenUse // candidate restKey → tokens it served
+	failures map[string]int      // candidate restKey → failures since it last answered
 }{turn: map[string]int{}, used: map[string]tokenUse{}, failures: map[string]int{}}
 
 type tokenUse struct {
@@ -45,8 +45,10 @@ func (u tokenUse) now(t time.Time) float64 {
 	return u.n * math.Exp2(-t.Sub(u.at).Seconds()/usageHalfLife.Seconds())
 }
 
-// served counts what a candidate just answered against it; key is what it
-// rests by (restKey).
+// served counts what a candidate just answered against it, by who it is:
+// rest for a key, an account by its user whichever the agent is signed in
+// to (restKey, as key is), so a switch doesn't hand one account's count to
+// another (#209).
 func served(rest, key string, tokens int) {
 	if tokens <= 0 {
 		tokens = 1 // it answered, whether or not it said how much
@@ -62,7 +64,8 @@ func served(rest, key string, tokens int) {
 // servedCandidate records an answer and ends both the provider's rest and,
 // when it has one, the candidate's model-specific rest.
 func servedCandidate(c candidate, tokens int) {
-	served(c.rest, c.restKey(), tokens)
+	served(c.restKey(), c.restKey(), tokens)
+	provider.NoteServed(c.p, time.Now())
 	if id := c.restID(); id != c.restKey() {
 		clearRest(id)
 	}
@@ -86,6 +89,13 @@ const (
 	// says when it's back: a week's window, and a day over
 	longestQuota = 8 * 24 * time.Hour
 	longestRetry = 10 * time.Minute // failing again and again
+	// longestRateRest is the most a rate limit that keeps coming back as
+	// soon as its rest is over is waited out, when the vendor says nothing
+	// of when (rateRest)
+	longestRateRest = 30 * time.Minute
+	// rateForget: a rate limit this long after the last one's rest ended
+	// is a new one, a minute again
+	rateForget = 30 * time.Minute
 	// verifyRest: an account Google wants verified (#152) is out until
 	// someone does, or lifts its rest in the app
 	verifyRest = 30 * time.Minute
@@ -99,7 +109,7 @@ var (
 	// creditWords: the account or key has no money left.
 	creditWords = regexp.MustCompile(`(?i)insufficient.?(balance|credit|fund)|balance|credit|billing|payment|arrear|overdue|suspended|余额|欠费|充值|账户.*(不足|停)`)
 	// quotaWords: it has used up what its plan allows for now.
-	usedUpWords = regexp.MustCompile(`(?i)quota|usage.?limit|limit.?reached|hit your .*limit|limit.{0,24}resets|exceeded.*(plan|limit)|额度|用量|套餐|上限`)
+	usedUpWords = regexp.MustCompile(`(?i)quota|usage.?limit|out of budget|budget (exceeded|exhausted)|limit.?reached|hit your .*limit|limit.{0,24}resets|exceeded.*(plan|limit)|额度|用量|套餐|上限`)
 	// rateWords: a 429 that is a short rate limit — requests or tokens per
 	// minute — which usedUpWords took for a used-up plan ("Rate limit
 	// exceeded", "reached"): as magpie words an upstream error, with
@@ -119,6 +129,7 @@ const (
 	failQuota  = "quota"
 	failRate   = "rate"
 	failOther  = "other"
+	failAuth   = "auth"
 	// failCanceled: the agent went away before the answer came
 	failCanceled = "canceled"
 	// failForeign: the conversation's reasoning was sealed by another
@@ -127,17 +138,52 @@ const (
 	// failFloor: the request asked for a shorter reply than the provider
 	// gives, and is sent again asking for the least it takes
 	failFloor = "floor"
+	// failUpdate: the upstream turned away the configuration_update items
+	// a changed effort went as (#617), and the request is sent again
+	// without them
+	failUpdate = "update"
 	// failVerify: the account must be verified with its vendor (Google's
 	// VALIDATION_REQUIRED) before it is served again
 	failVerify = "verify"
+	// failRefused: the vendor's safety filter refused the request before
+	// anything was said (#248) — the next one is asked, and nobody rests
+	failRefused = "refused"
+	// failShape: the vendor couldn't read the request's shape (#350) — the
+	// next one is asked, and nobody rests
+	failShape = "shape"
+	// failEffort: the account's plan doesn't take the reasoning level
+	// asked for (#520) — another account is asked, and nobody rests
+	failEffort = "effort"
+	// failProxy: the proxy magpie sends through (its own setting, the
+	// *_PROXY variables, the system's) didn't take the connection (#381) —
+	// nothing reached the vendor, so the next one is asked, and nobody rests
+	failProxy = "proxy"
+	// failOverflow: the conversation is too long for the member's model
+	// (#700) — another member, with room for it, is asked, and nobody rests
+	failOverflow = "overflow"
+	// failSlow: the member hadn't begun its reply when its group's
+	// FirstToken ran out, nothing of it sent — the next is asked, and
+	// nobody rests, as a long prompt is slow anywhere
+	failSlow = "slow"
 )
+
+// proxyDown is the error Go gives when the proxy itself can't be reached,
+// over HTTP (proxyconnect) or SOCKS (socks connect).
+var proxyDown = regexp.MustCompile(`proxyconnect |socks connect `)
 
 // failure says why a reply failed.
 func failure(status int, body []byte) string {
+	if status == http.StatusBadGateway && proxyDown.Match(body) {
+		return failProxy
+	}
 	if _, ok := provider.Verification(body); ok && (status == 401 || status == 403) {
 		return failVerify
 	}
 	switch {
+	case overflowed(status, body):
+		// Kimi's "exceeded model token limit" is the conversation's
+		// length, not the plan's
+		return failOther
 	case status == 402, creditWords.Match(body) && status != 429 || strings.Contains(string(body), "insufficient_quota"):
 		return failCredit
 	case status == 429 && rateWords.Match(body) && !plannedWords.Match(body):
@@ -148,6 +194,17 @@ func failure(status int, body []byte) string {
 		return failRate
 	}
 	return failOther
+}
+
+// failureOf says why c's reply failed: a Claude account's sign-in that
+// Anthropic refused is told as one (provider/claude_auth.go), passed over
+// till it is signed in again; another vendor saying the same words fails
+// as failure says, and rests as before.
+func failureOf(c candidate, status int, body []byte) string {
+	if status >= 400 && c.p.Account != nil && c.p.Account.Agent == "claude" && provider.ClaudeSignInRequired(string(body)) {
+		return failAuth
+	}
+	return failure(status, body)
 }
 
 // openRouterSharedPool says an OpenRouter free model was refused by the
@@ -171,7 +228,8 @@ type Rest struct {
 	// By is what set how long: "credit" (half an hour), "retry-after" (the
 	// vendor's own headers), "resets" (the time Claude Code gave), "window"
 	// (the allowance window it filled renews), "quota" (no word of when),
-	// "cooldown" (a minute), "backoff" (longer each time it fails again).
+	// "cooldown" (a minute), "backoff" (longer each time it fails again,
+	// or is rate limited again as soon as it is back).
 	By       string `json:"by"`
 	Failures int    `json:"failures,omitempty"` // in a row, for a backoff
 	// Key is what it rests by, for the app to lift the rest (Unrest)
@@ -198,6 +256,13 @@ func renewed(agent, user string) {
 }
 
 func init() { provider.OnRenewed(renewed) }
+
+// staleAllowance is provider.StaleAllowance, swapped in tests.
+var staleAllowance = provider.StaleAllowance
+
+// RestOf is why what rests by key — a provider's id, or its id#key — is
+// passed over now, while it is.
+func RestOf(key string) (Rest, bool) { return restOf(key) }
 
 // Unrest lifts the rest of what rests by key — an account just verified
 // with its vendor, say — so the next request asks it again. False when it
@@ -262,8 +327,12 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 func (s *Server) restAfterMarked(c candidate, status int, header http.Header, body []byte, sharedPool bool) Rest {
 	now := time.Now()
 	d := fallbackCooldown
-	why := failure(status, body)
+	why := failureOf(c, status, body)
 	r := Rest{Why: why, Status: status, By: "cooldown"}
+	if why == failProxy {
+		// the account is as good as it was; the proxy is the user's to start
+		return r
+	}
 	switch why {
 	case failCredit:
 		d, r.By = creditRest, "credit"
@@ -288,8 +357,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		}
 		d = min(d, longestQuota)
 	case failRate:
-		if w := retryAfter(header, now); w > 0 {
-			d, r.By = w, "retry-after"
+		d, r.By, r.Failures = s.rateRest(c, header, body, sharedPool, now)
+		// rate limited with quota left: to the back, where the order sinks
+		if c.full(now).IsZero() && !(c.isOpenRouterFree() && sharedPool) {
+			sink(c.restKey(), now)
 		}
 	case failVerify:
 		d, r.By = verifyRest, "verify"
@@ -302,8 +373,8 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		r.Link, _ = provider.Verification([]byte(r.said))
 	default:
 		routed.Lock()
-		routed.failures[c.rest]++
-		n := routed.failures[c.rest]
+		routed.failures[c.restKey()]++
+		n := routed.failures[c.restKey()]
 		routed.Unlock()
 		d, r.By, r.Failures = min(fallbackCooldown<<min(n-1, 10), longestRetry), "backoff", n
 		// a subscription that failed with a window full is out of it,
@@ -312,12 +383,14 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			d, r.By = t.Sub(now), "window"
 		}
 	}
+	// an account is kept by the agent its usage is asked of: a plugin's
+	// by the plugin's provider ("plugin:grok"), not by "plugin"
 	if a := c.p.Account; a != nil && why != failOther && why != failVerify {
-		provider.StaleAllowance(a.Agent, a.User) // ask again what it has left
+		staleAllowance(a.UsageAgent(), a.User) // ask again what it has left
 	}
 	r.Until = now.Add(d)
 	if a := c.p.Account; a != nil {
-		r.agent, r.user = a.Agent, a.User
+		r.agent, r.user = a.UsageAgent(), a.User
 	}
 	id := c.restKey()
 	// OpenRouter identifies a provider's shared pool separately from its
@@ -333,8 +406,54 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	return r
 }
 
+// rateRest is how long a rate-limited candidate sits out: as long as the
+// vendor says (Retry-After, a reset header or a reset time in its error),
+// and a minute when it says nothing. One limited again as soon as its rest
+// is over sits out twice as long as the last time, up to longestRateRest,
+// until it answers: a free model WorkBuddy keeps refusing with 429 while
+// the account still has credits was asked every minute, a request lost
+// each time before the next model of the group was (01huadalang). Failing
+// again while still resting — tried anyway, the last one left — keeps the
+// count where it is, so one request's own retries don't stretch it.
+func (s *Server) rateRest(c candidate, header http.Header, body []byte, sharedPool bool, now time.Time) (time.Duration, string, int) {
+	id := c.restKey()
+	if c.isOpenRouterFree() && sharedPool {
+		id = c.restID()
+	}
+	n := 1
+	restingUntil.Lock()
+	if prev, ok := restingUntil.note[id]; ok && prev.Why == failRate {
+		until := restingUntil.m[id]
+		switch {
+		case now.Before(until):
+			n = max(prev.Failures, 1)
+		case now.Sub(until) < rateForget:
+			n = max(prev.Failures, 1) + 1
+		}
+	}
+	restingUntil.Unlock()
+	d, by := min(fallbackCooldown<<min(n-1, 10), longestRateRest), "cooldown"
+	if n > 1 {
+		by = "backoff"
+	}
+	said := retryAfter(header, now)
+	if w := resetsNoted(header, now); w > said {
+		said = min(w, longestWait)
+	}
+	if w := resetsAt(body, now); w > said {
+		said = min(w, longestWait)
+	}
+	if said > 0 && said >= d {
+		d, by = said, "retry-after"
+	}
+	return d, by, n
+}
+
 // full is when a subscription whose allowance, as last known, has a window
-// used up for the candidate's model renews; zero otherwise.
+// used up for the candidate's model renews; zero otherwise. Used up is
+// all but (usedShare), except In order: there an account at 98% is still
+// tried in its turn, and one that fails then isn't benched until its week
+// renews unless the vendor said it was out (#530).
 func (c candidate) full(now time.Time) time.Time {
 	if c.p.Account == nil {
 		if a, ok := keyPoolAllowance(c.p.SelectedKey().PoolRefs); ok {
@@ -342,7 +461,7 @@ func (c candidate) full(now time.Time) time.Time {
 		}
 		return time.Time{}
 	}
-	return allowances(c.p.Account.Agent)[c.p.Account.User].Full(c.model, usedShare, now)
+	return allowances(c.p.Account.UsageAgent())[c.p.Account.User].Full(c.model, provider.SpentShareOf(c.p.Routing), now)
 }
 
 // keepRetry passes on, with a vendor's error, what it said about when to
@@ -365,7 +484,17 @@ func keepRetry(dst, src http.Header, body []byte) {
 			dst.Set("Retry-After", strconv.Itoa(int(d.Seconds())))
 		}
 	}
+	if note, ok := policyRefusal(body); ok {
+		// the error the agent gets keeps the vendor's words but not its
+		// code (bio_policy): that it was the safety filter goes on beside
+		// it, for settle to try the next account (#248)
+		dst.Set(refusedHeader, note)
+	}
 }
+
+// refusedHeader carries, from keepRetry to settle, that an error status
+// was the safety filter refusing the request, and what it said.
+const refusedHeader = "X-Magpie-Refused"
 
 // resetsHeader carries, from keepRetry to restAfter, when a subscription
 // out of quota said it's back. A held error that is passed on after all
@@ -416,10 +545,11 @@ var allowances = provider.Allowances
 var keyPoolAllowance = provider.KeyPoolAllowance
 
 // Shares of an allowance past which an account is kept for when the others
-// can't take a request: low, and all but used up.
+// can't take a request: low, and all but used up — where the agent signed
+// in to it is signed in to another, too (provider.SpentShare).
 const (
 	lowShare  = 90
-	usedShare = 98
+	usedShare = provider.SpentShare
 )
 
 // route orders one provider's candidates as its routing says.
@@ -448,6 +578,18 @@ func (c candidate) allowanceKey() allowanceKey {
 type left struct {
 	used   float64
 	renews []time.Time
+	soon   []time.Time // renews as Smart ranks them (Allowance.Renewal)
+	pace   float64     // weekly pace: share of its week left per hour until it renews
+	due    time.Time   // when the window that pace went by renews; zero when not known
+	// restarts: when an auto-used reset starts its windows again
+	// (Allowance.Restarts), zero when none will; dueRestart: due is that,
+	// sooner than the window renews by itself
+	restarts   time.Time
+	dueRestart bool
+	// the count used is the share of, when the vendor counts it so
+	// (Allowance.Count): amount of of, in unit
+	amount, of float64
+	unit       string
 }
 
 // learns: c is a subscription whose allowance isn't known yet, of an agent
@@ -458,8 +600,18 @@ func learns(c candidate, lefts map[allowanceKey]left) bool {
 }
 
 // weigh orders one provider's candidates as its routing says, and tells
-// what it went by.
+// what it went by: with Sink on, those rate limited with quota left behind
+// the others (sink.go).
 func weigh(p provider.Provider, cs []candidate, model string, from provider.Protocol) ([]candidate, weighing) {
+	cs, wg := weighRouted(p, cs, model, from)
+	if sinks(p.Sink, p.Routing) {
+		cs = sinkLast(cs)
+	}
+	return cs, wg
+}
+
+// weighRouted is weigh by the routing alone.
+func weighRouted(p provider.Provider, cs []candidate, model string, from provider.Protocol) ([]candidate, weighing) {
 	var wg weighing
 	if len(cs) < 2 {
 		return cs, wg
@@ -474,19 +626,27 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 				if a, ok := keyPoolAllowance(refs); ok {
 					u, r := a.For(c.model, now)
 					if len(r) > 0 {
-						wg.lefts[c.allowanceKey()] = left{u, r}
+						pc, due := a.Pace(c.model, now)
+						amt, of, unit := a.Count(c.model, now)
+						rs := a.Restarts(now)
+						wg.lefts[c.allowanceKey()] = left{used: u, renews: r, soon: a.Renewal(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
+							restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs)}
 					}
 				}
 			}
 			continue
 		}
-		ag := c.p.Account.Agent
+		ag := c.p.Account.UsageAgent()
 		if _, ok := known[ag]; !ok {
 			known[ag] = allowances(ag)
 		}
 		if a, ok := known[ag][c.p.Account.User]; ok {
 			u, r := a.For(c.model, now)
-			wg.lefts[c.allowanceKey()] = left{u, r} // one not known counts as unused
+			pc, due := a.Pace(c.model, now)
+			amt, of, unit := a.Count(c.model, now)
+			rs := a.Restarts(now)
+			wg.lefts[c.allowanceKey()] = left{used: u, renews: r, soon: a.Renewal(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
+				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs)} // one not known counts as unused
 		}
 	}
 	lefts := wg.lefts
@@ -501,7 +661,14 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 		// soonest, since what it has left is lost then, while one renewing
 		// later keeps: the biggest window decides — the week, not the five
 		// hours in it — and the next one only when that renews in the
-		// same hour. Those alike stay in their order, keeping the vendor's
+		// same hour. An account with no week (Claude Enterprise's five
+		// hours alone) goes by its five hours, so ahead of every week
+		// but one renewing sooner; a window not started renews its whole
+		// span from now (#576). A Codex account that spends a reset about
+		// to run out by itself (auto-use on, its windows used) renews when
+		// that is spent, if sooner: what it has left is lost there just the
+		// same (#718). Only holding one, or one that runs out after the
+		// week renews, changes nothing. Those alike stay in their order, keeping the vendor's
 		// prompt cache warm. Past that, whichever has the most left, and
 		// one all but used up only when nothing else can take it. Only the
 		// windows that count the model do: Opus's own weekly allowance
@@ -532,7 +699,7 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 			if li, lj := learns(fine[i], lefts), learns(fine[j], lefts); li != lj {
 				return li
 			}
-			ri, rj := lefts[fine[i].allowanceKey()].renews, lefts[fine[j].allowanceKey()].renews
+			ri, rj := lefts[fine[i].allowanceKey()].soon, lefts[fine[j].allowanceKey()].soon
 			for k := 0; k < len(ri) || k < len(rj); k++ {
 				var a, b time.Time // to the hour, so a few minutes don't reorder
 				if k < len(ri) {
@@ -572,7 +739,7 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 		tokens := make([]float64, len(cs))
 		wg.tokens = map[string]float64{}
 		for i, c := range cs {
-			tokens[i] = routed.used[c.rest].now(now)
+			tokens[i] = routed.used[c.restKey()].now(now)
 			wg.tokens[c.rest] = tokens[i]
 		}
 		routed.Unlock()
@@ -587,6 +754,101 @@ func weigh(p provider.Provider, cs []candidate, model string, from provider.Prot
 			}
 			if sa, sb := shareOf(ca), shareOf(cb); sa != sb {
 				return sa < sb
+			}
+			return tokens[idx[a]] < tokens[idx[b]]
+		})
+		out := make([]candidate, len(cs))
+		for i, j := range idx {
+			out[i] = cs[j]
+		}
+		cs = out
+	case provider.Pace:
+		// a subscription by what it has left of its week per hour until
+		// that renews, the most first: it has the most to lose at the
+		// reset, where the most left alone (least used) sends a fresh
+		// account ahead of one with 80% left and an hour to go, and the
+		// soonest reset alone (smart) sends one with 3% left and an hour
+		// to go ahead of one with 90% and two. The tiers are Smart's: one
+		// at 90% or more of any window that counts the model — the five
+		// hours too, a rate cap it would be sent into before its
+		// allowance was read again — waits until the others can't answer,
+		// one all but used up until nothing else can; each tier by the
+		// share used. Among the rest, one not known that tells what it
+		// has left as it answers goes first while it isn't, as in Smart,
+		// else it would never be known; then the pace, those alike within
+		// a tenth by what magpie sent them lately, then in their order,
+		// keeping the vendor's prompt cache warm. An account not known
+		// counts as a whole week ahead of it; a key has no week. A Codex
+		// account that spends a reset about to run out by itself goes by
+		// the hours until then when that is sooner (Allowance.Pace, #717).
+		paceOf := func(c candidate) float64 {
+			if l, ok := lefts[c.allowanceKey()]; ok {
+				return l.pace
+			}
+			if c.p.Account != nil {
+				return provider.FreshPace
+			}
+			return 0
+		}
+		tier := func(share float64) int {
+			switch {
+			case share >= usedShare:
+				return 2
+			case share >= lowShare:
+				return 1
+			}
+			return 0
+		}
+		// the bands of pace alike within a tenth, the highest first: drawn
+		// before sorting, from each band's highest down, so that sorting
+		// by them is consistent — "within a tenth of each other" alone is
+		// not, three paces a twelfth apart each going round in a circle.
+		// Drawn among those the pace orders alone — one running low
+		// would otherwise set a band's top and part two alike behind it
+		var byPace []int
+		for i, c := range cs {
+			if tier(shareOf(c)) == 0 && !learns(c, lefts) {
+				byPace = append(byPace, i)
+			}
+		}
+		sort.SliceStable(byPace, func(a, b int) bool { return paceOf(cs[byPace[a]]) > paceOf(cs[byPace[b]]) })
+		band, top := make([]int, len(cs)), 0.0
+		for k, i := range byPace {
+			if p := paceOf(cs[i]); k == 0 || p < 0.9*top {
+				top = p
+				if k > 0 {
+					band[i] = band[byPace[k-1]] + 1
+					continue
+				}
+			} else {
+				band[i] = band[byPace[k-1]]
+			}
+		}
+		routed.Lock()
+		tokens := make([]float64, len(cs))
+		wg.tokens = map[string]float64{}
+		for i, c := range cs {
+			tokens[i] = routed.used[c.restKey()].now(now)
+			wg.tokens[c.rest] = tokens[i]
+		}
+		routed.Unlock()
+		idx := make([]int, len(cs))
+		for i := range idx {
+			idx[i] = i
+		}
+		sort.SliceStable(idx, func(a, b int) bool {
+			ca, cb := cs[idx[a]], cs[idx[b]]
+			sa, sb := shareOf(ca), shareOf(cb)
+			if ta, tb := tier(sa), tier(sb); ta != tb {
+				return ta < tb
+			} else if ta > 0 {
+				if sa != sb {
+					return sa < sb
+				}
+			} else if la, lb := learns(ca, lefts), learns(cb, lefts); la != lb {
+				return la
+			} else if band[idx[a]] != band[idx[b]] {
+				return band[idx[a]] < band[idx[b]]
 			}
 			return tokens[idx[a]] < tokens[idx[b]]
 		})

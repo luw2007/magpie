@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -20,6 +21,11 @@ type groupsJSON struct {
 	// Deciders are the decision providers' models, which may only be a
 	// group's classifier.
 	Deciders []modelRef `json:"deciders"`
+	// Found: magpie finds groups on its own (provider.AutoGroupsOn)
+	Found bool `json:"found"`
+	// Moved: the agents turning found groups off moved off one of them,
+	// to its model from one provider (agent.Reseat)
+	Moved []agent.Move `json:"moved,omitempty"`
 }
 
 type groupJSON struct {
@@ -29,6 +35,15 @@ type groupJSON struct {
 	// Holds: the groups in it, at any depth — none of which can have it in
 	// turn
 	Holds []string `json:"holds"`
+	// Offers: the reasoning levels agents are offered for it; Shared: those
+	// its members have in common, which it offers unless it names its own
+	Offers []string `json:"offers"`
+	Shared []string `json:"shared"`
+	// Picked: the member a manual group sends every request to
+	Picked string `json:"picked,omitempty"`
+	// Patterns: its patterns, each with how many models it matches now
+	// (#766), so one that matches nothing is said on its card
+	Patterns []provider.PatternHit `json:"patterns"`
 }
 
 type memberJSON struct {
@@ -40,6 +55,14 @@ type memberJSON struct {
 	Model    string `json:"model,omitempty"` // what the vendor is asked for
 	On       int    `json:"on"`              // its keys or accounts on
 	Group    bool   `json:"group,omitempty"` // a routing group in the group; Name is its
+	// Of is the model's id without the effort the member is fixed at, and
+	// Effort that effort ("provider/model:low"); "" for one without
+	Of     string `json:"of,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	// Fast: the group sends it in its vendor's fast mode; CanFast: its
+	// model has one (provider.CanFast)
+	Fast    bool `json:"fast,omitempty"`
+	CanFast bool `json:"canFast,omitempty"`
 	// what a rule may send it: the tokens it takes, when known, and images
 	Context int  `json:"context,omitempty"`
 	Images  bool `json:"images,omitempty"`
@@ -51,6 +74,13 @@ type modelRef struct {
 	Provider string `json:"provider"`
 	PName    string `json:"providerName"`
 	Icon     string `json:"icon,omitempty"`
+	Context  int    `json:"context,omitempty"` // the tokens it takes, when known
+	// Efforts: the model's reasoning levels, when known — those a group's
+	// member of it may be fixed at
+	Efforts []string `json:"efforts,omitempty"`
+	// CanFast: a group's member of it may be sent in its vendor's fast
+	// mode (provider.CanFast)
+	CanFast bool `json:"canFast,omitempty"`
 }
 
 type poolJSON struct {
@@ -61,6 +91,7 @@ type poolJSON struct {
 	Who      []string `json:"who"`
 	Routing  string   `json:"routing"`
 	Affinity string   `json:"affinity"`
+	Sink     bool     `json:"sink,omitempty"` // provider.Provider.Sink
 	// Protocol: the one its keys are made for, when the provider's keys are
 	// made for more than one — each protocol's keys are a pool of their own
 	Protocol provider.Protocol `json:"protocol,omitempty"`
@@ -111,18 +142,25 @@ func keyPools(p provider.Provider) []poolJSON {
 }
 
 func groupsState() groupsJSON {
-	out := groupsJSON{Groups: []groupJSON{}, Models: []modelRef{}, Pools: []poolJSON{}, Deciders: []modelRef{}}
+	out := groupsJSON{Groups: []groupJSON{}, Models: []modelRef{}, Pools: []poolJSON{}, Deciders: []modelRef{}, Found: provider.AutoGroupsOn()}
 	for _, e := range provider.Deciders() {
 		out.Deciders = append(out.Deciders, modelRef{ID: e.ID, Name: e.Name, Provider: e.Provider.ID, PName: e.Provider.Name, Icon: e.Provider.Icon})
 	}
 	served := provider.Served()
 	for _, e := range served {
 		if e.Group == "" {
-			out.Models = append(out.Models, modelRef{ID: e.ID, Name: e.Name, Provider: e.Provider.ID, PName: e.Provider.Name, Icon: e.Provider.Icon})
+			out.Models = append(out.Models, modelRef{ID: e.ID, Name: e.Name, Provider: e.Provider.ID, PName: e.Provider.Name, Icon: e.Provider.Icon, Context: e.Context, Efforts: e.Efforts, CanFast: provider.CanFast(e.Provider, e.Model)})
 		}
 	}
 	for _, g := range provider.Groups() {
-		gj := groupJSON{Group: g, Info: []memberJSON{}, Holds: []string{}}
+		gj := groupJSON{Group: g, Info: []memberJSON{}, Holds: []string{}, Offers: []string{}, Shared: []string{}, Patterns: []provider.PatternHit{}}
+		gj.Patterns = append(gj.Patterns, provider.PatternHits(g)...)
+		for _, e := range served {
+			if e.ID == provider.GroupPrefix+g.ID {
+				gj.Offers, gj.Shared = append(gj.Offers, e.Efforts...), append(gj.Shared, e.Shared...)
+				break
+			}
+		}
 		if _, ms, ok := provider.FindGroup(provider.GroupPrefix + g.ID); ok {
 			for _, m := range ms {
 				for _, v := range m.Groups() {
@@ -152,9 +190,13 @@ func groupsState() groupsJSON {
 				gj.Info = append(gj.Info, m)
 				continue
 			}
-			if p, model, ok := provider.Resolve(id); ok {
+			of, effort := provider.MemberEffort(id)
+			m.Of, m.Effort = of, effort
+			if p, model, ok := provider.Resolve(of); ok {
 				_, who := onOf(p)
 				m.Ready, m.Provider, m.Name, m.Icon, m.Model, m.On = true, p.ID, p.Name, p.Icon, model, max(len(who), 1)
+				m.CanFast = provider.CanFast(p, model)
+				m.Fast = m.CanFast && g.IsFast(id)
 				for _, e := range served {
 					if e.Group == "" && e.Provider.ID == p.ID && e.Model == model {
 						m.Context, m.Images = e.Context, e.Images && (e.ImageInput == nil || *e.ImageInput)
@@ -165,6 +207,12 @@ func groupsState() groupsJSON {
 			}
 			gj.Info = append(gj.Info, m)
 		}
+		if g.Routing == provider.Manual {
+			// agents can pick it while the member picked can answer
+			gj.Picked = g.Picked()
+			i := slices.IndexFunc(gj.Info, func(m memberJSON) bool { return m.ID == gj.Picked })
+			gj.Ready = i >= 0 && gj.Info[i].Ready
+		}
 		out.Groups = append(out.Groups, gj)
 	}
 	for _, p := range provider.All() {
@@ -172,13 +220,13 @@ func groupsState() groupsJSON {
 			continue
 		}
 		if kind, who := onOf(p); kind == "account" && len(who) > 1 {
-			out.Pools = append(out.Pools, poolJSON{Provider: p.ID, Name: p.Name, Icon: p.Icon, Kind: kind, Who: who, Routing: p.Routing, Affinity: p.Affinity})
+			out.Pools = append(out.Pools, poolJSON{Provider: p.ID, Name: p.Name, Icon: p.Icon, Kind: kind, Who: who, Routing: p.Routing, Affinity: p.Affinity, Sink: p.Sink})
 			continue
 		}
 		pools := keyPools(p)
 		for _, kp := range pools {
 			if len(kp.Who) > 1 {
-				kp.Provider, kp.Name, kp.Icon, kp.Kind, kp.Routing, kp.Affinity = p.ID, p.Name, p.Icon, "key", p.Routing, p.Affinity
+				kp.Provider, kp.Name, kp.Icon, kp.Kind, kp.Routing, kp.Affinity, kp.Sink = p.ID, p.Name, p.Icon, "key", p.Routing, p.Affinity, p.Sink
 				if len(pools) == 1 {
 					kp.Protocol = ""
 				}
@@ -197,6 +245,12 @@ func groupRoutes(mux *http.ServeMux) {
 		var body struct {
 			provider.Group
 			From string `json:"from"` // the id the group had: another is a rename
+			On   bool   `json:"on"`   // found: magpie finds groups on its own
+			// arrange: the groups by id, in the order the Routing page
+			// lists them (#779), which /v1/models follows too
+			Order []string `json:"order"`
+			// delete: several groups at once, all or none
+			IDs []string `json:"ids"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			fail(rw, err)
@@ -204,7 +258,13 @@ func groupRoutes(mux *http.ServeMux) {
 		}
 		in := body.Group
 		var err error
+		var moved []agent.Move
 		switch r.PathValue("action") {
+		case "found":
+			// off, an agent set to a found group is moved to its model
+			// from one provider; a request still naming one goes there too
+			// (provider.AutoStandIn)
+			moved, err = agent.Reseat(func() error { return provider.SetAutoGroups(body.On) })
 		case "save":
 			to := strings.ToLower(strings.TrimSpace(in.ID))
 			if body.From == "" || body.From == to {
@@ -220,9 +280,15 @@ func groupRoutes(mux *http.ServeMux) {
 				err = provider.RenameGroup(body.From, to)
 			}
 		case "delete":
-			err = provider.DeleteGroup(in.ID)
+			if len(body.IDs) > 0 {
+				err = provider.DeleteGroups(body.IDs)
+			} else {
+				err = provider.DeleteGroup(in.ID)
+			}
 		case "show":
 			err = provider.ShowGroup(in.ID)
+		case "arrange":
+			err = provider.SetGroupOrder(body.Order)
 		default:
 			http.NotFound(rw, r)
 			return
@@ -231,6 +297,8 @@ func groupRoutes(mux *http.ServeMux) {
 			fail(rw, err)
 			return
 		}
-		writeJSON(rw, groupsState())
+		st := groupsState()
+		st.Moved = moved
+		writeJSON(rw, st)
 	})
 }

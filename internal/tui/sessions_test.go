@@ -10,6 +10,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // sessionsHome puts the sessions package's fixtures where Claude Code and
@@ -17,6 +18,7 @@ import (
 func sessionsHome(t *testing.T) {
 	t.Helper()
 	h := home(t)
+	t.Setenv("HERMES_HOME", filepath.Join(h, ".hermes"))
 	for from, env := range map[string]string{"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"} {
 		dir := filepath.Join(h, "sessions", from)
 		if err := os.CopyFS(dir, os.DirFS(filepath.Join("..", "sessions", "testdata", from))); err != nil {
@@ -26,7 +28,7 @@ func sessionsHome(t *testing.T) {
 	}
 	oldZone, oldPrice := time.Local, sessions.PriceOf
 	time.Local = time.UTC
-	sessions.PriceOf = func(m string) (catalog.Price, bool) {
+	sessions.PriceOf = func(_ settings.Settings, m string) (catalog.Price, bool) {
 		switch m {
 		case "claude-opus-5-5":
 			return catalog.Price{Input: 4, Output: 20, CacheRead: 0.2, CacheWrite: 5}, true
@@ -36,8 +38,10 @@ func sessionsHome(t *testing.T) {
 		return catalog.Price{}, false
 	}
 	t.Cleanup(func() {
-		time.Local, sessions.PriceOf = oldZone, oldPrice
+		// the page's index is written behind it: let that write finish before
+		// the zone it reads (a stat of the file it writes) goes back
 		sessions.Reset()
+		time.Local, sessions.PriceOf = oldZone, oldPrice
 	})
 	sessions.Reset()
 }
@@ -51,7 +55,7 @@ func TestSessionsPage(t *testing.T) {
 		t.Fatalf("page %d, range %d", m.page, m.srange)
 	}
 	v := m.View()
-	for _, want := range []string{"5 sessions", " all ", "all models", "all folders", "11.9K tokens", "cache read 25.2K (69% hit)", "active 7m on 2 days",
+	for _, want := range []string{"5 sessions", " all ", "all models", "all folders", "11.9K tokens", "cache read 25.2K (67% hit)", "active 7m on 2 days",
 		"█", "Sep 20", "tokens · a day", "models", "gpt-6-astra", "claude-opus-5-5", "folders", "/work/app", "/work/it's", "M model", "f folder"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("missing %q in\n%s", want, v)

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -67,7 +68,7 @@ func gemini(home string) *Agent {
 		if m := unstash("gemini.model"); m != "" {
 			return edit.SetJSON(path, edit.KV{Path: "model.name", Value: m})
 		}
-		return edit.DelJSON(path, "model.name")
+		return delModelName(path)
 	}
 	setModel := func(v string) error {
 		if v == "" {
@@ -76,9 +77,11 @@ func gemini(home string) *Agent {
 				if err := edit.DelEnvFile(envPath, "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY"); err != nil {
 					return err
 				}
-				return edit.DelJSON(path, "security.auth.selectedType", "model.name")
+				if err := edit.DelJSON(path, "security.auth.selectedType"); err != nil {
+					return err
+				}
 			}
-			return edit.DelJSON(path, "model.name")
+			return delModelName(path)
 		}
 		if isMagpie(v) {
 			if !routed() {
@@ -103,6 +106,10 @@ func gemini(home string) *Agent {
 			return "custom"
 		}
 		switch auth() {
+		case "":
+			// none chosen: the CLI asks on its first run, as with no CLI at
+			// all — the default, so the row folds away with the others
+			return ""
 		case "gemini-api-key":
 			return "api-key"
 		case "vertex-ai":
@@ -158,6 +165,22 @@ func gemini(home string) *Agent {
 		ID: "gemini", Name: "Gemini CLI", Icon: "geminicli-color", Aliases: []string{"gemini-cli"},
 		UA:  []string{"geminicli", "gemini-cli"},
 		Bin: "gemini", Dir: dir, Path: path,
+		// its model's default forgets what it had before magpie, its
+		// sign-in's default forgets the sign-in: this puts both back
+		Unwire: unroute,
+		// Gemini CLI is its binary. What it leaves in ~/.gemini stays when it
+		// is uninstalled (#230), and Antigravity keeps its folders there too
+		// (antigravity, antigravity-cli, config) and reads GEMINI.md (#330),
+		// so nothing there says Gemini CLI is here: a row for it would set
+		// up a CLI that can't run. The desktop app's PATH has the user's
+		// shell's (proc.UserPath).
+		detect: func() bool {
+			if Taken(dir) {
+				return false
+			}
+			_, err := exec.LookPath("gemini")
+			return err == nil
+		},
 		Check: func() string {
 			if !isMagpie(model()) {
 				return ""
@@ -223,4 +246,17 @@ func gemini(home string) *Agent {
 			},
 		},
 	}
+}
+
+// delModelName takes model.name out of Gemini CLI's settings.json, and the
+// model it was in once nothing else is there: the "model": {} it would
+// leave was never the user's.
+func delModelName(path string) error {
+	if err := edit.DelJSON(path, "model.name"); err != nil {
+		return err
+	}
+	if v, _ := edit.GetJSON(path, "model"); strings.TrimSpace(strings.Trim(strings.TrimSpace(v), "{}")) == "" && strings.HasPrefix(strings.TrimSpace(v), "{") {
+		return edit.DelJSON(path, "model")
+	}
+	return nil
 }

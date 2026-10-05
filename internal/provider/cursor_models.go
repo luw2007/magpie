@@ -1,5 +1,14 @@
 package provider
 
+// PLUGIN-SERVED (see AGENTS.md): Cursor ("cursor") is a deprecated built-in
+// subscription served by its plugin, @magpie-community/opencode-cursor-auth,
+// once moved onto it (provider.Moved; the default for a new sign-in). A
+// moved one's sign-ins, models, requests and usage are all the plugin's,
+// never this code's (only the move, in migrate*.go, still reads its
+// accounts). A fix here alone doesn't reach those users; fix the plugin
+// (github.com/magpie-community/plugins, packages/cursor) and raise the
+// mover's min in internal/provider/migrate_side.go.
+
 // Cursor lists a model once for each effort and speed it serves it at
 // ("grok-4.7-low", "grok-4.7-low-fast", … "grok-4.7-xhigh-fast"), and a
 // Claude with thinking apart from one without. magpie offers one model a
@@ -9,6 +18,7 @@ package provider
 // way to ask for it.
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
@@ -165,6 +175,36 @@ func collapseCursorModels(raw []catalog.Model) []catalog.Model {
 			continue
 		}
 		out = append(out, f.model())
+	}
+	return out
+}
+
+// cursorCapacity is the context Cursor puts in a model's name ("Claude
+// Opus 5.5 1M", "GPT-5.5 (1M)").
+var cursorCapacity = regexp.MustCompile(`\(\s*\d+M\s*\)|\b\d+M\b`)
+
+// withoutCursorCapacity is Cursor's list, collapsed, with the context taken
+// out of each name: it is the model's Context, shown apart. A name that
+// would then be another model's ("GPT-5.5 1M" beside a "GPT-5.5") keeps
+// it, as that is what tells the two apart. Ids stay as they are.
+func withoutCursorCapacity(ms []catalog.Model) []catalog.Model {
+	strip := func(name string) string {
+		return strings.Join(strings.Fields(cursorCapacity.ReplaceAllString(name, " ")), " ")
+	}
+	names := map[string]int{} // each name, as listed or stripped, by how many models have it
+	for _, m := range ms {
+		names[strings.ToLower(m.Name)]++
+		if s := strip(m.Name); s != m.Name {
+			names[strings.ToLower(s)]++
+		}
+	}
+	out := slices.Clone(ms)
+	for i, m := range out {
+		s := strip(m.Name)
+		if s == m.Name || s == "" || names[strings.ToLower(s)] > 1 {
+			continue
+		}
+		out[i].Name = s
 	}
 	return out
 }

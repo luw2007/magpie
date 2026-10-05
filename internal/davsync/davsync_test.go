@@ -8,12 +8,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/profile"
@@ -32,6 +34,18 @@ type fakeDAV struct {
 	// nutstore: a file read in a folder that isn't there is a 409, as
 	// 坚果云 (Nutstore) answers, not a 404
 	nutstore bool
+	// cond: a read sent with the version last seen is answered 304 when
+	// it is still that one; putETag: a write's answer says its ETag;
+	// lastModified: files have a Last-Modified, a second apart for each
+	// write, and no ETag; tooMany: every request is answered 429, with
+	// retryAfter as its Retry-After
+	cond, putETag, lastModified bool
+	tooMany                     bool
+	retryAfter                  string
+	mtimes                      map[string]time.Time
+	// gets are the reads, full those answered with the file, of bytes
+	// bytes in all, and notModified those answered 304
+	gets, full, bytes, notModified int
 }
 
 func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -41,10 +55,18 @@ func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if f.tooMany {
+		if f.retryAfter != "" {
+			w.Header().Set("Retry-After", f.retryAfter)
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
+		f.gets++
 		b, ok := f.files[r.URL.Path]
-		if !ok && f.nutstore && !f.dirs[filepath.Dir(r.URL.Path)] {
+		if !ok && f.nutstore && !f.dirs[urlDir(r.URL.Path)] {
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
@@ -52,10 +74,27 @@ func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		w.Header().Set("ETag", f.etags[r.URL.Path])
+		if f.lastModified {
+			mt := f.mtimes[r.URL.Path]
+			w.Header().Set("Last-Modified", mt.Format(http.TimeFormat))
+			if ims, err := http.ParseTime(r.Header.Get("If-Modified-Since")); f.cond && err == nil && !mt.After(ims) {
+				f.notModified++
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		} else {
+			w.Header().Set("ETag", f.etags[r.URL.Path])
+			if f.cond && r.Header.Get("If-None-Match") == f.etags[r.URL.Path] {
+				f.notModified++
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+		f.full++
+		f.bytes += len(b)
 		w.Write(b)
 	case http.MethodPut:
-		if !f.dirs[filepath.Dir(r.URL.Path)] {
+		if !f.dirs[urlDir(r.URL.Path)] {
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
@@ -67,6 +106,14 @@ func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.n++
 		f.puts++
 		f.files[r.URL.Path], f.etags[r.URL.Path] = b, fmt.Sprintf(`"%d"`, f.n)
+		if f.mtimes == nil {
+			f.mtimes = map[string]time.Time{}
+		}
+		// long before now, and a second later for each write
+		f.mtimes[r.URL.Path] = time.Date(2026, 1, 1, 0, 0, f.n, 0, time.UTC)
+		if f.putETag && !f.lastModified {
+			w.Header().Set("ETag", f.etags[r.URL.Path])
+		}
 		w.WriteHeader(http.StatusCreated)
 	case "MKCOL":
 		p := strings.TrimSuffix(r.URL.Path, "/")
@@ -81,6 +128,9 @@ func (f *fakeDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// urlDir is the folder a URL path is in: a URL's, with / on every system
+func urlDir(p string) string { return p[:max(strings.LastIndex(p, "/"), 1)] }
+
 // computer is one machine's magpie: its own home, which the test moves
 // between.
 type computer string
@@ -89,19 +139,23 @@ func newComputer(t *testing.T) computer { return computer(t.TempDir()) }
 
 func (c computer) use(t *testing.T) {
 	t.Setenv("HOME", string(c))
+	t.Setenv("USERPROFILE", string(c))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(string(c), ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(string(c), ".cache"))
-	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(string(c), ".claude"))
-	t.Setenv("CODEX_HOME", filepath.Join(string(c), ".codex"))
 	t.Setenv("PATH", "")
-	for _, v := range []string{"DSH_HOME", "PI_CODING_AGENT_DIR", "COPILOT_HOME", "CLINE_DIR", "GROK_HOME", "HERMES_HOME", "HANA_HOME", "APPDATA", "LOCALAPPDATA"} {
+	for _, v := range agentenv.Vars {
 		t.Setenv(v, "")
 	}
+	t.Setenv("APPDATA", "")
+	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(string(c), ".claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(string(c), ".codex"))
 }
 
 func ids() []string {
 	var out []string
-	for _, p := range provider.Stored() {
+	ps, _ := provider.Stored()
+	for _, p := range ps {
 		out = append(out, p.ID+"="+p.Key)
 	}
 	slices.Sort(out)
@@ -125,7 +179,7 @@ func TestSync(t *testing.T) {
 	a, b := newComputer(t), newComputer(t)
 	a.use(t)
 	provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k1"})
-	settings.Save(settings.Settings{Theme: "dark", Proxy: "http://127.0.0.1:7890", Window: []int{900, 700}})
+	settings.Save(settings.Settings{Theme: "dark", Proxy: "http://127.0.0.1:7890", Window: []int{900, 700}, TrayUsages: []string{"claude|a@b.c"}, TrayUsageEvery: 5, TrayNoLogos: true, TrayNoBird: true})
 	profile.Save("work", profile.Profile{Fields: map[string]string{"claude.model": "x"}})
 	same := cfg
 	same.Passphrase = cfg.Password
@@ -135,7 +189,7 @@ func TestSync(t *testing.T) {
 	if err := Configure(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if fi, _ := os.Stat(path("sync.json")); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(path("sync.json")); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 { // Windows has no such bits
 		t.Fatalf("sync.json is %v", fi.Mode())
 	}
 	// the first: its setup goes up, sealed
@@ -167,6 +221,11 @@ func TestSync(t *testing.T) {
 	}
 	if s := settings.Load(); s.Theme != "dark" || s.Proxy != "direct" || !slices.Equal(s.Window, []int{1, 2}) {
 		t.Fatalf("b's settings: %+v", s)
+	}
+	// nor does a's menu bar: what shows beside the icon is b's own (yoooo
+	// on Discord)
+	if s := settings.Load(); len(s.TrayUsages) != 0 || s.TrayUsage != "" || s.TrayUsageEvery == 5 || s.TrayNoLogos || s.TrayNoBird {
+		t.Fatalf("b's menu bar: %+v", s)
 	}
 	if ps, _ := profile.Load(); len(ps) != 1 {
 		t.Fatalf("b's profiles: %v", ps)
@@ -260,7 +319,7 @@ func TestSync(t *testing.T) {
 	now(t)
 	a.use(t)
 	now(t)
-	if ps := provider.Stored(); len(ps) != 1 || ps[0].Name != "Kimi 2" || ps[0].Key != "k2" || ps[0].KeyID != keyID {
+	if ps, _ := provider.Stored(); len(ps) != 1 || ps[0].Name != "Kimi 2" || ps[0].Key != "k2" || ps[0].KeyID != keyID {
 		t.Fatalf("a after c renamed: %+v", ps)
 	}
 	remote, err := backup.Open(fake.files["/dav/magpie/magpie.magpie-backup"], "correct horse")
@@ -318,6 +377,65 @@ func TestSyncNutstore(t *testing.T) {
 	}
 	if v := Status(); v.Error != "" || len(fake.files["/dav/magpie/magpie.magpie-backup"]) == 0 || !fake.dirs["/dav/magpie"] {
 		t.Fatalf("first sync: %+v", v)
+	}
+}
+
+// The order the providers were put in on the Providers tab (#499) goes
+// with them (ARNO on Discord: 发现webdav同步的时候没有同步provider的顺序):
+// b joins and lists them as a does; b arranges them again and a follows;
+// a moving one alone is a change that syncs.
+func TestSyncProviderOrder(t *testing.T) {
+	fake := &fakeDAV{files: map[string][]byte{}, etags: map[string]string{}, dirs: map[string]bool{"/dav": true}}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	cfg := Config{URL: srv.URL + "/dav/", User: "me", Password: "pw", Passphrase: "correct horse", Keys: true}
+	now := func(t *testing.T) {
+		t.Helper()
+		if err := Now(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed := func() []string {
+		var out []string
+		for _, p := range provider.All() {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	a, b := newComputer(t), newComputer(t)
+	a.use(t)
+	for _, id := range []string{"one", "two", "three"} {
+		provider.Save(provider.Provider{ID: id, Name: id, Chat: "https://" + id + ".example.com/v1", Key: "k-" + id})
+	}
+	if err := provider.SetOrder([]string{"three", "one", "two"}); err != nil {
+		t.Fatal(err)
+	}
+	Configure(cfg)
+	now(t)
+
+	b.use(t)
+	Configure(cfg)
+	now(t)
+	if got := listed(); !slices.Equal(got, []string{"three", "one", "two"}) {
+		t.Fatalf("b after joining: %v", got)
+	}
+	puts := fake.puts
+	now(t)
+	if fake.puts != puts {
+		t.Fatal("b pushed back the order it brought in")
+	}
+	// only the order changes on b: a gets it
+	if err := provider.SetOrder([]string{"two", "three", "one"}); err != nil {
+		t.Fatal(err)
+	}
+	now(t)
+	if fake.puts != puts+1 {
+		t.Fatalf("b's new order not pushed (%d puts)", fake.puts-puts)
+	}
+	a.use(t)
+	now(t)
+	if got := listed(); !slices.Equal(got, []string{"two", "three", "one"}) {
+		t.Fatalf("a after b arranged: %v", got)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
-	"github.com/yetone/magpie/internal/settings"
 )
 
 // A model that can't see images is given what a model that can says of
@@ -24,6 +23,15 @@ import (
 // the image's place, in the current turn, older turns and tool results
 // alike. With Vision off, or no model that sees, such an image is turned
 // away as before (textOnlyBody).
+
+// Agents are told a model that can't see takes images while one that can
+// describes them to it.
+func init() {
+	provider.Described = func() bool {
+		_, ok := seer()
+		return ok
+	}
+}
 
 // VisionAgent is the User-Agent of the descriptions magpie asks for.
 const VisionAgent = "magpie-vision/1"
@@ -54,10 +62,40 @@ func describing(ctx context.Context) bool {
 	return v
 }
 
+// describeForKey holds the request an image is described for: the Routing
+// view names it by the description's row, in that request's session.
+type describeForKey struct{}
+
+type describeFor struct {
+	call    *CallFor
+	session string
+}
+
+func withDescribeFor(ctx context.Context, agent, model, session string) context.Context {
+	return context.WithValue(ctx, describeForKey{}, describeFor{&CallFor{Agent: agent, Model: model}, session})
+}
+
+func describedFor(ctx context.Context) *CallFor {
+	f, _ := ctx.Value(describeForKey{}).(describeFor)
+	return f.call
+}
+
+// blindTo is whether a describer is to describe images for pid/model: its
+// list says it takes none (in), or says nothing and magpie counts it
+// text-only — as agents were told before Vision had them told every model
+// takes images (provider.Described): models.dev doesn't say it sees either.
+func blindTo(pid, model string, in *bool) bool {
+	if in != nil {
+		return !*in
+	}
+	e, ok := provider.ServedEntryOf(pid + "/" + model)
+	return ok && !e.Images
+}
+
 // seer is the model that describes images: the Settings' Vision while it
 // resolves, else AutoVision's. None when Vision is off or no model sees.
 func seer() (string, bool) {
-	switch v := settings.Load().Vision; v {
+	switch v := provider.HeldSettings().Vision; v {
 	case "off":
 		return "", false
 	case "":
@@ -88,7 +126,7 @@ func AutoVision() string {
 	}
 	best, bestTier, bestCost := "", 0, 0.0
 	for _, p := range provider.All() {
-		if !p.On() || p.Decides() {
+		if !p.On() || p.DecideOnly() {
 			continue
 		}
 		t := tier(p)
@@ -185,6 +223,10 @@ func (s *Server) askVision(ctx context.Context, model, src string) (string, erro
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("User-Agent", VisionAgent)
+	if f, _ := ctx.Value(describeForKey{}).(describeFor); f.session != "" {
+		// in the Routing view beside the request it describes for
+		r.Header.Set(SessionHeader, f.session)
+	}
 	w := httptest.NewRecorder()
 	s.serve(w, r, provider.Chat, body)
 	if ctx.Err() != nil {

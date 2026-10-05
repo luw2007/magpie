@@ -14,6 +14,7 @@ import (
 func TestRenameLegacy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	write := func(rel, body string) {
@@ -38,7 +39,7 @@ func TestRenameLegacy(t *testing.T) {
   "theme": "dark"
 }
 `)
-	write(".codex/config.toml", "model_reasoning_effort = \"high\"\nmodel = \"deepseek/deepseek-flash\"\nmodel_provider = \"dial\"\nmodel_catalog_json = \""+filepath.Join(home, ".codex", "dial-models.json")+"\"\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n\n[model_providers.dial]\nname = \"dial\"\nbase_url = \"http://127.0.0.1:3425/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"dial\"\n")
+	write(".codex/config.toml", "model_reasoning_effort = \"high\"\nmodel = \"deepseek/deepseek-flash\"\nmodel_provider = \"dial\"\nmodel_catalog_json = '"+filepath.Join(home, ".codex", "dial-models.json")+"'\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n\n[model_providers.dial]\nname = \"dial\"\nbase_url = \"http://127.0.0.1:3425/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"dial\"\n")
 	write(".codex/dial-models.json", "{}")
 	write(".pi/agent/settings.json", `{"defaultProvider": "dial", "defaultModel": "deepseek/deepseek-flash", "theme": "dark"}`)
 	write(".pi/agent/models.json", `{"providers": {"dial": {"api": "openai-completions", "apiKey": "dial", "baseUrl": "http://127.0.0.1:3425/v1", "models": []}}}`)
@@ -104,9 +105,15 @@ func TestRenameLegacy(t *testing.T) {
 func TestMoveCursorEfforts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	if err := provider.Save(provider.Provider{ID: "curs", Name: "Curs", Chat: "https://curs.example/v1", Key: "k", Models: []string{"grok-4.7"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Pi is offered the levels its entry gives the model (#597): a model
+	// with none would be offered off alone, and low not moved
+	if err := provider.SetModelEfforts("curs/grok-4.7", []string{"low", "high"}); err != nil {
 		t.Fatal(err)
 	}
 	base := func(id string) (string, string, bool) {

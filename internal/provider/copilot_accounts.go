@@ -15,12 +15,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 // copilotConfigDir is where the Copilot editors keep their sign-in.
 func copilotConfigDir() string {
-	if cfg := os.Getenv("XDG_CONFIG_HOME"); cfg != "" {
+	if cfg := appdir.Getenv("XDG_CONFIG_HOME"); cfg != "" {
 		return cfg
 	}
 	home, _ := os.UserHomeDir()
@@ -31,6 +32,10 @@ func copilotConfigDir() string {
 func copilotSaved(l savedLogin) (copilotApp, bool) {
 	var app copilotApp
 	if l.own() || json.Unmarshal(l.Auth, &app) != nil || app.Token == "" {
+		return copilotApp{}, false
+	}
+	// only github.com or an enterprise's <name>.ghe.com gets the token
+	if h, err := CopilotHost(app.Host); err != nil || h != app.Host {
 		return copilotApp{}, false
 	}
 	app.User = l.User
@@ -90,12 +95,17 @@ func setCopilotLoginOn(user string, on bool) error {
 }
 
 func forgetCopilotLogin(user string) error {
-	return forgetSideLogin("copilot", user, "the Copilot sign-in of your editor or the Copilot CLI; sign out there", copilotSide(), nil)
+	return forgetSideLogin("copilot", user, copilotSide(), nil)
 }
 
-// addCopilotLogin keeps an account magpie just signed in.
-func addCopilotLogin(user, plan, token string) error {
-	auth, _ := json.Marshal(map[string]string{"oauth_token": token})
+// addCopilotLogin keeps an account magpie just signed in, on host ("" for
+// github.com).
+func addCopilotLogin(user, plan, token, host string) error {
+	a := map[string]string{"oauth_token": token}
+	if host != "" {
+		a["host"] = host
+	}
+	auth, _ := json.Marshal(a)
 	return addSideLogin(savedLogin{Agent: "copilot", User: user, Plan: plan, Auth: auth}, copilotOwnUser(copilotConfigDir()), func(savedLogin) {})
 }
 
@@ -127,7 +137,7 @@ var copilotPlans = map[string]string{
 
 // copilotUser is who a GitHub token belongs to and which Copilot plan it
 // has; no plan, no Copilot.
-func copilotUser(ctx context.Context, token string) (user, plan string, err error) {
+func copilotUser(ctx context.Context, token, host string) (user, plan string, err error) {
 	get := func(u string, v any) (int, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
@@ -149,22 +159,17 @@ func copilotUser(ctx context.Context, token string) (user, plan string, err erro
 	var gh struct {
 		Login string `json:"login"`
 	}
-	if _, err := get(GitHubUserURL, &gh); err != nil || gh.Login == "" {
+	if _, err := get(gitHubUserURL(host), &gh); err != nil || gh.Login == "" {
 		return "", "", errors.New("GitHub didn't say whose account this is")
 	}
-	var cp struct {
-		Plan string `json:"copilot_plan"`
-	}
-	if code, err := get(CopilotUserURL, &cp); err != nil {
+	var cp copilotEntitlement
+	if code, err := get(copilotUserURL(host), &cp); err != nil {
 		if code == 401 || code == 403 || code == 404 {
 			return gh.Login, "", errors.New(gh.Login + " has no Copilot subscription")
 		}
 		return gh.Login, "", errors.New("Copilot: " + err.Error())
 	}
-	plan = copilotPlans[strings.ToLower(cp.Plan)]
-	if plan == "" && cp.Plan != "" {
-		plan = strings.ToUpper(cp.Plan[:1]) + cp.Plan[1:]
-	}
+	plan = cp.label()
 	return gh.Login, plan, nil
 }
 

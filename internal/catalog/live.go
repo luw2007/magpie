@@ -70,11 +70,27 @@ func LiveDrawers(provider string) []Model {
 	return out
 }
 
-// Chat is ms without the models that draw.
+// LiveVideomakers are the models in the provider's fetched list that make
+// videos, in the list's order.
+func LiveVideomakers(provider string) []Model {
+	f, err := readLive(provider)
+	if err != nil {
+		return nil
+	}
+	var out []Model
+	for _, m := range f.Models {
+		if m.Films {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Chat is ms without the models that draw or make videos.
 func Chat(ms []Model) []Model {
 	out := make([]Model, 0, len(ms))
 	for _, m := range ms {
-		if !m.Draws {
+		if !m.Draws && !m.Films {
 			out = append(out, m)
 		}
 	}
@@ -111,8 +127,15 @@ func SaveLive(provider, base string, models []Model) error {
 // of their own up to date.
 var Changed func()
 
-// Touched tells Changed, if set.
+// Forget, when set, is told so first: the provider package drops the
+// catalog a request holds (provider.Hold).
+var Forget func()
+
+// Touched tells Forget and Changed, if set.
 func Touched() {
+	if Forget != nil {
+		Forget()
+	}
 	if Changed != nil {
 		Changed()
 	}
@@ -265,19 +288,34 @@ func fetchOne(ctx context.Context, url, key string, anthropic bool, headers map[
 		}
 		// a model that draws is kept, marked, for Settings → Images; any
 		// other that isn't for text (embeddings, speech) is left out
-		drawer := DrawsID(id) && !strings.Contains(strings.ToLower(id), "deep-research")
-		if !drawer && !textModel(mdModel{ID: id}) {
+		films := r.Kind == "video"
+		drawer := !films && (DrawsID(id) && !strings.Contains(strings.ToLower(id), "deep-research") || r.Kind == "image")
+		if !drawer && !films && !textModel(mdModel{ID: id}) {
 			continue
 		}
 		name := r.DisplayName
+		if r.Label != "" {
+			name = r.Label
+		}
 		if name == "" {
 			name = id
 		}
 		input := imageInput(r.Modalities.Input)
-		m := Model{ID: id, Name: name, ImageInput: input, APIs: EndpointAPIs(r.Endpoints), Draws: drawer}
+		apis := EndpointAPIs(r.Endpoints)
+		if native := EndpointAPIs(r.Native); len(native) > 0 {
+			apis = native
+		}
+		if len(apis) == 0 {
+			apis = targetAPIs(r.TypeTarget)
+		}
+		m := Model{ID: id, Name: name, ImageInput: input, APIs: apis, Draws: drawer, Films: films}
 		if n, ok := r.ContextLength.(float64); ok && n > 0 {
 			m.Context = int(n)
 		}
+		if n, ok := r.Output.(float64); ok && n > 0 {
+			m.Output = int(n)
+		}
+		m.Efforts = levelsOf(r.Levels)
 		if input != nil {
 			m.Images = *input
 		}
@@ -327,6 +365,39 @@ type liveModel struct {
 	// the context window, where the list tells it (OpenRouter, Command
 	// Code); any, as a vendor's odd value mustn't lose the whole list
 	ContextLength any `json:"context_length"`
+	// what another magpie's list tells of each model: the APIs its own
+	// provider serves it on, where a request goes on as it is rather
+	// than translated (native_endpoints), its longest reply and its
+	// reasoning levels. any, as a vendor's odd value mustn't lose the
+	// whole list
+	Native []string `json:"native_endpoints"`
+	Output any      `json:"max_output_tokens"`
+	Levels any      `json:"supported_reasoning_levels"`
+	// another magpie's name for the model with its provider there after
+	// it, and "image" on one it draws with, "video" on one it makes videos
+	// with
+	Label string `json:"magpie_label"`
+	Kind  string `json:"kind"`
+	// the protocol family PipeLLM routes the model by: openai, anthropic
+	// or gemini
+	TypeTarget string `json:"type_target"`
+}
+
+// levelsOf are the efforts of a list's supported_reasoning_levels, as
+// magpie and Codex write them ([{"effort":"high"}]) or as plain names.
+func levelsOf(v any) []string {
+	xs, _ := v.([]any)
+	var out []string
+	for _, x := range xs {
+		e, _ := x.(string)
+		if o, ok := x.(map[string]any); ok {
+			e, _ = o["effort"].(string)
+		}
+		if e != "" && !slices.Contains(out, e) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // EndpointAPIs names the APIs of a model list's supported_endpoints —
@@ -351,6 +422,23 @@ func EndpointAPIs(endpoints []string) []string {
 	return out
 }
 
+// targetAPIs are the APIs a model is served on by its type_target, as
+// PipeLLM's list says it: its own /v1/chat/completions and /v1/responses
+// take the openai family alone, /v1/messages the anthropic one (asked
+// there rather than through a converter), and its converter for Chat
+// (/openai/v1) every family, Gemini's too.
+func targetAPIs(target string) []string {
+	switch target {
+	case "openai":
+		return []string{"chat", "responses"}
+	case "anthropic":
+		return []string{"anthropic"}
+	case "gemini":
+		return []string{"chat"}
+	}
+	return nil
+}
+
 // Decorate fills in names and reasoning levels for live models from the
 // catalog's entry for the same id, keeping the live order.
 func Decorate(live []Model, known []Model) []Model {
@@ -369,6 +457,7 @@ func Decorate(live []Model, known []Model) []Model {
 				m.Name = k.Name
 			}
 			m.Efforts, m.Released, m.Provider = k.Efforts, k.Released, k.Provider
+			m.Reasoning = m.Reasoning || k.Reasoning
 			if m.ImageInput == nil {
 				m.ImageInput = k.ImageInput
 				m.Images = m.Images || k.Images

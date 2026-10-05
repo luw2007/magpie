@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/yetone/magpie/internal/edit"
@@ -31,6 +32,9 @@ type Library struct {
 	// Icons are the icons of the servers added from the market, by what
 	// each runs, for the page to show them by
 	Icons map[string]string `json:"icons,omitempty"`
+	// SkillGroups are the groups the user made of some skills on the
+	// page, each shown as a group of its own (#791)
+	SkillGroups []*SkillGroup `json:"skillGroups,omitempty"`
 	// kept is where a change put what it kept aside before the sync, for
 	// the sync to keep the agents' files beside it
 	kept *backups
@@ -137,6 +141,24 @@ func checkName(kind, name string) error {
 	}
 	return nil
 }
+
+// agentRe is an agent's id: a name, or one in a WSL distro's
+// (codex@wsl:Ubuntu-24.04).
+var agentRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(@wsl:[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$`)
+
+func checkAgent(id string) error {
+	if !agentRe.MatchString(id) {
+		return fmt.Errorf("agent %q: not an agent's id", id)
+	}
+	return nil
+}
+
+// fileName is an agent's id as the name of a file or folder of its:
+// Windows has no colon in one, so a WSL agent's is codex@wsl.Ubuntu.
+func fileName(id string) string { return strings.Replace(id, "@wsl:", "@wsl.", 1) }
+
+// agentOfFile is the agent's id a fileName is of.
+func agentOfFile(name string) string { return strings.Replace(name, "@wsl.", "@wsl:", 1) }
 
 // set turns id on or off in a list of agent ids, which stays sorted.
 func set(list []string, id string, on bool) []string {

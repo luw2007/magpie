@@ -1,7 +1,6 @@
 package gui
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -95,8 +94,9 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 		writeJSON(rw, davsync.Status())
 	})
 	mux.HandleFunc("POST /api/davsync/{action}", func(rw http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-		defer cancel()
+		// no time limit: a large backup on a slow line takes minutes (#657),
+		// and davsync ends a request that stops moving
+		ctx := r.Context()
 		var err error
 		switch r.PathValue("action") {
 		case "save": // and sync at once, so a wrong address or password shows now
@@ -108,9 +108,9 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			err = busy(davsync.Now(ctx)) // how it went is in the status
+			err = busy(davsync.SyncNow(ctx)) // how it went is in the status
 		case "now":
-			err = busy(davsync.Now(ctx))
+			err = busy(davsync.SyncNow(ctx))
 		case "off":
 			err = davsync.Off()
 		case "dismiss":

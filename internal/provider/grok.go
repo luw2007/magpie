@@ -1,5 +1,14 @@
 package provider
 
+// PLUGIN-SERVED (see AGENTS.md): Grok ("grok") is a deprecated built-in
+// subscription served by its plugin, @magpie-community/opencode-grok-auth,
+// once moved onto it (provider.Moved; the default for a new sign-in). A
+// moved one's sign-ins, models, requests and usage are all the plugin's,
+// never this code's (only the move, in migrate*.go, still reads its
+// accounts). A fix here alone doesn't reach those users; fix the plugin
+// (github.com/magpie-community/plugins, packages/grok) and raise the mover's
+// min in internal/provider/migrate_side.go.
+
 // A Grok subscription (SuperGrok, X Premium+) is served straight from the
 // backend xAI's Grok Build CLI talks to, OpenAI's Responses API at
 // cli-chat-proxy.grok.com, with the CLI's sign-in. Here is who the CLI is
@@ -10,6 +19,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
@@ -33,7 +45,7 @@ import (
 var GrokExecutable = func() string {
 	home, _ := os.UserHomeDir()
 	path := append(filepath.SplitList(os.Getenv("PATH")), registryPath()...)
-	for _, c := range grokCandidates(runtime.GOOS, home, GrokHome(), os.Getenv("GROK_BIN_DIR"), path) {
+	for _, c := range grokCandidates(runtime.GOOS, home, GrokHome(), appdir.Getenv("GROK_BIN_DIR"), path) {
 		if isFile(c.path) && (c.own || isGrokBuild(c.path)) {
 			return c.path
 		}
@@ -109,7 +121,7 @@ func isGrokBuild(path string) bool {
 
 // GrokHome is where the CLI keeps its sign-in and settings.
 func GrokHome() string {
-	if h := os.Getenv("GROK_HOME"); h != "" {
+	if h := appdir.Getenv("GROK_HOME"); h != "" {
 		return h
 	}
 	home, _ := os.UserHomeDir()
@@ -165,9 +177,9 @@ func grokAccount() (Provider, bool) {
 		if err != nil {
 			return nil, err
 		}
-		return ms, catalog.SaveLive("grok", grokBase, ms)
+		return ms, catalog.SaveLive("grok", GrokBase, ms)
 	}
-	return Provider{ID: "grok", Name: "Grok (SuperGrok)", Icon: "xai", Website: "https://x.ai/cli", Responses: grokBase, Account: acct}, true
+	return Provider{ID: "grok", Name: "Grok (SuperGrok)", Icon: "xai", Website: "https://x.ai/cli", Responses: GrokBase, Account: acct}, true
 }
 
 // grokSigned has the account's requests signed with the sign-in in home.
@@ -193,7 +205,8 @@ func grokSigned(acct *Account, home string) {
 
 // grokTools are the tool types Grok's backend takes; it turns the whole
 // request away over another, as over Codex's freeform apply_patch (custom)
-// or its sub-agent tools, grouped in a namespace.
+// or a namespace, which groups its sub-agent tools. A namespace's functions
+// go as functions of their own (grokFlat).
 var grokTools = map[string]bool{"function": true, "web_search": true, "x_search": true, "image_generation": true,
 	"collections_search": true, "file_search": true, "code_execution": true, "code_interpreter": true,
 	"mcp": true, "shell": true, "tool_search": true}
@@ -204,9 +217,15 @@ var grokTools = map[string]bool{"function": true, "web_search": true, "x_search"
 // reach the live web, which Grok's doesn't take either; it searches live.
 // And Codex hands reasoning back with "content": null, which the backend
 // can't read the encrypted reasoning beside ("Could not decode the
-// compaction blob"), so a null content goes.
+// compaction blob"), so a null content goes. A namespace's functions, as
+// collaboration's spawn_agent, go flat (collaboration__spawn_agent), and so
+// do the calls to them handed back and a tool_choice naming one (#404).
+// A tool_choice with no tools
+// left goes too: the backend turns the request away over it ("A
+// tool_choice was set on the request but no tools were specified"), as it
+// would Codex's compaction summary, sent without tools (#378).
 func grokBody(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"tools"`)) && !bytes.Contains(body, []byte(`"reasoning"`)) {
+	if !bytes.Contains(body, []byte(`"tools"`)) && !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`"tool_choice"`)) && !bytes.Contains(body, []byte(`"namespace"`)) {
 		return body
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -221,6 +240,11 @@ func grokBody(body []byte) []byte {
 		for _, t := range tools {
 			if tm, ok := t.(map[string]any); ok {
 				ty, _ := tm["type"].(string)
+				if ty == "namespace" {
+					dirty = true
+					kept = append(kept, grokFlat(tm)...)
+					continue
+				}
 				if !grokTools[ty] {
 					dirty = true
 					continue
@@ -232,16 +256,33 @@ func grokBody(body []byte) []byte {
 			}
 			kept = append(kept, t)
 		}
+		for _, t := range kept {
+			if tm, ok := t.(map[string]any); ok && tm["type"] == "function" && objectRoot(tm) {
+				dirty = true
+			}
+		}
 		m["tools"] = kept
 		if tc, ok := m["tool_choice"].(map[string]any); ok {
+			if flatCall(tc) {
+				dirty = true
+			}
 			if ty, _ := tc["type"].(string); !grokTools[ty] {
 				delete(m, "tool_choice")
 				dirty = true
 			}
 		}
 	}
+	if tools, _ := m["tools"].([]any); len(tools) == 0 {
+		if _, ok := m["tool_choice"]; ok {
+			delete(m, "tool_choice")
+			dirty = true
+		}
+	}
 	input, _ := m["input"].([]any)
 	for _, it := range input {
+		if im, ok := it.(map[string]any); ok && flatCall(im) {
+			dirty = true
+		}
 		if im, ok := it.(map[string]any); ok && im["type"] == "reasoning" {
 			if c, ok := im["content"]; ok && c == nil {
 				delete(im, "content")
@@ -257,6 +298,171 @@ func grokBody(body []byte) []byte {
 		return body
 	}
 	return b
+}
+
+// liteNamespace is the namespace Codex's Responses Lite groups its own
+// functions in, which Codex reads as none at all.
+const liteNamespace = "functions"
+
+// FlatName is the name a namespaced tool is offered to a model under, which
+// takes one flat name: namespace__name, as Codex names an MCP server's tools.
+// A name longer than the 64 characters APIs allow is cut and made unique by
+// a hash of the whole.
+func FlatName(namespace, name string) string {
+	flat := namespace + "__" + name
+	if len(flat) <= 64 {
+		return flat
+	}
+	sum := sha256.Sum256([]byte(namespace + "\x00" + name))
+	return flat[:55] + "_" + hex.EncodeToString(sum[:4])
+}
+
+// grokFlat is a namespace's functions, each under its flat name; what else
+// it holds, a freeform tool, Grok's backend wouldn't take either.
+func grokFlat(ns map[string]any) []any {
+	space, _ := ns["name"].(string)
+	nested, _ := ns["tools"].([]any)
+	var out []any
+	for _, n := range nested {
+		nm, _ := n.(map[string]any)
+		name, _ := nm["name"].(string)
+		if nm == nil || nm["type"] != "function" || name == "" {
+			continue
+		}
+		if space != "" && space != liteNamespace {
+			nm["name"] = FlatName(space, name)
+		}
+		out = append(out, nm)
+	}
+	return out
+}
+
+// objectRoot makes a function's parameters an object at the root, which
+// Grok's backend wants ("tool parameter root must be an object type"):
+// Codex's codex_app automation_update takes an anyOf of objects (Fate on
+// Discord). It reports whether it changed anything.
+func objectRoot(fn map[string]any) bool {
+	ps, _ := fn["parameters"].(map[string]any)
+	return ps != nil && ObjectRoot(ps)
+}
+
+// ObjectRoot makes a tool's input schema a plain object at the root, with
+// no anyOf, oneOf or allOf there: Grok's backend wants one, and so do
+// Anthropic's models behind Factory ("input_schema does not support
+// oneOf, allOf, or anyOf at the top level", #646). allOf's branches are
+// all merged, properties and required alike. Of anyOf's and oneOf's object
+// branches the properties are merged, a field each of them requires stays
+// required, and the other branches go. It reports whether it changed
+// anything.
+func ObjectRoot(ps map[string]any) bool {
+	_, any1 := ps["anyOf"]
+	_, one := ps["oneOf"]
+	_, all := ps["allOf"]
+	if ps["type"] == "object" && !any1 && !one && !all {
+		return false
+	}
+	props, _ := ps["properties"].(map[string]any)
+	if props == nil {
+		props = map[string]any{}
+	}
+	var required []any
+	if r, ok := ps["required"].([]any); ok {
+		required = r
+	}
+	list, _ := ps["allOf"].([]any)
+	for _, b := range list {
+		bm, _ := b.(map[string]any)
+		if bm = grokRef(ps, bm); bm == nil {
+			continue
+		}
+		bp, _ := bm["properties"].(map[string]any)
+		for k, v := range bp {
+			if _, ok := props[k]; !ok {
+				props[k] = v
+			}
+		}
+		br, _ := bm["required"].([]any)
+		required = append(required, br...)
+	}
+	delete(ps, "allOf")
+	var branches []map[string]any
+	for _, k := range []string{"anyOf", "oneOf"} {
+		list, _ := ps[k].([]any)
+		for _, b := range list {
+			bm, _ := b.(map[string]any)
+			if bm = grokRef(ps, bm); bm == nil {
+				continue
+			}
+			if _, has := bm["properties"]; bm["type"] != "object" && !has {
+				continue
+			}
+			branches = append(branches, bm)
+		}
+		delete(ps, k)
+	}
+	for i, b := range branches {
+		bp, _ := b["properties"].(map[string]any)
+		for k, v := range bp {
+			if _, ok := props[k]; !ok {
+				props[k] = v
+			}
+		}
+		br, _ := b["required"].([]any)
+		if i == 0 {
+			required = append(required, br...)
+			continue
+		}
+		in := map[any]bool{}
+		for _, r := range br {
+			in[r] = true
+		}
+		kept := required[:0]
+		for _, r := range required {
+			if in[r] {
+				kept = append(kept, r)
+			}
+		}
+		required = kept
+	}
+	ps["type"] = "object"
+	ps["properties"] = props
+	if len(required) > 0 {
+		ps["required"] = required
+	} else {
+		delete(ps, "required")
+	}
+	return true
+}
+
+// grokRef is a branch of a schema, or what its local $ref names in the
+// schema's $defs or definitions.
+func grokRef(root, b map[string]any) map[string]any {
+	ref, _ := b["$ref"].(string)
+	if ref == "" {
+		return b
+	}
+	for _, k := range []string{"$defs", "definitions"} {
+		if name, ok := strings.CutPrefix(ref, "#/"+k+"/"); ok {
+			defs, _ := root[k].(map[string]any)
+			d, _ := defs[name].(map[string]any)
+			return d
+		}
+	}
+	return nil
+}
+
+// flatCall names a call to a namespaced tool, or a tool_choice of one, by
+// the flat name it was offered under, and reports whether it was one.
+func flatCall(it map[string]any) bool {
+	space, ok := it["namespace"].(string)
+	if !ok {
+		return false
+	}
+	delete(it, "namespace")
+	if name, _ := it["name"].(string); name != "" && space != "" && space != liteNamespace {
+		it["name"] = FlatName(space, name)
+	}
+	return true
 }
 
 // grokHeaders say a request comes from the Grok CLI, which the backend
@@ -302,7 +508,7 @@ func grokVersion() string {
 	v := grokClientVersion
 	if exe := GrokExecutable(); exe != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if out, err := proc.CommandContext(ctx, exe, "--version").Output(); err == nil { // "grok 1.0.41 (4220f3b224a6)"
+		if out, err := proc.ProbeContext(ctx, exe, "--version").Output(); err == nil { // "grok 1.0.41 (4220f3b224a6)"
 			if c := grokSemver.FindString(string(out)); c != "" && compareClaudeVersion(c, v) > 0 {
 				v = c
 			}
@@ -316,7 +522,7 @@ func grokVersion() string {
 // grokModels lists what the account can use, with each model's context
 // window and efforts, as the CLI's backend lists them.
 func grokModels(ctx context.Context, sign func(context.Context, *http.Request, []byte) error) ([]catalog.Model, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, grokBase+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GrokBase+"/models", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +644,7 @@ func startGrokSignIn(s *signInFlow) error {
 		return runCLISignIn(s, "grok login", nil, true, nil, func() (string, string, bool) {
 			c, ok := readGrokCredential(GrokHome())
 			return c.Email, "", ok
-		}, path, "login", "--device-auth")
+		}, nil, path, "login", "--device-auth")
 	}
 	home, err := newGrokHome()
 	if err != nil {
@@ -447,7 +653,7 @@ func startGrokSignIn(s *signInFlow) error {
 	err = runCLISignIn(s, "grok login", grokOwnEnv(os.Environ(), home), false, func() { removeGrokHome(home) }, func() (string, string, bool) {
 		user, err := addGrokLogin(home)
 		return user, "", err == nil
-	}, path, "login", "--device-auth")
+	}, nil, path, "login", "--device-auth")
 	if err != nil {
 		removeGrokHome(home)
 	}
@@ -456,7 +662,15 @@ func startGrokSignIn(s *signInFlow) error {
 
 // agentCommand runs an agent's CLI with magpie's proxy.
 func agentCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
-	cmd := proc.CommandContext(ctx, path, args...)
+	return withProxy(proc.CommandContext(ctx, path, args...))
+}
+
+// agentProbe is agentCommand for asking the CLI something (proc.ProbeContext).
+func agentProbe(ctx context.Context, path string, args ...string) *exec.Cmd {
+	return withProxy(proc.ProbeContext(ctx, path, args...))
+}
+
+func withProxy(cmd *exec.Cmd) *exec.Cmd {
 	cmd.Env = netproxy.Env(nil)
 	return cmd
 }
@@ -465,8 +679,10 @@ func agentCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
 // prints to the window, and finishes when the command does and identity
 // says who is signed in. using says whether the agent now uses that
 // account; failed, when there is one, undoes what a sign-in that did not
-// finish left behind.
-func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed func(), identity func() (user, plan string, ok bool), path string, args ...string) error {
+// finish left behind. whole, when there is one, says a link has all it
+// needs: one that hasn't is the start of a link the CLI wrapped, and the
+// lines after it that are nothing but more of it are joined on.
+func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed func(), identity func() (user, plan string, ok bool), whole func(link string) bool, path string, args ...string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := proc.CommandContext(ctx, path, args...)
 	cmd.Dir, _ = os.UserHomeDir()
@@ -485,20 +701,52 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 	s.stop = cancel
 	s.mu.Unlock()
 	got := make(chan string, 1)
+	var partial struct {
+		sync.Mutex
+		link string
+	}
 	go func() {
-		sc := bufio.NewScanner(out)
+		rd := bufio.NewReader(out)
 		sent := false
-		var tail []string
-		for sc.Scan() {
-			line := ansi.ReplaceAllString(sc.Text(), "")
-			if u := cursorLoginURL.FindString(line); u != "" && !sent {
+		link := ""
+		send := func() {
+			if !sent && link != "" {
 				sent = true
-				got <- u
+				got <- link
+			}
+		}
+		var tail []string
+		for {
+			raw, rerr := rd.ReadString('\n')
+			line := ansi.ReplaceAllString(strings.TrimRight(raw, "\r\n"), "")
+			switch {
+			case sent:
+			case link == "":
+				link = cursorLoginURL.FindString(line)
+			case linkRest.MatchString(strings.TrimSpace(line)) && (!whole(link) || queryRest.MatchString(strings.TrimSpace(line))):
+				// a whole link takes only more of its query, not "Waiting..." printed after it
+				link += strings.TrimSpace(line)
+			default:
+				send() // what came after it isn't more of it
+			}
+			// a whole link is handed on once what came with it is read,
+			// so the rest of one wrapped after its last param joins too
+			if whole == nil || whole(link) && rd.Buffered() == 0 {
+				send()
+			}
+			if !sent {
+				partial.Lock()
+				partial.link = link
+				partial.Unlock()
 			}
 			if strings.TrimSpace(line) != "" {
 				tail = append(tail, strings.TrimSpace(line))
 			}
+			if rerr != nil {
+				break
+			}
 		}
+		send()
 		if !sent {
 			close(got)
 		}
@@ -520,19 +768,48 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 		}
 		s.finish(SignInState{State: "failed", Error: msg})
 	}()
+	var u string
 	select {
-	case u, ok := <-got:
+	case l, ok := <-got:
 		if !ok {
 			return fmt.Errorf("%s gave no link to open", what)
 		}
-		s.mu.Lock()
-		s.st.URL = u
-		s.mu.Unlock()
-		return nil
-	case <-time.After(30 * time.Second):
-		cancel()
-		return fmt.Errorf("%s gave no link to open", what)
+		u = l
+	case <-time.After(linkWait):
+		// a link that never came whole is still the one there is
+		partial.Lock()
+		u = partial.link
+		partial.Unlock()
+		if u == "" {
+			cancel()
+			return fmt.Errorf("%s gave no link to open", what)
+		}
 	}
+	s.mu.Lock()
+	s.st.URL = u
+	s.mu.Unlock()
+	return nil
+}
+
+// linkWait is how long a login command has to print its link.
+var linkWait = 30 * time.Second
+
+// linkRest is a line that is nothing but more of a link: no spaces, only
+// what a URL holds.
+var linkRest = regexp.MustCompile(`^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$`)
+
+// queryRest is what may still follow a link that already has its challenge
+// and uuid: the rest of a value, or more params.
+var queryRest = regexp.MustCompile(`^[A-Za-z0-9\-_%&=]+$`)
+
+// AgentUser is who an agent is signed in to itself, as its own files say,
+// for an agent whose vendor a plugin serves too; "" when not known.
+func AgentUser(agent string) string {
+	if agent == "grok" {
+		u, _ := GrokUser(GrokHome())
+		return u
+	}
+	return ""
 }
 
 // GrokUser is who the grok with this home is signed in to.

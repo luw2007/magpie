@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yetone/magpie/internal/agentenv"
 )
 
 func TestBalanceReaders(t *testing.T) {
@@ -23,6 +25,8 @@ func TestBalanceReaders(t *testing.T) {
 		{"commandcode", readCommandCode, `{"credits":{"monthlyCredits":12.3,"purchasedCredits":2,"freeCredits":0},"windowLimits":{"limited":true,"fiveHour":{"used":4.2,"cap":10},"weekly":{"used":9,"cap":50}}}`, "$14.30"},
 		{"commandcode credits only", readCommandCode, `{"credits":{"monthlyCredits":"70"},"windowLimits":null}`, "$70.00"},
 		{"siliconflow", readSiliconFlow("¥"), `{"code":20000,"data":{"balance":"0.88","totalBalance":"88.88"}}`, "¥88.88"},
+		{"stepfun", readStepFun("¥"), `{"object":"account","type":"prepaid","balance":26.00,"total_cash_balance":0.00,"total_voucher_balance":26.00}`, "¥26.00"},
+		{"stepfun intl", readStepFun("$"), `{"object":"account","type":"prepaid","balance":0.00,"total_cash_balance":0.00,"total_voucher_balance":0.00}`, "$0.00"},
 	} {
 		got, err := c.read([]byte(c.body))
 		if err != nil || got != c.want {
@@ -81,6 +85,8 @@ func TestBalanceSourceByHost(t *testing.T) {
 		"https://openrouter.ai/api/v1":           "https://openrouter.ai/api/v1/credits",
 		"https://api.siliconflow.cn/v1":          "https://api.siliconflow.cn/v1/user/info",
 		"https://api.commandcode.ai/provider/v1": "https://api.commandcode.ai/alpha/billing/credits",
+		"https://api.stepfun.com/step_plan/v1":   "https://api.stepfun.com/v1/accounts",
+		"https://api.stepfun.ai/v1":              "https://api.stepfun.ai/v1/accounts",
 		"https://relay.example.com/v1":           "",
 		"https://api.deepseek.com.evil/":         "",
 	} {
@@ -101,10 +107,11 @@ func TestKeyBalances(t *testing.T) {
 	isolate(t)
 	h := t.TempDir()
 	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
 	t.Setenv("PATH", h)
-	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME"} {
+	for _, v := range agentenv.Vars {
 		t.Setenv(v, "")
 	}
 	keyBalanceCache.data = nil
@@ -224,5 +231,139 @@ func TestNamedBalanceWithSub2APIJWT(t *testing.T) {
 	}
 	if balanceAuthorization("tok") != "tok" {
 		t.Fatal("a new-api access token goes as it is")
+	}
+}
+
+// An access token beside new-api's /api/usage/token, which takes only the
+// key, is never sent there: what to name in its place is said instead.
+func TestKeyUsageWithAccessToken(t *testing.T) {
+	asked := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = true
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"success":false,"message":"无效的令牌"}`))
+	}))
+	defer srv.Close()
+	p := Provider{ID: "relay", Chat: srv.URL + "/v1", Key: "sk-one", BalanceToken: "tok",
+		BalanceURL: srv.URL + "/api/usage/token/", BalancePath: "$data.total_available / 500000"}
+	_, ok, err := Balance(context.Background(), p)
+	if !ok || err == nil || asked {
+		t.Fatalf("ok %v, err %v, asked %v", ok, err, asked)
+	}
+	if want := srv.URL + "/api/user/self (Balance field $data.quota / 500000)"; !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "takes the API key, not the access token") {
+		t.Fatalf("err = %v", err)
+	}
+	// the key alone still asks it
+	p.BalanceToken = ""
+	if _, _, err := Balance(context.Background(), p); !asked || err == nil {
+		t.Fatalf("without the token: asked %v, err %v", asked, err)
+	}
+}
+
+// new-api's /api/user/self with its field left out reads the quota as
+// new-api counts it, $1 to 500000.
+func TestUserSelfDefaultField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"success":true,"data":{"quota":1000000}}`))
+	}))
+	defer srv.Close()
+	p := Provider{ID: "relay", Chat: srv.URL + "/v1", Key: "sk-one", BalanceToken: "tok", BalanceURL: srv.URL + "/api/user/self"}
+	if got, _, err := Balance(context.Background(), p); err != nil || got != "$2.00" {
+		t.Fatalf("balance = %q %v", got, err)
+	}
+	p.BalancePath = "data.quota"
+	if got, _, err := Balance(context.Background(), p); err != nil || got != "1000000.00" {
+		t.Fatalf("a field given is kept: %q %v", got, err)
+	}
+}
+
+// new-api turns an access token without New-Api-User down with a 401 (and
+// some builds, or a bad token, with a 200) of {"success":false,…}: the
+// message is the error, with what to add, not a field missing.
+func TestNewAPIUserRefusal(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		body   string
+		want   []string
+	}{
+		{401, `{"success":false,"message":"无权进行此操作，未提供 New-Api-User"}`, []string{"401 Unauthorized: ", "add the header New-Api-User = your user ID", "未提供 New-Api-User"}},
+		{200, `{"success":false,"message":"Unauthorized, New-Api-User header not provided"}`, []string{"add the header New-Api-User = your user ID", "header not provided"}},
+		{401, `{"success":false,"message":"无权进行此操作，New-Api-User 与登录用户不匹配"}`, []string{"add the header New-Api-User", "不匹配"}},
+		{200, `{"success":false,"message":"无权进行此操作，access token 无效"}`, []string{"access token 无效"}},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(c.status)
+			w.Write([]byte(c.body))
+		}))
+		p := Provider{ID: "relay", Chat: srv.URL + "/v1", Key: "sk-one", BalanceToken: "tok",
+			BalanceURL: srv.URL + "/api/user/self", BalancePath: "$data.quota / 500000"}
+		_, ok, err := Balance(context.Background(), p)
+		srv.Close()
+		if !ok || err == nil {
+			t.Fatalf("%s: ok %v, err %v", c.body, ok, err)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: %q lacks %q", c.body, err, w)
+			}
+		}
+		if strings.Contains(err.Error(), "nothing at") {
+			t.Errorf("%s: read as a missing field: %v", c.body, err)
+		}
+		if !strings.Contains(c.body, "New-Api-User") && strings.Contains(err.Error(), "add the header") {
+			t.Errorf("%s: told to add the header: %v", c.body, err)
+		}
+	}
+}
+
+// A vendor that takes the key in the Balance URL's query, or in a header of
+// its own, is asked with each key in its place, so every key's card tells
+// its own balance, not the one a key pasted into the URL has (#266).
+func TestBalanceURLNamesTheKey(t *testing.T) {
+	isolate(t)
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	t.Setenv("PATH", h)
+	for _, v := range agentenv.Vars {
+		t.Setenv(v, "")
+	}
+	keyBalanceCache.data = nil
+	t.Cleanup(func() { keyBalanceCache.data = nil })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Key") != r.URL.Query().Get("apikey") {
+			t.Errorf("header %q, query %q", r.Header.Get("X-Key"), r.URL.Query().Get("apikey"))
+		}
+		switch r.URL.Query().Get("apikey") {
+		case "sk-one":
+			w.Write([]byte(`{"balance":3}`))
+		case "sk-two+/=":
+			w.Write([]byte(`{"balance":7}`))
+		default:
+			http.Error(w, `{"message":"no such key"}`, http.StatusUnauthorized)
+		}
+	}))
+	defer srv.Close()
+	if err := Save(Provider{ID: "relay", Name: "Relay", Chat: srv.URL + "/v1",
+		Keys: []KeyAccount{{ID: "main", Name: "main", Key: "sk-one"}, {ID: "spare", Name: "spare", Key: "sk-two+/="}},
+		Headers:    map[string]string{"X-Key": "{apiKey}"},
+		BalanceURL: srv.URL + "/query?apikey={key}", BalancePath: "$balance"}); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, q := range KeyBalances(context.Background()) {
+		lines = append(lines, q.User+"|"+q.Balance+"|"+q.Error)
+	}
+	if want := "main|$3.00|,spare|$7.00|"; strings.Join(lines, ",") != want {
+		t.Fatalf("balances:\n%s\nwant\n%s", strings.Join(lines, ","), want)
+	}
+	// a URL that can't be asked doesn't show the key in what it says
+	_, _, err := Balance(context.Background(), Provider{Chat: "http://127.0.0.1:1/v1", Key: "sk-secret-123456",
+		BalanceURL: "http://127.0.0.1:1/q?key={key}", BalancePath: "balance"})
+	if err == nil || strings.Contains(err.Error(), "sk-secret-123456") {
+		t.Fatalf("error: %v", err)
 	}
 }

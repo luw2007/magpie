@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -146,7 +147,7 @@ func TestHanakoFiles(t *testing.T) {
 	if d, _ := json.Marshal(c["meta"].(map[string]any)["deletedProviders"]); string(d) != `["old"]` {
 		t.Fatalf("deletedProviders: %s", d)
 	}
-	if st, _ := os.Stat(catalogPath); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(catalogPath); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // Windows has no such bits
 		t.Fatalf("mode %v", st.Mode())
 	}
 	if _, err := os.Stat(filepath.Dir(filepath.Dir(stale))); !os.IsNotExist(err) {
@@ -260,7 +261,7 @@ func TestHanakoFresh(t *testing.T) {
 	if c["catalogVersion"] != float64(2) || len(c) != 2 {
 		t.Fatalf("catalog: %v", c)
 	}
-	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(path); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // Windows has no such bits
 		t.Fatalf("mode %v", st.Mode())
 	}
 	if chat, raw := hanakoChatOf(t, filepath.Join(dir, "agents", "a", "config.yaml")); chat["id"] != "relay/glm-4.6" || chat["provider"] != "magpie" {
@@ -458,5 +459,43 @@ func TestHanakoStale(t *testing.T) {
 func TestHanakoKey(t *testing.T) {
 	if k := hanakoProvider().APIKey; k != gateway.TokenFor("hanako") {
 		t.Fatal(k)
+	}
+}
+
+// One of OpenHanako's own providers named as one of magpie's (its own
+// DeepSeek, and magpie's deepseek): its model isn't magpie's, so the row
+// isn't connected on it, and Disconnect from magpie puts it back and is
+// done, rather than leaving the row connected on the model it went back to
+// (Hu9956, #835).
+func TestHanakoOwnProviderNamedAsMagpies(t *testing.T) {
+	home, dir := hanakoTestHome(t)
+	catalogPath := filepath.Join(dir, "provider-catalog.json")
+	// the user's own relay provider, which magpie has one of too
+	hanakoWrite(t, catalogPath, `{"catalogVersion":2,"providers":{"relay":{"base_url":"https://x/v1","api":"openai-completions","api_key":"k","models":["glm-4.6"]}}}`, 0o600)
+	hanakoWrite(t, filepath.Join(dir, "user", "preferences.json"), `{"primaryAgent":"hana"}`, 0o644)
+	cfg := filepath.Join(dir, "agents", "hana", "config.yaml")
+	hanakoWrite(t, cfg, "models:\n  chat:\n    id: glm-4.6\n    provider: relay\n", 0o644)
+
+	a := hanako(home)
+	if a.Wired() {
+		t.Fatal("its own relay/glm-4.6 reads as magpie's")
+	}
+	if err := a.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Wired() {
+		t.Fatalf("not wired after connect: %v", a.Values())
+	}
+	if err := a.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if chat, raw := hanakoChatOf(t, cfg); chat["id"] != "glm-4.6" || chat["provider"] != "relay" {
+		t.Fatalf("disconnected config:\n%s", raw)
+	}
+	if _, ok := hanakoCurrent(dir); ok {
+		t.Fatal("magpie's provider is still there")
+	}
+	if a.Wired() {
+		t.Fatalf("still connected after Disconnect: %v", a.Values())
 	}
 }

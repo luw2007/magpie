@@ -18,6 +18,10 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
+// ruleClock is the time a turn's rules look at (a rule's hours), and its
+// decision is kept from; tests set it.
+var ruleClock = time.Now
+
 // RuleHit is what the trace tells of a group's rules for a request.
 type RuleHit struct {
 	N    int      `json:"n"`             // the rule, from 1; 0 when none matched
@@ -49,6 +53,16 @@ type RuleHit struct {
 	// Pick: the reasoning the group's decision model picked for the turn,
 	// which its requests ask their model for (provider.EffortAuto)
 	Pick string `json:"pick,omitempty"`
+	// Wanted: the reasoning the decision model picked for the turn when
+	// the conversation kept a higher one (Pick) for the vendor's cache of
+	// it (#617) — sent instead where the change goes as an effort update
+	// that keeps the cache (takesEffortUpdates)
+	Wanted string `json:"wanted,omitempty"`
+	// Compact: the request is the agent compacting its conversation, looked
+	// at on its own; Small, the members of rules it matched that take less
+	// than it is long, passed over
+	Compact bool     `json:"compact,omitempty"`
+	Small   []string `json:"small,omitempty"`
 	// Bare: the group has no rules, only its effort picked
 	Bare bool `json:"bare,omitempty"`
 }
@@ -79,6 +93,11 @@ type turnRule struct {
 	// intent is what the classifier said the turn's first message is
 	intent string
 	effort string // the reasoning it picked for the turn
+	wanted string // what it would have picked, kept from (RuleHit.Wanted)
+	// answered is when the vendor last answered the conversation: its
+	// cache of it is read from then (ruleAnswered)
+	answered time.Time
+	size     int // how long magpie took the conversation's last request to be (estimate)
 }
 
 var turnRules = struct {
@@ -126,14 +145,15 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		return nil
 	}
 	turn, within := turnIn(req)
-	q := provider.RuleRequest{Tokens: estimate(req), Thinking: req.Thinking, Effort: req.Effort, Agent: agent}
+	now := ruleClock()
+	size := estimate(req)
+	q := provider.RuleRequest{Tokens: size, Thinking: req.Thinking, Effort: req.Effort, Agent: agent, At: now}
 	for _, m := range req.Messages {
 		if slices.ContainsFunc(m.Parts, func(p Part) bool { return p.Kind == Image }) {
 			q.Images = true
 			break
 		}
 	}
-	now := time.Now()
 	turnRules.Lock()
 	tr, had := turnRules.m[key]
 	turnRules.Unlock()
@@ -153,6 +173,26 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 	}()
 	if hit.Effort == "" && q.Thinking {
 		hit.Effort = "on"
+	}
+	if slices.ContainsFunc(g.Rules, func(r provider.Rule) bool { return r.Compact }) && compacting(req) {
+		// the agent summarizing its conversation: the first rule it matches,
+		// on its own — not the turn's decision, so the requests after it go
+		// on as the turn would. The request is as long as the conversation:
+		// a model known to take less would only refuse it, and is passed over.
+		q.Compact, hit.Compact = true, true
+		ctx := memberContexts(ms)
+		for i, r := range g.Rules {
+			if !r.Matches(q) {
+				continue
+			}
+			if c := ctx[r.Use]; c > 0 && c < q.Tokens {
+				hit.Small = append(hit.Small, r.Use)
+				continue
+			}
+			hit.N, hit.Use, hit.When = i+1, r.Use, r.Conditions()
+			break
+		}
+		return hit
 	}
 	if within {
 		// the same turn: what was decided as it began, while the group
@@ -174,16 +214,16 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			hit.Waits = true
 		}
 		if !hit.Waits && hit.Effort != "" {
-			hit.Pick = tr.effort
+			hit.Pick, hit.Wanted = tr.effort, tr.wanted
 		}
 		if grown, ok := outgrown(g, ctx, hit, q); ok {
 			hit = grown
-			turnRules.m[key] = turnRule{turn: turn, use: hit.Use, n: hit.N, at: now, input: tr.input, intent: q.Intent, effort: tr.effort}
+			turnRules.m[key] = turnRule{turn: turn, use: hit.Use, n: hit.N, at: now, input: tr.input, intent: q.Intent, effort: tr.effort, wanted: tr.wanted, answered: tr.answered, size: size}
 			return hit
 		}
 		if had {
 			if cur, ok := turnRules.m[key]; ok {
-				cur.at = now
+				cur.at, cur.size = now, size
 				turnRules.m[key] = cur
 			}
 		}
@@ -228,17 +268,20 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 		}
 		q.Intent = c.Intent
 		hit.Classified, hit.Pick = c, c.Effort
+		if effort && had && keepsEffort(tr, c.Effort, size, now) {
+			hit.Pick, hit.Wanted = tr.effort, c.Effort
+		}
 	}
 	if i := provider.MatchRule(g.Rules, q); i >= 0 {
 		hit.N, hit.Use, hit.When = i+1, g.Rules[i].Use, g.Rules[i].Conditions()
 	}
 	turnRules.Lock()
 	defer turnRules.Unlock()
-	input := tr.input
+	input, answered := tr.input, tr.answered
 	if cur, ok := turnRules.m[key]; ok {
-		input = cur.input // answered while the classifier was asked
+		input, answered = cur.input, cur.answered // answered while the classifier was asked
 	}
-	turnRules.m[key] = turnRule{turn: turn, use: hit.Use, n: hit.N, at: now, input: input, intent: q.Intent, effort: hit.Pick}
+	turnRules.m[key] = turnRule{turn: turn, use: hit.Use, n: hit.N, at: now, input: input, intent: q.Intent, effort: hit.Pick, wanted: hit.Wanted, answered: answered, size: size}
 	if len(turnRules.m) > 4096 {
 		for k, tr := range turnRules.m {
 			if now.Sub(tr.at) > stickKeep {
@@ -288,6 +331,12 @@ func memberContexts(ms []provider.Member) map[string]int {
 				if c, ok := out[m.ID]; !ok || e.Context > 0 && (c == 0 || e.Context < c) {
 					out[m.ID] = e.Context
 				}
+				// a model the group names that a group in it has too (named)
+				if n := len(m.Path); n > 1 {
+					if _, ok := out[m.Path[n-1]]; !ok {
+						out[m.Path[n-1]] = e.Context
+					}
+				}
 				break
 			}
 		}
@@ -305,9 +354,40 @@ func ruleAnswered(key string, u Usage) {
 	turnRules.Lock()
 	defer turnRules.Unlock()
 	if tr, ok := turnRules.m[key]; ok {
-		tr.input = n
+		tr.input, tr.answered = n, ruleClock()
 		turnRules.m[key] = tr
 	}
+}
+
+// keepsEffort is whether a new turn of a conversation keeps the reasoning
+// its turn before was asked for, rather than the lower one the decision
+// model picked now (#617). The reasoning is part of what the vendor caches
+// a conversation under: a turn asking for another reads none of it back —
+// with group effort "auto", 40 of 42 changes between a Pi session's turns
+// on gpt-6.1-sol read 0 cached tokens, against 4 of 834 without one. So
+// while the cache is warm the effort only goes up — a hard turn still gets
+// the reasoning it needs, and a conversation pays for at most one miss per
+// level — and a lower pick waits for a turn the cache is lost to anyway:
+// one after cacheCold without an answer, or after the agent compacted the
+// conversation (it is now under half as long as its last request).
+func keepsEffort(tr turnRule, pick string, tokens int, now time.Time) bool {
+	if tr.effort == "" || pick == "" || pick == tr.effort {
+		return false
+	}
+	if slices.Index(effortRank, pick) > slices.Index(effortRank, tr.effort) {
+		return false // up: the turn wants more than the conversation had
+	}
+	last := tr.at
+	if tr.answered.After(last) {
+		last = tr.answered
+	}
+	if now.Sub(last) > cacheCold {
+		return false
+	}
+	if tr.size > 0 && tokens < tr.size/2 {
+		return false
+	}
+	return true
 }
 
 // nestedRules looks at the rules of each group in the group that the one
@@ -352,6 +432,15 @@ func (s *Server) nestedRules(at string, req *Request, agent string, ask classifi
 	return out, keys, cands, pl
 }
 
+// named reports whether m is the group's member id: the model, or one of
+// the models of the group in the group it is. A model the group names
+// itself that a group in it, ahead of it, names too is kept where it was
+// met first (provider's membersIn), in that group, and a rule naming it
+// is still its (#625).
+func named(m provider.Member, id string) bool {
+	return m.ID == id || !strings.HasPrefix(id, provider.GroupPrefix) && len(m.Path) > 1 && m.Path[len(m.Path)-1] == id
+}
+
 // ruleMembers are the models of the member a rule names, among those
 // ready now: the model, or a group in the group's.
 func ruleMembers(hit *RuleHit, ms []provider.Member) []provider.Member {
@@ -360,11 +449,21 @@ func ruleMembers(hit *RuleHit, ms []provider.Member) []provider.Member {
 	}
 	var out []provider.Member
 	for _, m := range ms {
-		if m.ID == hit.Use {
+		if named(m, hit.Use) {
 			out = append(out, m)
 		}
 	}
 	return out
+}
+
+// modelRuled reports whether the one going first is a model the group's
+// rule names itself: one a group in the group has too goes there, and that
+// group's rules don't pick another over it (#625).
+func modelRuled(hit *RuleHit, ms []provider.Member, cs []candidate) bool {
+	if hit == nil || strings.HasPrefix(hit.Use, provider.GroupPrefix) || len(cs) == 0 {
+		return false
+	}
+	return slices.ContainsFunc(ruleMembers(hit, ms), func(m provider.Member) bool { return ofMember(cs[0], m) })
 }
 
 // ruleOrder is who a rule's request goes to before the group's others:
@@ -376,7 +475,7 @@ func ruleOrder(hit *RuleHit, ms []provider.Member) []provider.Member {
 	}
 	for _, id := range hit.Then {
 		for _, m := range ms {
-			if m.ID == id {
+			if named(m, id) {
 				out = append(out, m)
 			}
 		}
@@ -432,28 +531,32 @@ func applyRule(hit *RuleHit, ms []provider.Member, cs []candidate, pl planned) (
 	if len(ordered) > 0 && len(cs) > 0 {
 		cs, pl, lead = ruleFirst(ordered, cs, pl)
 	}
-	hit.Unready = lead < 0 || ordered[lead].ID != hit.Use
+	// ordered has the rule's own first, then those of the rules after it
+	hit.Unready = lead < 0 || lead >= len(ruleMembers(hit, ms))
 	if lead >= 0 && hit.Unready {
 		hit.Instead = ordered[lead].ID
+		if i := slices.IndexFunc(hit.Then, func(id string) bool { return named(ordered[lead], id) }); i >= 0 {
+			hit.Instead = hit.Then[i]
+		}
 	}
 	return cs, pl, lead >= 0
 }
 
 // ofMember reports whether a candidate is one of the member's keys or
 // accounts: its rest is the provider's id, or that with the key ("#") or
-// the account ("@") after it.
+// the account ("@") after it, for the member's model at the member's
+// effort.
 func ofMember(c candidate, m provider.Member) bool {
 	id := m.Provider.ID
-	return c.model == m.Model && (c.rest == id || strings.HasPrefix(c.rest, id+"#") || strings.HasPrefix(c.rest, id+"@"))
+	return c.model == m.Model && c.effort == m.Effort && (c.rest == id || strings.HasPrefix(c.rest, id+"#") || strings.HasPrefix(c.rest, id+"@"))
 }
 
-// membersImageInput is whether a group request may carry images: the
-// member a rule put first decides, or else every member must take them
-// (as the group's catalog entry says without rules).
-func membersImageInput(ms []provider.Member, ruled []provider.Member) *bool {
-	if len(ruled) > 0 {
-		ms = ruled
-	}
+// membersImageInput is whether a group request may carry images: when a
+// member takes them it may (as the group's catalog entry says), and a
+// request with an image goes to the members that see it, the others
+// given it described or left out (#756). A rule's member first changes
+// none of that: one that can't see is passed over for an image.
+func membersImageInput(ms []provider.Member) *bool {
 	var out *bool
 	cat := provider.Served() // an unlisted member counts as much as the others
 	for i, m := range ms {
@@ -468,22 +571,22 @@ func membersImageInput(ms []provider.Member, ruled []provider.Member) *bool {
 			out = in
 			continue
 		}
-		out = sharedImageInput(out, in)
+		out = anyImageInput(out, in)
 	}
 	return out
 }
 
-// sharedImageInput is provider's: an explicit text-only answer wins, and
-// an unknown one stays unknown.
-func sharedImageInput(a, b *bool) *bool {
-	if a != nil && !*a {
+// anyImageInput is provider's: one member that takes images is enough,
+// both text-only is text-only, and otherwise it is unknown.
+func anyImageInput(a, b *bool) *bool {
+	if a != nil && *a {
 		return a
 	}
-	if b != nil && !*b {
+	if b != nil && *b {
 		return b
 	}
-	if a == nil || b == nil {
-		return nil
+	if a != nil && b != nil {
+		return a
 	}
-	return a
+	return nil
 }

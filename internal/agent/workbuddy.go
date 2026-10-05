@@ -22,16 +22,16 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"slices"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 )
 
 func workbuddy(home string) *Agent {
-	dir := os.Getenv("WORKBUDDY_CONFIG_DIR")
+	dir := appdir.Getenv("WORKBUDDY_CONFIG_DIR")
 	if dir == "" {
 		dir = filepath.Join(home, ".workbuddy")
 	}
@@ -94,6 +94,8 @@ type workbuddyEntry struct {
 	ID       string `json:"id"`
 	Vendor   string `json:"vendor"`
 	Disabled *bool  `json:"disabled"`
+	URL      string `json:"url"`
+	APIKey   string `json:"apiKey"`
 }
 
 func workbuddyMine(raw json.RawMessage) (workbuddyEntry, bool) {
@@ -109,7 +111,9 @@ func workbuddyWired(path string) bool {
 
 // workbuddyWrite puts magpie's models into models.json (on) or takes them
 // out, leaving every other entry and key as WorkBuddy wrote it. A model
-// turned off in WorkBuddy stays off.
+// turned off in WorkBuddy stays off, and models the user pointed at a magpie
+// on another machine (a NAS's) stay there with its key, as ZCode's do
+// (zcodeAddress): a sync brings the models up to date, not the address.
 func workbuddyWrite(path string, on bool) error {
 	d, err := workbuddyRead(path)
 	if err != nil {
@@ -118,11 +122,15 @@ func workbuddyWrite(path string, on bool) error {
 	var kept []json.RawMessage
 	var ours []string
 	off := map[string]bool{}
+	var remote, remoteKey string
 	at := -1 // where magpie's were, which they keep
 	for _, raw := range d.models {
 		if e, ok := workbuddyMine(raw); ok {
 			if at < 0 {
 				at = len(kept)
+			}
+			if remote == "" && onAnotherMachine(e.URL) {
+				remote, remoteKey = e.URL, e.APIKey
 			}
 			ours = append(ours, e.ID)
 			if e.Disabled != nil && *e.Disabled {
@@ -139,9 +147,15 @@ func workbuddyWrite(path string, on bool) error {
 	var ids []string
 	if on {
 		for _, m := range magpieModels("workbuddy") {
-			e := workbuddyModel(m.ID, m.Name, m.Context, m.Output, m.Images, m.Efforts)
+			e := workbuddyModel(m.ID, m.Name, m.Context, maxTokens(m), m.Images, m.Efforts)
 			if off[m.ID] {
 				e["disabled"] = true
+			}
+			if remote != "" {
+				e["url"] = remote
+				if remoteKey != "" {
+					e["apiKey"] = remoteKey
+				}
 			}
 			b, err := json.Marshal(e)
 			if err != nil {
