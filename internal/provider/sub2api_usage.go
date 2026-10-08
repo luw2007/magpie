@@ -92,7 +92,7 @@ func sub2APIGet(ctx context.Context, url, key string, dst any) error {
 	return json.Unmarshal(envelope.Data, dst)
 }
 
-func fetchGoogleQuota(ctx context.Context, source UsageSource, credential string) (sub2APIUsage, error) {
+func fetchGoogleQuota(ctx context.Context, source UsageSource, credential, authIndex string) (sub2APIUsage, error) {
 	data := map[string]string{}
 	if source.Project != "" {
 		data["project"] = source.Project
@@ -102,7 +102,7 @@ func fetchGoogleQuota(ctx context.Context, source UsageSource, credential string
 		return sub2APIUsage{}, err
 	}
 	body := map[string]any{
-		"authIndex": source.AuthIndex, "method": "POST",
+		"authIndex": authIndex, "method": "POST",
 		"url":    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 		"header": map[string]string{"Authorization": "Bearer $TOKEN$", "Content-Type": "application/json", "User-Agent": "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)"},
 		"data":   string(encoded),

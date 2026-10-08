@@ -12,6 +12,135 @@ import (
 	"time"
 )
 
+// The management API returns a files array, not a sub2api data envelope.
+// These are auth-file metadata only; no OAuth tokens or gateway keys belong here.
+const googleAuthFiles = `{"files":[
+{"name":"second.json","auth_index":"2495a612ae81d65a","email":"second@example.com","provider":"antigravity","status":"active","disabled":false},
+{"name":"first.json","auth_index":"86a8fb9b6ee7b921","email":"first@example.com","provider":"antigravity","status":"active","disabled":false},
+{"auth_index":"disabled","email":"disabled@example.com","provider":"antigravity","disabled":true},
+{"auth_index":"other","email":"other@example.com","provider":"codex","disabled":false},
+{"email":"missing-index@example.com","provider":"antigravity","disabled":false}
+]}`
+
+func TestGoogleUsageSourceDiscoversAccountSpecificQuotas(t *testing.T) {
+	var first, second atomic.Int32
+	reset := time.Now().Add(24 * time.Hour)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test" {
+			t.Errorf("management authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			if r.Method != http.MethodGet {
+				t.Errorf("discovery method = %s", r.Method)
+			}
+			w.Write([]byte(googleAuthFiles))
+		case "/v0/management/api-call":
+			var request struct {
+				AuthIndex string            `json:"authIndex"`
+				Method    string            `json:"method"`
+				URL       string            `json:"url"`
+				Header    map[string]string `json:"header"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			if r.Method != http.MethodPost || request.Method != "POST" || request.URL != "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary" || request.Header["User-Agent"] == "" {
+				t.Errorf("quota request = %+v (%s)", request, r.Method)
+			}
+			remaining := 0.75
+			switch request.AuthIndex {
+			case "86a8fb9b6ee7b921":
+				first.Add(1)
+			case "2495a612ae81d65a":
+				second.Add(1)
+				remaining = 0.5
+			default:
+				t.Errorf("unexpected authIndex %q", request.AuthIndex)
+				http.Error(w, "unknown account", http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"body": map[string]any{"groups": []any{map[string]any{"displayName": "Gemini Models", "buckets": []any{map[string]any{"window": "weekly", "remainingFraction": remaining, "resetTime": reset}}}}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	source := UsageSource{ID: "google", Name: "Google", Type: "google-proxy", BaseURL: server.URL + "/"}
+	accounts, err := discoverSourceAccounts(context.Background(), source, "test")
+	if err != nil || len(accounts) != 2 {
+		t.Fatalf("discovery = %+v, %v", accounts, err)
+	}
+	for i, want := range []SourceAccount{{ID: "86a8fb9b6ee7b921", Name: "first@example.com", Platform: "google-proxy", Type: "google-proxy"}, {ID: "2495a612ae81d65a", Name: "second@example.com", Platform: "google-proxy", Type: "google-proxy"}} {
+		if accounts[i] != want {
+			t.Fatalf("account %d = %+v, want %+v", i, accounts[i], want)
+		}
+		q := sourceAccountQuota(context.Background(), source, "test", accounts[i])
+		wantUsed := float64(25 + i*25)
+		if q.AccountID != want.ID || q.DisplayName != want.Name || q.Status != "measured" || q.Error != "" || len(q.Windows) != 1 || q.Windows[0].Used != wantUsed || q.Windows[0].Span != 7*24*time.Hour {
+			t.Fatalf("account quota = %+v, want used %v", q, wantUsed)
+		}
+	}
+	if first.Load() != 1 || second.Load() != 1 {
+		t.Fatalf("quota calls first=%d second=%d", first.Load(), second.Load())
+	}
+}
+
+func TestGoogleUsageSourceExplicitAuthIndex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v0/management/api-call" {
+			t.Errorf("explicit account unexpectedly requested discovery: %s", r.URL.Path)
+			http.Error(w, "discovery not available", http.StatusServiceUnavailable)
+			return
+		}
+		var request struct {
+			AuthIndex string `json:"authIndex"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.AuthIndex != "explicit-index" {
+			t.Errorf("explicit quota authIndex = %q, %v", request.AuthIndex, err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"body": map[string]any{"groups": []any{map[string]any{"displayName": "Gemini Models", "buckets": []any{map[string]any{"window": "weekly", "remainingFraction": 0.5, "resetTime": time.Now().Add(24 * time.Hour)}}}}}})
+	}))
+	defer server.Close()
+	source := UsageSource{Type: "google-proxy", Name: "Legacy Google", BaseURL: server.URL, AuthIndex: "explicit-index"}
+	accounts, err := discoverSourceAccounts(context.Background(), source, "test")
+	want := SourceAccount{ID: "explicit-index", Name: "Legacy Google", Platform: "google-proxy", Type: "google-proxy"}
+	if err != nil || len(accounts) != 1 || accounts[0] != want {
+		t.Fatalf("explicit discovery = %+v, %v", accounts, err)
+	}
+	q := sourceAccountQuota(context.Background(), source, "test", accounts[0])
+	if q.Status != "measured" || q.AccountID != "explicit-index" || len(q.Windows) != 1 || q.Windows[0].Used != 50 {
+		t.Fatalf("explicit quota = %+v", q)
+	}
+}
+
+func TestGoogleUsageSourceFailuresNeverBecomeZero(t *testing.T) {
+	for _, body := range []string{"unavailable", `{"body":{"groups":[]}}`} {
+		t.Run(body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if body == "unavailable" {
+					http.Error(w, body, http.StatusServiceUnavailable)
+					return
+				}
+				w.Write([]byte(body))
+			}))
+			defer server.Close()
+			source := UsageSource{ID: "google", Type: "google-proxy", BaseURL: server.URL}
+			if body == "unavailable" {
+				if accounts, err := discoverSourceAccounts(context.Background(), source, "test"); err == nil || len(accounts) != 0 {
+					t.Fatalf("failed discovery = %+v, %v", accounts, err)
+				}
+			}
+			q := sourceAccountQuota(context.Background(), source, "test", SourceAccount{ID: "account", Name: "account@example.com"})
+			if q.Status != "error" || q.Error == "" || len(q.Windows) != 0 || q.AccountID != "account" {
+				t.Fatalf("failure became measured zero: %+v", q)
+			}
+		})
+	}
+}
+
 func TestUsageSourcesPreserveAccountsAndSharedPools(t *testing.T) {
 	lastQuotas.Lock()
 	lastQuotas.m, lastQuotas.loaded = nil, false

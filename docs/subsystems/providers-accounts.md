@@ -39,6 +39,35 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
 3. **Sign.** For each try, `Sign` gives the request its auth. A token about to expire is refreshed first, and the rotated tokens go back to their one holder: the agent's store, or `logins.json` for an account standing behind it.
 4. **Allowance.** Usage endpoints are rate limited, so `SubscriptionUsage` caches its results: a cached copy comes back at once and a stale one is refreshed in the background. When an account's windows start again, `OnRenewed` tells the gateway so a resting account can come back: a Codex reset spent (`renewedNow`), or a reading routing takes (`Allowances`, as the agent the account's usage is read under, `claude` or `plugin:<id>`) that finds the account full till sooner than the last did (`renewedFrom`, the rule a key's reading goes by): the whole account, or a pool of some models with the whole account's windows over it. A window used below `SpentShareOf` its routing, or whose reset passed, is full no more; one full with its reset not known is full for good. A Claude account is back as soon as a new `/usage` or the reset passing shows the window it was out of started again, not when the time Claude Code's refusal named comes; its five hours started again in a week used up tells nothing. A first reading, a failed one, one read alike, or one leaving the full window out tells nothing, and a reset spent is told once, by `renewedNow`. A key's reading that finds a window it was full in (at `SpentShareOf` its routing) full no more, or full till sooner, tells it too, as agent `""` and the key's `KeyAllowanceID`, so a key out of its limit is back once the limit is raised or its usage reset; a first reading, a failed one, or one that finds it fuller tells nothing. An account refused for its quota has its agent's allowances read again at the next ask (`StaleAllowance`). A reading already out then was asked before the refusal: what it read is kept, as not read, so the ask after it lands reads again, as `StaleKeyAllowance` does for a key. Built-in Grok's own per-account cache (`grokLoginUsage`) doesn't keep such a reading at all: it goes to its caller only, so that next ask reaches xAI.
 
+## Google proxy usage accounts and shared keys
+
+A `google-proxy` usage source reads quota through the proxy's management API.
+Without `authIndex`, it discovers accounts with `GET /v0/management/auth-files`
+using the source's management credential. Only enabled `antigravity` files with
+a nonempty `auth_index` are included. That index is the stable account ID;
+the email is the display name (or the index when no email is reported), and
+discovery sorts by display name. An explicit `authIndex` retains the single-account
+behavior and does not need the auth-files endpoint.
+
+Each account's quota is fetched separately through `/v0/management/api-call`,
+with that account's index in the request's `authIndex`. The upstream request is
+`retrieveUserQuotaSummary` with the Antigravity User-Agent. Google quota groups
+keep their own 5-hour and weekly windows; a failed request or missing measurement
+is not a measured zero allowance.
+
+For a relay that exposes two API keys over the same two Google accounts, configure
+one quota pool with the discovered indexes in `accountIDs`, and refer to that
+pool from both keys' `poolRefs`. These are two access keys to one upstream pool,
+not a key-to-email binding: Magpie cannot infer which mailbox the relay selects
+for a request. Quota readings remain per account and carry both keys' references;
+they are not copied into separate independent key allowances. `PoolAllowance`
+requires fresh measured readings for every member; if one account fails or is
+unknown, the pool allowance is unknown rather than zero. This usage association
+does not change the relay's account-routing policy.
+
+Implementation: [`usage_sources_collect.go`](../../internal/provider/usage_sources_collect.go)
+and [`sub2api_usage.go`](../../internal/provider/sub2api_usage.go).
+
 ## Constraints and failure behavior
 
 - Each refresh token has exactly one holder. Vendors rotate tokens on refresh, so two copies of one token would sign each other out. `savedTokenMu` stops two requests refreshing one saved account at once.

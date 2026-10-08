@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/http"
 	"slices"
 	"sort"
 	"strconv"
@@ -75,12 +76,36 @@ func discoverSourceAccounts(ctx context.Context, source UsageSource, credential 
 			}
 		}
 		return out, nil
-	case "google-proxy", "glm", "deepseek", "traex":
-		id := "default"
-		if source.Type == "google-proxy" && source.AuthIndex != "" {
-			id = source.AuthIndex
+	case "google-proxy":
+		if source.AuthIndex != "" {
+			return []SourceAccount{{ID: source.AuthIndex, Name: source.Name, Platform: source.Type, Type: source.Type}}, nil
 		}
-		return []SourceAccount{{ID: id, Name: source.Name, Platform: source.Type, Type: source.Type}}, nil
+		var listed struct {
+			Files []struct {
+				AuthIndex string `json:"auth_index"`
+				Email     string `json:"email"`
+				Provider  string `json:"provider"`
+				Disabled  bool   `json:"disabled"`
+			} `json:"files"`
+		}
+		if err := usageJSON(ctx, http.MethodGet, strings.TrimRight(source.BaseURL, "/")+"/v0/management/auth-files", "Bearer "+credential, nil, &listed); err != nil {
+			return nil, err
+		}
+		var out []SourceAccount
+		for _, file := range listed.Files {
+			if file.Provider != "antigravity" || file.Disabled || file.AuthIndex == "" {
+				continue
+			}
+			name := file.Email
+			if name == "" {
+				name = file.AuthIndex
+			}
+			out = append(out, SourceAccount{ID: file.AuthIndex, Name: name, Platform: source.Type, Type: source.Type})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		return out, nil
+	case "glm", "deepseek", "traex":
+		return []SourceAccount{{ID: "default", Name: source.Name, Platform: source.Type, Type: source.Type}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported usage source type %q", source.Type)
 	}
@@ -109,7 +134,7 @@ func sourceAccountQuota(ctx context.Context, source UsageSource, credential stri
 			}
 		}
 	case "google-proxy":
-		usage, err = fetchGoogleQuota(ctx, source, credential)
+		usage, err = fetchGoogleQuota(ctx, source, credential, account.ID)
 	case "glm":
 		usage, err = fetchGLMQuota(ctx, source, credential)
 	case "deepseek":
