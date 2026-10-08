@@ -168,3 +168,128 @@ func TestMergeQuotaHistory(t *testing.T) {
 		t.Error("a broken file merged")
 	}
 }
+
+func poolCard(source, pool, account, name string, status string, used float64, asOf time.Time, reset time.Time) SubscriptionQuota {
+	q := SubscriptionQuota{PoolRef: pool, SourceRef: source, AccountID: account, Name: name, DisplayName: name, User: name, Status: status, Windows: []QuotaWindow{
+		{Name: "5 hours", Used: used, ResetsAt: &reset, Span: 5 * time.Hour},
+		{Name: "Gemini · 7 days", Used: used / 2, ResetsAt: &reset, Span: 7 * 24 * time.Hour},
+	}}
+	if !asOf.IsZero() {
+		q.AsOf = &asOf
+	}
+	return q
+}
+
+func poolHist(hs []QuotaHistory, source, pool, account string) *QuotaHistory {
+	for i := range hs {
+		if hs[i].SourceRef == source && hs[i].PoolRef == pool && hs[i].AccountID == account {
+			return &hs[i]
+		}
+	}
+	return nil
+}
+
+// TestQuotaHistoryPools: a usage-source pool's account (no Provider, an AsOf
+// set when its source answered) is kept by source, pool and account, at the
+// time its source gave; another account, pool or source, or a renamed pool,
+// never shares its line; stale, unknown, failed and unchanged cached readings
+// add no point; a built-in's older history is still read.
+func TestQuotaHistoryPools(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t0 := time.Date(2026, 10, 3, 8, 0, 0, 0, time.UTC)
+	reset := t0.Add(3 * time.Hour)
+	at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+
+	// an older file: a built-in's line, as before pools were kept
+	old := quotaHist{"codex|a@x.com": {"5 hours": {{At: at(-60), Left: 50}}}}
+	writeQuotaHist(old)
+
+	// measured: the point is at its AsOf, not at the call's time
+	noteQuotaHistory([]SubscriptionQuota{poolCard("relay", "max", "101", "Max", "measured", 40, at(0), reset)}, at(1))
+	// the same reading handed back from the cache: still the same point
+	noteQuotaHistory([]SubscriptionQuota{poolCard("relay", "max", "101", "Max", "measured", 40, at(0), reset)}, at(30))
+	// another account, another pool, another source: lines of their own
+	noteQuotaHistory([]SubscriptionQuota{
+		poolCard("relay", "max", "102", "Max", "measured", 10, at(2), reset),
+		poolCard("relay", "pro", "101", "Max", "measured", 20, at(2), reset),
+		poolCard("other", "max", "101", "Max", "measured", 30, at(2), reset),
+		poolCard("relay|west", "max", "101", "Max", "measured", 35, at(2), reset),
+		poolCard("relay", "west|max", "101", "Max", "measured", 25, at(2), reset),
+	}, at(3))
+	// a renamed pool is the same account
+	noteQuotaHistory([]SubscriptionQuota{poolCard("relay", "max", "101", "Max renamed", "measured", 45, at(10), reset)}, at(11))
+	// stale, unknown, failed and a pool measured with no AsOf: nothing
+	failed := poolCard("relay", "max", "101", "Max", "measured", 99, at(20), reset)
+	failed.Error = "boom"
+	noteQuotaHistory([]SubscriptionQuota{
+		poolCard("relay", "max", "101", "Max", "stale", 90, at(20), reset),
+		poolCard("relay", "max", "101", "Max", "unknown", 90, at(20), reset),
+		poolCard("relay", "max", "101", "Max", "measured", 90, time.Time{}, reset),
+		failed,
+	}, at(21))
+
+	hs := QuotaHistories(time.Time{}, "", "")
+	if h := poolHist(hs, "relay", "max", "101"); h == nil || h.Provider != "" || h.User != "" {
+		t.Fatalf("pool history = %+v", hs)
+	}
+	five := lineOf0(t, poolHist(hs, "relay", "max", "101"), "5 hours")
+	if len(five) != 2 || !five[0].At.Equal(at(0)) || five[0].Left != 60 || !five[1].At.Equal(at(10)) || five[1].Left != 55 {
+		t.Fatalf("relay/max/101 5 hours = %+v", five)
+	}
+	if five[0].ResetsAt == nil || !five[0].ResetsAt.Equal(reset) || five[0].Start == nil || !five[0].Start.Equal(reset.Add(-5*time.Hour)) {
+		t.Errorf("window = %v .. %v", five[0].Start, five[0].ResetsAt)
+	}
+	lineOf0(t, poolHist(hs, "relay", "max", "101"), "Gemini · 7 days")
+	for _, c := range []struct {
+		source, pool, account string
+		left                  float64
+	}{{"relay", "max", "102", 90}, {"relay", "pro", "101", 80}, {"other", "max", "101", 70}, {"relay|west", "max", "101", 65}, {"relay", "west|max", "101", 75}} {
+		pts := lineOf0(t, poolHist(hs, c.source, c.pool, c.account), "5 hours")
+		if len(pts) != 1 || pts[0].Left != c.left {
+			t.Errorf("%s/%s/%s = %+v, want one point of %v left", c.source, c.pool, c.account, pts, c.left)
+		}
+	}
+	// the built-in's line is kept, and the pool's lines don't answer to it
+	if pts := lineOf(t, QuotaHistories(time.Time{}, "codex", "a@x.com"), "a@x.com", "5 hours"); len(pts) != 1 || pts[0].Left != 50 {
+		t.Errorf("built-in history = %+v", pts)
+	}
+	if got := QuotaHistories(time.Time{}, "codex", "a@x.com"); len(got) != 1 {
+		t.Errorf("provider and user pick only the built-in: %+v", got)
+	}
+	if got := QuotaHistories(time.Time{}, "codex", ""); len(got) != 1 || got[0].PoolRef != "" {
+		t.Errorf("provider-only filter admitted pool entries: %+v", got)
+	}
+	if got := QuotaHistories(time.Time{}, "", "A@X.COM"); len(got) != 1 || got[0].PoolRef != "" {
+		t.Errorf("user-only filter admitted pool entries: %+v", got)
+	}
+
+	// exported and merged on another computer: the same lines, no more
+	data := QuotaHistoryData()
+	testenv.SetHome(t, t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := MergeQuotaHistory(data, at(40)); err != nil {
+		t.Fatal(err)
+	}
+	merged := QuotaHistories(time.Time{}, "", "")
+	if len(merged) != 7 {
+		t.Fatalf("merged = %+v", merged)
+	}
+	if pts := lineOf0(t, poolHist(merged, "relay", "max", "101"), "5 hours"); len(pts) != 2 {
+		t.Errorf("merged pool line = %+v", pts)
+	}
+}
+
+func lineOf0(t *testing.T, h *QuotaHistory, name string) []QuotaPoint {
+	t.Helper()
+	if h == nil {
+		t.Fatalf("no history for the account")
+	}
+	for _, l := range h.Lines {
+		if l.Name == name {
+			return l.Points
+		}
+	}
+	t.Fatalf("no %s line in %+v", name, h)
+	return nil
+}

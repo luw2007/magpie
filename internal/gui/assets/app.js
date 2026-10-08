@@ -12989,9 +12989,16 @@ function renderQuotaTrend() {
   };
 }
 
+// a pool's account is told by its pool, source and upstream account (never
+// by the provider keys bound to it, nor its display name); the rest by
+// provider and user
 function quotaHistOf(sub) {
+  if (sub.poolRef) {
+    return quotaHist?.find?.((h) => h.poolRef === sub.poolRef && (h.sourceRef || "") === (sub.sourceRef || "")
+      && (h.accountId || "") === (sub.accountId || "") && (h.provider || "") === (sub.provider || ""));
+  }
   const user = (sub.user || "").toLowerCase();
-  return quotaHist?.find?.((h) => h.provider === sub.provider && h.user === user);
+  return quotaHist?.find?.((h) => !h.poolRef && h.provider === sub.provider && h.user === user);
 }
 // the lines of sub's windows, as its card lists them, with points
 function quotaLines(sub) {

@@ -167,7 +167,11 @@ func remoteCards(ctx context.Context, p Provider, fresh bool) []SubscriptionQuot
 	}
 	out := make([]SubscriptionQuota, 0, len(r.cards))
 	for _, q := range r.cards {
-		if q.From != "" || q.Provider == "" {
+		// a usage-source pool's card has no provider, its pool is its
+		// identity (poolRef, sourceRef, accountId stay as the remote has
+		// them); it is marked as the remote's by the same "<remote>/" prefix
+		// its history gets (RemoteQuotaHistories)
+		if q.From != "" || q.Provider == "" && q.PoolRef == "" {
 			continue
 		}
 		q.Provider = p.ID + "/" + q.Provider

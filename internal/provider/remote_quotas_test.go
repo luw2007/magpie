@@ -16,6 +16,7 @@ import (
 type fakePeer struct {
 	sync.Mutex
 	cards     []SubscriptionQuota
+	histories []QuotaHistory
 	status    int
 	gets      int
 	refreshes []string // provider|user of each refresh asked
@@ -38,7 +39,11 @@ func (f *fakePeer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "POST " + RemoteRefreshPath:
 		f.refreshes = append(f.refreshes, r.URL.Query().Get("provider")+"|"+r.URL.Query().Get("user"))
 	case "GET /v1/magpie/quotas/history":
-		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": []QuotaHistory{{Provider: "codex", User: "a@x.com", Lines: []QuotaLine{{Name: "5h"}}}}})
+		hs := f.histories
+		if hs == nil {
+			hs = []QuotaHistory{{Provider: "codex", User: "a@x.com", Lines: []QuotaLine{{Name: "5h"}}}}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": hs})
 		return
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -215,5 +220,23 @@ func TestRemoteQuotaHistories(t *testing.T) {
 	hs := RemoteQuotaHistories(context.Background(), "7")
 	if len(hs) != 1 || hs[0].Provider != "office/codex" || hs[0].User != "a@x.com" {
 		t.Errorf("%+v", hs)
+	}
+}
+
+// A peer's usage-source account has no bound provider. Its card and history
+// must both survive the remote boundary with the same identity for the curve.
+func TestRemotePoolCardAndHistory(t *testing.T) {
+	peer := &fakePeer{
+		cards: []SubscriptionQuota{{PoolRef: "max", SourceRef: "relay", AccountID: "101", Name: "Relay Max", Status: "measured", Windows: []QuotaWindow{{Name: "5 hours", Used: 40}}}},
+		histories: []QuotaHistory{{PoolRef: "max", SourceRef: "relay", AccountID: "101", Lines: []QuotaLine{{Name: "5 hours", Points: []QuotaPoint{{Left: 60}}}}}},
+	}
+	remoteQuotaHome(t, peer)
+	got := RemoteCards(context.Background())
+	if len(got) != 1 || got[0].PoolRef != "max" || got[0].SourceRef != "relay" || got[0].AccountID != "101" {
+		t.Fatalf("remote pool card was lost or renamed: %+v", got)
+	}
+	hs := RemoteQuotaHistories(context.Background(), "7")
+	if len(hs) != 1 || hs[0].Provider != got[0].Provider || hs[0].PoolRef != got[0].PoolRef || hs[0].SourceRef != got[0].SourceRef || hs[0].AccountID != got[0].AccountID || hs[0].Lines[0].Points[0].Left != 60 {
+		t.Fatalf("remote pool card/history mismatch: card=%+v history=%+v", got, hs)
 	}
 }

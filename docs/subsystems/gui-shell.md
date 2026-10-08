@@ -95,6 +95,11 @@ drafts; selecting a request or replay opens Live, while creating a group
 opens Routing groups. Hidden stages stop their animation loop, but trace
 polling continues so Requests stays current.
 
+Usage curves (`quotaHistOf` in `app.js`) match a pool card to its history by
+`poolRef`, `sourceRef` and `accountId`, and other cards by `provider` and `user`;
+a card with no matching history draws no curve, and a stale card draws only the
+history it has, never a point made from its figures.
+
 ## Verification
 
 ```sh

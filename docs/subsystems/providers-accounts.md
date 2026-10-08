@@ -65,6 +65,20 @@ requires fresh measured readings for every member; if one account fails or is
 unknown, the pool allowance is unknown rather than zero. This usage association
 does not change the relay's account-routing policy.
 
+Quota history (`quota-history.json`, `GET /api/usage/quotas/history`) keeps these
+accounts' trend lines too, under the pool's own identity: source ID, pool ID and
+upstream account ID (`QuotaHistory.sourceRef/poolRef/accountId`, empty
+`provider`/`user`), never a bound provider key or the display name, so a rename
+keeps the line and the same upstream ID in another source or pool stays apart.
+Only a reading with `Status == "measured"` and no error is a point, placed at
+the `AsOf` its source gave; stale, unknown and failed cards, and the same reading
+handed back from a cache (same `AsOf`), add nothing and the past stays drawn.
+Built-in subscriptions keep their `provider|user` keys, so older files read as before.
+A remote magpie shows these pool cards and their history too: `remoteCards` keeps a
+card with a `poolRef` though it has no provider, and both the card and its history
+(`RemoteQuotaHistories`) get the same `<remote id>/` provider prefix, with
+`poolRef`/`sourceRef`/`accountId` untouched, so the curve matches on all four.
+
 Implementation: [`usage_sources_collect.go`](../../internal/provider/usage_sources_collect.go)
 and [`sub2api_usage.go`](../../internal/provider/sub2api_usage.go).
 

@@ -204,3 +204,103 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
   }
 }
+
+// A usage-source pool's account (sub2api / Google / GLM: no provider, told by
+// poolRef + sourceRef + accountId) draws its own history; another pool or
+// account with the same ID never shares a line; a stale card shows the real
+// past, its legend the last real reading, not the card's figure now; a pool
+// with no history has no curve; the trend pick turns pool curves too.
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: usage-source pool cards draw their own history`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    const now = Date.now();
+    const r5 = now + 2 * H, rw = now + 3 * 24 * H;
+    const pool = (poolRef, accountId, displayName, status, used, extra = {}) => ({
+      poolRef, sourceRef: "relay", accountId, name: displayName, displayName, user: displayName, status,
+      asOf: iso(now - (status === "measured" ? 5e3 : 20 * 60e3)),
+      windows: [{ name: "Gemini · 5 hours", used, resetsAt: iso(r5), span: 5 * H }, { name: "Gemini · 7 days", used, resetsAt: iso(rw), span: 168 * H }], ...extra,
+    });
+    const line = (name, lefts, reset, span) => ({ name, points: lefts.map((left, i) => ({ at: iso(now - (lefts.length - i) * H), left, start: iso(reset - span), resetsAt: iso(reset) })) });
+    const history = (poolRef, accountId, five, week) => ({ poolRef, sourceRef: "relay", accountId, lines: [line("Gemini · 5 hours", five, r5, 5 * H), line("Gemini · 7 days", week, rw, 168 * H)] });
+    const data = {
+      quotas: [
+        pool("max", "101", "Relay Max", "measured", 40),
+        pool("pro", "101", "Relay Pro", "measured", 20),
+        pool("more", "101", "Relay More", "measured", 30),
+        pool("google", "a", "Google Alice", "measured", 10),
+        pool("google", "b", "Google Bob", "measured", 80),
+        pool("glm", "team", "GLM Team", "measured", 75, { sourceRef: "glm-source", windows: [{ name: "Weekly", used: 75, resetsAt: iso(rw), span: 168 * H }] }),
+        pool("remote", "101", "Remote Relay Max", "measured", 45, { provider: "office/", sourceRef: "remote-relay" }),
+        pool("old", "7", "Relay Old", "stale", 90),
+        pool("none", "9", "Relay None", "measured", 10),
+      ],
+      history: [
+        { ...history("max", "101", [1, 1], [1, 1]), sourceRef: "other" }, // wrong source sorts first
+        { ...history("max", "101", [3, 3], [3, 3]), provider: "office/" }, // identical source/pool/account from remote
+        history("max", "102", [2, 2], [2, 2]), // wrong account in the same pool
+        history("max", "101", [90, 80, 70], [95, 92, 90]),
+        history("pro", "101", [60, 55, 50], [85, 84, 83]),
+        history("more", "101", [65, 60, 45], [75, 70, 65]),
+        history("google", "a", [85, 80, 75], [75, 70, 65]),
+        history("google", "b", [45, 40, 35], [50, 45, 40]),
+        { poolRef: "glm", sourceRef: "glm-source", accountId: "team", lines: [line("Weekly", [60, 55, 50], rw, 168 * H)] },
+        { poolRef: "remote", sourceRef: "remote-relay", accountId: "101", provider: "office/", lines: [line("Gemini · 5 hours", [75, 70, 65], r5, 5 * H)] },
+        history("old", "7", [30, 25, 20], [40, 38, 35]),
+      ],
+    };
+    const page = await (await browser.newContext({ viewport: { width: 1440, height: 1200 }, reducedMotion: "reduce" })).newPage();
+    page.setDefaultTimeout(5000);
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.route("**/*", serve("en", "light", false, data));
+    await page.goto("http://magpie.test/?view=usage");
+    const cardOf = (name) => page.locator(".subscription-card").filter({ has: page.locator(".subscription-head > b", { hasText: new RegExp(`^${name}$`) }) });
+    const legend = async (name) => {
+      const card = cardOf(name);
+      await card.locator(".quota-curve").waitFor();
+      return card.locator(".quota-curve .qc-key").allTextContents();
+    };
+    // the figures are the history's last reading, per pool: 60 / 90 left
+    // would be the card's own, and a point made from it isn't drawn
+    assert.deepEqual(await legend("Relay Max"), ["Gemini · 5 hours70%", "Gemini · 7 days90%"]);
+    assert.deepEqual(await legend("Relay Pro"), ["Gemini · 5 hours50%", "Gemini · 7 days83%"]);
+    assert.deepEqual(await legend("Relay More"), ["Gemini · 5 hours45%", "Gemini · 7 days65%"]);
+    assert.deepEqual(await legend("Google Alice"), ["Gemini · 5 hours75%", "Gemini · 7 days65%"]);
+    const google = cardOf("Google Alice");
+    await google.locator(".subscription-account", { hasText: "Google Bob" }).locator(".quota-acct-fold").evaluate((button) => button.click());
+    assert.deepEqual(await google.locator(".quota-curve .qc-key").allTextContents(), [
+      "Gemini · 5 hours75%", "Gemini · 7 days65%", "Gemini · 5 hours35%", "Gemini · 7 days40%",
+    ], "two Google accounts draw independent 5-hour and 7-day windows");
+    assert.deepEqual(await legend("GLM Team"), ["Weekly50%"]);
+    assert.deepEqual(await legend("Remote Relay Max"), ["Gemini · 5 hours65%"]);
+    assert.deepEqual(await legend("Relay Old"), ["Gemini · 5 hours20%", "Gemini · 7 days35%"], "a stale card keeps its real past, not a new reading");
+    const max = cardOf("Relay Max").locator(".quota-curve");
+    assert.equal(await max.locator("path.qc-line").count(), 2);
+    assert.equal(await max.locator("line.qc-now").count(), 1);
+    for (const name of ["Relay Pro", "Relay More", "Google Alice", "GLM Team", "Remote Relay Max", "Relay Old"]) {
+      assert.ok(await cardOf(name).locator(".quota-curve path.qc-line").count() > 0, `${name} renders SVG`);
+    }
+    assert.equal(await cardOf("Relay None").locator(".quota-curve").count(), 0, "no history, no curve");
+    if (process.env.ARTIFACT_DIR) {
+      await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
+      await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-custom-pool-cycle.png`), fullPage: true });
+    }
+    // the trend pick is there for pools alone, and turns them all off and back
+    const pick = page.locator("#quotaHead #quotaTrend");
+    assert.equal(await pick.textContent(), "Trends: Cycle");
+    await pick.click();
+    await page.locator(".sess-menu .pm-item", { hasText: "Off" }).click();
+    assert.equal(await page.locator(".quota-curve").count(), 0);
+    if (process.env.ARTIFACT_DIR) {
+      await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-custom-pool-off.png`), fullPage: true });
+    }
+    await pick.click();
+    await page.locator(".sess-menu .pm-item", { hasText: "2 days" }).click();
+    assert.equal(await max.locator(".qc-range").textContent(), "2 days");
+    if (process.env.ARTIFACT_DIR) {
+      await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-custom-pool-2days.png`), fullPage: true });
+    }
+    assert.deepEqual(errors, []);
+  });
+}

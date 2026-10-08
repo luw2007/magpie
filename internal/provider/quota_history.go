@@ -7,9 +7,13 @@ package provider
 // and when it starts again — so the Usage page can draw the cycle's curve
 // against an even burn, and the tray its current cycle's line.
 //
-// Kept in quota-history.json, by provider and account name, and by window:
+// Kept in quota-history.json, by provider and account name (a usage-source
+// pool's account by its source, pool and upstream account ID, "pool:" and
+// their JSON), and by window:
 // the figures only — no token, no prompt, nothing else of the vendor's. A
-// reading kept from before (AsOf) or failed isn't a new one; a window with no
+// reading kept from before (AsOf) or failed isn't a new one — a pool's is
+// new only when measured (Status) just then, at the AsOf its source gave;
+// a window with no
 // limit, or one set aside, has nothing to draw. Points come at least
 // quotaHistGap apart within a cycle (a nearer one moves the last instead),
 // and a run of the same figure is its first and last point only. A cycle
@@ -62,11 +66,16 @@ type QuotaLine struct {
 	Points []QuotaPoint `json:"points"`
 }
 
-// QuotaHistory is one account's windows over time. User is lowercased.
+// QuotaHistory is one account's windows over time. User is lowercased. A
+// usage-source pool's account is named by PoolRef, SourceRef and AccountID
+// (Provider and User empty), never by a provider it is bound to.
 type QuotaHistory struct {
-	Provider string      `json:"provider"`
-	User     string      `json:"user"`
-	Lines    []QuotaLine `json:"lines"`
+	Provider  string      `json:"provider"`
+	User      string      `json:"user"`
+	PoolRef   string      `json:"poolRef,omitempty"`
+	SourceRef string      `json:"sourceRef,omitempty"`
+	AccountID string      `json:"accountId,omitempty"`
+	Lines     []QuotaLine `json:"lines"`
 }
 
 // quotaHist is the file: account ("provider|user") → window → points.
@@ -213,6 +222,44 @@ func (h quotaHist) prune(now time.Time) {
 
 func quotaHistKey(provider, user string) string { return provider + "|" + strings.ToLower(user) }
 
+// poolKeyPrefix starts the key of a usage-source pool's account; the rest is
+// the JSON of [source, pool, account], as keepLast names it, so ids holding
+// "|" can't run into one another and a replaced source starts its own line.
+const poolKeyPrefix = "pool:"
+
+func quotaPoolHistKey(sourceRef, poolRef, accountID string) string {
+	b, _ := json.Marshal([]string{sourceRef, poolRef, accountID})
+	return poolKeyPrefix + string(b)
+}
+
+// quotaHistReading is where q is kept and when it was read, if it is a
+// new reading. A subscription's is one not kept from before (no AsOf); a
+// pool's account is one measured just now: its AsOf is when the source
+// answered, and stale, unknown or failed ones (a reading kept from before
+// comes back stale) are not readings.
+func quotaHistReading(q SubscriptionQuota, now time.Time) (key string, at time.Time, ok bool) {
+	if q.Error != "" {
+		return "", time.Time{}, false
+	}
+	at = now
+	if q.PoolRef != "" {
+		if q.Status != "measured" || q.AsOf == nil {
+			return "", time.Time{}, false
+		}
+		if !q.AsOf.After(now) {
+			at = *q.AsOf
+		}
+		return quotaPoolHistKey(q.SourceRef, q.PoolRef, q.AccountID), at, true
+	}
+	if q.AsOf != nil || q.Provider == "" {
+		return "", time.Time{}, false // a reading kept from before isn't a new one
+	}
+	if q.ReadAt != nil && !q.ReadAt.After(now) {
+		at = *q.ReadAt
+	}
+	return quotaHistKey(q.Provider, q.User), at, true
+}
+
 // noteQuotaHistory keeps what each window among qs says, at when it was
 // read (ReadAt), or now: a reading handed back again from a cache (a
 // Claude account's, kept until Claude Code tells it again) keeps its time
@@ -223,12 +270,9 @@ func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 	var h quotaHist
 	changed := false
 	for _, q := range qs {
-		if q.Error != "" || q.AsOf != nil || q.Provider == "" {
-			continue // a reading kept from before isn't a new one
-		}
-		at := now
-		if q.ReadAt != nil && !q.ReadAt.After(now) {
-			at = *q.ReadAt
+		key, at, ok := quotaHistReading(q, now)
+		if !ok {
+			continue
 		}
 		for _, w := range q.Windows {
 			p, ok := pointOf(w, at, now)
@@ -238,7 +282,6 @@ func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 			if h == nil {
 				h = readQuotaHist()
 			}
-			key := quotaHistKey(q.Provider, q.User)
 			if h[key] == nil {
 				h[key] = map[string][]QuotaPoint{}
 			}
@@ -335,11 +378,20 @@ func QuotaHistories(since time.Time, provider, user string) []QuotaHistory {
 	}
 	out := []QuotaHistory{}
 	for _, key := range slices.Sorted(maps.Keys(h)) {
-		p, u, _ := strings.Cut(key, "|")
-		if provider != "" && p != provider || user != "" && u != strings.ToLower(user) {
-			continue
+		a := QuotaHistory{Lines: []QuotaLine{}}
+		if rest, ok := strings.CutPrefix(key, poolKeyPrefix); ok {
+			var id []string
+			if json.Unmarshal([]byte(rest), &id) != nil || len(id) != 3 || provider != "" || user != "" {
+				continue
+			}
+			a.SourceRef, a.PoolRef, a.AccountID = id[0], id[1], id[2]
+		} else {
+			p, u, _ := strings.Cut(key, "|")
+			if provider != "" && p != provider || user != "" && u != strings.ToLower(user) {
+				continue
+			}
+			a.Provider, a.User = p, u
 		}
-		a := QuotaHistory{Provider: p, User: u, Lines: []QuotaLine{}}
 		for _, name := range slices.Sorted(maps.Keys(h[key])) {
 			pts := h[key][name]
 			i, _ := slices.BinarySearchFunc(pts, since, func(p QuotaPoint, t time.Time) int { return p.At.Compare(t) })
