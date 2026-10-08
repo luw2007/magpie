@@ -129,7 +129,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const key = row("Sub2API");
       assert.equal(await key.locator(".bar i").evaluate((i) => i.style.width), "10%");
       assert.equal(await key.evaluate((li) => li.classList.contains("nobar")), false);
-      // a provider's own row is under its name, named by its model
+      // a provider's own row is under its name, named by its model (Requests pane)
+      await openPane(page, "requests");
       const act = page.locator(".rt-prov", { hasText: "Sub2API" }).locator("xpath=following-sibling::div[contains(@class, 'rt-act')][1]");
       await act.locator(".st", { hasText: "80 / 800" }).waitFor();
       const st = (await act.locator(".st").textContent()).trim();
@@ -161,7 +162,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const key = row("Kimi Code (China)");
         assert.equal(await key.locator(".bar i").evaluate((i) => i.style.width), "49%");
         assert.equal(await key.evaluate((li) => li.classList.contains("nobar")), false);
-        // its own row under its name says what is used and when it renews
+        // its own row under its name says what is used and when it renews (Requests pane)
+        await openPane(page, "requests");
         const act = page.locator(".rt-prov", { hasText: "Kimi Code (China)" }).locator("xpath=following-sibling::div[contains(@class, 'rt-act')][1]");
         await act.locator(".st", { hasText: "49%" }).waitFor();
         const st = (await act.locator(".st").textContent()).trim();

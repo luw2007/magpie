@@ -74,8 +74,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the mode in the provider editor's words
       await page.locator(".rt-hub i").filter({ hasText: chip[lang] }).waitFor();
       assert.equal((await page.locator(".rt-hub i").textContent()).trim(), chip[lang]);
-      // the Accounts and keys panel's heading names the provider's routing the same way
+      // the Accounts and keys panel (Requests pane) names the provider's routing the same way
+      await openPane(page, "requests");
       await page.locator(".rt-prov span").filter({ hasText: chip[lang] }).first().waitFor();
+      await openPane(page, "live");
       const say = (key, vars = {}) => page.evaluate(([lang, key, vars]) => ((lang !== "en" && I18N[lang]?.[key]) || key).replace(/\{(\w+)\}/g, (_, k) => vars[k]), [lang, key, vars]);
       assert.equal((await page.locator(".rt-mode").textContent()).trim(),
         await say("Requests spread over the keys by the weight set beside each: a key weighing 3 takes three requests for every one a key weighing 1 takes, evenly over a few requests. One that fails is passed over while it rests, and the others share its requests; a conversation stays with its key as Stays says."));

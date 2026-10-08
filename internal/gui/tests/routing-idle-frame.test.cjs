@@ -175,7 +175,9 @@ for (const engine of engines) {
     for (const [way, how] of Object.entries(hiddenWays)) {
       test(`${engine} ${lang}: hiding a running replay through ${way} ends it and stops its frames`, async t => {
         const { page, errors } = await routingPage(t, engine, lang, [1, 2, 3, 4, 5].map(req));
+        await openPane(page, "requests"); // the replay-all button is in the Requests pane's head
         await page.getByRole("button", { name: lang === "zh" ? "全部重放" : "Replay them all", exact: true }).click();
+        await openPane(page, "live"); // the replay plays on the Live stage
         await page.waitForFunction(() => !document.querySelector(".rt-replay").hidden && document.querySelectorAll(".pkt").length > 0);
         await how.hide(page);
         // Check the bar's own hidden flag, not visibility inherited from Agents.

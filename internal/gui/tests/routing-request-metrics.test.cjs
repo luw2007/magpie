@@ -144,6 +144,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(boxes.meta.left >= boxes.to.right - 1 || boxes.meta.top >= boxes.to.bottom - 1, `metadata overlaps destination at ${width}px`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `horizontal page overflow at ${width}px`);
         if (width === 480) {
+          // At this width the sticky tabs can cover Metrics while scrolled.
+          // Wheel over the outer view's gutter, not its independently scrolling
+          // request list; WebKit may still be completing the prior scroll.
+          await page.mouse.move(470, 400);
+          for (let attempt = 0; attempt < 4; attempt++) {
+            if (await page.locator("#view-routing").evaluate((v) => v.scrollTop === 0)) break;
+            await page.mouse.wheel(0, -3000);
+            await page.waitForTimeout(150);
+          }
+          assert.equal(await page.locator("#view-routing").evaluate((v) => v.scrollTop), 0,
+            "the reader can wheel the outer Routing view to its top");
           await page.locator("#rtMetrics").click();
           const menu = page.locator(".rt-metric-menu");
           const cost = menu.getByRole("menuitemcheckbox", { name: lang === "zh" ? "费用" : "Cost", exact: true });

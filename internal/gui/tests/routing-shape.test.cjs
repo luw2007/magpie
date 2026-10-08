@@ -90,7 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(story, JSON.stringify(steps));
       assert(story.includes(want[lang].rest) && story.includes("422"), story);
       assert(!steps.some((s) => s.includes("wouldn't fix") || s.includes("换账号也无法解决")), JSON.stringify(steps));
-      await openPane(page, "requests");
+      await openPane(page, "live"); // the failed try's tag sits on its row in the story
       const text = await page.locator("body").innerText();
       assert(text.includes(want[lang].tag), "no tag " + want[lang].tag);
       assert.deepEqual(errors, []);

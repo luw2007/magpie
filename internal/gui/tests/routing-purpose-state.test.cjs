@@ -68,10 +68,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, feed));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       const counts = () => page.locator("#rt .rt-stats b").allTextContents();
-      const story = async (id) => page.waitForFunction((id) => {
+      const story = async (id) => { await openPane(page, "live"); await page.waitForFunction((id) => {
         const row = document.querySelector('.rt-req[aria-pressed="true"]');
         return row?.textContent.includes("model-" + id) && document.querySelector(".rt-steps")?.textContent.includes("model-" + id);
-      }, id);
+      }, id); };
       const choose = async (value) => {
         await openPane(page, "requests");
         await click(page, page.locator("#rtPurpose"));

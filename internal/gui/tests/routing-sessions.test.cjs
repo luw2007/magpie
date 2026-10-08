@@ -455,6 +455,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator(".rt-group-by button").nth(1).click();
         // openRoute loads the full day, then appends a row outside its 2,000-row page.
         await page.evaluate(({ id, time }) => window.openRoute(id, time), extra);
+        await openPane(page, "requests"); // openRoute shows the request on Live
         await page.locator(".rt-req").nth(2000).waitFor();
         await page.evaluate(() => window.dispatchEvent(new Event("focus")));
         await page.waitForFunction(() => [...document.querySelectorAll(".rt-session .nm")].some((e) => e.textContent === "Codex · Applied opened-chat"));

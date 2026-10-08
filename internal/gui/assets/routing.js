@@ -2583,7 +2583,7 @@
   // for the providers' models), so it sits over the groups rather than in
   // one group's editor (PAMI on Discord)
   const gNames = el("div", "rt-gnames");
-  const pools = el("div", "rt-gsec");
+  const pools = el("div", "rt-psec");
   pools.append(pHead, pList);
   gsec.append(gHead, gFound, gNames, gList);
   more.append(gsec, pools);

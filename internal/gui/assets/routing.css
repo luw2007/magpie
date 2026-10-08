@@ -292,11 +292,11 @@ button.rt-session { cursor: pointer; }
 .rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); animation: rtlive 1.8s infinite; --fg: var(--green); }
 @media (prefers-reduced-motion: reduce) { .rt-livedot { animation: none; } }
 /* routing groups, and the providers routing over several of their own */
-.rt-gsec { display: grid; gap: 6px; margin-top: 16px; }
-.rt-gsec .row-head .note { margin-right: 6px; }
+.rt-gsec, .rt-psec { display: grid; gap: 6px; margin-top: 16px; }
+.rt-gsec .row-head .note, .rt-psec .row-head .note { margin-right: 6px; }
 /* the groups filtered by name and model, beside Select and New group */
 .rt-gsec .rt-gfilter { width: 190px; min-width: 0; flex: 0 1 190px; height: 24px; margin: 0 6px 0 4px; }
-.rt-gsec .rt-pools { margin-bottom: 0; }
+.rt-psec .rt-pools { margin-bottom: 0; }
 .rt-gsec .row-head + .list + .row-head { margin-top: 8px; }
 .rt-groups > *, .rt-pools > * { border-top: 1px solid var(--line-2); }
 .rt-groups > :first-child, .rt-pools > :first-child { border-top: 0; }
@@ -412,9 +412,9 @@ button.rt-session { cursor: pointer; }
   body.web .rt-stats { flex-wrap: wrap; gap: 10px 16px; }
   body.web #view-routing > .row-head .note { flex: 1 1 100%; order: 1; margin: 0; }
 }
-.rt-gsec .segs .opt { white-space: nowrap; }
+.rt-gsec .segs .opt, .rt-psec .segs .opt { white-space: nowrap; }
 @container (max-width: 520px) {
-  .rt-gsec .row-head .note { display: none; }
+  .rt-gsec .row-head .note, .rt-psec .row-head .note { display: none; }
   .rt-gsec .rt-gfilter { flex: 1 1 auto; width: auto; }
   .rt-gedit { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .rt-gedit label { text-align: left; padding-top: 8px; }
@@ -612,7 +612,7 @@ button.rt-session { cursor: pointer; }
     .rt-accts em { grid-column: 2; white-space: normal; }
     .rt-accts .bar { grid-column: 2; }
     .rt-stats { gap: 14px; }
-    .rt-gsec .row-head .note { display: none; }
+    .rt-gsec .row-head .note, .rt-psec .row-head .note { display: none; }
     .rt-gedit { grid-template-columns: minmax(0, 1fr); gap: 4px; }
     .rt-gedit label { text-align: left; padding-top: 8px; }
     .rt-gedit .segs .opt { padding-left: 9px; padding-right: 9px; }

@@ -84,9 +84,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const group = page.locator(".rt-group").first();
       await group.waitFor();
 
-      // the compaction in the trace, told as one
+      // the compaction in the trace, told as one (the story is on the Live stage)
+      await openPane(page, "live");
       await page.waitForFunction((s) => document.documentElement.innerText.includes(s), w.story);
       const said = await page.evaluate(() => document.documentElement.innerText);
+      await openPane(page, "groups");
       assert(said.includes(w.small), "the model passed over is named");
 
       // the group's rule, in words

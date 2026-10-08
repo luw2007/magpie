@@ -104,6 +104,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await t.test("Live and a day, picked in turn, stay under the pointer", async () => {
       await reset(1440);
       await dayButtons.nth(1).click(); // the day's requests, the list full
+      // the page above the date bar (the stage, on the old combined page) is some height the reader scrolls past
+      await page.locator("#rtMore").evaluate((m) => { const s = document.createElement("div"); s.style.cssText = "height:900px"; m.prepend(s); });
       await settle(page);
       // down to the list's end: Live, with none, leaves the page shorter
       await scrollTo(".rt-days", 0);
@@ -194,6 +196,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await t.test("the room kept for a click goes as the reader scrolls back", async () => {
       await reset(1440);
       await dayButtons.nth(1).click();
+      await page.locator("#rtMore").evaluate((m) => { const s = document.createElement("div"); s.style.cssText = "height:900px"; m.prepend(s); });
+      await page.locator(".rt-req").first().waitFor();
       await settle(page);
       await scrollTo(".rt-days", 0);
       await dayButtons.nth(0).click(); // Live: none, the page shorter

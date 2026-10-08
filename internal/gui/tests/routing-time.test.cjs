@@ -86,9 +86,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const group = page.locator(".rt-group").first();
       await group.waitFor();
 
-      // the trace: the rule that matched, told by its hours
+      // the trace: the rule that matched, told by its hours (the story is on the Live stage)
+      await openPane(page, "live");
       await page.waitForFunction((s) => document.documentElement.innerText.includes(s), w.cond);
       const said = await page.evaluate(() => document.documentElement.innerText);
+      await openPane(page, "groups");
       assert(said.includes(w.story), `the rule that matched is told: ${said.slice(0, 400)}`);
 
       // the group's rule, in words

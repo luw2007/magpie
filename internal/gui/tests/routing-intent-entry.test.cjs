@@ -78,7 +78,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const w = words[lang];
     for (const width of [1100, 440]) {
       test(`${engine} ${lang} ${width}: a rule by intent has its own entry`, async (t) => {
-        const height = 1400;
+        // a window shorter than the editor, as the reader's usually is: the page
+        // scrolls, and what is clicked is held under the pointer (a page at its
+        // top stays there instead, by design)
+        const height = 700;
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width, height } })).newPage();

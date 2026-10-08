@@ -143,7 +143,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // and every request is listed
         await openPane(page, "requests");
         await page.waitForFunction((n) => document.querySelectorAll(".rt-req").length === n, 1 + DONE + LIVE);
-        await openPane(page, "live");
+        // the replay-all button sits in the Requests pane's head
         assert.equal(await page.getByRole("button", { name: words[lang] }).count(), 1);
         assert.deepEqual(errors, []);
       });
