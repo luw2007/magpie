@@ -17,6 +17,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -184,7 +185,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the window opened so: that request picked, its story told, and the
       // address no longer asking for it
       const win = await open("http://magpie.test/?view=routing&req=101", { width: 1100, height: 760 }, []);
-      await win.locator(".rt-req").nth(routes.length - 1).waitFor();
+      await openPane(win, "live");
+      await win.locator(".rt-log-head").waitFor();
       await win.waitForFunction(() => !location.search.includes("req="));
       const picked = await win.locator('.rt-req[aria-pressed="true"]').evaluateAll((rs) => rs.map((r) => r.querySelector(".to").textContent));
       assert.equal(picked.length, 1);

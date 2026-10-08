@@ -12,6 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const iso = (ms) => new Date(ms).toISOString();
@@ -113,7 +114,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await browser.close();
         });
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "requests");
         await page.locator(".rt-req").first().waitFor();
+        await openPane(page, "live");
         await page.waitForTimeout(2500); // the first request's play ends
 
         // out of sight: many requests come and are answered, one update
@@ -131,13 +134,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           window.__look = setInterval(() => { window.__most = Math.max(window.__most, document.querySelectorAll(".rt-sky .rt-flier").length); }, 40);
         });
         await how.show(page);
+        await openPane(page, "live");
         await page.waitForTimeout(3000);
         const most = await page.evaluate(() => { clearInterval(window.__look); return window.__most; });
         // at most the ones under way: a carrier each, and one let go
         assert(most <= 2 * LIVE, `${most} magpies flew at once after coming back (at most ${2 * LIVE})`);
         assert(most >= 1, "the requests still under way must fly");
         // and every request is listed
+        await openPane(page, "requests");
         await page.waitForFunction((n) => document.querySelectorAll(".rt-req").length === n, 1 + DONE + LIVE);
+        await openPane(page, "live");
         assert.equal(await page.getByRole("button", { name: words[lang] }).count(), 1);
         assert.deepEqual(errors, []);
       });

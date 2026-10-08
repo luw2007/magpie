@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -82,6 +83,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (error) => errors.push(error.message));
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(routes.length - 1).waitFor();
       const sealed = lang === "zh" ? /任务已加密.*只能使用 ChatGPT/ : /task is encrypted.*Only ChatGPT/;
       const excluded = lang === "zh" ? /其他供应商（如 Claude）不参与选择/ : /other providers \(such as Claude\) are excluded/;
@@ -99,12 +101,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.doesNotMatch(await page.locator(".rt-steps li.why").first().textContent(), allowance);
       assert.doesNotMatch(await story(), lang === "zh" ? /平常的方式路由/ : /routes it as usual/);
 
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(1).click();
       await page.waitForFunction((pattern) => !new RegExp(pattern).test(document.querySelector(".rt-steps").textContent), parent.source);
       assert.match(await story(), sealed);
       assert.doesNotMatch(await story(), parent);
       assert.match(await story(), allowance);
 
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(2).click();
       await page.waitForFunction(() => document.querySelector(".rt-steps li.why").textContent.includes("enterprise@example.com"));
       assert.doesNotMatch(await story(), sealed);
@@ -112,20 +116,24 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(await story(), allowance);
       assert.doesNotMatch(await story(), lang === "zh" ? /周剩余额度/ : /its week left/);
 
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(3).click();
       await page.waitForFunction(() => !document.querySelector(".rt-steps li.kind").textContent.includes("magpie"));
       assert.doesNotMatch(await story(), selected);
       assert.doesNotMatch(await story(), sealed);
 
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(4).click();
       await page.waitForFunction(() => document.querySelector(".rt-steps li.kind").textContent.includes("magpie"));
       assert.doesNotMatch(await story(), sealed);
       assert.doesNotMatch(await story(), parent);
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(5).click();
       await page.waitForFunction(() => document.querySelector(".rt-steps").textContent.includes("12"));
       assert.match(await story(), sealed);
       assert.match(await story(), lang === "zh" ? /没有能接这次请求的账号或 Key/ : /no account or key that can take this request/);
       assert.doesNotMatch(await story(), lang === "zh" ? /候选/ : /eligible candidate/);
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(6).click();
       await page.waitForFunction((pattern) => !new RegExp(pattern).test(document.querySelector(".rt-steps").textContent), selected.source);
       assert.match(await story(), sealed);

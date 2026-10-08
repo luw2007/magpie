@@ -13,6 +13,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const now = new Date();
 const at = (i) => new Date(now.getTime() - (i + 1) * 60e3).toISOString();
@@ -78,6 +79,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-act").first().waitFor();
       await page.waitForTimeout(300);
 

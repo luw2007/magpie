@@ -14,6 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = Date.now();
@@ -134,6 +135,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, posts));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "live");
 
       // the one at the back says so, and since when
       const stage = page.locator("li", { has: page.locator(".who", { hasText: "one@example.test" }) }).first();
@@ -143,6 +145,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForFunction((s) => document.body.innerText.includes(s), zh ? "已排到最后" : "so it went to the back");
 
       // the providers with several accounts: set at once
+      await openPane(page, "pools");
       const pool = page.locator(".rt-pool", { hasText: "WorkBuddy AI" });
       await pool.waitFor();
       const y = await page.evaluate(() => document.scrollingElement.scrollTop);
@@ -150,8 +153,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(200);
       const sent = posts.find((p) => p.path === "/api/provider/sink");
       assert.deepEqual(sent?.body, { id: "workbuddy-ai", sink: true });
+      assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), y, "a pool click never scrolls the page");
 
       // the group's card says it; its editor has it, kept by the Save
+      await openPane(page, "groups");
       const card = page.locator(".rt-group", { hasText: "GLM" });
       await card.locator(".tag", { hasText: w.tag }).waitFor();
       await card.locator("button", { hasText: w.edit }).click();
@@ -173,7 +178,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await label.isVisible(), false, "in turn: nothing to pick");
       await ed.locator(".segs .opt", { hasText: new RegExp(`^${w.order}$`) }).first().click();
       assert.equal(await label.isVisible(), true);
-      assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), y, "a click never scrolls the page");
       assert.equal(await page.locator("select").count(), 0, "no native select");
       const b = ed.locator("button.primary", { hasText: w.save });
       await page.mouse.move(550, 600); // the reader scrolls to it

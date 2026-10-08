@@ -10,6 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = Date.now();
@@ -87,10 +88,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // the Routing page: the stage, and what each account did
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "live");
         const stage = (who) => page.locator("li", { has: page.locator(".who", { hasText: who }) }).first();
         await stage("李雷").locator("em").filter({ hasText: w.stage }).waitFor();
         assert.equal(squash(await stage("李雷").locator("em").textContent()), w.stage);
         assert.equal(await stage("李雷").locator(".bar i").evaluate((i) => i.style.width), left ? "29%" : "71%");
+        await openPane(page, "requests");
         const act = page.locator(".rt-act", { hasText: "李雷" }).first();
         await act.waitFor();
         assert.ok(squash(await act.locator(".st").textContent()).startsWith(w.stage), await act.locator(".st").textContent());

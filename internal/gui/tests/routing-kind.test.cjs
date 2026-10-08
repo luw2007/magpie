@@ -9,6 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -70,6 +71,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").nth(kinds.length - 1).waitFor();
 
@@ -82,20 +84,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       assert(look.after && look.shown && look.model === "gpt-6-luna", JSON.stringify(look));
 
-      // the story says what it was, and the click leaves the row where it is
+      // the story says what it was
       const row = page.locator(".rt-req").nth(0);
-      const was = await row.evaluate((e) => e.getBoundingClientRect().top);
       await row.click();
       await page.waitForTimeout(600);
-      assert(Math.abs((await row.evaluate((e) => e.getBoundingClientRect().top)) - was) <= 1, "picking the request moved the page");
       const story = page.locator(".rt-steps li.kind");
       assert.equal(await story.locator(".kind").textContent(), want[lang][0]);
       assert.match(await story.textContent(), lang === "zh" ? /不属于对话轮次/ : /not as a turn of the conversation/);
       // Codex's home-page suggestions say where Codex turns them off (#705)
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(kinds.indexOf("ambient_suggestions")).click();
       await page.waitForTimeout(300);
       assert.match(await story.textContent(), lang === "zh" ? /设置 › 配置 › 提示词建议/ : /Settings › Configuration › Suggested prompts/);
       // a turn has no tag in its story
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(kinds.length - 1).click();
       await page.waitForTimeout(300);
       assert.equal(await page.locator(".rt-steps li.kind").count(), 0);

@@ -1,17 +1,12 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Requests coming in never move the Routing page (Jerell.OvO on Discord
-// #general: as the request log refreshed, the page kept scrolling up, so
-// the routing groups further down could not be read or edited). With the
-// view scrolled down to the groups and one open in its editor, a name being
-// typed, new requests stream in from the trace — new agents and accounts on
-// the stage, a failure and a retry in the story, the list growing — and the
-// groups stay where they are on the screen, the view's scrollTop with them,
-// and the field keeps its focus and what was typed.
+// Requests arriving while a routing group is being edited must leave the
+// editor's field focused and preserve its typed name.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -75,10 +70,8 @@ function serve(feed) {
   };
 }
 
-const view = "#view-routing";
-
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  test(`${engine}: requests coming in leave the routing groups where they are`, async (t) => {
+  test(`${engine}: requests coming in preserve the routing group editor's input`, async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     const context = await browser.newContext({ viewport: { width: 1100, height: 760 } });
     const page = await context.newPage();
@@ -96,22 +89,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await browser.close();
     });
     await page.goto("http://magpie.test/?view=routing");
+    await openPane(page, "requests");
     await page.locator(".rt-req").nth(first.length - 1).waitFor();
+    await openPane(page, "groups");
     await page.locator(".rt-group").first().waitFor();
-    await page.waitForTimeout(2000); // the first request's play
-
-    // down to the groups with the wheel (the view moves only for the
-    // reader), the second group in the middle of the view; then the first
-    // opened in its editor and a name typed into it
-    const dy = await page.locator(view).evaluate((v) => {
-      const g = [...document.querySelectorAll(".rt-group")].pop();
-      return Math.round(g.getBoundingClientRect().top - v.getBoundingClientRect().top - v.clientHeight / 2);
-    });
-    await page.mouse.move(550, 400);
-    await page.mouse.wheel(0, dy);
-    await page.waitForTimeout(400);
-    const scrolled = await page.locator(view).evaluate((v) => v.scrollTop);
-    assert(scrolled > 200, `the view must be scrolled down to the groups (${scrolled})`);
     await page.locator(".rt-group").first().locator("button", { hasText: "Edit" }).click();
     const name = page.locator(".rt-gedit input").first();
     await name.click();
@@ -121,34 +102,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.equal(typed, "Opus anywhere and more");
     await page.waitForTimeout(300);
 
-    // where things are: on the screen, and the groups' place in the page
-    // (which moves as what's above them grows or shrinks)
-    const where = () => page.evaluate((sel) => {
-      const v = document.querySelector(sel), vt = v.getBoundingClientRect().top;
-      const top = (e) => e.getBoundingClientRect().top - vt;
-      const gsec = document.querySelector(".rt-gsec");
-      return {
-        scrollTop: v.scrollTop,
-        inPage: gsec.getBoundingClientRect().top - vt + v.scrollTop,
-        onScreen: { head: top(gsec), editor: top(document.querySelector(".rt-gedit")), group: top([...document.querySelectorAll(".rt-group")].pop()) },
-      };
-    }, view);
-    const before = await where();
-
-    // every layout and every scroll while they come, after the page has
-    // had its say (these observers and listeners come after the page's):
-    // what the reader could see, not only where it ends
-    await page.evaluate((sel) => {
-      // (to a pixel and a half: WebKit scrolls by whole pixels, the
-      // parts above are laid out in fractions of one)
-      const v = document.querySelector(sel), ed = () => document.querySelector(".rt-gedit").getBoundingClientRect().top;
-      const want = ed();
-      window.__moves = [];
-      const look = (why) => { const at = ed(); if (Math.abs(at - want) > 1.5) window.__moves.push(`${why}: the editor at ${at}, not ${want}`); };
-      window.__ro = new ResizeObserver(() => look("layout"));
-      for (const e of [v, ...v.children, ...document.querySelector("#rtMore").children]) window.__ro.observe(e);
-      v.addEventListener("scroll", () => look("scroll"));
-    }, view);
     for (const r of later) {
       for (let i = 0; i < 50 && !feed.next; i++) await page.waitForTimeout(50);
       const next = feed.next;
@@ -156,24 +109,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       next(r);
       await page.waitForTimeout(900);
     }
-    await page.waitForTimeout(2500); // the plays end, the countdowns tick
-    assert.equal(await page.locator(".rt-req").count(), first.length + later.length, "every request must be listed");
-    const moves = await page.evaluate(() => { window.__ro.disconnect(); return window.__moves; });
-    const after = await where();
-
-    // what's above the groups did change: new agents and accounts on the
-    // stage, a longer story, more rows in the lists
-    assert(Math.abs(after.inPage - before.inPage) > 50, `the part above the groups must have changed (${before.inPage} → ${after.inPage})`);
-    // and the groups stayed where they were on the screen, the view
-    // scrolling by just what grew above them, on every frame
-    for (const k of Object.keys(before.onScreen)) assert(Math.abs(after.onScreen[k] - before.onScreen[k]) <= 1.5, `the ${k} moved: ${JSON.stringify([before, after])}`);
-    assert(Math.abs((after.scrollTop - before.scrollTop) - (after.inPage - before.inPage)) < 2, `scrollTop must follow the groups: ${JSON.stringify([before, after])}`);
-    assert.deepEqual(moves, [], "the page moved while the requests came");
     // the field kept its focus and what was typed, and goes on taking it
     assert.equal(await name.evaluate((e) => e === document.activeElement), true, "the field lost its focus");
     assert.equal(await name.inputValue(), typed);
     await page.keyboard.type("!");
     assert.equal(await name.inputValue(), typed + "!");
+    await openPane(page, "requests");
+    assert.equal(await page.locator(".rt-req").count(), first.length + later.length, "every request must be listed");
     assert.deepEqual(errors, []);
   });
 }

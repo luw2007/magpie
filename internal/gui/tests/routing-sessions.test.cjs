@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -65,6 +66,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, feed));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-group-by button").nth(1).click();
       await page.locator(".rt-session").nth(3).waitFor();
       const group = page.locator("button.rt-session").filter({ hasText: "Codex · conversation-a" });
@@ -104,6 +106,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".rt-req").filter({ hasText: "model-a" }).click();
       await page.waitForFunction(() => document.querySelector(".rt-steps").textContent.includes("model-a"));
       assert.match(await page.locator(".rt-steps").textContent(), /model-a/);
+      await openPane(page, "requests");
       for (const width of [1440, 560]) {
         await page.setViewportSize({ width, height: 800 });
         await page.waitForTimeout(150);
@@ -146,6 +149,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-group-by button").nth(1).click();
       await page.locator(".rt-session").nth(6).waitFor();
       const group = (id) => page.locator(`button.rt-session:has(.nm[title$="${id}"])`);
@@ -214,6 +218,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-group-by button").nth(1).click();
       await page.locator(".rt-session").nth(7).waitFor();
       const group = (id) => page.locator(`button.rt-session:has(.nm[title$="${id}"])`);
@@ -248,6 +253,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.route("**/*", serve("zh", feed, fixture));
     t.after(async () => { feed.next?.([]); await browser.close(); });
     await page.goto("http://magpie.test/?view=routing");
+    await openPane(page, "requests");
     await page.locator(".rt-group-by button").nth(1).click();
     const group = page.locator("button.rt-session").filter({ hasText: "Codex · main-a" });
     await group.waitFor();
@@ -293,6 +299,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, feed));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       const buttons = page.locator(".rt-group-by button");
       await page.locator(".rt-req").nth(5).waitFor();
       assert.equal(await buttons.first().getAttribute("aria-pressed"), "true");
@@ -301,11 +308,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".rt-session").nth(3).waitFor();
       feed.next?.([]);
       await page.reload();
+      await openPane(page, "requests");
       await page.locator(".rt-session").nth(3).waitFor();
       assert.equal(await buttons.nth(1).getAttribute("aria-pressed"), "true");
       await buttons.first().click();
       feed.next?.([]);
       await page.reload();
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(5).waitFor();
       assert.equal(await buttons.first().getAttribute("aria-pressed"), "true");
       assert.equal(await page.locator(".rt-session").count(), 0);
@@ -326,6 +335,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, feed, fixture));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(3).waitFor();
       assert.equal(await page.locator(".rt-req").filter({ hasText: "model-a" }).locator(".cost").textContent(), "≈$0.000+", "a zero-priced attempt plus an unknown attempt retains its amount");
       await page.locator(".rt-group-by button").nth(1).click();
@@ -362,6 +372,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, feed, fixture));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(2).waitFor();
       await page.locator(".rt-group-by button").nth(1).click();
       const group = (id) => page.locator(`button.rt-session:has(.nm[title$="${id}"])`);
@@ -398,6 +409,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await group(title.session).count(), 0, "history navigation lost title association");
       feed.next?.([]);
       await page.reload();
+      await openPane(page, "requests");
       await page.waitForFunction(() => document.querySelectorAll(".rt-session").length === 2);
       assert.equal(await group(title.session).count(), 0, "page reload lost title association");
       assert.match(await parent.locator(".summary").textContent(), lang === "zh" ? /2 个请求/ : /2 requests/);
@@ -438,6 +450,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.route("**/*", serve(lang, feed, fixture));
         t.after(async () => { feed.next?.([]); await browser.close(); });
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "requests");
         await page.locator(".rt-req").nth(59).waitFor(); // live trace retains only 60 rows
         await page.locator(".rt-group-by button").nth(1).click();
         // openRoute loads the full day, then appends a row outside its 2,000-row page.

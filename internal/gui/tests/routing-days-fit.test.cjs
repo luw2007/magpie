@@ -9,6 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -71,6 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, allDays, asked));
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "requests");
         await page.locator(".rt-days .rt-day-more").waitFor();
         await page.waitForTimeout(200);
 
@@ -120,6 +122,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const page = await (await browser.newContext({ viewport: { width: 1100, height: 760 } })).newPage();
     await page.route("**/*", serve("en", allDays.slice(0, 3), []));
     await page.goto("http://magpie.test/?view=routing");
+    await openPane(page, "requests");
     await page.locator(".rt-days .rt-day").nth(3).waitFor();
     await page.waitForTimeout(200);
     assert.equal(await page.locator(".rt-days .rt-day-more").count(), 0);
@@ -132,6 +135,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const page = await (await browser.newContext({ viewport: { width: 1600, height: 760 } })).newPage();
     await page.route("**/*", serve("en", allDays.slice(0, 8), []));
     await page.goto("http://magpie.test/?view=routing");
+    await openPane(page, "requests");
     await page.locator(".rt-days .rt-day").nth(8).waitFor();
     await page.waitForTimeout(200);
     const wide = await seen(page);

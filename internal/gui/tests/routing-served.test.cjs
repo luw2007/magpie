@@ -8,6 +8,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -71,6 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").nth(served.length - 1).waitFor();
 
@@ -86,20 +88,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(look.border, "0px");
       assert.match(look.title, want[lang].story);
 
-      // the story says so, and the click leaves the row where it is
+      // The selected request's story says so.
       const row = page.locator(".rt-req").nth(0);
-      const was = await row.evaluate((e) => e.getBoundingClientRect().top);
-      const scrolled = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
       await row.click();
       await page.waitForTimeout(600);
-      assert(Math.abs((await row.evaluate((e) => e.getBoundingClientRect().top)) - was) <= 1, "picking the request moved the page");
-      assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]), scrolled);
       const story = page.locator(".rt-steps li.swap");
       assert.equal(await story.count(), 1);
       assert.equal(await story.locator(".swap").textContent(), want[lang].tag);
       assert.match(await story.textContent(), want[lang].story);
       // the same model under its dated name, and a reply naming none: no mark
       for (const i of [1, 2]) {
+        await openPane(page, "requests");
         await page.locator(".rt-req").nth(i).click();
         await page.waitForTimeout(300);
         assert.equal(await page.locator(".rt-steps li.swap").count(), 0);

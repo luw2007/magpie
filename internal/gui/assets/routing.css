@@ -138,9 +138,11 @@
 #view-routing .row-head .rt-livedot + .note { margin-left: 8px; }
 .rt-mask, .rt-newgroup { display: inline-flex; align-items: center; gap: 5px; }
 .rt-mask svg, .rt-newgroup svg { width: 13px; height: 13px; flex: none; }
-/* the routing groups' New group, at the top too: the groups sit below the
-   requests, out of sight on a first look (#944) */
+/* The page action belongs to Groups; the other panes keep a quiet head. */
 .rt-newgroup { margin-right: 6px; }
+#view-routing > .row-head { position: sticky; top: 0; z-index: 3; background: var(--bg); flex: none; flex-wrap: wrap; row-gap: 6px; padding-bottom: 6px; }
+#view-routing .rt-pages { margin-left: 12px; flex-wrap: wrap; }
+#view-routing .rt-pages .opt { white-space: nowrap; }
 .rt-gnew { display: inline-flex; align-items: center; gap: 4px; }
 /* on, it says so in its struck eye and its words, a shade darker: a
    page tool, not a banner */

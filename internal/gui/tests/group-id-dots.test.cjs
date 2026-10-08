@@ -10,6 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [
@@ -58,6 +59,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, saved));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "groups");
       await page.locator(".rt-group", { hasText: "GPT-6.1 Sol" }).waitFor({ state: "attached" });
 
       assert.deepEqual(await page.evaluate(() => ["GPT 6.1 Sol", "gpt-6.1-sol", "a..b", ".x.", "-.a.-", "claude/opus 5", "..."].map(groupSlug)),

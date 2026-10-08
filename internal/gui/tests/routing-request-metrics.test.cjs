@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -73,6 +74,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, feed));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       const rows = page.locator(".rt-req");
       await rows.nth(fixtures.length - 1).waitFor();
       const check = async () => {
@@ -126,6 +128,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.match(await page.locator(".rt-steps").textContent(), /后首响/);
         assert.doesNotMatch(await page.locator(".rt-steps").textContent(), /首字/);
       }
+      await openPane(page, "requests");
       for (const width of [1280, 1000, 700, 480, 360]) {
         await page.setViewportSize({ width, height: 900 });
         await page.waitForTimeout(100);
@@ -206,6 +209,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await group.locator(".cost").isVisible(), false);
       assert.doesNotMatch(await group.locator(".session-count").textContent(), /token/);
       await page.reload();
+      await openPane(page, "requests");
       await rows.nth(fixtures.length - 1).waitFor();
       assert.equal(await rows.nth(0).locator(".rt-metric").count(), 2, "metric choices survive a reload");
       await page.locator("#rtMetrics").click();

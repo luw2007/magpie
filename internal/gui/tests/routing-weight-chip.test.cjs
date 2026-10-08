@@ -10,6 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -62,11 +63,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (error) => errors.push(error.message));
       await page.route("**/*", serve(lang, "weight"));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       // the one request is opened already
       const req = page.locator(".rt-req").first();
       await req.waitFor();
       if (await req.getAttribute("aria-pressed") !== "true") await req.click();
 
+      await openPane(page, "live");
       // the header's chip and mode paragraph tell the provider's routing,
       // the mode in the provider editor's words
       await page.locator(".rt-hub i").filter({ hasText: chip[lang] }).waitFor();
@@ -92,9 +95,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (error) => errors.push(error.message));
       await page.route("**/*", serve(lang, "smart"));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       const req = page.locator(".rt-req").first();
       await req.waitFor();
       if (await req.getAttribute("aria-pressed") !== "true") await req.click();
+      await openPane(page, "live");
       await page.locator(".rt-hub i").filter({ hasText: smart[lang] }).waitFor();
       assert.equal((await page.locator(".rt-hub i").textContent()).trim(), smart[lang]);
       assert.equal((await page.locator(".rt-mode").textContent()).trim(),

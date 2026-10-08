@@ -12,6 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const iso = (ms) => new Date(ms).toISOString();
@@ -70,6 +71,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await browser.close();
       });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "live");
       const rowOf = () => [...document.querySelectorAll("li")].find((li) => li.querySelector("code.mdl")?.textContent === "model-1");
       await page.waitForFunction(`(${rowOf})()`);
       // the row the try went to says it is answering

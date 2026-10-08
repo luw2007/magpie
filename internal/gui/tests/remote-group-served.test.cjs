@@ -12,6 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -96,6 +97,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // the Routing page's Requests: the member plain, the swap amber
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       // the date bar's day (the By request / By session buttons are rt-day too)
       await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").nth(routes.length - 1).waitFor();
@@ -112,17 +114,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(look.border, "0px");
       assert.match(look.title, want[lang].why);
 
-      // its story says so, with no swap in it; the click moves nothing
+      // Its story says so, with no swap in it.
       const row = page.locator(".rt-req").nth(0);
-      const was = await row.evaluate((e) => e.getBoundingClientRect().top);
-      const scrolled = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
       await row.click();
       await page.waitForTimeout(600);
-      assert(Math.abs((await row.evaluate((e) => e.getBoundingClientRect().top)) - was) <= 1, "picking the request moved the page");
-      assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]), scrolled);
       assert.equal(await page.locator(".rt-steps li.swap").count(), 0);
       const said = await page.locator(".rt-steps li").evaluateAll((ls) => ls.map((l) => l.textContent));
       assert(said.some((s) => want[lang].why.test(s)), JSON.stringify(said));
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(1).click();
       await page.waitForTimeout(300);
       assert.equal(await page.locator(".rt-steps li.swap").count(), 1);

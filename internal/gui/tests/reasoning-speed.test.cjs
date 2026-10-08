@@ -13,6 +13,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -91,6 +92,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // the Routing page: each row, and the session's average
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-days .rt-day").nth(1).click();
       const reqs = page.locator(".rt-req");
       await reqs.nth(timing.length - 1).waitFor();
@@ -104,6 +106,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForTimeout(200);
       const story = await page.locator(".rt-steps").textContent();
       assert(story.includes(w.s(133)) && !/1[,.]?467/.test(story), "the story's speed: " + story);
+      await openPane(page, "requests");
       await page.locator(".rt-group-by button").nth(1).click();
       const group = page.locator("button.rt-session").first();
       await group.waitFor();

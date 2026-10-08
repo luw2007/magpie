@@ -12,6 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -99,11 +100,13 @@ async function open(t, engine, lang, scene, width = 1100) {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/*", serve(lang, scene));
   await page.goto("http://magpie.test/?view=routing");
+  await openPane(page, "requests");
   // the one request is opened already; below the fold at 440px, WebKit
   // never finds it still enough to click
   const req = page.locator(".rt-req").first();
   await req.waitFor();
   if (await req.getAttribute("aria-pressed") !== "true") await req.click();
+  await openPane(page, "live");
   await page.locator(".rt-steps li.why").first().waitFor();
   // each row's state is filled on the next frame, after the story
   await page.waitForFunction(() => [...document.querySelectorAll("li")].filter((li) => li.querySelector(".who")).every((li) => li.querySelector("em")?.textContent.trim()));

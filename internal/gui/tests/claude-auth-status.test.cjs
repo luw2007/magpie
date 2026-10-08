@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const lapse = "Claude Code could not authenticate this account; sign in again in magpie";
@@ -81,6 +82,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultTimeout(5000);
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "live");
       const steps = page.locator(".rt-steps");
       await steps.getByText(lang === "zh" ? /当前登录不再重试/ : /this login is not retried/).waitFor();
       let story = await steps.textContent();
@@ -91,6 +93,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
         await steps.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-claude-auth-route.png`) });
       }
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(1).click();
       await steps.getByText(lang === "zh" ? /没有其他账号可以回答/ : /No other account could answer/).waitFor();
       assert((await steps.textContent()).includes(error));

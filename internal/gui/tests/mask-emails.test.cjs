@@ -8,6 +8,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -42,6 +43,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.route("**/*", serve());
     t.after(() => browser.close());
     await page.goto("http://magpie.test/?view=routing");
+    await openPane(page, "live");
     await page.evaluate(() => { try { localStorage.removeItem("magpie.maskEmails"); } catch {} });
     await page.evaluate((text) => {
       const d = document.createElement("div");

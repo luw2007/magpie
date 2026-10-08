@@ -12,7 +12,8 @@
   if (!box) return;
   const NS = "http://www.w3.org/2000/svg";
   const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const shown = () => !$("#view-routing").hidden && !document.hidden;
+  const viewShown = () => !$("#view-routing").hidden && !document.hidden;
+  const shown = () => viewShown() && !box.hidden;
   // steady redraws a part of the page where the reader is: WebKit has no
   // scroll anchoring, and a part emptied and filled again, measured between,
   // pulls the page up to what was left of it for that moment
@@ -199,6 +200,41 @@
   colB.append(actHead, acts);
   hist.append(colA, colB);
   more.append(hist);
+
+  const ROUTING_PAGES = [["live", "Live"], ["requests", "Requests"], ["groups", "Routing groups"], ["pools", "Several accounts or keys"]];
+  let routingPage = "live";
+  try {
+    const saved = localStorage.getItem("magpie.routingPage");
+    if (ROUTING_PAGES.some(([id]) => id === saved)) routingPage = saved;
+  } catch {}
+  function pageLabels() {
+    const tabs = segs(ROUTING_PAGES.map(([id, label]) => [id, t(label)]), routingPage, setRoutingPage);
+    tabs.id = "rtPages";
+    tabs.classList.add("rt-pages");
+    $("#rtPages").replaceWith(tabs);
+  }
+  function setRoutingPage(page) {
+    const changed = page !== routingPage;
+    routingPage = page;
+    try { localStorage.setItem("magpie.routingPage", page); } catch {}
+    box.hidden = page !== "live";
+    hist.hidden = page !== "requests";
+    gsec.hidden = page !== "groups";
+    pools.hidden = page !== "pools";
+    more.hidden = page === "live";
+    $("#rtNewGroup").hidden = page !== "groups";
+    $("#rtLiveNote").hidden = page !== "live";
+    $("#view-routing > .row-head .rt-livedot").hidden = page !== "live";
+    for (const [i, button] of [...$("#rtPages").querySelectorAll(".opt")].entries()) {
+      const active = ROUTING_PAGES[i][0] === page;
+      button.classList.toggle("on", active);
+      button.setAttribute("aria-pressed", String(active));
+    }
+    slide($("#rtPages"), "routing-pages");
+    start();
+    if (changed) $("#view-routing").scrollTop = 0;
+    if (page === "requests") { fitDays(); fitReqs(); }
+  }
 
   const path = () => { const p = document.createElementNS(NS, "path"); wires.appendChild(p); return p; };
   const setText = (e, s) => { if (e.textContent !== s) e.textContent = s; };
@@ -1386,11 +1422,9 @@
     }));
   }
 
-  // pick sets the stage to a past request, or back to live with the newest.
-  // The page stays where it is: a request clicked in the list stays under
-  // the pointer, and the stage and its story change above it (it used to
-  // go up to the stage, which read as the page jumping to its top)
+  // Selecting a request opens its stage and story on the Live subpage.
   function pick(r) {
+    if (routingPage !== "live") setRoutingPage("live");
     pinned = !day && r.id === newest()?.id ? null : r;
     if (rp) { rp = null; rbar.hidden = true; }
     stopPlays();
@@ -1408,6 +1442,7 @@
       r = whole(await res.json());
       noteAccounts(r);
     }
+    if (!(await window.show("routing"))) return;
     day = routes.has(id) ? "" : r.time.slice(0, 10);
     if (day) {
       await loadDays(day);
@@ -1415,7 +1450,7 @@
     }
     if (purpose && purposeOf(r.kind) !== purpose) purpose = "";
     offline("");
-    window.show("routing");
+    setRoutingPage("live");
     pick(r);
   };
 
@@ -1601,7 +1636,7 @@
   const sessionKey = (r) => groupSession(r) ? JSON.stringify([r.agent || "other", groupSession(r)]) : "";
   let namesBusy = false;
   async function refreshSessionNames() {
-    if (namesBusy || !shown()) return;
+    if (namesBusy || !viewShown()) return;
     const rs = listed().filter((r) => r.agent === "codex"), sourceDay = day, routeIDs = new Set(rs.map((r) => r.id));
     if (!rs.some(groupSession)) return;
     namesBusy = true;
@@ -1727,7 +1762,7 @@
     const rs = listed();
     renderStats(rs);
     const all = allListed();
-    hist.hidden = !all.length && !day && !days.length && !purpose;
+    hist.hidden = routingPage !== "requests";
     const opts = purposeOptions(all.map((r) => purposeOf(r.kind)), purpose);
     const selected = opts.find((o) => o.v === purpose);
     purposeTools.hidden = opts.length < 2 && !purpose;
@@ -1989,8 +2024,9 @@
   function renderAll() { if (!drawing) drawing = requestAnimationFrame(drawAll); }
   function drawAll() {
     drawing = 0;
-    if (!shown()) return;
-    render(); renderLog(); renderHist();
+    if (!viewShown()) return;
+    if (shown()) { render(); renderLog(); }
+    renderHist();
   }
   const newest = () => (day ? past : [...routes.values()]).filter(matchesPurpose).reduce((a, b) => (!a || b.id > a.id ? b : a), null);
 
@@ -2166,6 +2202,7 @@
   function replay(list, back) {
     list = list.filter((r) => r.done).sort((a, b) => a.id - b.id);
     if (!list.length) return;
+    setRoutingPage("live");
     const all = [];
     for (const r of list) { all.push(at(r.time), ends(r)); for (const tr of r.tries) all.push(at(tr.start), at(tr.start) + (tr.ms || 0)); }
     const ts = [...new Set(all)].sort((a, b) => a - b), vs = [];
@@ -2402,7 +2439,12 @@
   document.addEventListener("visibilitychange", start);
   window.addEventListener("focus", start);
   // countdowns tick once a second
-  setInterval(() => { if (shown()) { if (!pinned && loaded && cur) sync(); render(); renderActs(listed()); } }, 1000);
+  setInterval(() => {
+    if (!viewShown()) return;
+    if (shown() && !pinned && loaded && cur) sync();
+    if (shown()) render();
+    renderActs(listed());
+  }, 1000);
 
   function offline(msg) {
     off.textContent = msg;
@@ -2480,6 +2522,7 @@
           const asked = wanted && routes.get(wanted), r = pinned || asked || newest();
           if (wanted) { wanted = 0; params.delete("req"); history.replaceState(null, "", params.size ? "?" + params : location.pathname); }
           if (asked && asked.id !== newest().id) pinned = asked;
+          if (asked) setRoutingPage("live");
           if (r) { cur = r; sync(true); say(affWhy(r, true) || ruleWhy(r, true) || firstWhy(r)); renderAll(); } else empty();
           // the page's first frame came before the trace did, and found
           // nothing to fly: the requests under way fly now, not never
@@ -2512,6 +2555,7 @@
 
   // labels in the page's language, and again when it changes
   function words() {
+    pageLabels();
     for (const s of stats.children) s.lastChild.textContent = t(s.dataset.label);
     hubText();
     // the caption said before, said again in these words: it was set as text
@@ -2539,10 +2583,10 @@
   // for the providers' models), so it sits over the groups rather than in
   // one group's editor (PAMI on Discord)
   const gNames = el("div", "rt-gnames");
-  gsec.append(gHead, gFound, gNames, gList, pHead, pList);
-  // after the requests: a request picked in the list plays on the stage,
-  // so the list sits right under it
-  more.append(gsec);
+  const pools = el("div", "rt-gsec");
+  pools.append(pHead, pList);
+  gsec.append(gHead, gFound, gNames, gList);
+  more.append(gsec, pools);
   // ROUTE_OPTS is provider-level. benchmark/manual are groups only. Weight (#841) is provider-key-only, appended to opts beside each key below.
   const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Weekly pace"]];
   // a group may also be routed by benchmark or by hand — a provider's keys can't
@@ -2593,7 +2637,7 @@
   let groups = null, gEdit = null; // gEdit: { id: "" for a new one, draft }
   async function loadGroups() {
     try { groups = await api("groups"); } catch { return; }
-    if (!gEdit && !gsec.contains(document.activeElement)) renderGroups(); // not under someone's hands
+    if (!gEdit && !gsec.contains(document.activeElement) && !pools.contains(document.activeElement)) renderGroups(); // not under someone's hands
   }
   const groupDirty = () => !!gEdit && gEdit.was !== undefined &&
     (JSON.stringify(gEdit.draft) !== gEdit.was || !!gsec.querySelector(".rt-patadd input")?.value.trim());
@@ -3758,8 +3802,12 @@
   // the providers that route over several accounts or keys of their own
   function renderPools() {
     const ps = groups?.pools || [];
-    pHead.hidden = pList.hidden = !ps.length;
+    pHead.hidden = pList.hidden = false;
     pHead.replaceChildren(el("span", "label", t("Several accounts or keys")), el("span", "grow"), el("span", "note", t("each provider routes over its own")));
+    if (!ps.length) {
+      pList.replaceChildren(el("div", "none", t("No provider has several enabled accounts or keys. Add them on Providers to configure pool routing here.")));
+      return;
+    }
     pList.replaceChildren(...ps.map((p) => {
       const row = el("div", "rt-pool");
       const nm = el("div", "nm");
@@ -3789,7 +3837,7 @@
   }
   // loaded when the view is shown, and again when the window comes back
   new MutationObserver(() => { if (!$("#view-routing").hidden) loadGroups(); }).observe($("#view-routing"), { attributes: true, attributeFilter: ["hidden"] });
-  window.addEventListener("focus", () => { if (shown()) loadGroups(); });
+  window.addEventListener("focus", () => { if (!$("#view-routing").hidden) loadGroups(); });
   // newGroupWith: a new group's editor, opened with the model in it — a
   // model of a provider kept for routing groups that no group has, which
   // agents can reach no other way. The picker and the provider's editor
@@ -3800,17 +3848,17 @@
     if (!groups) await loadGroups();
     if (!groups) return;
     if (groupDirty() && !(await confirmDiscard())) return;
+    setRoutingPage("groups");
     gEdit = { id: "", draft: { name: name || modelOf(id)?.name || id.split("/").pop(), members: [id], fast: [], routing: "", affinity: "", rules: [] } };
     renderGroups();
     const ed = gList.querySelector(".rt-gedit");
     if (ed && window.scrollOnPurpose?.(ev)) ed.scrollIntoView({ block: "center", behavior: "smooth" });
     ed?.querySelector("input")?.focus({ preventScroll: true });
   };
-  // newGroup: an empty new group's editor. The groups sit below the
-  // requests, out of sight on a first look, so the page's head has a New
-  // group too (mintonight, #944), which brings the editor into view.
+  // Both New group entries open the same editor on the Groups subpage.
   async function newGroup(ev) {
     if (groupDirty() && !(await confirmDiscard())) return;
+    setRoutingPage("groups");
     gSel = null;
     gEdit = { id: "", draft: { name: "", members: [], match: [], matched: [], fast: [], off: [], routing: "", affinity: "", rules: [] } };
     renderGroups();
@@ -3828,21 +3876,6 @@
   if (askedGroup) loadGroups().then(() => window.newGroupWith(askedGroup, ""));
   else loadGroups();
 
-  // ---------- where the reader is, as requests come ----------
-  // Every request redraws what is above the routing groups: the stage gains
-  // or loses a row, the story a line, the lists theirs. The view kept its
-  // scrollTop, so all of it pushed the groups down or pulled them up under
-  // the reader, a group being edited too (Jerell.OvO on Discord). The view
-  // keeps a part of itself where it is on the screen instead (keepInView in
-  // app.js): the groups, while they are in the upper half of the view or a
-  // field in them has the focus, else the lists, while they are; with
-  // neither (the stage in sight at the top), the view stays as it is.
-  const rv = $("#view-routing");
-  keepInView(rv, () => {
-    const mid = rv.getBoundingClientRect().top + rv.clientHeight / 2;
-    if (gsec.contains(document.activeElement) && gsec.offsetParent) return gsec;
-    return [gsec, hist].find((p) => p.offsetParent && p.getBoundingClientRect().top <= mid) || null;
-  });
 
   // ---------- the tray panel's Routing tab ----------
   // The gateway's latest requests, as they come, from the same trace the
@@ -4145,7 +4178,7 @@
   function fitReqs() {
     const v = $("#view-routing");
     if (v.hidden || !reqs.offsetParent) return;
-    const above = reqs.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    const above = reqs.getBoundingClientRect().top - v.getBoundingClientRect().top + v.scrollTop;
     const room = v.clientHeight - above - 28;
     const h = Math.round(Math.max(216, Math.min(420, room))) + "px";
     if (reqs.style.maxHeight !== h) reqs.style.maxHeight = h;
@@ -4157,6 +4190,7 @@
   const fitSoon = () => { if (!fitting) fitting = requestAnimationFrame(() => { fitting = 0; fitReqs(); }); };
   new ResizeObserver(fitSoon).observe($("#view-routing"));
   new ResizeObserver(fitSoon).observe(box);
+  setRoutingPage(routingPage);
   words();
   start();
   poll();

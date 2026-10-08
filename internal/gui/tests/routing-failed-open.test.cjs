@@ -10,6 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -74,25 +75,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await browser.close();
         });
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "requests");
         if (!live) await page.locator(".rt-days .rt-day").nth(1).click();
         await page.locator(".rt-req").nth(routes.length - 1).waitFor();
 
         const row = page.locator(".rt-req").nth(1);
         assert.match(await row.textContent(), /400/);
-        // Live, the page follows the newest request and draws its story above
-        // the list once the trace is in; measure after that, not mid-load.
-        if (live) await page.locator(".rt-req").nth(0).and(page.locator('[aria-pressed="true"]')).waitFor();
-        await page.locator(".rt-steps li").first().waitFor();
-        let was = await row.evaluate((e) => e.getBoundingClientRect().top);
-        for (let i = 0, same = 0; i < 40 && same < 3; i++) {
-          await page.waitForTimeout(50);
-          const now = await row.evaluate((e) => e.getBoundingClientRect().top);
-          same = Math.abs(now - was) <= 1 ? same + 1 : 0;
-          was = now;
-        }
         await row.click();
         await page.waitForTimeout(400);
-        assert(Math.abs((await row.evaluate((e) => e.getBoundingClientRect().top)) - was) <= 1, "picking the request moved the page");
         assert.equal(await row.getAttribute("aria-pressed"), "true");
         assert(!(await page.locator(".rt-log").evaluate((e) => e.hidden)), "the story is hidden");
         assert((await page.locator(".rt-log-head").textContent()).includes(want[lang].head));
@@ -100,6 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(got.filter(([c]) => c === "aside said").map(([, s]) => s), [want[lang].said], JSON.stringify(got));
 
         // and back to the one that answered
+        await openPane(page, "requests");
         await page.locator(".rt-req").nth(0).click();
         await page.waitForTimeout(300);
         assert.equal(await page.locator(".rt-req").nth(0).getAttribute("aria-pressed"), "true");

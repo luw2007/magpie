@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 // Wheel into view before clicking: the app undoes unsolicited auto-scroll.
 // Cover the long ledger and the Routing filters below a narrow-window stage.
 async function click(page, locator) {
@@ -148,6 +149,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
       // The same aliases and unknown names in both live and historical Routing.
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(7).waitFor();
       assert.equal(await page.locator("#rtPurpose span").textContent(), lang === "zh" ? "用途" : "Purpose filter");
       await click(page, page.locator("#rtPurpose"));
@@ -163,6 +165,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.evaluate(() => window.openRoute(94, new Date().toISOString()));
       await page.waitForFunction(() => document.querySelectorAll(".rt-req").length === 8);
       assert.equal(await page.locator(".rt-req").count(), 8);
+      await openPane(page, "requests");
       await choose("#rtPurpose", "kind:thread_title");
       await page.locator(".rt-group-by button").last().click();
       assert.match(await page.locator(".rt-session .summary").textContent(), /^4/);

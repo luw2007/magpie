@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 const assets = process.env.ASSET_DIR || path.resolve(__dirname, "../assets");
 const now = new Date(), day = "2026-09-01";
 function req(id, kind, status = 200, error = "") {
@@ -72,10 +73,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         return row?.textContent.includes("model-" + id) && document.querySelector(".rt-steps")?.textContent.includes("model-" + id);
       }, id);
       const choose = async (value) => {
+        await openPane(page, "requests");
         await click(page, page.locator("#rtPurpose"));
         const name = await page.evaluate((v) => v ? purposeOptions([v], v)[0].name : t("All purposes"), value);
         await page.locator(".rt-purpose-menu .pm-item").filter({ has: page.locator(".pm-name", { hasText: name }) }).click();
         await page.waitForFunction((v) => document.querySelector(".rt-purpose-tools").classList.contains("set") === !!v, value);
+        await openPane(page, "live");
       };
       const send = async (rs) => {
         for (let i = 0; i < 100 && !feed.next; i++) await page.waitForTimeout(20);
@@ -86,6 +89,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(feed.next, "trace update was applied");
       };
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "live");
       await story(100);
       assert.deepEqual(await counts(), ["20", "5", "7"], "unfiltered counters retain the gateway's lifetime totals");
       await choose("kind:thread_title");
@@ -112,13 +116,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.evaluate(() => window.show("providers"));
       await send([req(104, "review")]);
       await page.evaluate(() => window.show("routing"));
+      await openPane(page, "live");
       await story(102);
       await send([req(105, "thread_title")]);
       await story(105);
       assert.deepEqual(await counts(), ["5", "1", "2"]);
       // History with no matching calls clears the old live story and counters.
+      await openPane(page, "requests");
       await click(page, page.locator(".rt-days .rt-day").nth(1));
       await page.waitForFunction(() => document.querySelector(".rt-log").hidden);
+      await openPane(page, "live");
       assert.deepEqual(await counts(), ["0", "0", "0"]);
       assert.equal(await page.locator(".rt-errs").getAttribute("aria-disabled"), "true");
       await send([req(106, "thread_title")]);
@@ -128,10 +135,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(await counts(), ["1", "0", "1"]);
       await click(page, page.locator(".rt-errs"));
       await story(50);
+      await openPane(page, "requests");
       await click(page, page.locator(".rt-days .rt-day").first());
       await story(104);
+      await openPane(page, "requests");
       await click(page, page.locator("#rtPurposeClear"));
       await story(106);
+      await openPane(page, "live");
       assert.deepEqual(await counts(), ["20", "5", "7"]);
       await choose("kind:thread_title");
       // The try can report failure even without a route-level error message.

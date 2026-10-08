@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const iso = (ms) => new Date(ms).toISOString();
@@ -73,6 +74,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       const drain = async () => { for (let i = 0; i < 100 && feed.q.length; i++) await page.waitForTimeout(50); assert.equal(feed.q.length, 0); };
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(first.length - 1).waitFor();
       await page.waitForTimeout(2500);
       assert.equal(await page.getByText(words[lang], { exact: true }).first().isVisible(), true);
@@ -108,6 +110,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(touched, 0, `the list was redrawn ${touched} times out of sight`);
       // back: all of them listed
       await page.locator('#nav button[data-view="routing"]').click();
+      await openPane(page, "requests");
       await page.waitForFunction((n) => document.querySelectorAll(".rt-req").length === n, first.length + 8 + 6);
       assert.deepEqual(errors, []);
     });

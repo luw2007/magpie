@@ -15,6 +15,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -123,6 +124,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, old));
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "requests");
         await page.locator(".rt-req").nth(routes.length - 1).waitFor();
         await page.waitForTimeout(150);
         if (process.env.ARTIFACT_DIR) {

@@ -9,6 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -16,7 +17,7 @@ const day = [now.getFullYear(), now.getMonth() + 1, now.getDate()].map((n) => St
 const at = (i) => new Date(now.getTime() - (i + 1) * 60e3).toISOString();
 const key = { id: "antigravity", provider: "antigravity", name: "Antigravity", kind: "provider", model: "gemini-3.8-flash" };
 // newest first: the report's burst, a 500 ms burst, then ordinary replies
-// (100 tok/s and 50 tok/s; a few rows, so the stage above holds still)
+// (100 tok/s and 50 tok/s)
 const timing = [[8264, 24360, 24359], [8264, 1500, 1000], [1200, 15000, 3000], [100, 3000, 1000], [100, 3000, 1000], [100, 3000, 1000]];
 const routes = timing.map(([out, ms, ttft], i) => ({
   id: 100 - i, seq: 100 - i, time: at(i), agent: "codex", model: "antigravity/gemini-3.8-flash", provider: "antigravity",
@@ -66,10 +67,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang));
       t.after(() => browser.close());
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").nth(timing.length - 1).waitFor();
 
       const story = async (i) => {
+        await openPane(page, "requests");
         const row = page.locator(".rt-req").nth(i);
         // Taller metric rows need the list scrolled first, with real input
         // so the page's script-scroll protection keeps the same position.
@@ -79,12 +82,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.mouse.wheel(0, rb.y + rb.height - lb.y - lb.height + 6);
           await page.waitForTimeout(200);
         }
-        const was = await row.evaluate((e) => e.getBoundingClientRect().top);
-        const scrolled = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
         await row.click();
         await page.waitForTimeout(300);
-        assert(Math.abs((await row.evaluate((e) => e.getBoundingClientRect().top)) - was) <= 1, "picking the request moved the page");
-        assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]), scrolled);
         return page.locator(".rt-steps").textContent();
       };
       // the report: its first token, and no speed

@@ -13,6 +13,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 const engines = process.env.BROWSER ? [process.env.BROWSER] : ["webkit"];
 
 const assets = path.resolve(__dirname, "../assets");
@@ -101,7 +102,8 @@ for (const engine of engines) for (const lang of ["en", "zh"]) {
       await browser.close();
     });
     await page.goto("http://magpie.test/?view=routing");
-    await page.locator(".rt-req").first().waitFor();
+    await openPane(page, "live");
+    await page.waitForFunction(() => document.querySelectorAll(".rt-req").length > 0);
     // Routing in sight: the loop is running, and it is this loop we count
     await page.waitForFunction(() => window.__seenFrame, null, { timeout: 5000 });
     await page.evaluate(() => window.__mark());
@@ -123,6 +125,7 @@ for (const engine of engines) for (const lang of ["en", "zh"]) {
 
     // Routing picked again: the loop resumes, and the page is drawn
     await page.locator('#nav button[data-view="routing"]').click();
+    await openPane(page, "live");
     await page.evaluate(() => window.__mark());
     const again = await page.evaluate(() => window.__count(600));
     assert(again > 10, `picking Routing again must resume the loop (${again} frames in 600ms)`);
@@ -162,6 +165,7 @@ async function routingPage(t, engine, lang, feed, view = "routing") {
   page.on("pageerror", e => errors.push(e.message));
   await page.route("**/*", serve(lang, feed));
   await page.goto(`http://magpie.test/?view=${view}`);
+  if (view === "routing") await openPane(page, "live");
   await page.waitForFunction(() => document.querySelectorAll(".rt-req").length > 0);
   return { page, errors };
 }
@@ -180,6 +184,7 @@ for (const engine of engines) {
         await page.waitForTimeout(300);
         assert(await page.evaluate(() => window.__steps) <= 1, "replay kept scheduling frames after it was hidden");
         await how.show(page);
+        await openPane(page, "live");
         assert(await page.evaluate(() => document.querySelector(".rt-replay").hidden), "showing Routing restarted the old replay");
         assert.equal(errors.length, 0, errors.join("\n"));
       });
@@ -193,6 +198,7 @@ for (const engine of engines) {
       const showOnce = async show => {
         await page.evaluate(() => { window.__packets = window.__frames = 0; });
         await show(page);
+        await openPane(page, "live");
         await page.waitForFunction(() => window.__frames >= 2);
         assert.equal(await page.evaluate(() => window.__packets), 1, "resume played a live request twice");
       };

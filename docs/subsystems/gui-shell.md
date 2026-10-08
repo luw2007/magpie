@@ -87,6 +87,14 @@ dirty group draft; Cancel retains the draft and Discard opens the new editor.
 `newGroupWith` applies the same guard when creating a group from a model and
 waits for `show` to accept navigation before creating its draft.
 
+Routing separates Live (the stage and request story), Requests (history,
+filters, replay and accounts), Routing groups (group configuration), and
+Several accounts or keys (provider pool policies). The selected subpage is
+kept in browser local storage. Switching panes retains filters and group
+drafts; selecting a request or replay opens Live, while creating a group
+opens Routing groups. Hidden stages stop their animation loop, but trace
+polling continues so Requests stays current.
+
 ## Verification
 
 ```sh

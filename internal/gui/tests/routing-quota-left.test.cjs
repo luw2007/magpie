@@ -9,6 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = Date.now();
@@ -62,6 +63,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, left));
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "live");
         const stage = (who) => page.locator("li", { has: page.locator(".who", { hasText: who }) }).first();
         await stage("spare@example.com").locator("em").filter({ hasText: w.spare }).waitFor();
         assert.equal((await stage("spare@example.com").locator("em").textContent()).trim(), w.spare);
@@ -69,6 +71,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await stage("work@example.com").locator(".bar i").evaluate((i) => i.style.width), left ? "70%" : "30%");
         assert.equal(await stage("spare@example.com").locator(".bar i").evaluate((i) => i.style.width), left ? "5%" : "95%");
         // what each account did: the same word, as of the request
+        await openPane(page, "requests");
         const act = page.locator(".rt-act", { hasText: "work@example.com" }).first();
         await act.waitFor();
         assert.ok((await act.locator(".st").textContent()).startsWith(w.work), await act.locator(".st").textContent());

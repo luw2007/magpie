@@ -9,6 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -68,10 +69,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (error) => errors.push(error.message));
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(routes.length - 1).waitFor();
       const w = words[lang];
       const why = () => page.locator(".rt-steps li.why").first().textContent();
       const open = async (n, who, want) => {
+        await openPane(page, "requests");
         await page.locator(".rt-req").nth(n).click();
         await page.waitForFunction(([who, src]) => {
           const li = document.querySelector(".rt-steps li.why");

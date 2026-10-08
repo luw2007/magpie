@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 // The agent's current login changes its trace ID from provider@user to
 // provider. Old requests keep both IDs, and provider used to name another
@@ -60,6 +61,7 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ["chromium", 
       let routes = switchedRoutes(now, true);
       await page.route("**/*", serve(lang, () => routes, now));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-act").first().waitFor();
       assert.equal(await page.locator(".rt-act").count(), 2, "two logins stay two rows when their current-login IDs exchange");
       const uni = page.locator(".rt-act", { hasText: "uni@example.test" });
@@ -77,6 +79,7 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ["chromium", 
 
       routes = switchedRoutes(now, false);
       await page.reload();
+      await openPane(page, "requests");
       await page.locator(".rt-act").first().waitFor();
       assert.equal(await team.locator(".st.rest").count(), 0, "a newer snapshot that cleared the cooldown wins over the old alias");
       assert.deepEqual(await counts(team), [18, 17], "clearing rest does not erase the historical failure or replies");
@@ -88,6 +91,7 @@ for (const engine of process.env.BROWSER ? [process.env.BROWSER] : ["chromium", 
         { ...routes[0].order[1], id: "claude@other-org", who: "seat@example.test · Other Group" },
         { ...routes[0].order[1], id: "claude#key1", kind: "key" }] }];
       await page.reload();
+      await openPane(page, "requests");
       await page.locator(".rt-act").first().waitFor();
       assert.equal(await page.locator(".rt-act").count(), 4, "provider, organization, and API-key boundaries are preserved");
       assert.deepEqual(errors, []);

@@ -14,6 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = process.env.MAGPIE_FILTER_ASSETS || path.resolve(__dirname, "../assets");
 
@@ -119,6 +120,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, held));
         await page.goto("http://magpie.test/?view=" + view);
+        if (view === "routing") await openPane(page, "groups");
         return { page, errors };
       };
       // typeIn: through an IME where there is one to drive, by key elsewhere

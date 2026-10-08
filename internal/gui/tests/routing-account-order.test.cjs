@@ -13,6 +13,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -96,6 +97,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", f.route);
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "live");
       await page.locator(".rt-accts > li[title]").nth(8).waitFor();
       assert.deepEqual(await seated(page), listed(f), "each provider's rows in its list's order, not by name nor as weighed");
       assert.deepEqual(listed(f).antigravity, ["ag-a@x.test", "ag-c@x.test", "ag-b@x.test"]);
@@ -115,6 +117,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.keyboard.press("Escape");
       await page.locator("#modal .ehead").waitFor({ state: "hidden" });
       await page.locator('#nav button[data-view="routing"]').click();
+      await openPane(page, "live");
       await page.waitForFunction((want) => {
         const by = {};
         for (const l of document.querySelectorAll(".rt-accts > li[title]")) { const p = l.title.split(/[@#]/)[0]; (by[p] ||= []).push(l.querySelector(".who").textContent); }
