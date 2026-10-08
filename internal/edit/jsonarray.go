@@ -42,19 +42,22 @@ func SetJSONItem(path string, where map[string]string, value any) error {
 		return WriteAtomic(path, []byte("[\n\t"+string(v)+"\n]\n"))
 	}
 	stripped := jsonc.ToJSONInPlace(append([]byte(nil), raw...))
+	if !json.Valid(stripped) {
+		return fmt.Errorf("%s: invalid JSON/JSONC", path)
+	}
 	root, open, close := topArray(stripped)
 	if close < 0 {
 		return fmt.Errorf("%s: top level is not a JSON array", path)
 	}
 	if r, ok := findItem(stripped, where); ok {
 		out, _ := splice(raw, r.Index, len(r.Raw), marshalAt(raw, r.Index, value))
-		return WriteAtomic(path, out)
+		return WriteAtomic(path, keepCRLF(out, raw))
 	}
 	items := root.Array()
 	if len(items) == 0 {
 		v, _ := json.MarshalIndent(value, "\t", "\t")
 		out, _ := splice(raw, open, close-open+1, []byte("[\n\t"+string(v)+"\n]"))
-		return WriteAtomic(path, out)
+		return WriteAtomic(path, keepCRLF(out, raw))
 	}
 	last := items[len(items)-1]
 	at := last.Index + len(last.Raw)
@@ -72,7 +75,7 @@ func SetJSONItem(path string, where map[string]string, value any) error {
 	indent := lineIndent(raw, last.Index)
 	v := marshalAt(raw, last.Index, value)
 	out, _ := splice(raw, at, 0, []byte(sep+"\n"+indent+string(v)))
-	return WriteAtomic(path, out)
+	return WriteAtomic(path, keepCRLF(out, raw))
 }
 
 // DelJSONItem removes every element of the file's top-level array that has
@@ -85,6 +88,9 @@ func DelJSONItem(path string, where map[string]string) error {
 	changed := false
 	for {
 		stripped := jsonc.ToJSONInPlace(append([]byte(nil), raw...))
+		if !json.Valid(stripped) {
+			return fmt.Errorf("%s: invalid JSON/JSONC", path)
+		}
 		r, ok := findItem(stripped, where)
 		if !ok {
 			break

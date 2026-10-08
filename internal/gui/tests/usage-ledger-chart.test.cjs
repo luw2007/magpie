@@ -1,8 +1,8 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// The Requests tab opens on what its requests add up to: a strip of four totals
-// (tokens, requests, cost, the cache hit rate), then the trend of one metric —
-// tokens, cost or requests — as columns by the hour, day or week, each told
-// apart by provider, agent or model, beside a ranking of the same that is the
+// The Requests tab opens on what its requests add up to: a strip of five totals
+// (tokens, requests, cost, the cache hit rate, the output speed), then the trend of one metric —
+// tokens, cost, requests or speed — as columns by the hour, day or week, each told
+// apart by model, model at provider, provider or agent, beside a ranking of the same that is the
 // chart's legend and a way in: a click on a provider or an agent lists only its
 // requests, the provider picker beside the agent's does too, and the ranking
 // keeps the others in sight to switch to. The pointer over a column shows what
@@ -85,6 +85,11 @@ function page(q, variant) {
     ...(daily ? { rows: series.filter((p) => p.calls).map((p) => ({ ...ROWS[0], t: p.time })), total: 6 } : {}),
     bucket: daily ? "day" : "hour", series: none ? [] : series, by: none ? { provider: [], agent: [], model: [] } : many ? { ...BY, provider: many } : BY,
     agents: Object.entries(AGENTS).map(([id, a]) => ({ id, ...a })), providers: (many || WHO).map((w) => ({ id: w.id, name: w.name, icon: w.icon })),
+    // the two sources and their total, as the Requests tab's three cells count
+    // them: the calls the gateway served, the ones read from an agent's own
+    // session file, and both together
+    through: { calls: 8, errors: 1, input: TOTALS.input * .4, output: TOTALS.output * .4, cache_write: TOTALS.cache_write * .4, cache_read: TOTALS.cache_read * .4, cost: TOTALS.cost * .4 },
+    direct: { calls: 12, errors: 2, input: TOTALS.input * .6, output: TOTALS.output * .6, cache_write: TOTALS.cache_write * .6, cache_read: TOTALS.cache_read * .6, cost: TOTALS.cost * .6 },
   };
 }
 
@@ -110,9 +115,11 @@ function server(lang, theme, variant, asked, exported) {
 }
 
 const L = {
-  en: { strip: ["Tokens", "Requests", "Cost", "Cache hit rate"], metric: ["Tokens", "Cost", "Requests"], split: ["Model", "Provider", "Agent"], all: "All providers", none: "No known price for these requests" },
-  zh: { strip: ["Token", "请求", "费用", "缓存命中率"], metric: ["Token", "费用", "请求"], split: ["模型", "供应商", "Agent"], all: "全部供应商", none: "这些请求没有已知价格" },
+  en: { strip: ["Tokens", "Requests", "Cost", "Cache hit rate", "Output speed"], metric: ["Tokens", "Cost", "Requests", "Speed"], split: ["Model", "Model · provider", "Provider", "Agent"], all: "All providers", none: "No known price for these requests" },
+  zh: { strip: ["Token", "请求", "费用", "缓存命中率", "输出速度"], metric: ["Token", "费用", "请求", "速度"], split: ["模型", "模型 · 供应商", "供应商", "Agent"], all: "全部供应商", none: "这些请求没有已知价格" },
 };
+// where each split is among #ledSplit's choices
+const SPLIT = { model: 0, modelAt: 1, provider: 2, agent: 3 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   test(engine + ": the Requests tab's totals and trend", async (t) => {
@@ -133,7 +140,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await p.locator('[data-view="usage"]').first().click();
       await p.locator("#usageTab .opt").nth(1).click();
       if (variant !== "none") await p.locator("#ledRank .rk").first().waitFor();
-      if (["many", "unpriced"].includes(variant)) await p.locator("#ledSplit .opt").nth(1).click();
+      if (["many", "unpriced"].includes(variant)) await p.locator("#ledSplit .opt").nth(SPLIT.provider).click();
       return { p, errors, asked, exported, context };
     };
     const lastAsked = async (asked, want) => {
@@ -146,7 +153,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const w = L[lang];
       await t.test(lang, async () => {
         const { p, errors, asked } = await open(lang, "light");
-        // the strip of four totals
+        // the strip of five totals
         assert.deepEqual(await p.locator("#ledKpi .k").allTextContents(), w.strip);
         assert.equal(await p.locator("#ledKpi .blk").nth(0).getAttribute("title"), Math.round(allTokens).toLocaleString(lang === "zh" ? "zh-CN" : "en"));
         const rate = TOTALS.cache_read / (TOTALS.input + TOTALS.cache_write + TOTALS.cache_read);
@@ -162,7 +169,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await p.locator("#ledSplit .opt.on").textContent(), w.split[0]);
         assert.equal(await p.locator("#period .opt.on").textContent(), lang === "zh" ? "今天" : "Today");
         assert.deepEqual(await names(p), ["claude-sonnet-5", "gpt-6-sol", "gpt-6-luna"]);
-        await p.locator("#ledSplit .opt").nth(1).click(); // exercise provider ranking below
+        await p.locator("#ledSplit .opt").nth(SPLIT.provider).click(); // exercise provider ranking below
         assert.deepEqual(await names(p), ["Claude", "Relay", "Codex"]);
         assert.deepEqual(await p.locator("#ledRank .rk-sw").evaluateAll((s) => s.map((x) => x.style.background)), ["var(--c1)", "var(--c2)", "var(--c3)"]);
         assert(/\d+%/.test(await p.locator("#ledRank .rk-b").first().textContent()), "a share");
@@ -218,15 +225,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await names(p), ["Relay", "Codex", "Claude"]);
         assert.equal(await p.locator("#view-usage").evaluate((v) => v.scrollTop), before, "a click moved the page");
         // and what it is split by
-        await p.locator("#ledSplit .opt").nth(2).click();
+        await p.locator("#ledSplit .opt").nth(SPLIT.agent).click();
         assert.deepEqual(await names(p), ["Codex", "Claude Code"]);
-        await p.locator("#ledSplit .opt").nth(0).click();
+        await p.locator("#ledSplit .opt").nth(SPLIT.model).click();
         assert.deepEqual(await names(p), ["gpt-6-sol", "gpt-6-luna", "claude-sonnet-5"]);
         await p.locator("#ledRank .rk").first().click();
         await lastAsked(asked, (q) => q.get("model") === "gpt-6-sol" && !q.has("q"));
         await p.locator("#ledRank .rk").first().click();
         await lastAsked(asked, (q) => !q.has("model"));
-        await p.locator("#ledSplit .opt").nth(1).click();
+        await p.locator("#ledSplit .opt").nth(SPLIT.provider).click();
         await p.locator("#ledMetric .opt").nth(0).click();
 
         // no rule of another part of the page reaches the ranking: nothing in it but the
@@ -382,7 +389,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await t.test("the metric is remembered, while today and model are defaults", async () => {
       const first = await open("en", "light");
       await first.p.locator("#ledMetric .opt").nth(1).click();
-      await first.p.locator("#ledSplit .opt").nth(1).click();
+      await first.p.locator("#ledSplit .opt").nth(SPLIT.provider).click();
       await first.p.evaluate(() => localStorage.setItem("magpie.ledSplit", "provider"));
       const second = await open("en", "light", { ctx: first.context });
       assert.equal(await second.p.locator("#ledMetric .opt.on").textContent(), "Cost");
@@ -398,6 +405,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(svg.width > 300 && svg.x + svg.width <= chart.x + chart.width + 1, "the chart fits at 560");
       assert(rank.y >= chart.y + chart.height - 1, "the ranking goes under the chart when there is no room beside it");
       assert.equal(await p.locator("#ledKpi").evaluate((k) => getComputedStyle(k).gridTemplateColumns.split(" ").length), 2, "two totals to a row");
+      // the lines between the columns of one bar belong to the totals' cards:
+      // a card starting a row has no left line, and the rows under the first
+      // are divided — the two sources the Requests tab draws keep none of it
+      assert.equal(await p.locator("#ledKpi .blk").nth(2).evaluate((b) => getComputedStyle(b).borderLeftWidth), "0px", "a totals card starting a row carries no left line");
+      assert.notEqual(await p.locator("#ledKpi .blk").nth(2).evaluate((b) => getComputedStyle(b).borderTopWidth), "0px", "and the rows are divided");
+      await p.locator("#usageTab .opt").nth(1).click();
+      await p.locator("#ledVia .blk").first().waitFor();
+      assert.equal(await p.locator("#ledVia .blk").nth(1).evaluate((b) => getComputedStyle(b).borderLeftWidth), "0px", "a source cell carries no line between cells of one bar");
       // the chart follows the window
       await p.setViewportSize({ width: 1100, height: 760 });
       await p.waitForTimeout(300);

@@ -22,6 +22,8 @@
   const folderBoxes = new Map(); // each folder's box as drawn, by cwd
   let openedFor = "";         // the agent the folders were first unfolded for
   let detail = "";            // the session opened to its details
+  const talkOpen = new Set(); // sessions whose conversation is shown, by agent/id
+  const talks = new Map();    // what was said in them, as read, by agent/id
   let loading = 0;
   let fitObserver = null;
   let focus = null;           // { agent, id, until }: a session to bring into sight once drawn
@@ -39,6 +41,7 @@
       // models may be null for a session that spent nothing
       data = { ...d, agents: d?.agents || [], sessions: (d?.sessions || []).map((s) => ({ ...s, models: s.models || [] })), trash: d?.trash || [], agent: d?.agent || "" };
       failed = "";
+      talks.clear(); // read again when shown: a session may have gone on
       if (agent !== d.agent) { agent = d.agent; picked.clear(); }
     } catch (e) {
       if (n !== loading) return;
@@ -213,12 +216,121 @@
           : "magpie can list {agent}'s sessions, but cannot resume or delete them.";
       box.append(el("p", "usage-note sm-note", t(key, { agent: a.name })));
     }
-    if (a?.deletable && data.sessions.some((s) => s.wsl)) {
-      box.append(el("p", "usage-note sm-note", t("Sessions in WSL can be resumed, but not deleted from magpie: delete them in WSL.")));
-    }
+    const prov = providerBar();
+    if (prov) box.append(prov);
     box.append(selectBar(), el("div", "sm-tree"));
     queueMicrotask(redrawList);
     return box;
+  }
+
+  // Codex lists in its history only the sessions made with the provider it
+  // uses now; ones made with another (CC Switch's "custom") are there as
+  // files but hidden from it (#887). They can be moved to Codex's provider
+  // here, picked in a dialog first, and the last move undone.
+  const otherProvider = (s) => !s.read_only && s.provider && s.uses_provider && s.provider !== s.uses_provider;
+  let lastMove = null; // { agent, moved: [{ id, from, to }] }
+
+  function providerBar() {
+    if (data.agent !== "codex") return null;
+    const hidden = data.sessions.filter(otherProvider);
+    const undo = lastMove?.agent === data.agent && lastMove.moved.length ? lastMove : null;
+    if (!hidden.length && !undo) return null;
+    const bar = el("div", "row sm-provider");
+    if (hidden.length) {
+      const from = [...new Set(hidden.map((s) => s.provider))].join(", ");
+      const to = hidden[0].uses_provider;
+      bar.append(el("span", "sm-provider-text", t(hidden.length === 1
+        ? "1 Codex session was made with another provider ({from}): Codex lists only {to}'s sessions in its history now, so it doesn't show there."
+        : "{n} Codex sessions were made with another provider ({from}): Codex lists only {to}'s sessions in its history now, so they don't show there.", { n: hidden.length, from, to })));
+      const go = el("button", "text sm-provider-move", t("Move to {to}…", { to }));
+      go.type = "button";
+      go.onclick = (e) => { e.stopPropagation(); askProvider(hidden); };
+      bar.append(el("span", "grow"), go);
+    } else {
+      bar.append(el("span", "sm-provider-text", t(undo.moved.length === 1 ? "Moved 1 session to {to}" : "Moved {n} sessions to {to}", { n: undo.moved.length, to: undo.moved[0].to })), el("span", "grow"));
+    }
+    if (undo) {
+      const back = el("button", "text sm-provider-undo");
+      back.type = "button";
+      back.append(svg(UNDO, 13, 1.4), el("span", "", t("Undo")));
+      back.onclick = async (e) => {
+        e.stopPropagation();
+        back.disabled = true;
+        const out = await moveProviders(undo.moved.map((m) => ({ id: m.id, to: m.from })));
+        if (!out) { back.disabled = false; return; }
+        lastMove = null;
+        if (!out.refused.length) status(t(out.moved.length === 1 ? "Moved 1 session back" : "Moved {n} sessions back", { n: out.moved.length }), "ok");
+        await load();
+      };
+      bar.append(back);
+    }
+    return bar;
+  }
+
+  // moveProviders posts the moves, says what was refused, and gives the
+  // reply (null when the post failed)
+  async function moveProviders(moves) {
+    let out;
+    try {
+      out = await api("sessions/codex-provider", { moves });
+    } catch (err) {
+      status(err.message, "err");
+      return null;
+    }
+    if (out.refused.length) {
+      const first = out.refused[0], s = data.sessions.find((x) => x.id === first.id);
+      const active = out.refused.filter((r) => r.active);
+      status(active.length ? t(active.length === 1 ? "{title} is still being written to; close it in {agent} and try again in a minute" : "{n} sessions are still being written to; close them in {agent} and try again in a minute", { title: s?.title || first.id, n: active.length, agent: "Codex" })
+        : (s?.title || first.id) + ": " + first.error, "err");
+    }
+    return out;
+  }
+
+  // askProvider: the sessions to move, each ticked, to untick before Move
+  function askProvider(list) {
+    const to = list[0].uses_provider;
+    const chosen = new Set(list.map((s) => s.id));
+    const ed = el("div", "editor sm-ask sm-provider-ask");
+    const h = el("div", "ehead");
+    h.append(icon(current()?.icon || "generic"), el("b", "", t("Move sessions to {to}?", { to })));
+    ed.append(h);
+    const names = el("ul", "sm-ask-list sm-provider-list");
+    const go = el("button", "text primary", t("Move"));
+    for (const s of list) {
+      const li = el("li");
+      const lab = el("label");
+      const c = el("input", "sm-check");
+      c.type = "checkbox";
+      c.checked = true;
+      c.onchange = () => { c.checked ? chosen.add(s.id) : chosen.delete(s.id); go.disabled = !chosen.size; };
+      lab.append(c, el("span", "name", s.title || s.id), el("span", "sm-prov", s.provider), el("span", "note", ago(s.last)));
+      li.append(lab);
+      names.append(li);
+    }
+    ed.append(names);
+    ed.append(el("p", "lib-confirm", t("Only the provider each one names is changed, in its files and in Codex's database: its messages, id, title and archive stay as they are. A copy of its files is kept in magpie's trash folder first, and Undo moves them back. A session written to in the last minute is left alone.")));
+    const bar = el("div", "bar");
+    go.type = "button";
+    go.onclick = async (e) => {
+      e.stopPropagation();
+      go.disabled = true;
+      go.classList.add("busy");
+      const out = await moveProviders([...chosen].map((id) => ({ id, to })));
+      if (!out) { go.disabled = false; go.classList.remove("busy"); return; }
+      closeConfirmAsk();
+      lastMove = { agent: data.agent, moved: out.moved };
+      if (!out.refused.length) status(t(out.moved.length === 1 ? "Moved 1 session to {to}" : "Moved {n} sessions to {to}", { n: out.moved.length, to }), "ok");
+      await load();
+    };
+    const cancel = el("button", "text", t("Cancel"));
+    cancel.type = "button";
+    cancel.onclick = (e) => { e.stopPropagation(); closeConfirmAsk(); };
+    bar.append(el("span", "grow"), cancel, go);
+    ed.append(bar);
+    confirmAsk = ed;
+    openModal(ed);
+    $("#modal").classList.add("lib");
+    cancel.focus({ preventScroll: true });
   }
 
   // the bar over the tree: pick every session shown, and delete those picked
@@ -226,7 +338,7 @@
     const bar = el("div", "row-head sm-bar");
     const a = current();
     if (!a?.deletable) { bar.hidden = true; return bar; }
-    const list = shown().filter((s) => !s.read_only && !s.wsl);
+    const list = shown().filter((s) => !s.read_only);
     const all = el("input", "sm-check");
     all.type = "checkbox";
     all.checked = list.length > 0 && list.every((s) => picked.has(s.id));
@@ -286,7 +398,7 @@
       const open = !!q || opened.has(cwd);
       const g = el("div", "list sm-group");
       const r = el("div", "row sm-folder");
-      const writable = items.filter((s) => !s.read_only && !s.wsl);
+      const writable = items.filter((s) => !s.read_only);
       // the folder's box picks every session of it shown, folded or not,
       // for the bar's Delete; the bar still counts sessions (#527)
       if (current()?.deletable && writable.length) {
@@ -330,7 +442,7 @@
     const wrap = el("div", "sess-item sm-item" + (detail === s.id ? " open" : ""));
     const r = el("div", "row sess sm-sess");
     r.dataset.id = s.id;
-    if (a?.deletable && !s.read_only && !s.wsl) {
+    if (a?.deletable && !s.read_only) {
       const c = el("input", "sm-check");
       c.type = "checkbox";
       c.checked = picked.has(s.id);
@@ -344,6 +456,11 @@
     const sub = el("div", "sub", [ago(s.last), sessModelsText(s), s.messages ? t(s.messages === 1 ? "{n} message" : "{n} messages", { n: s.messages }) : "", fmtBytes(s.size), s.id.slice(0, 8)].filter(Boolean).join(" · "));
     if (s.via?.length) sub.title = s.via.map(viaText).join("\n");
     if (s.wsl) sub.prepend(wslBadge(s), " ");
+    if (otherProvider(s)) {
+      const p = el("span", "sm-prov", s.provider);
+      p.title = t("Made with {from}: Codex's history lists only {to}'s sessions now", { from: s.provider, to: s.uses_provider });
+      sub.prepend(p, " ");
+    }
     who.append(sub);
     // what it spent, as the Usage page's list shows it
     r.append(who, ...sessSpent(s));
@@ -372,7 +489,8 @@
         r.append(term);
       }
     }
-    if (a?.deletable && !s.read_only && !s.wsl) {
+    if (s.carry?.length) r.append(carryPick(s));
+    if (a?.deletable && !s.read_only) {
       const del = el("button", "copy sm-del");
       del.type = "button";
       del.title = t("Delete");
@@ -404,9 +522,90 @@
     if (s.cwd) line(t("Folder"), s.cwd);
     line(t("Session ID"), s.id, copyBtn(s.id, t("Session id")));
     if (s.resume) line(t("Resume"), el("code", "", s.resume), copyBtn(s.resume, t("Resume command")));
+    for (const c of s.carry || []) line(t("Continue in {agent}", { agent: agentOf(c.agent).name }), el("code", "", c.command), copyBtn(c.command, t("Command")));
     sessUsageDetail(d, s, line);
     if (s.path) line(t("File"), s.path + (s.files > 1 ? " " + t("+{n} more", { n: s.files - 1 }) : ""));
+    if (s.transcript) {
+      const box = el("div", "sess-talk");
+      const b = el("button", "text sess-talk-btn");
+      b.type = "button";
+      const show = () => {
+        const on = talkOpen.has(s.agent + "/" + s.id);
+        b.textContent = t(on ? "Hide conversation" : "Show conversation");
+        b.setAttribute("aria-expanded", String(on));
+        box.hidden = !on;
+        if (on) drawTalk(box, s);
+      };
+      b.onclick = (e) => {
+        e.stopPropagation();
+        const k = s.agent + "/" + s.id;
+        if (talkOpen.has(k)) talkOpen.delete(k); else talkOpen.add(k);
+        show();
+      };
+      line(t("Conversation"), b);
+      d.append(box);
+      show();
+    }
     return d;
+  }
+
+  // agentOf is an agent as the page names it: of those with sessions, else
+  // by its id
+  const agentOf = (id) => data?.agents.find((x) => x.agent === id) || { agent: id, name: id, icon: id };
+
+  // carryPick is the other agents that can carry a session on from its
+  // file as it is (#845; oh-my-pi forks a Pi session), in the app's menu:
+  // copy the command, or open it in the session terminal.
+  function carryPick(s) {
+    const b = el("button", "sess-pick sess-carry");
+    b.type = "button";
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
+    b.title = t("Continue this session in another agent");
+    b.append(el("span", "", t("Continue in")), svg(CHEV, 11, 1.6));
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if (b.classList.contains("open")) return closeProtoMenu();
+      const opts = [];
+      for (const c of s.carry) {
+        const name = agentOf(c.agent).name;
+        opts.push({ v: "copy\x01" + c.agent, name, literalName: true, note: "Copy the command", title: c.command });
+        if (data.terminal) opts.push({ v: "term\x01" + c.agent, name, literalName: true, note: "Open in session terminal", title: c.command });
+      }
+      openProtoMenu(b, opts, "", (v) => {
+        b.focus({ preventScroll: true });
+        const [how, to] = v.split("\x01");
+        const c = s.carry.find((x) => x.agent === to);
+        if (!c) return;
+        if (how === "copy") copy(c.command, t("Command"));
+        else api("sessions/terminal", { agent: s.agent, id: s.id, in: to }).then(() => status(t("Opening in session terminal"), "ok"), (err) => status(err.message, "err"));
+      }, "Continue in another agent", "sess-carry-menu", "right");
+    };
+    return b;
+  }
+
+  // drawTalk fills box with what was said in a session, read from the
+  // agent's own file when it is first shown (only read, never written)
+  function drawTalk(box, s) {
+    const k = s.agent + "/" + s.id;
+    const got = talks.get(k);
+    if (!got) {
+      box.replaceChildren(el("p", "cx-none", t("Reading…")));
+      talks.set(k, { busy: true });
+      api("sessions/transcript?agent=" + encodeURIComponent(s.agent) + "&id=" + encodeURIComponent(s.id))
+        .then((tr) => talks.set(k, { tr }), (err) => talks.set(k, { err: err.message }))
+        .then(() => { if (box.isConnected && talkOpen.has(k)) drawTalk(box, s); });
+      return;
+    }
+    if (got.busy) return;
+    if (got.err) { box.replaceChildren(el("p", "cx-none", got.err)); talks.delete(k); return; }
+    const parts = got.tr?.parts || [];
+    const out = [];
+    if (!parts.length) out.push(el("p", "cx-none", t("Nothing was said here")));
+    for (const p of parts) out.push(ledSaid(p));
+    if (got.tr?.cut) out.push(el("p", "cx-none", t("There was more than is shown here")));
+    out.push(el("p", "cx-src", t("Read from the agent's session file; magpie keeps no copy")));
+    box.replaceChildren(...out);
   }
 
   // askDelete asks in magpie's dialog before the sessions go to its trash;

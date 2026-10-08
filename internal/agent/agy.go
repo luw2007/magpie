@@ -164,15 +164,23 @@ func agy(home string) *Agent {
 			},
 			Options: func(cur map[string]string) []Option {
 				custom := agyCustom(path)
+				// its own say they go to their provider, not through magpie,
+				// as every agent's own do (EZN7L2C3, #834)
 				var own []Option
 				for k := range custom {
 					if !strings.HasPrefix(k, magpieID+"/") {
-						own = append(own, Option{Value: k, Icon: modelIcon("", gjson.GetBytes(custom[k], "modelName").String())})
+						to := "Google"
+						if p := gjson.GetBytes(custom[k], "apiProvider").String(); strings.Contains(p, "ANTHROPIC") {
+							to = "Anthropic"
+						} else if strings.Contains(p, "OPENAI") {
+							to = "OpenAI"
+						}
+						own = append(own, Option{Value: k, Icon: modelIcon("", gjson.GetBytes(custom[k], "modelName").String()), Direct: to})
 					}
 				}
 				sort.Slice(own, func(i, j int) bool { return own[i].Value < own[j].Value })
 				if c := cur["model"]; c != "" && !usesMagpie(c) && custom[c] == nil {
-					own = append([]Option{{Value: c, Icon: modelIcon("", c)}}, own...)
+					own = append([]Option{{Value: c, Icon: modelIcon("", c), Direct: "Google"}}, own...)
 				}
 				return append(group("Antigravity CLI", own), viaMagpie("agy", magpieID+"/")...)
 			},

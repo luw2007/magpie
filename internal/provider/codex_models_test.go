@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // A ChatGPT account lists the models of its own plan, asked with its own
@@ -56,9 +58,7 @@ func TestCodexVersion(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	writeFile(t, filepath.Join(home, ".codex", "models_cache.json"), map[string]any{"client_version": "0.160.0"})
 	exe := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(exe, []byte("#!/bin/sh\necho codex-cli 0.161.1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testenv.Program(t, exe, "#!/bin/sh\necho codex-cli 0.161.1\n")
 	old := codexExecutable
 	t.Cleanup(func() { codexExecutable = old; codexVersionCache.at = time.Time{}; codexSeen = seenVersion{} })
 	codexSeen = seenVersion{}
@@ -158,9 +158,7 @@ func TestCodexExecutableOffPath(t *testing.T) {
 			os.WriteFile(filepath.Join(home, ".npmrc"), []byte("registry=https://registry.npmjs.org/\nprefix = ~/custom-npm\n"), 0o644)
 			exe := filepath.Join(home, dir, "codex")
 			os.MkdirAll(filepath.Dir(exe), 0o755)
-			if err := os.WriteFile(exe, []byte("#!/bin/sh\necho codex-cli 0.161.0\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			testenv.Program(t, exe, "#!/bin/sh\necho codex-cli 0.161.0\n")
 			if got := codexExecutable(); got != exe {
 				t.Fatalf("found %q, want %q", got, exe)
 			}
@@ -176,5 +174,51 @@ func TestCodexModelsMaxContext(t *testing.T) {
 		{"slug":"gpt-5.5","context_window":272000,"max_context_window":272000}]}`))
 	if len(ms) != 2 || ms[0].Context != 272000 || ms[0].MaxContext != 872000 || ms[1].MaxContext != 0 {
 		t.Fatalf("%+v", ms)
+	}
+}
+
+// A codex CLI that fails to run — macOS stopping it as malware, with an
+// alert each time (#864) — isn't run again every ten minutes, and an npm
+// install's version is read from its package, not run.
+func TestCodexVersionNotRerun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", "")
+	dir := t.TempDir()
+	runs := filepath.Join(dir, "runs")
+	exe := filepath.Join(dir, "codex")
+	testenv.Program(t, exe, "#!/bin/sh\necho x >> '"+runs+"'\nexit 137\n")
+	old := codexExecutable
+	t.Cleanup(func() { codexExecutable = old; codexVersionCache.at = time.Time{}; codexSeen = seenVersion{} })
+	codexSeen = seenVersion{}
+	codexExecutable = func() string { return exe }
+	for range 3 { // ten minutes apart
+		codexVersionCache.at = time.Time{}
+		if got := codexVersion(); got != codexClientVersion {
+			t.Fatalf("got %s", got)
+		}
+	}
+	if b, _ := os.ReadFile(runs); strings.Count(string(b), "x") != 1 {
+		t.Fatalf("the failing codex was run %d times", strings.Count(string(b), "x"))
+	}
+
+	pkg := filepath.Join(dir, "node_modules", "@openai", "codex")
+	os.MkdirAll(filepath.Join(pkg, "bin"), 0o755)
+	os.WriteFile(filepath.Join(pkg, "package.json"), []byte(`{"version":"0.199.0"}`), 0o644)
+	testenv.Program(t, filepath.Join(pkg, "bin", "codex.js"), "#!/bin/sh\necho x >> '"+runs+"'\necho codex-cli 0.199.0\n")
+	link := filepath.Join(dir, "bin", "codex")
+	os.MkdirAll(filepath.Dir(link), 0o755)
+	os.Symlink(filepath.Join(pkg, "bin", "codex.js"), link)
+	codexExecutable = func() string { return link }
+	codexVersionCache.at = time.Time{}
+	if got := codexVersion(); got != "0.199.0" {
+		t.Fatalf("npm codex: %s", got)
+	}
+	if b, _ := os.ReadFile(runs); strings.Count(string(b), "x") != 1 {
+		t.Fatal("the npm codex was run")
 	}
 }

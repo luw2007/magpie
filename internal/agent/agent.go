@@ -44,6 +44,10 @@ type Option struct {
 	// sign-in or key, with magpie not in the way ("Anthropic"): its config
 	// then names no magpie endpoint, which is right, not a failed setup
 	Direct string `json:"direct,omitempty"`
+	// Via is a model of the agent's own it asks through magpie's gateway,
+	// on its own sign-in all the same (Codex's while routed by its base
+	// URL): the picker says via magpie by it, as by a catalog model's
+	Via bool `json:"via,omitempty"`
 	// Same is a model magpie serves on the very account the agent is
 	// signed in to itself, so the agent reaches it on its own too: the
 	// picker folds these into one row a click opens (Claude Code, #496)
@@ -52,6 +56,12 @@ type Option struct {
 	// (claude-opus-4-5-20251101 → claude-opus-4-5): the picker shows one
 	// row for the two, the alias, unless the dated one is the value set
 	Alias string `json:"alias,omitempty"`
+	// FastFor is the agent a catalog model with a fast mode (provider.
+	// CanFast) is switched fast or not for, by the model in the picker
+	// (#954): the one whose requests the gateway sends it on; Fast is
+	// whether it is now (provider.IsFastPick)
+	FastFor string `json:"fastFor,omitempty"`
+	Fast    bool   `json:"fast,omitempty"`
 
 	// own: served on the agent's own sign-in (viaMagpie), for Same
 	own bool
@@ -73,7 +83,8 @@ type Field struct {
 	// another field until set (Claude Code's per-tier models).
 	Quiet bool
 	// Follows is the key of the field a Quiet one takes after while empty
-	// ("model" for Claude Code's tiers), for a profile's details to say so.
+	// ("model" for Claude Code's tiers and subagents): a profile's details
+	// say so, and Drift reads the field as on that one's model (#1050).
 	Follows string
 }
 
@@ -87,6 +98,7 @@ type Agent struct {
 	Dir     string // config directory, used for detection
 	Path    string // config file magpie edits
 	Fields  []Field
+	Native  *NativeConnection
 	// Notice, if set, is advice worth showing after a change: agents that
 	// read their config once at start-up need a restart to see it.
 	Notice func() string
@@ -116,6 +128,17 @@ type Agent struct {
 	// Joined reports an agent Join connected: magpie is in its config
 	// though no field is on one of magpie's models.
 	Joined func() bool
+	// Beside reports an agent set on one of magpie's models beside its own
+	// (Codex by the base URL beside its ChatGPT sign-in), now on one of its
+	// own written in by the agent: still connected, as joined, though the
+	// change is told as drift (#940).
+	Beside func() bool
+	// OwnVia is the catalog id magpie serves one of the agent's own models
+	// by on a sign-in of the user's, which its model field lists as its
+	// own rather than as magpie's ("codex/gpt-5.5" for Codex's gpt-5.5),
+	// "" for none: Connect keeps the agent on that model through magpie
+	// where it can't Join (#940: Codex went to an unrelated model).
+	OwnVia func(model string) string
 	// Routed reports that the agent's config sends whatever model it
 	// names to magpie's gateway (Codex's openai_base_url or magpie as its
 	// provider), so a model's name the gateway takes as a routing group
@@ -186,13 +209,30 @@ type Agent struct {
 	// detect, when set, says whether the agent is here in place of looking
 	// for its files and binary: a distro's, probed once.
 	detect func() bool
+	// reach, when set, is the gateway's address as the agent's config has
+	// it where that is kept apart from Gateway (this machine's Codex at an
+	// address of the user's, #816): Drift tries it (see reach.go).
+	reach func() string
+	// move, when set, points the agent's config at to where it names the
+	// gateway at from: an address of WSL's that changed (#1013).
+	move func(from, to string) error
+	// dirShared says Dir is a folder another agent keeps its files in too
+	// (omp's, when PI_CODING_AGENT_DIR points it at Pi's): that it is there
+	// says nothing of this agent.
+	dirShared bool
 }
 
 // Running reports whether a process whose command line matches any pattern
-// (an extended regexp, as for pgrep -f) is alive. Unknown on Windows.
+// (an extended regexp, as for pgrep -f) is alive. Windows can't be asked
+// what runs, so anything may be: every caller is the advice an agent's own
+// lists need after magpie changed what it reads at start ("restart Codex",
+// "open a new dsh session"), and a Windows that answered no here dropped
+// that advice silently — a model picked in magpie looked like it had done
+// nothing at all. claudeRunning and Pencil's own check already say they
+// can't be told, and say yes for the same reason.
 func Running(patterns ...string) bool {
 	if runtime.GOOS == "windows" {
-		return false
+		return len(patterns) > 0
 	}
 	for _, pat := range patterns {
 		if err := proc.Command("pgrep", "-f", pat).Run(); err == nil {
@@ -215,7 +255,7 @@ func (a *Agent) Detected() bool {
 	if _, err := os.Stat(a.Path); err == nil {
 		return true
 	}
-	if a.Dir != "" && isDir(a.Dir) {
+	if a.Dir != "" && !a.dirShared && isDir(a.Dir) {
 		return true
 	}
 	if a.Bin != "" {

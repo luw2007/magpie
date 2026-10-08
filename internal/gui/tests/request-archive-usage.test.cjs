@@ -78,8 +78,8 @@ const L = {
   },
   zh: {
     name: "请求存档", fetch: "从存档取回", download: "下载", secrets: "已去除密钥", not: "无存档",
-    omitted: "内容过长，这里不显示。下载存档即可查看完整内容。",
-    large: "这份存档有 120 MB，太大无法在这里显示。请下载后查看。",
+    omitted: "内容过长，不在此显示。下载存档可查看完整内容。",
+    large: "存档 120 MB，过大无法在此显示，请下载后查看。",
   },
 };
 
@@ -117,9 +117,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             const at = await top();
             await loc.click();
             await p.waitForTimeout(200);
-            // magpie web's page settles a row's first opening up to a pixel
-            // off, on main before #447 as well
-            assert(Math.abs((await top()) - at) <= (web ? 1 : 0), `a click moved the page: ${at} to ${await top()}`);
+            assert.equal(await top(), at, "a click moved the page");
           };
           const wait = async (n) => { for (let i = 0; i < 60 && seen.length < n; i++) await p.waitForTimeout(50); };
 

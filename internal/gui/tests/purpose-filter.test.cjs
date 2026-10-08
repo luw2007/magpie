@@ -85,7 +85,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const page = await context.newPage();
       page.setDefaultTimeout(7000);
       const errors = [], asked = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      // WebKit reports a ResizeObserver round left to the next frame as a page
+      // error; Chromium doesn't. A purpose picked from a long list shrinks the
+      // Usage page, the click's hold (heldSizes) gives it room again before the
+      // paint, and the page's scrollbar coming back narrows the ledger by 8px
+      // in that same frame, so its own observers are told once more. Under
+      // load that lands past the loop's depth. Nothing is lost or painted
+      // wrong: the round is delivered on the next frame.
+      page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", server(lang, asked));
       const choose = async (id, value) => {
         await click(page, page.locator(id));
@@ -169,6 +176,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator(".rt-req .kind").count(), 0);
       assert.equal(await page.locator("#rtPurpose span").textContent(), lang === "zh" ? "用途：未标记" : "Purpose: Unmarked");
       await click(page, page.locator("#rtPurposeClear"));
+      await page.waitForFunction(() => document.querySelector("#rtPurposeClear").hidden && document.querySelectorAll(".rt-req").length === 8);
       assert.equal(await page.locator(".rt-req").count(), 8);
       assert.equal(await page.locator(".rt-group-by button").last().getAttribute("aria-pressed"), "true");
       assert.equal(await page.locator(".rt-days .rt-day").nth(1).getAttribute("aria-pressed"), "true");

@@ -24,6 +24,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // codexClientVersion is the Codex CLI version the models list is asked for
@@ -91,16 +92,18 @@ func codexVersion() string {
 			newer(c.ClientVersion)
 		}
 		if exe := codexExecutable(); exe != "" {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if out, err := proc.ProbeContext(ctx, exe, "--version").Output(); err == nil {
-				newer(string(out)) // "codex-cli 0.155.1"
-			}
-			cancel()
+			// "codex-cli 0.155.1"; read from its npm package, and not run
+			// again once it failed (#864: macOS's malware alert each time)
+			newer(codexCLIVersion(exe))
 		}
 		codexVersionCache.v, codexVersionCache.at = v, time.Now()
 	}
 	return newerVersion(codexVersionCache.v, codexSeen.get())
 }
+
+// codexCLIVersion is what the codex CLI at exe says its version is; a var
+// so tests can fake it.
+var codexCLIVersion = proc.Version
 
 // newerVersion is the later of two versions, a when b isn't one.
 func newerVersion(a, b string) string {
@@ -280,13 +283,18 @@ func (a *Account) Levels(model string) (levels []string, ok bool) {
 	return nil, false
 }
 
-// codexPoolLevels gives each of ms — the list of the account Codex is
-// signed in to — the reasoning levels any other account on gives it too:
-// the provider's levels are what its accounts together take, so a Free
-// account signed in, whose plan lacks high, doesn't lower the request a
-// Plus one beside it answers (#520); the gateway sends each account only
-// what its own list takes (Account.Levels) first.
-func codexPoolLevels(ms []catalog.Model) []catalog.Model {
+// codexPoolModels is ms — the list of the account Codex is signed in to —
+// with what the other accounts on add to it. A model only another account's
+// plan has joins it (Raven on Discord: Codex signed in to a Free account
+// beside a Pro 5x one, and the codex provider listed only the Free plan's
+// three), right after the model before it in that account's list, as
+// Antigravity's pool does (mergeAntigravityModels). And each model takes
+// the reasoning levels any of them gives it: the provider's levels are what
+// its accounts together take, so a Free account signed in, whose plan lacks
+// high, doesn't lower the request a Plus one beside it answers (#520). The
+// gateway sends each account only the models and levels its own list has
+// (Account.Lists, Account.Levels) first.
+func codexPoolModels(ms []catalog.Model) []catalog.Model {
 	var lists [][]catalog.Model
 	for _, l := range Logins("codex") {
 		if l.Active || !l.On {
@@ -300,26 +308,30 @@ func codexPoolLevels(ms []catalog.Model) []catalog.Model {
 		return ms
 	}
 	out := slices.Clone(ms)
-	for i, m := range out {
-		if len(m.Efforts) == 0 {
-			continue
-		}
-		efforts := slices.Clone(m.Efforts)
-		for _, live := range lists {
-			for _, o := range live {
-				if o.ID != m.ID {
-					continue
-				}
-				for _, e := range o.Efforts {
-					if !slices.Contains(efforts, e) {
-						efforts = append(efforts, e)
-					}
+	for _, live := range lists {
+		next := 0
+		for _, o := range live {
+			i := slices.IndexFunc(out, func(m catalog.Model) bool { return m.ID == o.ID })
+			if i < 0 {
+				o.Efforts = slices.Clone(o.Efforts)
+				out = slices.Insert(out, next, o)
+				next++
+				continue
+			}
+			next = max(next, i+1)
+			if len(out[i].Efforts) == 0 {
+				continue
+			}
+			efforts := slices.Clone(out[i].Efforts)
+			for _, e := range o.Efforts {
+				if !slices.Contains(efforts, e) {
+					efforts = append(efforts, e)
 				}
 			}
-		}
-		if len(efforts) > len(m.Efforts) {
-			slices.SortStableFunc(efforts, func(a, b string) int { return levelRank(a) - levelRank(b) })
-			out[i].Efforts = efforts
+			if len(efforts) > len(out[i].Efforts) {
+				slices.SortStableFunc(efforts, func(a, b string) int { return levelRank(a) - levelRank(b) })
+				out[i].Efforts = efforts
+			}
 		}
 	}
 	return out
@@ -374,15 +386,46 @@ func CodexNativeHidden() map[string]bool {
 	}
 	out := map[string]bool{}
 	for _, e := range Catalog() {
-		if off[e.ID] && e.Group == "" && e.Provider.Account != nil && e.Provider.Account.Agent == "codex" {
+		if off[e.ID] && CodexOwn(e) {
 			out[e.Model] = true
 		}
 	}
 	return out
 }
 
+// CodexOrder is where each model of Codex's list goes when the user put
+// them in an order of their own on the Agents page (#855), by the slug
+// Codex knows it by — a ChatGPT account's own by its bare one, as the
+// backend lists it — and whether they did. A model it doesn't name keeps
+// its place after them.
+func CodexOrder() (map[string]int, bool) {
+	order := ModelOrder("codex")
+	if len(order) == 0 {
+		return nil, false
+	}
+	at := make(map[string]int, len(order))
+	for i, id := range order {
+		at[id] = i
+	}
+	out := map[string]int{}
+	for _, e := range Catalog() {
+		i, ok := at[e.ID]
+		if !ok {
+			continue
+		}
+		slug := e.ID
+		if CodexOwn(e) {
+			slug = e.Model
+		}
+		if cur, seen := out[slug]; !seen || i < cur {
+			out[slug] = i
+		}
+	}
+	return out, true
+}
+
 // CodexListTag names the list Codex is handed, for its ETag: magpie's models,
-// the account's own taken out of it, the windows set on them, and whether its OpenAI models say
+// the account's own taken out of it, the order they are in, the windows set on them, the auto-review model, and whether its OpenAI models say
 // multi-agent V1 (settings.CodexAgentsV1), so any of them changing has
 // Codex ask for the list again.
 func CodexListTag() string {
@@ -391,7 +434,20 @@ func CodexListTag() string {
 	for _, slug := range off {
 		ms = append(ms, catalog.Model{ID: "-" + slug})
 	}
+	// and the order the user put them in, the account's own among them
+	for _, id := range ModelOrder("codex") {
+		ms = append(ms, catalog.Model{ID: "^" + id})
+	}
 	ms = append(ms, codexWindowsTag()...)
+	// and where a model with no threshold of its own is compacted, when
+	// that isn't the working window
+	if n := settings.Load().Compact(); n != settings.WorkingWindow {
+		ms = append(ms, catalog.Model{ID: "~compact", Context: n})
+	}
+	// and the model Codex's auto-review runs on (#938)
+	if v := settings.Load().CodexAutoReview; v != "" {
+		ms = append(ms, catalog.Model{ID: "~autoreview:" + v})
+	}
 	return codexcat.PolicyTag(codexcat.Tag(ms))
 }
 
@@ -467,11 +523,14 @@ func codexListed(shown []Entry, members func(id string) []Member) []catalog.Mode
 	// are in Codex's picker beside these
 	labels := Labels(shown)
 	seen := described()
+	s := settings.Load()
+	find := func(id string) (Group, []Member, bool) { return Group{}, members(id), true }
 	for i, e := range shown {
-		if e.Group == "" && e.Provider.Account != nil && e.Provider.Account.Agent == "codex" {
+		if CodexOwn(e) {
 			continue
 		}
 		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: e.Efforts, Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2}
+		m.Compact = compactSet(s, e.ID, find)
 		if e.Group != "" {
 			for _, mb := range members(e.ID) {
 				if a := mb.Provider.Account; a != nil && a.Agent == "codex" && strings.HasPrefix(mb.Model, "gpt-") {

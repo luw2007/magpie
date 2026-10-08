@@ -65,7 +65,7 @@ function server(lang, posted) {
 
 const want = {
   en: { name: "Codex thread titles", own: "Codex’s own (ChatGPT)", off: "Off", subOwn: /through its ChatGPT sign-in/, subOff: /sent nowhere/, subModel: /go to this model/ },
-  zh: { name: "Codex 会话标题", own: "Codex 自带（ChatGPT）", off: "关闭", subOwn: /ChatGPT 登录/, subOff: /不发往任何地方/, subModel: /改由这个模型/ },
+  zh: { name: "Codex 会话标题", own: "Codex 自带（ChatGPT）", off: "关闭", subOwn: /ChatGPT 登录/, subOff: /不外发/, subModel: /改由此模型/ },
 };
 const view = (page) => page.locator("#view-settings").evaluate((v) => v.scrollTop);
 
@@ -94,6 +94,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal((await row.locator(".name").textContent()).trim(), want[lang].name);
       assert.equal((await pick.textContent()).trim(), want[lang].own, "Codex's own by default");
       assert.match(await row.locator(".sub").textContent(), want[lang].subOwn);
+      // the chip's icon is the chip's size, not the row's 18–22px (duanckham on X)
+      assert.deepEqual(await pick.locator(".ic").evaluate((e) => [e.offsetWidth, e.offsetHeight]), [14, 14]);
 
       // scrolled by a wheel till the row is mid-view, so a click that
       // moved the page would show

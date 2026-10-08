@@ -6,6 +6,7 @@ package provider
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -105,13 +106,14 @@ func loginReading(ctx context.Context, l Login) loginUsageEntry {
 			c.pending = map[string]*loginRead{}
 		}
 		c.pending[key] = r
+		ctx, _ = quotaReading(ctx)
 		go func() {
 			start := time.Now()
 			// read for all who wait for it: no one's ctx cuts it short, but
 			// it is bounded as the Usage page's refresh is
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subscriptionTimeout)
 			defer cancel()
-			r.e = entry(keepLast(readNow(loginQuota(rctx, l)), l.User))
+			r.e = entry(keepReading(rctx, readNow(loginQuota(rctx, l)), l.User))
 			c.Lock()
 			// one dropped meanwhile (StaleAllowance) read too soon, and a
 			// Claude account the user asked to see meanwhile is read again
@@ -180,6 +182,8 @@ func builtinLogins(agent string) (logins []Login, ok bool) {
 		logins = factoryLoginList()
 	case MiMoID:
 		logins = mimoLoginList()
+	case ChatGPTAPIID:
+		logins = siwcLoginList()
 	case "gemini", "antigravity":
 		logins = googleLoginList(agent)
 	case "cursor": // one account, the one cursor-agent is signed in to
@@ -244,6 +248,15 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 		for _, c := range copilotLogins(copilotConfigDir()) {
 			if strings.EqualFold(c.User, l.User) {
 				q := copilotSubscriptionUsage(ctx, c.app.Token, c.app.Host)
+				// an editor's stale token, the CLI signed in to the same
+				// account: read as the requests are sent (#1238)
+				if q.Error == http.StatusText(http.StatusUnauthorized) {
+					if cli, ok := copilotStandIn(c.app); ok {
+						copilotRefuse(c.app.Token, http.StatusUnauthorized)
+						c.app = cli
+						q = copilotSubscriptionUsage(ctx, cli.Token, cli.Host)
+					}
+				}
 				if q.Error == "" {
 					refreshCopilotEntitlement(c.app, q.Plan, q.AccessSKU)
 				}
@@ -280,7 +293,7 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 			}
 		} else {
 			var plan string
-			if plan, q.Windows, q.Resets, q.Balance, err = codexWindows(ctx, tok, accountID); plan != "" {
+			if plan, q.Windows, q.Resets, q.Balance, q.Held, err = codexWindows(ctx, tok, accountID); plan != "" {
 				q.Plan = plan
 			}
 			q.Until = codexUntil(codexLoginAuth(l), time.Now())
@@ -292,14 +305,17 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	return q
 }
 
-// CodexUsedUp reports whether the ChatGPT account Codex is signed in to has
-// used up its allowance for now; false when that isn't known.
+// CodexUsedUp reports whether the ChatGPT account Codex is signed in to is
+// out for the Codex app, which then sends nothing for it (codexHeld): out
+// of its allowance with no credits to go on with. A window at 100% with
+// credits left isn't (the Codex app keeps sending, and the backend
+// answers). False when that isn't known.
 func CodexUsedUp(ctx context.Context) bool {
 	// read as LoginUsage has it, fetched at most once a minute: the agent
 	// package asks on every catalog sync
 	u := LoginUsage(ctx, "codex")
 	for _, l := range Logins("codex") {
-		if q, ok := u[l.User]; l.Active && ok && q.Error == "" && usedUp(q) {
+		if q, ok := u[l.User]; l.Active && ok && q.Error == "" && q.Held {
 			return true
 		}
 	}

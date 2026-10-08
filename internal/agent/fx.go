@@ -58,7 +58,10 @@ func fxIn(at place) *Agent {
 	}
 	return &Agent{
 		ID: "fx", Name: "fx", Icon: "fx", Spelled: prefixed,
-		Bin: "fx", Dir: dir, Path: path,
+		Dir: dir, Path: path,
+		// ~/.fx is where its settings are. No command: `fx` is a common name
+		// (the JSON viewer has it too), as in WSL (wsl.go).
+		detect: func() bool { return isDir(dir) },
 		Sync: func() error {
 			return syncJSON(path, "providers."+magpieID, func() any { return fxProvider(fxModels(path)[magpieID]) })
 		},
@@ -140,12 +143,10 @@ func fxModels(path string) map[string]string {
 	return out
 }
 
-// fxProvider is magpie's entry in settings.json's providers. Its
-// model_metadata is what fx's model picker lists: the catalog, the model
-// in use first so it is never the one cut at fx's limit.
-func fxProvider(cur string) any { return fxProviderAt(cur, gatewayV1()) }
-
-// fxProviderAt is fxProvider for an fx reaching the gateway's /v1 at v1.
+// fxProviderAt is magpie's entry in settings.json's providers, for an fx
+// reaching the gateway's /v1 at v1. Its model_metadata is what fx's model
+// picker lists: the catalog, the model in use first so it is never the one
+// cut at fx's limit.
 func fxProviderAt(cur, v1 string) any {
 	all := magpieModels("fx")
 	slices.SortStableFunc(all, func(a, b catalog.Model) int {

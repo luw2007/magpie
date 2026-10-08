@@ -65,6 +65,8 @@ func (s *Server) serveQoder(w http.ResponseWriter, r *http.Request, from provide
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	// the vendor's own API is told the answer's format in words
+	req = req.inSystem()
 	req.Model = model
 	ask := s.askQoder(p.Account.Agent, model, p.Account.User)
 	ctx, cancel := context.WithCancel(r.Context())
@@ -216,6 +218,7 @@ func (s *Server) askQoder(agent, model, user string) round {
 		if err != nil {
 			return nil, 502, "Qoder: " + err.Error()
 		}
+		res = notAnAPIReply(res, "") // a web page served 200 (#1012)
 		if res.StatusCode/100 != 2 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()

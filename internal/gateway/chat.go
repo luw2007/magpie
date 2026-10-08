@@ -2,9 +2,13 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"net"
+	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -57,6 +61,7 @@ type cRequest struct {
 	ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
 	ServiceTier         string          `json:"service_tier,omitempty"`
 	PromptCacheKey      string          `json:"prompt_cache_key,omitempty"`
+	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
 }
 
 func parseChat(body []byte) (*Request, error) {
@@ -66,7 +71,7 @@ func parseChat(body []byte) (*Request, error) {
 	}
 	r := &Request{Model: c.Model, MaxTokens: c.MaxCompletionTokens, Temp: c.Temperature, TopP: c.TopP,
 		Stream: c.Stream, Effort: effortOf(c.ReasoningEffort), Parallel: c.ParallelToolCalls, Fast: c.ServiceTier == "priority",
-		CacheKey: c.PromptCacheKey}
+		CacheKey: c.PromptCacheKey, Format: openAIFormat(c.ResponseFormat)}
 	if r.MaxTokens == 0 {
 		r.MaxTokens = c.MaxTokens
 	}
@@ -146,6 +151,11 @@ func chatParts(raw json.RawMessage) []Part {
 		ImageURL struct {
 			URL string `json:"url"`
 		} `json:"image_url"`
+		File struct {
+			FileData string `json:"file_data"`
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+		} `json:"file"`
 	}
 	json.Unmarshal(raw, &items)
 	var out []Part
@@ -155,9 +165,35 @@ func chatParts(raw json.RawMessage) []Part {
 			out = append(out, Part{Kind: Text, Text: it.Text})
 		case "image_url":
 			out = append(out, imagePart(it.ImageURL.URL))
+		case "file":
+			if p, ok := chatFile(it.File.FileData, it.File.FileID, it.File.Filename); ok {
+				out = append(out, p)
+			}
 		}
 	}
 	return out
+}
+
+// chatFile is a Chat Completions file part (a PDF, say) as a file of the
+// request's, which a Gemini upstream is given as inline data and the
+// others are told of (attachmentText), rather than left out for the model
+// to answer as if it had read it (#934). Its data is a data: URL, or the
+// bare base64 some clients send; one named only by its OpenAI file id is
+// kept as that id.
+func chatFile(data, id, name string) (Part, bool) {
+	mt, _, _ := strings.Cut(mime.TypeByExtension(strings.ToLower(path.Ext(name))), ";")
+	switch {
+	case strings.HasPrefix(data, "data:"):
+		if p := imagePart(data); p.Data != "" {
+			return Part{Kind: File, MediaType: cmp.Or(p.MediaType, mt, "application/octet-stream"), Data: p.Data}, true
+		}
+	case data != "":
+		return Part{Kind: File, MediaType: cmp.Or(mt, "application/octet-stream"), Data: data}, true
+	}
+	if id != "" {
+		return Part{Kind: File, MediaType: cmp.Or(mt, "application/octet-stream"), URL: id}, true
+	}
+	return Part{}, false
 }
 
 // imagePart reads a data: URL into an inline image, or keeps the URL.
@@ -218,7 +254,7 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			seen = nil
 		}
 	}
-	for _, m := range r.Messages {
+	for i, m := range r.Messages {
 		if m.Role == "assistant" {
 			showSeen()
 			am := map[string]any{"role": "assistant"}
@@ -261,7 +297,24 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			if len(calls) > 0 {
 				am["tool_calls"] = calls
 			}
-			if replay && think != "" {
+			// a reply cut short and sent back to go on from (Resume) is marked
+			// with the upstream's own prefill mode — DeepSeek's prefix, Kimi's
+			// partial (continuation.go; an upstream without one is never asked
+			// to go on) — and its reasoning goes with it where the upstream
+			// reads reasoning_content back, so the going on picks the thought
+			// up where it was cut
+			if r.Resume && i == len(r.Messages)-1 {
+				mode := chatPrefill(host, model)
+				switch mode {
+				case "prefix":
+					am["prefix"] = true
+				case "partial":
+					am["partial"] = true
+				}
+				if think != "" && mode != "" {
+					am["reasoning_content"] = think
+				}
+			} else if think != "" && replay {
 				am["reasoning_content"] = think
 			}
 			msgs = append(msgs, am)
@@ -360,8 +413,9 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 		if tc := aiStudioThinking(r, model); tc != nil {
 			out["extra_body"] = map[string]any{"google": map[string]any{"thinking_config": tc}}
 		} else if r.ThinkOff {
-			// Gemini 3 can't stop thinking; it thinks least at minimal
-			out["reasoning_effort"] = "minimal"
+			// Gemini 3 can't stop thinking; it thinks least at minimal,
+			// or at its lowest level where it has no minimal
+			out["reasoning_effort"] = cmp.Or(r.OffLevel, "minimal")
 		} else if r.Effort != "" {
 			out["reasoning_effort"] = r.Effort
 		}
@@ -387,6 +441,9 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 		if r.Parallel != nil {
 			out["parallel_tool_calls"] = *r.Parallel
 		}
+	}
+	if r.Format != nil {
+		out["response_format"] = r.Format.chat()
 	}
 	if r.WebSearch && host == "openrouter.ai" {
 		// OpenRouter's own search, for any of its models
@@ -583,6 +640,15 @@ func thinkingEffort(body []byte) []byte {
 // provider that refused it.
 const thinkingConfigField = "thinking_config"
 
+// geminiMinimalRefused is Gemini turning minimal away for a model that
+// doesn't have it, which names thinking but isn't thinking_config turned
+// away (refusesThinkingConfig): gemini-3.8-flash's 400 "Thinking level is
+// unsupported: THINKING_LEVEL_MINIMAL", for reasoning_effort minimal and
+// thinking_level minimal alike, at Vertex AI's OpenAI-compatible API; and
+// gemini-3.1-pro-preview's "thinking_level MINIMAL is not supported by this
+// model" at its generateContent.
+var geminiMinimalRefused = regexp.MustCompile(`(?i)thinking[ _]level.*minimal`)
+
 // refusesThinkingConfig recognizes an upstream turning a request away for
 // the thinking_config it was sent, by its error naming it.
 func refusesThinkingConfig(status int, body []byte) bool {
@@ -763,6 +829,13 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 				ReasoningContent string          `json:"reasoning_content"`
 				Reasoning        string          `json:"reasoning"`
 				ToolCalls        []cToolCall     `json:"tool_calls"`
+				// Vertex AI's OpenAI-compatible API marks a chunk of
+				// Gemini's thoughts here, the thought its content
+				ExtraContent struct {
+					Google struct {
+						Thought bool `json:"thought"`
+					} `json:"google"`
+				} `json:"extra_content"`
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -807,6 +880,9 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 			content = text
 		} else {
 			json.Unmarshal(c.Delta.Content, &content)
+		}
+		if c.Delta.ExtraContent.Google.Thought {
+			t, content = t+content, ""
 		}
 		if t != "" {
 			emit(Event{Kind: KThink, Text: t})

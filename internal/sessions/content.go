@@ -37,12 +37,9 @@ const (
 
 var errNoPlace = errors.New("the call has no place in a file")
 
-// add keeps a part, cut to what one may be, unless the content is full.
-func (c *Content) add(input bool, p Part) {
-	p.Text = strings.TrimSpace(p.Text)
-	if p.Text == "" {
-		return
-	}
+// add keeps a part, cut to what one may be, unless the content is full; it
+// says whether there is room for more.
+func (c *Content) add(input bool, p Part) bool {
 	size := 0
 	for _, x := range c.Input {
 		size += len(x.Text)
@@ -52,17 +49,31 @@ func (c *Content) add(input bool, p Part) {
 	}
 	if size >= contentMax {
 		c.Cut = true
-		return
+		return false
 	}
-	if n := utf8.RuneCountInString(p.Text); n > partMax {
-		r := []rune(p.Text)
-		p.Text, p.Cut = string(r[:partMax]), n-partMax
+	p, ok := keep(p)
+	if !ok {
+		return true
 	}
 	if input {
 		c.Input = append(c.Input, p)
 	} else {
 		c.Output = append(c.Output, p)
 	}
+	return true
+}
+
+// keep is a part trimmed and cut to what one may be, unless it says nothing.
+func keep(p Part) (Part, bool) {
+	p.Text = strings.TrimSpace(p.Text)
+	if p.Text == "" {
+		return p, false
+	}
+	if n := utf8.RuneCountInString(p.Text); n > partMax {
+		r := []rune(p.Text)
+		p.Text, p.Cut = string(r[:partMax]), n-partMax
+	}
+	return p, true
 }
 
 // ContentOf reads what was said in a call from its file.
@@ -73,9 +84,9 @@ func ContentOf(c Call) (Content, error) {
 	}
 	var err error
 	if c.Agent == "codex" {
-		err = codexContent(c, &out)
+		err = codexContent(c, out.add)
 	} else {
-		err = claudeContent(c, &out)
+		err = claudeContent(c, out.add)
 	}
 	return out, err
 }
@@ -112,8 +123,9 @@ type ccBlock struct {
 
 // claudeContent reads the lines from where the call was asked to where it ended:
 // the user lines — a prompt, a tool's result — are what it was given, and the
-// lines of its own message what it said.
-func claudeContent(c Call, out *Content) error {
+// lines of its own message what it said. add is told each part, and says
+// whether to read on.
+func claudeContent(c Call, add func(input bool, p Part) bool) error {
 	_, err := scanAt(c.File, c.From, nil, func(b []byte, start, end int64) bool {
 		if start >= c.To {
 			return false
@@ -134,17 +146,18 @@ func claudeContent(c Call, out *Content) error {
 		if json.Unmarshal(b, &l) != nil {
 			return true
 		}
+		more := true
 		switch {
 		case l.Type == "user" && !l.IsMeta:
 			for _, p := range claudeParts(l.Message.Content, "user") {
-				out.add(true, p)
+				more = add(true, p) && more
 			}
 		case l.Type == "assistant" && (c.Msg == "" || l.Message.ID == c.Msg):
 			for _, p := range claudeParts(l.Message.Content, "assistant") {
-				out.add(false, p)
+				more = add(false, p) && more
 			}
 		}
-		return true
+		return more
 	})
 	return err
 }
@@ -232,8 +245,8 @@ var cxItem = []byte(`"type":"response_item"`)
 // model was given (the prompt, a tool's output) and what it said (words,
 // reasoning, a call of a tool). A rollout the Codex app has compressed (or
 // unpacked) since the call was read is read in its new form: its lines and
-// their places are the same.
-func codexContent(c Call, out *Content) error {
+// their places are the same. add is as claudeContent's.
+func codexContent(c Call, add func(input bool, p Part) bool) error {
 	path := c.File
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		if _, err := os.Stat(rolloutTwin(path)); err == nil {
@@ -281,24 +294,24 @@ func codexContent(c Call, out *Content) error {
 		case "message":
 			switch p.Role {
 			case "user":
-				out.add(true, textPart("user", words()))
+				return add(true, textPart("user", words()))
 			case "assistant":
-				out.add(false, textPart("assistant", words()))
+				return add(false, textPart("assistant", words()))
 			}
 		case "reasoning":
 			var s []string
 			for _, x := range p.Summary {
 				s = append(s, x.Text)
 			}
-			out.add(false, Part{Role: "assistant", Kind: "thinking", Text: strings.Join(s, "\n\n")})
+			return add(false, Part{Role: "assistant", Kind: "thinking", Text: strings.Join(s, "\n\n")})
 		case "function_call":
-			out.add(false, Part{Role: "assistant", Kind: "tool_use", Name: p.Name, Text: pretty(json.RawMessage(p.Arguments))})
+			return add(false, Part{Role: "assistant", Kind: "tool_use", Name: p.Name, Text: pretty(json.RawMessage(p.Arguments))})
 		case "custom_tool_call":
-			out.add(false, Part{Role: "assistant", Kind: "tool_use", Name: p.Name, Text: p.Input})
+			return add(false, Part{Role: "assistant", Kind: "tool_use", Name: p.Name, Text: p.Input})
 		case "local_shell_call":
-			out.add(false, Part{Role: "assistant", Kind: "tool_use", Name: "shell", Text: strings.Join(p.Action.Command, " ")})
+			return add(false, Part{Role: "assistant", Kind: "tool_use", Name: "shell", Text: strings.Join(p.Action.Command, " ")})
 		case "function_call_output", "custom_tool_call_output":
-			out.add(true, Part{Role: "tool", Kind: "tool_result", Text: codexOutput(p.Output)})
+			return add(true, Part{Role: "tool", Kind: "tool_result", Text: codexOutput(p.Output)})
 		}
 		return true
 	})

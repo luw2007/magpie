@@ -81,10 +81,20 @@ type signInFlow struct {
 	site     string           // where to sign in, for an agent with more than one (ZCode: "zai" or "bigmodel")
 	plugin   string           // a plugin's sign-in session, finished with the code pasted back
 	claude   *claudeCLISignIn // Claude Code's own sign-in, run by magpie
+	// pluginPorts are where a plugin's browser sign-in comes back to on
+	// this machine, for its address pasted (pluginsignin_paste.go)
+	pluginPorts []string
+
+	// nonce and hostID are a ChatGPT API sign-in's: what its ID token must
+	// carry, and this machine's id it registers magpie for (chatgpt_api.go)
+	nonce, hostID string
 	// claimed is a callback being traded for the account: the browser's own
 	// or a pasted address, whichever came first
 	claimed bool
-	done    chan struct{}
+	// finished is an outcome being recorded: the first finish's, which for a
+	// sign-in done reads as done once the account is shown again
+	finished bool
+	done     chan struct{}
 }
 
 var signIns = struct {
@@ -220,6 +230,19 @@ func (s *signInFlow) begin() error {
 		q.Set("state", s.state)
 		q.Set("originator", "codex_cli_rs")
 		s.st.URL = codexAuthorizeURL + "?" + q.Encode()
+	case ChatGPTAPIID:
+		// OpenAI's Sign in with ChatGPT, which registers magpie on the way
+		if s.hostID, err = siwcHostID(); err != nil {
+			return err
+		}
+		if ln, err = listenSIWCCallback(); err != nil {
+			return err
+		}
+		s.redirect = fmt.Sprintf("http://127.0.0.1:%d/auth/callback", ln.Addr().(*net.TCPAddr).Port)
+		s.nonce = randomToken(24)
+		s.mu.Lock()
+		s.st.URL = siwcAuthorize(s.redirect, s.state, s.nonce, challenge, s.hostID)
+		s.mu.Unlock()
 	case "cursor":
 		// Cursor has no sign-in of its own to borrow: its CLI signs in
 		if err := startCursorSignIn(s); err != nil {
@@ -374,6 +397,9 @@ func SubmitSignInCallback(id, raw string) error {
 	if s.plugin != "" {
 		return s.pluginCode(raw)
 	}
+	if s.pluginPorts != nil {
+		return s.pluginCallback(raw)
+	}
 	if s.claude != nil {
 		return s.claudePaste(raw)
 	}
@@ -497,7 +523,7 @@ func (p *pastedReply) Write(b []byte) (int, error) {
 func (s *signInFlow) claim() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.st.State != "waiting" || s.claimed {
+	if s.st.State != "waiting" || s.claimed || s.finished {
 		return false
 	}
 	s.claimed = true
@@ -527,21 +553,27 @@ func (s *signInFlow) status() SignInState {
 	return s.st
 }
 
-// finish records the outcome once and lets the callback server go.
+// finish records the outcome once and lets the callback server go. A
+// sign-in done reads as done only once its account is shown again, so the
+// window, seeing it done, finds the account listed.
 func (s *signInFlow) finish(out SignInState) bool {
 	s.mu.Lock()
-	if s.st.State != "waiting" && s.st.State != "installing" {
+	if s.finished {
 		s.mu.Unlock()
 		return false
+	}
+	s.finished = true
+	if out.State == "done" {
+		agent := s.st.Agent
+		s.mu.Unlock()
+		// signing in again brings back an account removed from magpie
+		_ = ShowAccount(agent)
+		s.mu.Lock()
 	}
 	out.ID, out.Agent, out.URL, out.Code = s.st.ID, s.st.Agent, s.st.URL, s.st.Code
 	s.st = out
 	stop, srv := s.stop, s.srv
 	s.mu.Unlock()
-	if out.State == "done" {
-		// signing in again brings back an account removed from magpie
-		_ = ShowAccount(out.Agent)
-	}
 	close(s.done)
 	if stop != nil {
 		stop()
@@ -602,6 +634,10 @@ func (s *signInFlow) callback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if app, ok := googleAppOf(s.st.Agent); ok {
 		s.googleDone(ctx, w, app, q.Get("code"))
+		return
+	}
+	if s.st.Agent == ChatGPTAPIID {
+		s.siwcDone(ctx, w, q)
 		return
 	}
 	l, err := s.exchange(ctx, q.Get("code"))
@@ -765,6 +801,7 @@ func addLogin(l savedLogin) (using bool, err error) {
 	l.Seen = time.Now().UTC().Truncate(time.Second)
 	live, signedIn := liveLogin(l.Agent)
 	ls := readLogins()
+	l.User = codexName(ls, l)
 	using = !signedIn || sameLogin(live, l)
 	if first := claudeStandIn(ls); !signedIn && l.Agent == "claude" && first != "" {
 		// logged out of Claude Code with accounts in magpie: it stays so,

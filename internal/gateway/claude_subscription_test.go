@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 func TestClaudeSubscriptionPromptKeepsForeignHarnessOutOfSystem(t *testing.T) {
@@ -79,6 +80,7 @@ func TestCleanClaudeEnvRemovesGatewayOverrides(t *testing.T) {
 
 // fakeClaude answers each line it is given with the process it runs in and
 // how many turns that process has had, as Claude Code's stream-json does.
+// A test calls it before New(), for runsEndWithTest.
 func fakeClaude(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -96,8 +98,47 @@ while read -r line; do
   echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
 done
 `
-	os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755)
+	testenv.Program(t, filepath.Join(dir, "claude"), script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runsEndWithTest(t, dir)
+}
+
+// runsEndWithTest fails the test, and ends the runs, when a Claude Code run
+// of the fake in dir is still going after the test's cleanups. A run kept
+// for the next turn waits idleLongest, so the test ends its server's runs
+// with t.Cleanup(s.subscription.abortAll), registered after this call, as
+// cleanups run last first.
+func runsEndWithTest(t *testing.T, dir string) {
+	t.Helper()
+	dir = filepath.Clean(dir) // as exec.LookPath's filepath.Join gives it
+	t.Cleanup(func() {
+		t.Helper()
+		var left []*subscriptionRun
+		bridges.Range(func(key, _ any) bool {
+			b := key.(*subscriptionBridge)
+			b.mu.Lock()
+			for _, run := range b.runs {
+				if run.cmd == nil || filepath.Dir(run.cmd.Path) != dir {
+					continue
+				}
+				// a run killed, or exited, may not have left b.runs yet
+				run.mu.Lock()
+				closed := run.closed
+				run.mu.Unlock()
+				if !closed {
+					left = append(left, run)
+				}
+			}
+			b.mu.Unlock()
+			return true
+		})
+		if len(left) > 0 {
+			t.Errorf("Claude Code runs the test started, still going after it: %d", len(left))
+		}
+		for _, run := range left {
+			run.abort()
+		}
+	})
 }
 
 // A conversation's next turn goes to the Claude Code that had its last,
@@ -106,6 +147,7 @@ done
 func TestClaudeRunKeptForTheNextTurn(t *testing.T) {
 	fakeClaude(t)
 	s := New()
+	t.Cleanup(s.subscription.abortAll)
 	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
 	ask := func(msgs string) string {
 		t.Helper()
@@ -150,6 +192,7 @@ func TestClaudeRunKeptForTheNextTurn(t *testing.T) {
 func TestClaudeOneOffAskNotKept(t *testing.T) {
 	fakeClaude(t)
 	s := New()
+	t.Cleanup(s.subscription.abortAll)
 	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
 	ask := func(msgs string) string {
 		t.Helper()
@@ -205,7 +248,7 @@ func TestSubscriptionStreamErrorIsTheEnd(t *testing.T) {
 		body := `{"model":"m","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}],"input":"hi"}`
 		rec := httptest.NewRecorder()
 		var u Usage
-		code, failed := s.serveSubscription(rec, httptest.NewRequest("POST", "/", strings.NewReader(body)), from, "Agent", "m", []byte(body), &u, start)
+		code, failed := s.serveSubscription(rec, httptest.NewRequest("POST", "/", strings.NewReader(body)), from, "Agent", "m", "", []byte(body), &u, start)
 		out := rec.Body.String()
 		if code != 200 || failed != "it died" || !strings.Contains(out, "it died") {
 			t.Fatalf("%s: %d %q\n%s", from, code, failed, out)
@@ -307,6 +350,7 @@ func TestClaudeLimits(t *testing.T) {
 func TestClaudeRunLetGoWhenTheConversationMovedOn(t *testing.T) {
 	fakeClaude(t)
 	s := New()
+	t.Cleanup(s.subscription.abortAll)
 	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
 	ask := func(model, msgs string) string {
 		t.Helper()
@@ -414,6 +458,53 @@ func TestSweepBridgeProjectsTakesOnlyTheBridgesFolders(t *testing.T) {
 	sweepBridgeProjects(filepath.Join(base, "missing"), real) // no projects folder: nothing to do
 }
 
+// A gateway quit for an update, or killed, leaves its runs' temp folders;
+// the next one removes those untouched for long, and leaves a run's still
+// in use (another gateway's), the shared work folder and anything else
+// (#958).
+func TestBridgeTempsSwept(t *testing.T) {
+	tmp := t.TempDir()
+	old := time.Now().Add(-tempLongest - time.Hour)
+	mk := func(name string, stale bool) string {
+		dir := filepath.Join(tmp, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		f := filepath.Join(dir, "tools.json")
+		if err := os.WriteFile(f, []byte("[]"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if stale {
+			for _, p := range []string{f, dir} {
+				if err := os.Chtimes(p, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return dir
+	}
+	gone := []string{mk("magpie-claude-1097091858", true), mk("magpie-claude-42", true)}
+	kept := []string{
+		mk("magpie-claude-777", false), // a run still going
+		mk("magpie-claude-work-501", true),
+		mk("magpie-claude-", true),
+		mk("magpie-claude-12-x", true),
+		mk("other-1", true),
+	}
+	sweepBridgeTemps(tmp)
+	for _, d := range gone {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Fatalf("%s should be swept", d)
+		}
+	}
+	for _, d := range kept {
+		if _, err := os.Stat(d); err != nil {
+			t.Fatalf("%s should be kept: %v", d, err)
+		}
+	}
+	sweepBridgeTemps(filepath.Join(tmp, "missing")) // nothing to do
+}
+
 // Out of quota, Claude Code ends the turn with an error result and no
 // message_stop, then waits on its next input: the reply is a 429 at once,
 // streamed or not, so another account can take over (#177).
@@ -427,7 +518,7 @@ while read -r line; do
   echo '{"type":"result","subtype":"success","is_error":true,"result":"You'"'"'ve hit your limit · resets 3am"}'
 done
 `
-	os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755)
+	testenv.Program(t, filepath.Join(dir, "claude"), script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	s := New()
 	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
@@ -478,9 +569,11 @@ while read -r line; do
   echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
 done
 `
-	os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755)
+	testenv.Program(t, filepath.Join(dir, "claude"), script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runsEndWithTest(t, dir)
 	s := New()
+	t.Cleanup(s.subscription.abortAll)
 	p := provider.Provider{ID: "claude", Account: &provider.Account{Agent: "claude", User: "u"}}
 	ask := func(effort, msgs string) string {
 		t.Helper()
@@ -529,5 +622,54 @@ done
 	}
 	if !strings.Contains(lines[3], `"type":"user"`) || !strings.Contains(lines[4], `"type":"user"`) {
 		t.Fatalf("turns: %s", b)
+	}
+}
+
+// A run's Claude Code has the caller's tools only as mcp__magpie__<Name>:
+// its built-ins are off. A run started anew on a long conversation was told
+// every past call by its bare name ([tool call Bash …]), so the model
+// called Bash, Claude Code answered "Bash is disabled for this session, in
+// subagents as well as here." and the turn ended with no call (#958). The
+// past calls of the tools the caller offers are told under the run's names;
+// a call of one it doesn't offer (its framework's own) keeps its name.
+func TestClaudePromptTellsPastCallsByTheRunsNames(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "run the tests"}}},
+		{Role: "assistant", Parts: []Part{
+			{Kind: ToolCall, ID: "toolu_1", Name: "Bash", Args: json.RawMessage(`{"command":"go test ./..."}`)},
+			{Kind: ToolCall, ID: "toolu_2", Name: "team_sync", Args: json.RawMessage(`{}`)},
+		}},
+		{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: "toolu_1", Text: "ok"}, {Kind: ToolResult, CallID: "toolu_2", Text: "synced"}}},
+		{Role: "assistant", Parts: []Part{{Kind: Text, Text: "All pass."}}},
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "and lint?"}}},
+	}
+	tools := []Tool{{Name: "Bash"}, {Name: "Read"}}
+	text := func(blocks []map[string]any) string {
+		var b strings.Builder
+		for _, block := range blocks {
+			s, _ := block["text"].(string)
+			b.WriteString(s)
+		}
+		return b.String()
+	}
+	check := func(what, got string) {
+		t.Helper()
+		if !strings.Contains(got, "[tool call mcp__magpie__Bash id=toolu_1 ") || strings.Contains(got, "[tool call Bash ") {
+			t.Errorf("%s: a call of the caller's Bash isn't told as the run's mcp__magpie__Bash: %q", what, got)
+		}
+		if !strings.Contains(got, "[tool call team_sync id=toolu_2 ") {
+			t.Errorf("%s: a call of a tool the caller doesn't offer lost its name: %q", what, got)
+		}
+	}
+	blocks, err := renderClaudePrompt(&Request{Messages: msgs, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("started anew", text(blocks))
+	check("next turn", text(renderClaudeTurn(msgs[1:], tools)))
+
+	blocks, _ = renderClaudePrompt(&Request{Messages: msgs[:1], Tools: tools, ToolChoice: "name:Read"})
+	if got := text(blocks); !strings.Contains(got, "You must call the mcp__magpie__Read tool.") {
+		t.Errorf("a forced tool is named as the caller has it, not as the run can call it: %q", got)
 	}
 }

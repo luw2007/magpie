@@ -273,6 +273,10 @@ func zcodeTimezone() string {
 	return "UTC"
 }
 
+// zcodeClock is the time a Start Plan request's context prefix gives the
+// day of (zcodeDateReminder); tests set it.
+var zcodeClock = time.Now
+
 // zcodeStartRequest makes req, a request to the Start Plan, ZCode's own:
 // its headers, and a model request's body shaped as ZCode's
 // (zcodeStartBody) for an account on base.
@@ -281,7 +285,7 @@ func zcodeStartRequest(req *http.Request, base string, body []byte) {
 	if len(body) == 0 || !strings.HasSuffix(req.URL.Path, "/v1/messages") {
 		return
 	}
-	nb := zcodeStartBody(body, zcodeStartProvider(base), time.Now())
+	nb := zcodeStartBody(body, zcodeStartProvider(base), zcodeClock())
 	req.Body = io.NopCloser(bytes.NewReader(nb))
 	req.ContentLength = int64(len(nb))
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(nb)), nil }
@@ -487,6 +491,7 @@ func zcodeStartQuota(ctx context.Context, l Login, jwt string) SubscriptionQuota
 	if until != nil {
 		q.Until, q.Renew = until, "off"
 	}
+	var buckets []zcodeBucket
 	for _, x := range b.Balances {
 		total, hasTotal := zcodeNum(x.Total)
 		used, hasUsed := zcodeNum(x.Used)
@@ -529,17 +534,58 @@ func zcodeStartQuota(ctx context.Context, l Login, jwt string) SubscriptionQuota
 				w.Span = time.Duration(e-s) * time.Second
 			}
 		}
-		if len(models) > 0 {
-			w.matches = func(model string) bool {
-				for _, m := range models {
-					if strings.EqualFold(m, model) {
-						return true
-					}
-				}
-				return false
+		q.Windows = append(q.Windows, w)
+		buckets = append(buckets, zcodeBucket{models, hasLeft && left <= 0 || hasTotal && total > 0 && used >= total})
+	}
+	zcodeAlternatives(q.Windows, buckets)
+	return q
+}
+
+// zcodeBucket is what zcodeAlternatives reads of a window's bucket.
+type zcodeBucket struct {
+	models []string
+	spent  bool
+}
+
+// zcodeAlternatives scopes each bucket's window to the models a request
+// spends it on. Two plans can give one model (ZCode Trust Build's and the
+// Start Plan's GLM-5.3-Flash), and the server picks the bucket — ZCode
+// sends no plan with a request — so a model counts on one bucket: a live
+// one before a spent one, the least used of those. A bucket that is no
+// model's stays on the card, Aside, so a spent one doesn't hold up the
+// model, or the account, another still has (ganlerk on Discord).
+func zcodeAlternatives(ws []QuotaWindow, bs []zcodeBucket) {
+	best := map[string]int{}
+	for i, b := range bs {
+		for _, m := range b.models {
+			k := strings.ToLower(m)
+			j, ok := best[k]
+			if !ok || bs[j].spent && !b.spent || bs[j].spent == b.spent && ws[i].Used < ws[j].Used {
+				best[k] = i
 			}
 		}
-		q.Windows = append(q.Windows, w)
 	}
-	return q
+	for i, b := range bs {
+		if len(b.models) == 0 {
+			continue
+		}
+		var mine []string
+		for _, m := range b.models {
+			if best[strings.ToLower(m)] == i {
+				mine = append(mine, m)
+			}
+		}
+		if len(mine) == 0 {
+			ws[i].Aside = true
+			continue
+		}
+		ws[i].matches = func(model string) bool {
+			for _, m := range mine {
+				if strings.EqualFold(m, model) {
+					return true
+				}
+			}
+			return false
+		}
+	}
 }

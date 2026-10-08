@@ -354,6 +354,43 @@ func (k KeyAccount) AllowsModel(model string) bool {
 	return len(k.Models) == 0 || slices.Contains(k.Models, "*") || slices.Contains(k.Models, model)
 }
 
+// RemoveKeys forgets several keys at once (361 on Discord: hundreds of
+// keys, some dead): those named by id that it has. One key in use always
+// stays: removing every key in use is refused.
+func RemoveKeys(id string, refs []string) (removed int, err error) {
+	var n int
+	err = func() error {
+		p, err := Find(id)
+		if err != nil {
+			return err
+		}
+		gone := map[string]bool{}
+		for _, r := range refs {
+			gone[r] = true
+		}
+		var kept []KeyAccount
+		for _, k := range p.Keys {
+			if gone[k.ID] {
+				n++
+				continue
+			}
+			kept = append(kept, k)
+		}
+		if n == 0 {
+			return fmt.Errorf("%s has none of these keys", p.Name)
+		}
+		p.Keys = kept
+		if len(p.KeysOn()) == 0 {
+			return errors.New("those are all the keys in use; keep one on")
+		}
+		return Save(*p)
+	}()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 func SetKeyBinding(id, ref string, poolRefs []string, models []string) error {
 	pools := QuotaPools()
 	refs := make([]string, 0, len(poolRefs))

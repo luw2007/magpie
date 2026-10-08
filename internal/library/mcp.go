@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/tidwall/jsonc"
@@ -151,8 +154,10 @@ type mcpFile struct {
 	// reads, with what couldn't be moved from it.
 	Extra []string
 	// WSL: the agent runs in a WSL distro, where a Windows program isn't
-	// one it can start
-	WSL bool
+	// one it can start, but for magpie's own (side); Distro is its name and
+	// Home its $HOME as the distro spells it
+	WSL          bool
+	Distro, Home string
 }
 
 // files are every file the servers are written into.
@@ -184,10 +189,8 @@ func (f *mcpFile) supports(s *Server) error {
 	if f.Format == fmtDsh && s.Name != "" && !dshServerName.MatchString(s.Name) {
 		return errDshName
 	}
-	if f.WSL && !s.Remote() && windowsPath.MatchString(s.Command) {
-		return fmt.Errorf("it runs a Windows program (%s), which an agent in WSL can't start: give it a command WSL has", s.Command)
-	}
-	return nil
+	_, err := f.side(s)
+	return err
 }
 
 // windowsPath is a program named as Windows names one: C:/…, a path with a
@@ -1006,7 +1009,13 @@ func tomlValue(v any) string {
 	switch x := v.(type) {
 	case string:
 		return tomlString(x)
-	case bool, int, int64, float64:
+	case bool, int, int64:
+		return fmt.Sprint(x)
+	case float64:
+		return tomlFloat(x)
+	case time.Time:
+		return x.Format(time.RFC3339Nano)
+	case toml.LocalDate, toml.LocalTime, toml.LocalDateTime:
 		return fmt.Sprint(x)
 	case []string:
 		parts := make([]string, len(x))
@@ -1038,6 +1047,24 @@ func tomlValue(v any) string {
 		return "{ " + strings.Join(parts, ", ") + " }"
 	}
 	return tomlString(fmt.Sprint(v))
+}
+
+// tomlFloat writes a float as one, so a user's tool_timeout_sec = 120.0
+// stays a float and doesn't come back as an integer.
+func tomlFloat(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "nan"
+	case math.IsInf(f, 1):
+		return "inf"
+	case math.IsInf(f, -1):
+		return "-inf"
+	}
+	s := strconv.FormatFloat(f, 'g', -1, 64)
+	if !strings.ContainsAny(s, ".eE") {
+		s += ".0"
+	}
+	return s
 }
 
 // ---- found in agents ------------------------------------------------------

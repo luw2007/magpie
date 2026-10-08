@@ -61,10 +61,35 @@ func keepCRLF(out, orig []byte) []byte {
 	return bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
 }
 
+// PatchJSON computes a config change without writing a file.
+func PatchJSON(raw []byte, set []KV, del []string) ([]byte, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = []byte("{}\n")
+	}
+	orig := raw
+	var err error
+	for _, kv := range set {
+		raw, err = setJSONBytes(raw, kv.Path, kv.Value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, key := range del {
+		raw, _, err = delJSONBytes(raw, key)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return keepCRLF(raw, orig), nil
+}
+
 func setJSONBytes(raw []byte, keyPath string, value any) ([]byte, error) {
 	// Comments are blanked out in a copy of identical length so gjson offsets
 	// map 1:1 back onto the original bytes.
 	stripped := jsonc.ToJSONInPlace(append([]byte(nil), raw...))
+	if !json.Valid(stripped) {
+		return nil, fmt.Errorf("invalid JSON/JSONC")
+	}
 	root := gjson.ParseBytes(stripped)
 	if !root.IsObject() {
 		return nil, fmt.Errorf("top level is not a JSON object")
@@ -244,6 +269,9 @@ func DelJSON(path string, keyPaths ...string) error {
 
 func delJSONBytes(raw []byte, keyPath string) ([]byte, bool, error) {
 	stripped := jsonc.ToJSONInPlace(append([]byte(nil), raw...))
+	if !json.Valid(stripped) {
+		return nil, false, fmt.Errorf("invalid JSON/JSONC")
+	}
 	r := gjson.GetBytes(stripped, keyPath)
 	if !r.Exists() || r.Index == 0 {
 		return raw, false, nil

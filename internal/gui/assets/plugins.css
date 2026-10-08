@@ -69,12 +69,13 @@
 }
 .pm-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 18px; }
 .pm-dl { display: inline-flex; align-items: center; gap: 3px; }
-.pm-ver { font: 10.5px var(--code); color: var(--muted); }
+.pm-ver { font: var(--code-style, normal) var(--code-weight, 400) 10.5px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--muted); }
 .pm-chip { display: inline-flex; align-items: center; height: 17px; padding: 0 6px; border-radius: 5px; font-size: 10.5px; font-weight: 500; background: var(--pill); color: var(--fg-2); }
 .pm-chip.up { background: var(--accent-soft); color: var(--accent); }
 button.pm-chip { border: 0; font-family: inherit; cursor: pointer; }
 button.pm-chip.up:hover:not(:disabled) { background: var(--accent); color: var(--accent-fg); }
 button.pm-chip:disabled { cursor: default; opacity: .6; }
+.pm-mw-fail { color: var(--red); }
 .pm-chip.bad { background: var(--red-soft); color: var(--red); }
 .pm-chip.moved { gap: 4px; background: var(--accent-soft); color: var(--accent); }
 .pm-chip.moved .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
@@ -83,6 +84,10 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-chip.warn .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .pm-foot .pm-check { display: inline-flex; align-items: center; gap: 5px; }
 .pm-foot .pm-check .spin { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
+.pm-chip.kind { gap: 3px; flex: none; }
+.pm-chip.kind svg { flex: none; }
+.pm-chip.kind.pv { background: var(--green-soft); color: var(--green); }
+.pm-chip.kind.mw { background: var(--accent-soft); color: var(--accent); }
 .pm-chip.soft { background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); }
 
 /* a plugin's one button */
@@ -113,12 +118,14 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 
 .pm-note { margin: 0; padding: 4px 2px; font-size: 12px; color: var(--muted); }
 .pm-note.bad { color: var(--red); }
+.pm-note.warn { display: flex; align-items: flex-start; gap: 6px; padding: 8px 10px; border-radius: 8px; background: var(--amber-soft); color: var(--fg); line-height: 1.5; }
+.pm-note.warn svg { flex: none; margin-top: 2px; color: var(--amber); }
 .pm-empty { margin: 24px 4px; font-size: 12.5px; color: var(--red); }
 
 /* a package the market doesn't list */
 .pm-manual { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--line); flex-wrap: wrap; }
 .pm-mlabel { font-size: 12px; color: var(--muted); }
-.pm-minput { flex: 1; min-width: 180px; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: 12px var(--code); outline: none; }
+.pm-minput { flex: 1; min-width: 180px; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: var(--code-style, normal) var(--code-weight, 400) 12px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); outline: none; }
 .pm-minput:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 /* the system's folder picker, beside the field it fills */
 .pm-browse { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; padding: 0; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--muted); cursor: pointer; transition: color .14s var(--ease), border-color .14s var(--ease); }
@@ -140,6 +147,16 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-sub { display: inline-flex; align-items: center; gap: 5px; }
 .pm-sub .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .pm-sub.in .dot { background: var(--green); }
+.pm-opts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.pm-opts textarea {
+  width: 100%; box-sizing: border-box; resize: vertical; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg); font: var(--code-style, normal) var(--code-weight, 400) 12px/1.5 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); tab-size: 2; outline: none;
+}
+.pm-opts textarea:focus { border-color: var(--accent); }
+.pm-opts-err { font-size: 11.5px; color: var(--red); }
+.pm-opts-err:empty { display: none; }
+.pm-opts-bar { display: flex; align-items: center; gap: 2px; }
+.pm-opts-bar > span { flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); }
 .pm-row .val { display: flex; align-items: center; gap: 2px; flex: none; }
 .pm-row.off .who, .pm-row.off .pm-logo { opacity: .5; }
 .pm-foot { display: flex; align-items: center; gap: 8px; padding: 0 4px; font-size: 11px; color: var(--faint); }
@@ -178,7 +195,7 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-md li + li { margin-top: 2px; }
 .pm-md a { color: var(--accent); text-decoration: none; }
 .pm-md a:hover { text-decoration: underline; }
-.pm-md code { font: 11.5px var(--code); padding: 1px 4px; border-radius: 4px; background: var(--pill); color: var(--fg); }
+.pm-md code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); padding: 1px 4px; border-radius: 4px; background: var(--pill); color: var(--fg); }
 .pm-md pre { margin: 0 0 10px; padding: 9px 11px; border-radius: 8px; background: var(--card-2); border: 1px solid var(--line-2); overflow-x: auto; }
 .pm-md pre code { padding: 0; background: none; font-size: 11.5px; line-height: 1.35; white-space: pre; } /* close enough for a box drawn in │ and ─ to join */
 .pm-md blockquote { margin: 0 0 9px; padding: 7px 11px; border-radius: 8px; background: var(--card-2); color: var(--fg-2); }

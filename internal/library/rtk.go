@@ -184,6 +184,21 @@ var rtkSpecs = map[string]rtkSpec{
 	},
 }
 
+// rtkNoHook are agents RTK has no hook for, and why: the Library lists
+// them all the same, so one isn't simply missing as if magpie hadn't seen
+// it (Discord, lc: rtk 没有识别 deepseek harness).
+//
+// DeepSeek Harness: RTK works by rewriting the shell command an agent is
+// about to run (git status → rtk git status), and dsh has no way for a hook
+// to do that — its pre-tool hooks only allow, deny or ask, and its Claude
+// Code hook bridge drops updatedInput (deepseek-harness's
+// pre-tool-input-rewrite note is only proposed). rtk init has no
+// --agent dsh either (rtk 0.51; rtk-ai/rtk#3847, and #3934 only adds
+// instructions to AGENTS.md, which rewrite nothing).
+var rtkNoHook = map[string]string{
+	"dsh": "RTK has no hook for DeepSeek Harness yet: RTK works by rewriting the shell command an agent is about to run, and dsh's hooks can only allow or deny a command, not change it; rtk init has no --agent dsh either (github.com/rtk-ai/rtk/issues/3847)",
+}
+
 func opencodePlugin(a *agent.Agent) string {
 	return filepath.Join(filepath.Dir(a.Path), "plugins", "rtk.ts")
 }
@@ -453,6 +468,8 @@ type RTKAgent struct {
 	// Blocked says why rtk can't be switched on for it here (OpenCode 2);
 	// one that has it can still be switched off
 	Blocked string `json:"blocked,omitempty"`
+	// NoHook: rtk has no hook for it at all (rtkNoHook), and Blocked says why
+	NoHook bool `json:"noHook,omitempty"`
 }
 
 // RTKGain is what rtk says it saved, over every command it has recorded.
@@ -490,6 +507,12 @@ type RTKView struct {
 	// doesn't know how this rtk was installed
 	Latest  string `json:"latest,omitempty"`
 	Upgrade string `json:"upgrade,omitempty"`
+	// Waiting is the package manager this rtk was installed with (winget,
+	// Homebrew) when Latest is out but it has nothing newer than this rtk
+	// yet, WaitingHas what it has: an upgrade through it would change
+	// nothing, so the page offers none (#1025)
+	Waiting    string `json:"waiting,omitempty"`
+	WaitingHas string `json:"waitingHas,omitempty"`
 	// Note is what an upgrade left to say: Homebrew's rtk behind rtk's
 	// own release
 	Note string `json:"note,omitempty"`
@@ -597,6 +620,11 @@ func ReadRTK() *RTKView {
 		}
 		v.Agents = append(v.Agents, ra)
 	}
+	for _, a := range agent.Detected() {
+		if why, ok := rtkNoHook[a.ID]; ok {
+			v.Agents = append(v.Agents, RTKAgent{ID: a.ID, Name: a.Name, Icon: a.Icon, Blocked: why, NoHook: true})
+		}
+	}
 	if v.Path == "" {
 		return v
 	}
@@ -607,7 +635,7 @@ func ReadRTK() *RTKView {
 	if out, err := rtkRun(v.Path, "--version"); err == nil {
 		v.Version = strings.TrimSpace(strings.TrimPrefix(out, "rtk"))
 	}
-	if c := rtkUpgrader(v.Path); c != nil {
+	if c := upgraderOf(v.Path); c != nil {
 		v.Upgrade = shown(c)
 	}
 	v.Gain, v.Days, v.GainErr = rtkGain(v.Path)
@@ -738,6 +766,8 @@ func SetRTK(id string, on bool) (*RTKView, error) {
 	}
 	sp, ok := rtkSpecs[id]
 	switch {
+	case !ok && rtkNoHook[id] != "":
+		return nil, errors.New(rtkNoHook[id])
 	case !ok:
 		return nil, fmt.Errorf("rtk has no hook for %s", id)
 	case a == nil:
@@ -856,6 +886,9 @@ func RTKTakes(q string) (string, error) {
 	a, err := agent.Find(q)
 	if err != nil {
 		return "", err
+	}
+	if why := rtkNoHook[a.ID]; why != "" {
+		return "", errors.New(why)
 	}
 	if _, ok := rtkSpecs[a.ID]; !ok {
 		var ids []string

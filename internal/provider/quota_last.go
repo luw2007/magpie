@@ -72,6 +72,10 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 	defer c.Unlock()
 	c.load()
 	if q.Error == "" {
+		if kept := c.m[key].Q; q.readSeq != 0 && kept.readSeq > q.readSeq {
+			kept.Name, kept.Icon, kept.User = q.Name, q.Icon, q.User
+			return kept
+		}
 		if len(q.Windows) == 0 && q.Balance == "" {
 			return q
 		}
@@ -138,7 +142,16 @@ func (c *lastQuotasT) load() {
 func (c *lastQuotasT) reading(key string) (SubscriptionQuota, bool) {
 	out, ok := c.reported(key)
 	if ok {
-		out.Windows = elapsed(out.Windows, time.Now())
+		now := time.Now()
+		// as read, before any window started again (none had by the zero
+		// time)
+		wasUp := usedUp(out, time.Time{})
+		out.Windows = elapsed(out.Windows, now)
+		// a hold that came with a window used up ends when that window
+		// starts again; one with no window used up stands till a fresh read
+		if out.Held && wasUp && !usedUp(out, now) {
+			out.Held = false
+		}
 	}
 	return out, ok
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/wslrun"
 )
 
 // An agent installed in a WSL distro reads its config there, not in
@@ -31,10 +32,11 @@ import (
 // stopped), and edits the files through \\wsl.localhost\<distro>. Each is
 // an agent of its own, <id>@wsl:<distro> (codex@wsl:Ubuntu,
 // pi@wsl:Ubuntu, claude@wsl:Ubuntu). The gateway it is pointed at is
-// 127.0.0.1 when WSL shares Windows' network (mirrored networking, as the
-// distro's wslinfo says, or .wslconfig where there is no wslinfo); under
-// NAT it is Windows as WSL sees it, which reaches the gateway only while
-// that listens beyond loopback.
+// 127.0.0.1 when the distro's 127.0.0.1 reaches Windows' (mirrored or
+// consomme networking, as the distro's wslinfo says, wslrun.HostLoopback;
+// or mirrored in .wslconfig where there is no wslinfo); under NAT it is
+// Windows as WSL sees it, which reaches the gateway only while that
+// listens beyond loopback.
 
 // place is where an agent lives: its home as magpie opens it, how a path
 // there is spelt in the agent's own config, and the gateway as it reaches
@@ -119,22 +121,43 @@ func (p place) key(k string) string {
 
 // distro is one WSL distro, as probed.
 type distro struct {
-	Name    string            `json:"name"`
-	Home    string            `json:"home"`              // $HOME inside it, e.g. /home/me
-	Root    string            `json:"root"`              // where magpie opens its / from, e.g. \\wsl.localhost\Ubuntu
-	Has     map[string]bool   `json:"has"`               // "dir:.codex", "bin:pi": what the probe found
-	Probe   int               `json:"probe,omitempty"`   // the wslProbeVersion that found it
-	Gateway string            `json:"gateway,omitempty"` // the Windows host as the distro reaches it, when not mirrored
-	Values  map[string]string `json:"values,omitempty"`  // its agents' fields as last read (wslKind.memo), shown while it is stopped
+	Name    string          `json:"name"`
+	Home    string          `json:"home"`              // $HOME inside it, e.g. /home/me
+	Root    string          `json:"root"`              // where magpie opens its / from, e.g. \\wsl.localhost\Ubuntu
+	Has     map[string]bool `json:"has"`               // "dir:.codex", "bin:pi": what the probe found
+	Probe   int             `json:"probe,omitempty"`   // the wslProbeVersion that found it
+	Gateway string          `json:"gateway,omitempty"` // the Windows host as the distro reaches it, when not at 127.0.0.1
+	// Was are the addresses it reached Windows at before, newest last: an
+	// agent's config still on one is offered the one now (#1013)
+	Was    []string          `json:"was,omitempty"`
+	Values map[string]string `json:"values,omitempty"` // its agents' fields as last read (wslKind.memo), shown while it is stopped
 	// Net is WSL's networking mode as the distro's wslinfo said at the
-	// last probe ("mirrored", "nat", "virtioproxy", "none"); "" when it
-	// couldn't say (a WSL without wslinfo), and .wslconfig is read instead
+	// last probe ("mirrored", "consomme", "nat", "bridged", "none", and
+	// "virtioproxy" before WSL 2.9); "" when it couldn't say (a WSL without
+	// wslinfo), and .wslconfig is read instead
 	Net string `json:"net,omitempty"`
 	// Versions is what the CLIs of wslKinds that ask (version) said their
 	// versions are at the last probe, by the kind's id
 	Versions map[string]string `json:"versions,omitempty"`
-	Mirrored bool              `json:"-"`
-	Running  bool              `json:"-"`
+	// Mirrored is whether the distro's 127.0.0.1 is Windows' (mirror): in
+	// mirrored networking, or in consomme
+	Mirrored bool `json:"-"`
+	// noRelay: consomme with localhostForwarding=false in .wslconfig, where
+	// the distro's 127.0.0.1 is its own after all
+	noRelay bool
+	Running bool `json:"-"`
+	// up asks whether it runs now (wslUp), for one wslDistros listed
+	up func() bool
+}
+
+// live is whether the distro runs now: asked of wsl.exe again, at most
+// wslRunningAge after the last answer, for one wslDistros listed (an
+// agent of it may be read after the user stopped it); Running otherwise.
+func (d distro) live() bool {
+	if d.up == nil {
+		return d.Running
+	}
+	return d.up()
 }
 
 // local is a path inside the distro as magpie opens it.
@@ -155,10 +178,15 @@ func (d distro) native(local string) string {
 	return rel
 }
 
-// mirror settles Mirrored: what wslinfo said at the probe, or cfg
-// (.wslconfig's say) when it couldn't.
-func (d *distro) mirror(cfg bool) {
-	d.Mirrored = d.Net == "mirrored" || d.Net == "" && cfg
+// mirror settles Mirrored from what wslinfo said at the probe, or, when it
+// couldn't, from cfg (.wslconfig) saying mirrored: a WSL without wslinfo
+// predates consomme, so .wslconfig's consomme isn't taken for one. Under
+// consomme, cfg's localhostForwarding=false (wsl2.localhostForwarding)
+// turns the relay of 127.0.0.1 off; it stays the address, with a notice,
+// as Windows' next hop (the default route) is never Windows there.
+func (d *distro) mirror(cfg string) {
+	d.Mirrored = wslrun.HostLoopback(d.Net) || d.Net == "" && wslMirrored(cfg)
+	d.noRelay = d.Net != "mirrored" && wslrun.HostLoopback(d.Net) && wslOff(cfg, "localhostForwarding")
 }
 
 // notMirrored is the notice of an agent in a distro not known to be in
@@ -189,12 +217,17 @@ func (d distro) place(id string) place {
 // of it, and how it lives at a place. Adding one here is all it takes.
 type wslKind struct {
 	id, name string
-	dir, bin string             // under $HOME, and on its PATH: either says it is there
+	// dir, under $HOME, and bin, on its PATH: either says it is there; ""
+	// for one that says nothing (a folder other tools keep too)
+	dir, bin string
 	in       func(place) *Agent // the agent at a place, as on this machine
 	restart  string             // advice after a change, when mirrored; "" none
 	// version: the probe asks the distro's own bin its version (--version),
 	// for an agent whose config depends on it
 	version bool
+	// accept, when set, is whether what the probe found is the agent: a
+	// command another tool's release shares the name of, told by its version
+	accept func(d distro) bool
 	// asleep, when set, is a stopped distro's options for a field, which
 	// must read nothing of its files; nil keeps the live agent's
 	asleep func(key string) func(map[string]string) []Option
@@ -252,6 +285,14 @@ var wslKinds = []wslKind{
 				}
 			case "effort":
 				return nil
+			case "login":
+				// its sign-in, while the model last seen is magpie's
+				return func(cur map[string]string) []Option {
+					if !isMagpie(cur["model"]) {
+						return nil
+					}
+					return claudeSignIns()
+				}
 			}
 			// a tier: magpie's models while the model last seen is one
 			return func(cur map[string]string) []Option {
@@ -356,6 +397,86 @@ var wslKinds = []wslKind{
 		restart: "reads its settings as a session starts — open sessions keep the model they have; new ones use this."},
 	{id: "qoder-cn", name: "Qoder CN", dir: ".qoder-cn", bin: "qoderclicn", in: qoderCNIn,
 		restart: "reads its settings as a session starts — open sessions keep the model they have; new ones use this."},
+	// lgtm on Discord: magpie didn't find a CodeBuddy Code installed in WSL
+	{id: "codebuddy", name: "CodeBuddy Code", dir: ".codebuddy", bin: "codebuddy", in: codebuddyIn,
+		restart: "reads its model when a session starts — restart open codebuddy sessions, or run /clear in them, to use this."},
+	// Cline's CLI, and its VS Code extension in a Remote - WSL window, which
+	// keep the same ~/.cline
+	{id: "cline", name: "Cline", dir: ".cline", bin: "cline", in: clineIn,
+		restart: "reads its provider as a session starts — open sessions keep the model they have; new ones use this. Reload VS Code's window for its extension.",
+		asleep:  wslOwnAsleep("cline", "model")},
+	{id: "atomcode", name: "AtomCode", dir: ".atomcode", bin: "atomcode", in: atomcodeIn,
+		restart: "reads its settings at start-up — restart open atomcode sessions to use this.",
+		asleep: func(key string) func(map[string]string) []Option {
+			if key != "model" {
+				return nil
+			}
+			// the models of its config.toml are the distro's files
+			return func(cur map[string]string) []Option {
+				return append(atomcodeOwnModels("", cur["model"]), viaMagpie("atomcode", magpieID+"/")...)
+			}
+		}},
+	// no dir: Antigravity keeps its folders in ~/.gemini too, so only the
+	// command says Gemini CLI is there
+	{id: "gemini", name: "Gemini CLI", bin: "gemini", in: geminiIn,
+		restart: "reads its settings at start-up — restart open gemini sessions to see this.",
+		asleep: func(key string) func(map[string]string) []Option {
+			if key != "provider" {
+				return nil
+			}
+			// which key its .env has is the distro's file
+			return func(cur map[string]string) []Option {
+				out := []Option{
+					{Value: "google", Label: "Google", Icon: "gemini-color", Note: "Google account · OAuth sign-in"},
+					{Value: "api-key", Label: "API key", Icon: "gemini-color"},
+					{Value: "vertex", Label: "Vertex AI", Icon: "googlecloud-color", Note: "Vertex AI · $GOOGLE_CLOUD_PROJECT"},
+				}
+				if v := cur["provider"]; v == magpieID || v == "custom" {
+					out = append(out, Option{Value: v})
+				}
+				return out
+			}
+		}},
+	// Block's goose, by its folder alone: a goose command may be pressly's
+	// database migration tool
+	{id: "goose", name: "Goose", dir: ".config/goose", in: func(at place) *Agent { return gooseIn(at, filepath.Join(at.home, ".config")) },
+		restart: "loads its providers at start-up — restart open goose sessions to use magpie's models.",
+		asleep:  wslOwnAsleep("goose", "model")},
+	// Reasonix's native CLI (1.39 on), by its command and the version it
+	// gives: the historical npm client is reasonix too, and ~/.reasonix is
+	// both's
+	{id: "reasonix", name: "Reasonix", bin: "reasonix", in: reasonixIn, version: true,
+		accept: func(d distro) bool {
+			v := d.Versions["reasonix"]
+			return strings.HasPrefix(v, "2.") || strings.HasPrefix(v, "1.39.")
+		},
+		restart: "reads its settings at start-up — start a new reasonix process to use this.",
+		asleep: func(key string) func(map[string]string) []Option {
+			switch key {
+			case "model", "planner":
+				return func(cur map[string]string) []Option {
+					out := append(ownOptions("", cur[key]), viaMagpie("reasonix", magpieID+"/")...)
+					if key == "planner" {
+						out = append([]Option{{Value: "off", Label: "off", Note: "Disable the separate planner"}}, out...)
+					}
+					return out
+				}
+			case "effort":
+				// the levels of magpie's model, as its provider is written them
+				return func(cur map[string]string) []Option {
+					ref, ok := strings.CutPrefix(cur["model"], magpieID+"/")
+					if !ok {
+						return nil
+					}
+					levels := reasonixCatalogAt(magpieModels("reasonix"), ref, "", "").Overrides[ref].Efforts
+					if len(levels) == 0 {
+						return nil
+					}
+					return static(append([]string{"auto"}, levels...)...)
+				}
+			}
+			return nil
+		}},
 }
 
 // wslOwnAsleep is a stopped distro's options for an agent's model fields
@@ -374,7 +495,10 @@ func wslOwnAsleep(id string, keys ...string) func(string) func(map[string]string
 
 // found reports whether the probe found the agent in d.
 func (k wslKind) found(d distro) bool {
-	return d.Has["dir:"+k.dir] || k.bin != "" && d.Has["bin:"+k.bin]
+	if k.accept != nil && !k.accept(d) {
+		return false
+	}
+	return k.dir != "" && d.Has["dir:"+k.dir] || k.bin != "" && d.Has["bin:"+k.bin]
 }
 
 // memo is the key a field of the agent is kept under in distro.Values:
@@ -394,6 +518,16 @@ func wslFound(d distro) bool {
 		}
 	}
 	return false
+}
+
+// ListsFor is whose model lists an agent's are (provider.CatalogFor): its
+// own id's, or, for one in a WSL distro, its Windows twin's (claude for
+// claude@wsl:Ubuntu). A distro's agent is written magpie's models under
+// that id and sends the gateway that id's key, so the models picked for
+// its row are the ones it is shown only when kept under that id too (#927).
+func (a *Agent) ListsFor() string {
+	id, _, _ := strings.Cut(a.ID, "@wsl:")
+	return id
 }
 
 func wslKindOf(id string) wslKind {
@@ -431,6 +565,10 @@ func wslAgent(k wslKind, d distro) *Agent {
 		if !d.Mirrored {
 			return d.notMirrored(k.name)
 		}
+		if d.noRelay {
+			return "WSL " + d.Name + " is in " + d.Net + " networking with localhostForwarding=false in %UserProfile%\\.wslconfig, so 127.0.0.1 there, where its " + k.name +
+				" was pointed, isn't relayed to Windows, where magpie listens. Remove localhostForwarding=false under [wsl2] (it is on by default) and run wsl --shutdown."
+		}
 		if k.restart == "" {
 			return ""
 		}
@@ -441,6 +579,9 @@ func wslAgent(k wslKind, d distro) *Agent {
 	}
 	if reached := a.Reached; reached != nil {
 		a.Reached = func(since time.Time) (time.Time, string, bool) {
+			if !d.live() {
+				return time.Time{}, "", false
+			}
 			at, to, refused := reached(since)
 			if sameHost(to, d.base()) {
 				to = gateway.URL() // the gateway, however WSL reaches it
@@ -448,10 +589,41 @@ func wslAgent(k wslKind, d distro) *Agent {
 			return at, to, refused
 		}
 	}
+	// the agent may be read after the distro stopped (it is made at most
+	// wslRunningAge before): what reads its files in the background asks
+	// again first, and a stopped one reads as last seen
 	for i := range a.Fields {
 		f := &a.Fields[i]
 		get, key := f.Get, k.memo(f.Key)
-		f.Get = func() string { v := get(); wslRemember(d.Name, key, v); return v }
+		f.Get = func() string {
+			if !d.live() {
+				return wslLastSeen(d.Name, key)
+			}
+			v := get()
+			wslRemember(d.Name, key, v)
+			return v
+		}
+	}
+	if sync := a.Sync; sync != nil {
+		a.Sync = func() error {
+			if !d.live() {
+				return nil // its files get the catalog once it runs
+			}
+			return sync()
+		}
+	}
+	if check := a.Check; check != nil {
+		a.Check = func() string {
+			if !d.live() {
+				return ""
+			}
+			return check()
+		}
+	}
+	for _, p := range []*func() bool{&a.Routed, &a.Joined, &a.Beside, &a.Added} {
+		if f := *p; f != nil {
+			*p = func() bool { return d.live() && f() }
+		}
 	}
 	// what a set leaves is kept at once, in case the distro stops before
 	// the next look
@@ -486,7 +658,7 @@ func asleep(live *Agent, k wslKind, d distro) *Agent {
 		}}
 	for _, lf := range live.Fields {
 		key := lf.Key
-		f := Field{Key: key, Label: lf.Label, Quiet: lf.Quiet, Options: lf.Options,
+		f := Field{Key: key, Label: lf.Label, Quiet: lf.Quiet, Follows: lf.Follows, Options: lf.Options,
 			Get: func() string { return wslLastSeen(d.Name, k.memo(key)) },
 			Set: func(v string) error {
 				// opening a stopped distro's files is aborted rather than
@@ -517,6 +689,11 @@ func asleep(live *Agent, k wslKind, d distro) *Agent {
 			if o := k.asleep(key); o != nil {
 				f.Options = o
 			}
+		}
+		// Claude Code's claude.ai sign-in is kept only where the gateway
+		// takes any key, which the distro's address says without its files
+		if k.id == "claude" && key == "login" && d.place(live.ID).gwKey() != gateway.Token {
+			f.Options = func(map[string]string) []Option { return nil }
 		}
 		a.Fields = append(a.Fields, f)
 	}
@@ -571,6 +748,7 @@ var wsl struct {
 	at      time.Time
 	names   []string        // every distro installed
 	running map[string]bool // those running
+	runAt   time.Time       // when running was listed
 	listed  bool            // names is a real answer, and may forget distros
 	seen    map[string]*distro
 	probed  map[string]bool
@@ -581,6 +759,11 @@ var wsl struct {
 const (
 	wslListAge  = time.Minute
 	wslRetryAge = 10 * time.Minute
+	// wslRunningAge is how long which distros run is taken as wsl.exe
+	// said: one the user stops (wsl --shutdown or --terminate, to repair
+	// WSL) is seen stopped within it, before anything opens its files,
+	// which would start it again (TJHHHH on Discord)
+	wslRunningAge = 3 * time.Second
 )
 
 // wslOn is whether there is WSL to look in: on Windows, or in tests.
@@ -618,15 +801,11 @@ func wslDistros() []distro {
 	}
 	if time.Since(wsl.at) > wslListAge {
 		wsl.names, wsl.listed = wslList("-l", "-q")
-		run, _ := wslList("-l", "--running", "-q")
-		wsl.running = map[string]bool{}
-		for _, n := range run {
-			wsl.running[n] = true
-		}
 		wsl.at = time.Now()
 	}
+	wslRunningLocked()
 	installed := map[string]bool{}
-	mirrored := wslMirrored(wslConfig())
+	cfg := wslConfig()
 	var out []distro
 	for _, n := range wsl.names {
 		installed[n] = true
@@ -644,6 +823,7 @@ func wslDistros() []distro {
 					if wslFound(*d) {
 						if old := wsl.seen[n]; old != nil {
 							d.Values = old.Values
+							d.Was = wslWas(old.Was, old.Gateway, d.Gateway)
 						}
 						wsl.seen[n] = d
 					} else {
@@ -659,7 +839,8 @@ func wslDistros() []distro {
 		}
 		c := *d
 		c.Running = wsl.running[n]
-		c.mirror(mirrored)
+		c.up = func() bool { return wslUp(n) }
+		c.mirror(cfg)
 		out = append(out, c)
 	}
 	// an unregistered distro is forgotten
@@ -670,6 +851,23 @@ func wslDistros() []distro {
 		}
 	}
 	wslSaveLocked()
+	return out
+}
+
+// wslWas is the addresses a distro reached Windows at before, with the
+// last one (was) added when it reaches Windows elsewhere now: the newest
+// few, now's left out.
+func wslWas(before []string, was, now string) []string {
+	out := slices.DeleteFunc(slices.Clone(before), func(h string) bool { return h == was || h == now })
+	if was != "" && was != now {
+		out = append(out, was)
+	}
+	if len(out) > 4 {
+		out = out[len(out)-4:]
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 
@@ -694,6 +892,38 @@ func wslForgetOldBins() {
 		}
 	}
 }
+
+// wslRunningLocked lists the running distros again (wsl.exe -l --running,
+// which starts none) when the last list is older than wslRunningAge. When
+// wsl.exe can't say, none is taken to run: a distro is never opened on a
+// guess.
+func wslRunningLocked() {
+	if !wsl.runAt.IsZero() && time.Since(wsl.runAt) <= wslRunningAge {
+		return
+	}
+	run, _ := wslList("-l", "--running", "-q")
+	wsl.running = map[string]bool{}
+	for _, n := range run {
+		wsl.running[n] = true
+	}
+	wsl.runAt = time.Now()
+}
+
+// wslUp is whether distro runs, as wsl.exe said at most wslRunningAge ago:
+// what reads a distro's files in the background (a field shown, the
+// catalog synced, requests counted, sessions listed) asks it first, so a
+// distro stopped since its agent was made isn't started again.
+func wslUp(distro string) bool {
+	wsl.Lock()
+	defer wsl.Unlock()
+	wslRunningLocked()
+	return wsl.running[distro]
+}
+
+// WSLRunning is whether the WSL distro runs now (wslUp); false off
+// Windows. What another package does in a distro on its own, rather than
+// at the user's asking, asks it first.
+func WSLRunning(distro string) bool { return wslOn && wslUp(distro) }
 
 // wslSave writes wsl.json if anything in it changed.
 func wslSave() {
@@ -735,11 +965,13 @@ func wslLastSeen(name, key string) string {
 }
 
 // wslClaudeStandIn is StandIn for a Claude Code in a WSL distro routed
-// through magpie: the first, of the distros running at the last look, whose
-// settings.json has a stand-in. Only magpie's memory of them is asked —
-// nothing is listed nor probed, and a stopped distro is never opened.
+// through magpie: the first, of the distros running now, whose
+// settings.json has a stand-in. Only magpie's memory of them and which run
+// (wslRunningLocked) are asked — nothing is probed, and a stopped distro
+// is never opened.
 func wslClaudeStandIn(model string) string {
 	wsl.Lock()
+	wslRunningLocked()
 	var ds []distro
 	for _, n := range wsl.names {
 		if d := wsl.seen[n]; d != nil && wsl.running[n] && wslKindOf("claude").found(*d) {
@@ -747,9 +979,9 @@ func wslClaudeStandIn(model string) string {
 		}
 	}
 	wsl.Unlock()
-	mirrored := wslMirrored(wslConfig())
+	cfg := wslConfig()
 	for _, d := range ds {
-		d.mirror(mirrored)
+		d.mirror(cfg)
 		path := filepath.Join(d.local(d.Home), ".claude", "settings.json")
 		if m := claudeStandInAt(path, model, d.base()); m != "" {
 			return m
@@ -779,15 +1011,24 @@ const wslProbeVersion = 2
 // its default route (the Windows host under NAT), and WSL's networking
 // mode as wslinfo (WSL 2.0 on) says it; and the version of each that asks
 // for it (omp, whose models.yml takes max only from 16.4.0).
+//
+// A command is also looked for in the folders its installers put it in
+// (wslbin): sh -l reads ~/.profile but not ~/.bashrc, where bun's and
+// nvm's installers add theirs to PATH (whqtian on Discord: a WSL omp from
+// bun was never asked its version, so its models still offered xhigh).
+// It is asked with its own folder on PATH, where bun's script finds bun.
 var wslProbeScript = func() string {
-	s := `echo "home:$HOME"; `
+	s := `wslbin() { for d in "$HOME/.bun/bin" "$HOME/.local/bin" "$HOME/.npm-global/bin" "$HOME/.volta/bin" "$HOME/.local/share/pnpm" "$HOME"/.nvm/versions/node/*/bin "$HOME/.local/share/mise/shims" "$HOME/.asdf/shims"; do [ -x "$d/$1" ] && { echo "$d/$1"; return 0; }; done; return 1; }; `
+	s += `echo "home:$HOME"; `
 	for _, k := range wslKinds {
-		s += `[ -d "$HOME/` + k.dir + `" ] && echo dir:` + k.dir + `; `
+		if k.dir != "" {
+			s += `[ -d "$HOME/` + k.dir + `" ] && echo dir:` + k.dir + `; `
+		}
 		if k.bin != "" {
-			s += `p=$(command -v ` + k.bin + ` 2>/dev/null) && echo "bin:` + k.bin + ` $p"`
+			s += `p=$(command -v ` + k.bin + ` 2>/dev/null || wslbin ` + k.bin + `) && echo "bin:` + k.bin + ` $p"`
 			if k.version {
 				// not one on Windows' drives (WSL's /mnt/c), which isn't the distro's
-				s += ` && case "$p" in /mnt/*) ;; *) echo "ver:` + k.id + ` $(timeout 10 "$p" --version </dev/null 2>&1 | head -n1)";; esac`
+				s += ` && case "$p" in /mnt/*) ;; *) echo "ver:` + k.id + ` $(PATH="${p%/*}:$PATH" timeout 10 "$p" --version </dev/null 2>&1 | head -n1)";; esac`
 			}
 			s += `; `
 		}
@@ -873,6 +1114,13 @@ func parseProbe(name, out string) *distro {
 	if d.Gateway == "" {
 		d.Gateway = ns
 	}
+	// the default route of a distro whose 127.0.0.1 is Windows' is
+	// Windows' own next hop (consomme: 198.18.0.2 under a TUN proxy,
+	// #1230), not Windows: an agent left on it is moved to 127.0.0.1
+	// (wslMovedFrom)
+	if wslrun.HostLoopback(d.Net) {
+		d.Gateway = ""
+	}
 	return d
 }
 
@@ -944,7 +1192,22 @@ func decodeText(b []byte) string {
 // wslMirrored reports whether a .wslconfig puts WSL 2 in mirrored
 // networking: networkingMode=mirrored under [wsl2].
 func wslMirrored(cfg string) bool {
-	section, mirrored := "", false
+	v, _ := wslSetting(cfg, "networkingMode")
+	return strings.EqualFold(v, "mirrored")
+}
+
+// wslOff reports whether a .wslconfig turns key under [wsl2] off: false,
+// as WSL reads a boolean (false, or 0).
+func wslOff(cfg, key string) bool {
+	v, ok := wslSetting(cfg, key)
+	return ok && (strings.EqualFold(v, "false") || v == "0")
+}
+
+// wslSetting is key's value under [wsl2] in a .wslconfig, the last one
+// set, unquoted and without a trailing comment; ok is false when it isn't
+// set there.
+func wslSetting(cfg, key string) (val string, ok bool) {
+	section := ""
 	sc := bufio.NewScanner(strings.NewReader(strings.TrimPrefix(cfg, "\ufeff")))
 	for sc.Scan() {
 		l := strings.TrimSpace(sc.Text())
@@ -958,14 +1221,14 @@ func wslMirrored(cfg string) bool {
 				continue
 			}
 		}
-		k, v, ok := strings.Cut(l, "=")
-		if !ok || section != "wsl2" || !strings.EqualFold(strings.TrimSpace(k), "networkingMode") {
+		k, v, found := strings.Cut(l, "=")
+		if !found || section != "wsl2" || !strings.EqualFold(strings.TrimSpace(k), key) {
 			continue
 		}
 		if i := strings.IndexAny(v, "#;"); i >= 0 {
 			v = v[:i]
 		}
-		mirrored = strings.EqualFold(strings.Trim(strings.TrimSpace(v), `"`), "mirrored")
+		val, ok = strings.Trim(strings.TrimSpace(v), `"`), true
 	}
-	return mirrored
+	return val, ok
 }

@@ -1,5 +1,11 @@
 // Caller keys use the same account list and edit controls as provider keys.
 let gatewayKeys = null, gatewayKeyDraft = null, gatewayKeysBusy = false;
+// gatewayOwnDraft is the value typed for a new key of the user's own (one
+// its clients already send, love1sbug on X); "" lets magpie make one
+let gatewayOwnDraft = "";
+// gatewayAccountNames maps a key's stored account entry ("<provider>/<id>",
+// #905) to how it is shown; what no provider has now is shown as it is kept
+let gatewayAccountNames = {};
 let gatewayKeysRead = 0;
 // gatewayLimit is the key whose limit editor is open, and its draft
 // (#585): what is picked in it is sent only by its Save.
@@ -58,6 +64,7 @@ async function gatewayKeyAction(action, body) {
     gatewayKeysRead++;
     connectSecret = null;
     gatewayKeys = out.keys || [];
+    gatewayAccountNames = out.accountNames || gatewayAccountNames;
     gatewayKeyDraft = null;
     if (action === "limit-key" || !gatewayKeys.some((k) => k.id === gatewayLimit?.id)) gatewayLimit = null;
     renderGatewayKeys();
@@ -99,23 +106,31 @@ function gatewayKeyForm() {
   const name = input(gatewayKeyDraft, t("Key name, e.g. Laptop"));
   name.setAttribute("aria-label", t("Gateway key name"));
   name.oninput = () => { gatewayKeyDraft = name.value; };
+  const own = input(gatewayOwnDraft, t("Your own key (optional)"), "password");
+  own.setAttribute("aria-label", t("Gateway key value"));
+  own.title = t("Leave empty and magpie makes a key. Or enter one your clients already send, from another gateway, so they keep working.");
+  own.autocomplete = "off";
+  own.oninput = () => { gatewayOwnDraft = own.value; };
   const add = el("button", "text primary", t("Create"));
   const go = async () => {
     add.disabled = true;
-    const out = await gatewayKeyAction("add-key", { name: name.value });
+    const mine = own.value.trim() !== "";
+    const out = await gatewayKeyAction("add-key", mine ? { name: name.value, secret: own.value } : { name: name.value });
     if (!out) { add.disabled = false; return; }
-    status(t("Gateway key created. Use Copy on its row to connect a client."), "ok");
+    gatewayOwnDraft = "";
+    status(t(mine ? "Gateway key created. Clients that send this key reach magpie now." : "Gateway key created. Use Copy on its row to connect a client."), "ok");
   };
   add.onclick = go;
-  name.onkeydown = (e) => {
+  const cancelled = () => { gatewayKeyDraft = null; gatewayOwnDraft = ""; renderGatewayKeys(); };
+  for (const i of [name, own]) i.onkeydown = (e) => {
     e.stopPropagation();
     if (e.key === "Enter" && !add.disabled) go();
-    else if (e.key === "Escape") { gatewayKeyDraft = null; renderGatewayKeys(); }
+    else if (e.key === "Escape") cancelled();
   };
   const cancel = el("button", "text", t("Cancel"));
-  cancel.onclick = () => { gatewayKeyDraft = null; renderGatewayKeys(); };
+  cancel.onclick = cancelled;
   const fields = el("div", "kf");
-  fields.append(name);
+  fields.append(name, own);
   const bar = el("div", "kb");
   bar.append(el("span", "grow"), cancel, add);
   box.append(fields, bar);
@@ -154,7 +169,7 @@ function renderGatewayKeys() {
     rm.onclick = () => askGatewayKey(k, false);
     const rotate = el("button", "text quiet", t("Rotate key"));
     rotate.onclick = () => askGatewayKey(k, true);
-    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), el("span", "grow"), gatewayLimitBadge(k), copyCallerKeyBtn(k), rotate, rm);
+    row.append(tick, gatewayRename(k), el("span", "plan mono", k.masked), el("span", "grow"), gatewayModelsBadge(k), gatewayLimitBadge(k), copyCallerKeyBtn(k), rotate, rm);
     const under = gatewayLimit?.id === k.id ? gatewayLimitEditor(k) : k.used ? gatewayLimitLine(k) : null;
     if (under) row.classList.add("with-limit"), row.append(under);
     list.append(row);
@@ -190,6 +205,118 @@ function askGatewayKey(k, rotate) {
   openModal(ed);
   $("#modal").classList.add("lib");
   cancel.focus({ preventScroll: true });
+}
+
+// ---- the models a gateway key may use (#882), and the accounts (#905) ----
+
+// accountShown is a stored account entry ("<provider>/<id>", #905) as the
+// badge says it: by who is signed in, the id itself when no provider has it.
+const accountShown = (a) => gatewayAccountNames[a] || a;
+
+// the key whose models menu waits on its list: the badge drawn last opens
+// it, so a redraw of the keys while it loads (a rename's reply, the
+// providers' poll) doesn't drop the click
+let keyModelsLoading = null;
+
+// gatewayModelsBadge picks the models and the accounts a key may use, in
+// the app's menu: "All models" on hover when it may use any, else which
+// it may, always shown. A pick is sent when the menu closes.
+function gatewayModelsBadge(k) {
+  const ms = k.models || [];
+  const as = k.accounts || [];
+  const b = el("button", "amodels key-models" + (ms.length || as.length ? " set" : ""));
+  b.type = "button";
+  b.textContent = !ms.length && !as.length ? t("All models")
+    : ms.length ? (ms.length === 1 && !as.length ? ms[0] : t("{n} models", { n: ms.length }))
+      : (as.length === 1 ? accountShown(as[0]) : t("{n} accounts", { n: as.length }));
+  b.title = (ms.length ? t("Only these models: {list}", { list: ms.join(", ") }) : t("Pick the models this key may use"))
+    + (as.length ? "\n" + t("Only these accounts: {list}", { list: as.map(accountShown).join(", ") }) : "");
+  b.setAttribute("aria-label", t("Models this key may use"));
+  b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-expanded", "false");
+  const open = (models, accounts) => {
+    if (!b.isConnected) return;
+    const opts = [{ v: "", name: "All models", note: "Any model and any account, now and later" }];
+    const seen = new Set();
+    // the accounts and keys the key may be held to (#905), each right
+    // after its provider's models, not one block at the end: an account
+    // by who is signed in, a key by its fingerprint
+    const accountsSet = new Set();
+    const ofProvider = new Map();
+    for (const a of accounts || []) {
+      accountsSet.add(a.id);
+      const o = { v: a.id, name: a.name, note: a.plan ? a.providerName + " · " + a.plan : a.providerName, literalName: true };
+      ofProvider.set(a.provider, [...(ofProvider.get(a.provider) || []), o]);
+    }
+    let listed = "";  // the provider whose models the list is in
+    const endBlock = () => {
+      for (const o of ofProvider.get(listed) || []) opts.push(o);
+      ofProvider.delete(listed);
+      listed = "";
+    };
+    for (const m of models || []) {
+      // a routing group the key names is its with every member in it
+      // (Magic_zero on Discord); the groups come first
+      if (m.group) {
+        endBlock();
+        if (!seen.has("group")) {
+          seen.add("group");
+          opts.push({ v: "group/*", name: "Every routing group", note: "group/*" });
+        }
+        opts.push({ v: m.id, name: m.name, note: m.id, literalName: true });
+        continue;
+      }
+      if (m.provider !== listed) {
+        endBlock();
+        listed = m.provider;
+      }
+      if (!seen.has(m.provider)) {
+        seen.add(m.provider);
+        opts.push({ v: m.provider + "/*", name: t("Every {provider} model", { provider: m.providerName }), note: m.provider + "/*", literalName: true });
+      }
+      opts.push({ v: m.id, name: m.name, note: m.id, literalName: true });
+    }
+    endBlock();
+    // a provider with accounts and no model in the list (one kept
+    // unlisted, or serving none now) keeps its accounts after the models
+    for (const os of ofProvider.values()) opts.push(...os);
+    // what the CLI kept that the list hasn't, a pattern, a model gone or
+    // an account signed out: behind every live entry, a model gone
+    // before an account signed out
+    for (const v of ms) if (!opts.some((o) => o.v === v)) opts.push({ v, name: v, note: "Not served now", literalName: true });
+    for (const v of as) if (!accountsSet.has(v)) { accountsSet.add(v); opts.push({ v, name: v, note: "Not signed in now", literalName: true }); }
+    openProtoMenu(b, opts, [...ms, ...as], (picked) => {
+      // one action at a time: gatewayKeyAction is busy while one is sent.
+      // The accounts are sent only when they changed: a model picked says
+      // nothing of the key's accounts.
+      (async () => {
+        const pickedModels = picked.filter((v) => !accountsSet.has(v));
+        const pickedAccounts = picked.filter((v) => accountsSet.has(v));
+        const out = await gatewayKeyAction("models-key", { key: k.id, models: pickedModels });
+        if (out) status(t(pickedModels.length ? "{name} may use only the models picked" : "{name} may use every model", { name: k.name }), "ok");
+        if (pickedAccounts.length !== as.length || pickedAccounts.some((v) => !as.includes(v))) {
+          await gatewayKeyAction("accounts-key", { key: k.id, accounts: pickedAccounts });
+        }
+      })();
+    }, "Models this key may use", "sess-menu", "right");
+  };
+  b.onclick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    const loading = keyModelsLoading = { id: k.id, open };
+    let models = [], accounts = [];
+    try { ({ models, accounts } = await api("caller-keys/models")); } catch (err) {
+      if (keyModelsLoading === loading) keyModelsLoading = null;
+      status(t(err.message), "err");
+      return;
+    }
+    if (keyModelsLoading !== loading) return;
+    keyModelsLoading = null;
+    loading.open(models, accounts);
+  };
+  if (keyModelsLoading?.id === k.id) keyModelsLoading.open = open;
+  return b;
 }
 
 // ---- a gateway key's own limit (#585) ----

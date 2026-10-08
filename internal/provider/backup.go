@@ -54,7 +54,7 @@ func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pool
 		replaced++
 	}
 	for _, g := range gs {
-		if g.ID == "" || g.ID != Slug(g.ID) {
+		if g.ID == "" || g.ID != GroupSlug(g.ID) {
 			continue
 		}
 		g.Auto = false
@@ -91,7 +91,7 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 		}
 		f.Providers = append(f.Providers, p)
 	}
-	f.Groups = slices.DeleteFunc(slices.Clone(gs), func(g Group) bool { return g.ID == "" || g.ID != Slug(g.ID) })
+	f.Groups = slices.DeleteFunc(slices.Clone(gs), func(g Group) bool { return g.ID == "" || g.ID != GroupSlug(g.ID) })
 	if err = validateBackupReferences(f); err != nil {
 		return err
 	}

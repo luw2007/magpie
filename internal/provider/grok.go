@@ -400,6 +400,9 @@ func ObjectRoot(ps map[string]any) bool {
 		}
 		delete(ps, k)
 	}
+	// a field every branch requires stays required, beside the root's and
+	// allOf's own, which no branch can drop
+	var common []any
 	for i, b := range branches {
 		bp, _ := b["properties"].(map[string]any)
 		for k, v := range bp {
@@ -409,21 +412,33 @@ func ObjectRoot(ps map[string]any) bool {
 		}
 		br, _ := b["required"].([]any)
 		if i == 0 {
-			required = append(required, br...)
+			common = append(common, br...)
 			continue
 		}
 		in := map[any]bool{}
 		for _, r := range br {
 			in[r] = true
 		}
-		kept := required[:0]
-		for _, r := range required {
+		kept := common[:0]
+		for _, r := range common {
 			if in[r] {
 				kept = append(kept, r)
 			}
 		}
-		required = kept
+		common = kept
 	}
+	seen := map[string]bool{}
+	var merged []any
+	for _, r := range append(required, common...) {
+		if name, ok := r.(string); ok {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+		}
+		merged = append(merged, r)
+	}
+	required = merged
 	ps["type"] = "object"
 	ps["properties"] = props
 	if len(required) > 0 {
@@ -704,6 +719,15 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 	var partial struct {
 		sync.Mutex
 		link string
+		last string // the last line it printed, which says why there's no link
+	}
+	noLink := func() error {
+		partial.Lock()
+		defer partial.Unlock()
+		if partial.last != "" {
+			return fmt.Errorf("%s gave no link to open: %s", what, partial.last)
+		}
+		return fmt.Errorf("%s gave no link to open", what)
 	}
 	go func() {
 		rd := bufio.NewReader(out)
@@ -722,7 +746,9 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 			switch {
 			case sent:
 			case link == "":
-				link = cursorLoginURL.FindString(line)
+				if !failedLine.MatchString(line) {
+					link = cursorLoginURL.FindString(line)
+				}
 			case linkRest.MatchString(strings.TrimSpace(line)) && (!whole(link) || queryRest.MatchString(strings.TrimSpace(line))):
 				// a whole link takes only more of its query, not "Waiting..." printed after it
 				link += strings.TrimSpace(line)
@@ -741,6 +767,9 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 			}
 			if strings.TrimSpace(line) != "" {
 				tail = append(tail, strings.TrimSpace(line))
+				partial.Lock()
+				partial.last = strings.TrimSpace(line)
+				partial.Unlock()
 			}
 			if rerr != nil {
 				break
@@ -772,7 +801,7 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 	select {
 	case l, ok := <-got:
 		if !ok {
-			return fmt.Errorf("%s gave no link to open", what)
+			return noLink()
 		}
 		u = l
 	case <-time.After(linkWait):
@@ -782,7 +811,7 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 		partial.Unlock()
 		if u == "" {
 			cancel()
-			return fmt.Errorf("%s gave no link to open", what)
+			return noLink()
 		}
 	}
 	s.mu.Lock()
@@ -790,6 +819,12 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 	s.mu.Unlock()
 	return nil
 }
+
+// failedLine is a line saying the login failed, whose URL is the endpoint
+// it couldn't reach, not a page to open: grok 1.0.46 behind a proxy it
+// can't get through prints "Error: error sending request for url
+// (https://auth.x.ai/oauth2/device/code): …" (𝕏 on Discord).
+var failedLine = regexp.MustCompile(`(?i)\berror\b`)
 
 // linkWait is how long a login command has to print its link.
 var linkWait = 30 * time.Second

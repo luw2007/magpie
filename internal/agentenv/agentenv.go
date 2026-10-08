@@ -30,6 +30,12 @@ package agentenv
 var Vars = []string{
 	// Claude Code, Codex and Copilot CLI
 	"CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME",
+	// Claude Code's temp folder, the images its sessions were given
+	"CLAUDE_CODE_TMPDIR",
+	// Zed, or a fork of it that keeps its settings (ZedG)
+	"MAGPIE_ZED_BIN", "MAGPIE_ZED_CONFIG_DIR", "MAGPIE_ZED_PROCESS_NAMES",
+	// Codex's state database, when it is kept apart from CODEX_HOME
+	"CODEX_SQLITE_HOME",
 	// Gemini CLI's session/config home
 	"GEMINI_CLI_HOME",
 	// Cline: its folder, its data, its sessions and its MCP settings file
@@ -45,9 +51,11 @@ var Vars = []string{
 	"GROK_HOME", "GROK_BIN_DIR",
 	// Kimi Code and its shared folder
 	"KIMI_CODE_HOME", "KIMI_SHARE_DIR",
-	// MiMo Code, MiniMax Code, OpenHanako, Hermes, dsh, WorkBuddy
+	// MiMo Code, MiniMax Code, OpenHanako, Hermes, dsh, WorkBuddy, CodeBuddy Code
 	"MIMOCODE_HOME", "MINIMAX_DATA_DIR", "HANA_HOME", "HERMES_HOME", "DSH_HOME",
-	"WORKBUDDY_CONFIG_DIR",
+	"WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR",
+	// Reasonix Studio and its native CLI share this config home
+	"REASONIX_HOME",
 	// Mister Morph's config file
 	"MISTER_MORPH_CONFIG",
 	// T3 Code's base folder (its settings in userdata/)
@@ -72,4 +80,5 @@ var NotPaths = map[string]bool{
 	"PI_PROFILE": true, "OMP_PROFILE": true,
 	"WINDSURF_API_SERVER_URL": true, "ZCODE_CREDENTIAL_SECRET": true,
 	"PI_CONFIG_DIR": true, "OPENCODE_DB": true,
+	"MAGPIE_ZED_BIN": true, "MAGPIE_ZED_PROCESS_NAMES": true,
 }

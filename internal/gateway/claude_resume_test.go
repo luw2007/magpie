@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,12 @@ type resumeHarness struct {
 
 func newResumeHarness(t *testing.T) *resumeHarness {
 	t.Helper()
+	return newReplyHarness(t, "ok")
+}
+
+// newReplyHarness is a resumeHarness whose Claude Code answers reply.
+func newReplyHarness(t *testing.T, reply string) *resumeHarness {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script stands in for Claude Code")
 	}
@@ -36,6 +43,7 @@ func newResumeHarness(t *testing.T) *resumeHarness {
 	testenv.SetHome(t, home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("CLAUDE_CODE_TMPDIR", t.TempDir())
 	config := filepath.Join(home, ".claude")
 	t.Setenv("CLAUDE_CONFIG_DIR", config)
 	dir, logs := t.TempDir(), t.TempDir()
@@ -59,13 +67,13 @@ while read -r line; do
   echo "told $line" >> $log
   if [ -n "$file" ]; then echo "$line" >> "$file"; fi
   echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-sonnet-5","usage":{"input_tokens":1}}}}'
-  echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}}'
+  echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + strconv.Quote(reply) + `}}}'
   echo '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}}'
   echo '{"type":"stream_event","event":{"type":"message_stop"}}'
   echo '{"type":"result","subtype":"success","is_error":false,"result":""}'
 done
 `
-	os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755)
+	testenv.Program(t, filepath.Join(dir, "claude"), script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	s := New()
 	t.Cleanup(s.subscription.abortAll)

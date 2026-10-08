@@ -42,7 +42,13 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 		for i := range ls {
 			if ls[i].Agent == agent && ls[i].own() {
 				found = true
-				changed := false
+				changed, renamed := false, false
+				if agent == "copilot" && copilotRenamed(ls[i].User, ownUser) {
+					// the same account, its host now in its name (#1220):
+					// kept as it was, hidden or not, its settings with it
+					ls[i].renameTo(ownUser)
+					renamed = renameDue()
+				}
 				if !strings.EqualFold(ls[i].User, ownUser) {
 					ls[i].User, ls[i].Seen = ownUser, time.Now().UTC().Truncate(time.Second)
 					if agent == "copilot" {
@@ -59,7 +65,7 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 						changed = true
 					}
 				}
-				if changed {
+				if changed || renamed {
 					_ = writeLogins(ls)
 				}
 			}
@@ -70,6 +76,11 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 			ls = append(ls, savedLogin{Agent: agent, User: ownUser, Seen: time.Now().UTC().Truncate(time.Second)})
 			_ = writeLogins(ls)
 		}
+	}
+	// a saved account renamed as it was read (nameAlike) is written under
+	// its new name, its settings moved to it, the first time it is listed
+	if agent == "copilot" && renameDue() && slices.ContainsFunc(ls, func(l savedLogin) bool { return l.was != "" }) {
+		_ = writeLogins(slices.Clone(ls)) // sorted there: listed here as added
 	}
 	var out []sideLogin
 	first := -1
@@ -168,14 +179,15 @@ func setSideLoginOn(agent, user string, on bool, ls []sideLogin) error {
 
 // forgetSideLogin drops an account magpie signed in; gone is told what it
 // kept. The agent's own sign-in is only hidden: its files stay as they
-// are, and it shows again once the agent signs in anew (ownMark). Hidden
-// while first, the next account is put first.
+// are, and it shows again once the agent signs in anew (ownMark). Either
+// one, removed while first, puts the next account first; the only one
+// leaves the subscription with no account (#874: a removed subscription's
+// Sign out… could never take its one account; 歧路亡羊 on Discord: one of
+// magpie's that was first was refused, "put another account first", even
+// by the subscription's Sign out…, which takes every account).
 func forgetSideLogin(agent, user string, ls []sideLogin, gone func(savedLogin)) error {
 	own := slices.ContainsFunc(ls, func(l sideLogin) bool { return l.Own && strings.EqualFold(l.User, user) })
 	first := strings.EqualFold(activeOf(ls), user)
-	if first && !own {
-		return fmt.Errorf("magpie uses %s first; put another account first", user)
-	}
 	next := ""
 	if first {
 		for _, l := range ls {
@@ -191,13 +203,14 @@ func forgetSideLogin(agent, user string, ls []sideLogin, gone func(savedLogin)) 
 	}
 	var old savedLogin
 	err := editSideLogin(agent, user, func(saved []savedLogin, i int) ([]savedLogin, error) {
+		for j := range saved {
+			if next != "" && j != i && saved[j].Agent == agent {
+				saved[j].First = strings.EqualFold(saved[j].User, next)
+				saved[j].On = saved[j].On || saved[j].First
+			}
+		}
 		if saved[i].own() {
 			saved[i].Hidden, saved[i].First = mark, false
-			for j := range saved {
-				if next != "" && saved[j].Agent == agent {
-					saved[j].First = strings.EqualFold(saved[j].User, next)
-				}
-			}
 			return saved, nil
 		}
 		old = saved[i]
@@ -280,7 +293,7 @@ func addSideLogin(l savedLogin, ownUser string, dup func(savedLogin)) error {
 // agent's own store as Claude Code's and Codex's are.
 func sideAgent(agent string) bool {
 	switch agent {
-	case "grok", "copilot", "zcode", "kiro", "devin", "workbuddy", WorkBuddyAIID, CommandCodePlanID, "gemini", "antigravity", "qoder", QoderCNID, "zed", "factory", MiMoID:
+	case "grok", "copilot", "zcode", "kiro", "devin", "workbuddy", WorkBuddyAIID, CommandCodePlanID, "gemini", "antigravity", "qoder", QoderCNID, "zed", "factory", MiMoID, ChatGPTAPIID:
 		return true
 	}
 	return false

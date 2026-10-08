@@ -4,7 +4,7 @@ package agent
 // (or where ompDir says its variables move it),
 // the model of each role under modelRoles as "provider/model", and providers
 // of the user's own in models.yml beside it. magpie adds itself there as the
-// provider "magpie", keyless (auth: none), with the catalog as its models; a
+// provider "magpie", keyless (auth: none) on loopback, with the catalog as its models; a
 // model through magpie is "magpie/<provider>/<model>", which omp matches
 // whole against provider/id. The other roles, the fallback chains and the
 // like may name them as well (ompRefKeys); magpie stays while any does.
@@ -94,7 +94,11 @@ var ompProfileName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // PI_PROFILE; "default" is none) is profiles/<name>/agent there; with none,
 // PI_CODING_AGENT_DIR — the variable Pi reads — moves it, else it is
 // agent there. omp takes that variable as given, without expanding "~".
-func ompDir(home string) string {
+//
+// shared says the folder is one omp has no claim to: PI_CODING_AGENT_DIR
+// moved it, and Pi reads that variable too, so Pi's own folder may be what
+// it names.
+func ompDir(home string) (dir string, shared bool) {
 	root := filepath.Join(home, ".omp")
 	if d := appdir.Getenv("PI_CONFIG_DIR"); d != "" {
 		root = filepath.Join(home, d)
@@ -104,16 +108,20 @@ func ompDir(home string) string {
 		p = os.Getenv("PI_PROFILE")
 	}
 	if p = strings.TrimSpace(p); p != "" && p != "default" && ompProfileName.MatchString(p) && !strings.HasSuffix(p, ".") {
-		return filepath.Join(root, "profiles", p, "agent")
+		return filepath.Join(root, "profiles", p, "agent"), false
 	}
 	if d := appdir.Getenv("PI_CODING_AGENT_DIR"); filepath.IsAbs(d) {
-		return filepath.Clean(d)
+		return filepath.Clean(d), true
 	}
-	return filepath.Join(root, "agent")
+	return filepath.Join(root, "agent"), false
 }
 
 func omp(home string) *Agent {
-	return ompAt(here(home), ompDir(home), func() ompProviderEntry { return ompProvider() })
+	dir, shared := ompDir(home)
+	a := ompAt(here(home), dir, func() ompProviderEntry { return ompProvider() })
+	// Pi's folder is no sign of omp: its config.yml or its command is
+	a.dirShared = shared
+	return a
 }
 
 // ompIn is omp in a WSL distro (see wsl.go): ~/.omp/agent, as the
@@ -386,7 +394,11 @@ type ompThinking struct {
 type ompProviderEntry struct {
 	BaseURL string `yaml:"baseUrl"`
 	API     string `yaml:"api"`
-	Auth    string `yaml:"auth"`
+	// Auth is none on loopback, where the gateway asks for no key; APIKey,
+	// for an omp that reaches it from beyond (a WSL distro under NAT), the
+	// key the gateway is shared on the network with
+	Auth   string `yaml:"auth,omitempty"`
+	APIKey string `yaml:"apiKey,omitempty"`
 	// Headers name omp to the gateway: omp 16.x asks with Bun's User-Agent
 	// and only a later one with its own (omp/18.4.4), so its requests went
 	// to "Bun" in usage and past omp's own rules and stand-ins
@@ -471,8 +483,14 @@ func ompProviderAt(gw, version string) ompProviderEntry {
 		}
 		ms = append(ms, e)
 	}
-	return ompProviderEntry{BaseURL: gw + "/v1", API: "openai-completions", Auth: "none",
+	e := ompProviderEntry{BaseURL: gw + "/v1", API: "openai-completions", Auth: "none",
 		Headers: map[string]string{"User-Agent": "omp"}, Models: ms}
+	// whqtian on Discord: a WSL omp under NAT asks Windows' address, where
+	// the gateway turns a request without a named key away
+	if key := keyAt(gw); key != gateway.Token {
+		e.Auth, e.APIKey = "", key
+	}
+	return e
 }
 
 // ompOwnOptions lists the models of the providers the user added to omp's

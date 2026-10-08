@@ -43,7 +43,7 @@ func commandCodeIn(at place) *Agent {
 		UA:  []string{"command-code", "commandcode"},
 		Bin: "command-code", Dir: dir, Path: path,
 		Sync: func() error {
-			return syncJSON(providers, "provider."+magpieID, func() any { return ccProviderJSON() })
+			return syncJSON(providers, "provider."+magpieID, theirsKept(providers, "provider."+magpieID, ccProviderJSON, "models"))
 		},
 		Notice: func() string {
 			notes := []string{"Command Code wants its own sign-in (cmd login) even for models through magpie."}
@@ -77,7 +77,7 @@ func commandCodeIn(at place) *Agent {
 					return dropMagpie()
 				}
 				if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
-					if err := edit.SetJSON(providers, edit.KV{Path: "provider." + magpieID, Value: ccProviderJSON()}); err != nil {
+					if err := edit.SetJSON(providers, edit.KV{Path: "provider." + magpieID, Value: theirsKept(providers, "provider."+magpieID, ccProviderJSON, "models")()}); err != nil {
 						return err
 					}
 					return edit.SetJSON(path, edit.KV{Path: "model", Value: v}, edit.KV{Path: "modelProvider", Value: magpieID})
@@ -144,12 +144,9 @@ func commandCodeIn(at place) *Agent {
 	}
 }
 
-// ccProviderJSON is magpie's entry in providers.json. The key is false:
-// the gateway takes any, and Command Code refuses one written out.
-func ccProviderJSON() any { return ccProviderJSONAt(gatewayV1()) }
-
-// ccProviderJSONAt is ccProviderJSON for a Command Code reaching the
-// gateway's /v1 at v1.
+// ccProviderJSONAt is magpie's entry in providers.json, for a Command Code
+// reaching the gateway's /v1 at v1. The key is false: the gateway takes
+// any, and Command Code refuses one written out.
 func ccProviderJSONAt(v1 string) any {
 	ms := map[string]any{}
 	for _, m := range magpieModels("commandcode") {

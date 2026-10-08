@@ -30,6 +30,82 @@ func Managed(secret string) bool {
 	return strings.HasPrefix(secret, legacyLANPrefix)
 }
 
+// Named: secret has a named gateway key's form (sk-magpie-…), or is the
+// key's own value a user gave it (Change.Secret), so a request from this
+// computer with one is counted and limited as that key, as a sk-magpie-
+// key is.
+func Named(secret string) bool {
+	if Managed(secret) {
+		return true
+	}
+	if secret == "" {
+		return false
+	}
+	own := ownSecrets()
+	_, ok := own[secret]
+	return ok
+}
+
+// own caches the key store's own-value secrets by the file's size and
+// time, so a request from this computer doesn't read it each time.
+var own struct {
+	sync.Mutex
+	size    int64
+	mod     int64
+	secrets map[string]struct{}
+}
+
+func ownSecrets() map[string]struct{} {
+	fi, err := os.Stat(Path())
+	if err != nil {
+		return nil
+	}
+	own.Lock()
+	defer own.Unlock()
+	if own.secrets != nil && own.size == fi.Size() && own.mod == fi.ModTime().UnixNano() {
+		return own.secrets
+	}
+	mu.Lock()
+	keys, err := load()
+	mu.Unlock()
+	if err != nil {
+		return nil // unknown: tried again on the next request
+	}
+	m := map[string]struct{}{}
+	for _, k := range keys {
+		if k.Secret != "" && !Managed(k.Secret) {
+			m[k.Secret] = struct{}{}
+		}
+	}
+	own.size, own.mod, own.secrets = fi.Size(), fi.ModTime().UnixNano(), m
+	return m
+}
+
+// ownSecret checks a key value a user brings (one their clients already
+// send, from another gateway they move from, such as CLIProxyAPI's
+// api-keys, which are any string): what an HTTP header carries, and no
+// other key's.
+func ownSecret(secret string, keys []Key) (string, error) {
+	secret = strings.TrimSpace(secret)
+	if n := len(secret); n < 8 || n > 256 {
+		return "", errors.New("Use a key between 8 and 256 characters")
+	}
+	for i := 0; i < len(secret); i++ {
+		if c := secret[i]; c <= ' ' || c > '~' {
+			return "", errors.New("A key can have only letters, digits and ASCII symbols, no spaces")
+		}
+	}
+	if strings.HasPrefix(secret, legacyLANPrefix) {
+		return "", errors.New("A key of your own can't start with sk-magpie-: leave the key empty and magpie makes one")
+	}
+	for _, k := range keys {
+		if subtle.ConstantTimeCompare([]byte(secret), []byte(k.Secret)) == 1 {
+			return "", errors.New("Another gateway key already has this key")
+		}
+	}
+	return secret, nil
+}
+
 type Key struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -39,12 +115,22 @@ type Key struct {
 	Masked string `json:"masked,omitempty"`
 	// Limit is the key's own budget (#585); nil for none.
 	Limit *Limit `json:"limit,omitempty"`
+	// Models are the models the key may use (#882): "<provider>/<model>",
+	// "<provider>/*" or a group's "group/<name>"; none for every model.
+	Models []string `json:"models,omitempty"`
+	// Accounts are the accounts and keys the key may use (#905), as
+	// "<provider>/<account>": a signed-in account by its stable id, a
+	// key by its fingerprint; none for every account, as keys always did.
+	Accounts []string `json:"accounts,omitempty"`
 }
 
-// Identity is the gateway key a request came with, and its budget.
+// Identity is the gateway key a request came with, its budget, the
+// models and the accounts it may use.
 type Identity struct {
 	KeyID, KeyName string
 	Limit          *Limit
+	Models         []string
+	Accounts       []string
 }
 type contextKey struct{}
 
@@ -87,9 +173,43 @@ func List() ([]Key, error) {
 			}
 			k.Masked = prefix + "…" + k.Secret[len(k.Secret)-6:]
 		}
+		if k.Secret != "" && !Managed(k.Secret) { // a key of the user's own: only its end
+			k.Masked = "…"
+			if len(k.Secret) >= 12 {
+				k.Masked += k.Secret[len(k.Secret)-4:]
+			}
+		}
 		k.Secret = ""
 	}
 	return keys, nil
+}
+
+// LANSecret is the key magpie shares the gateway on the local network with
+// (the default key ConfigureLAN made), for an agent of this computer's that
+// reaches it from beyond loopback — one in a WSL distro under NAT, whose
+// requests the gateway takes only with a named key; "" while the gateway
+// isn't shared, or that key is off.
+func LANSecret() string {
+	mu.Lock()
+	defer mu.Unlock()
+	s := settings.Load()
+	if !s.LAN {
+		return ""
+	}
+	keys, err := load()
+	if err != nil {
+		return ""
+	}
+	if i := slices.IndexFunc(keys, func(k Key) bool { return k.ID == s.LANKeyID || k.LAN }); i >= 0 {
+		if keys[i].Off {
+			return ""
+		}
+		return keys[i].Secret
+	}
+	if s.LANKeyID == "" && s.LANKey != "" && !strings.HasPrefix(s.LANKey, revokedLANPrefix) {
+		return s.LANKey
+	}
+	return ""
 }
 
 // Export returns credentials only for the encrypted backup bundle.
@@ -119,6 +239,15 @@ type Change struct {
 	Name string `json:"name"`
 	// Limit is what "limit-key" sets; nil or Unlimited takes the limit off.
 	Limit *Limit `json:"limit,omitempty"`
+	// Models is what "models-key" sets; none lets the key use every model.
+	Models []string `json:"models,omitempty"`
+	// Accounts is what "accounts-key" sets (#905); none lets the key use
+	// every account and key.
+	Accounts []string `json:"accounts,omitempty"`
+	// Secret is the value "add-key" gives the new key, one its clients
+	// already send (love1sbug on X: keys handed out from another gateway);
+	// "" for one magpie makes.
+	Secret string `json:"secret,omitempty"`
 }
 
 // Update writes the named key store atomically.
@@ -142,11 +271,17 @@ func Update(action string, in Change) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		token, err := random(24)
-		if err != nil {
-			return "", err
+		if in.Secret != "" {
+			if secret, err = ownSecret(in.Secret, keys); err != nil {
+				return "", err
+			}
+		} else {
+			token, err := random(24)
+			if err != nil {
+				return "", err
+			}
+			secret = Prefix + token
 		}
-		secret = Prefix + token
 		keys = append(keys, Key{ID: id, Name: name, Secret: secret})
 	} else {
 		i := slices.IndexFunc(keys, func(k Key) bool { return k.ID == in.Key })
@@ -173,6 +308,18 @@ func Update(action string, in Change) (string, error) {
 				return "", err
 			}
 			keys[i].Limit = lim
+		case "models-key":
+			ms, err := CleanModels(in.Models)
+			if err != nil {
+				return "", err
+			}
+			keys[i].Models = ms
+		case "accounts-key":
+			as, err := CleanAccounts(in.Accounts)
+			if err != nil {
+				return "", err
+			}
+			keys[i].Accounts = as
 		case "on-key", "off-key":
 			keys[i].Off = action == "off-key"
 		case "remove-key":
@@ -187,7 +334,7 @@ func Update(action string, in Change) (string, error) {
 		default:
 			return "", fmt.Errorf("unknown key action %q", action)
 		}
-		if defaultKey && action != "remove-key" && action != "rename-key" && action != "limit-key" {
+		if defaultKey && action != "remove-key" && action != "rename-key" && action != "limit-key" && action != "models-key" && action != "accounts-key" {
 			mirror = &keys[i]
 		}
 	}
@@ -234,7 +381,7 @@ func Authenticate(secret string) (Identity, bool) {
 			if k.Off {
 				return Identity{}, false
 			}
-			return Identity{k.ID, k.Name, k.Limit}, true
+			return Identity{KeyID: k.ID, KeyName: k.Name, Limit: k.Limit, Models: k.Models, Accounts: k.Accounts}, true
 		}
 	}
 	s := settings.Load()

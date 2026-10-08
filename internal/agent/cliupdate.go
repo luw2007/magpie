@@ -81,13 +81,14 @@ var cliSpecs = map[string]cliSpec{
 			}
 			return nil
 		}},
-	"pi":      {npm: []string{"@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"}},
-	"omp":     {npm: []string{"@oh-my-pi/pi-coding-agent"}},
-	"copilot": {npm: []string{"@github/copilot"}, brew: []string{"copilot-cli"}},
-	"crush":   {npm: []string{"@charmland/crush"}, brew: []string{"crush"}},
-	"cline":   {npm: []string{"cline"}},
-	"dsh":     {npm: []string{"@deepseek-ai/dsh"}},
-	"goose":   {brew: []string{"block-goose-cli"}},
+	"pi":        {npm: []string{"@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"}},
+	"omp":       {npm: []string{"@oh-my-pi/pi-coding-agent"}},
+	"copilot":   {npm: []string{"@github/copilot"}, brew: []string{"copilot-cli"}},
+	"crush":     {npm: []string{"@charmland/crush"}, brew: []string{"crush"}},
+	"cline":     {npm: []string{"cline"}},
+	"dsh":       {npm: []string{"@deepseek-ai/dsh"}},
+	"codebuddy": {npm: []string{"@tencent-ai/codebuddy-code"}},
+	"goose":     {brew: []string{"block-goose-cli"}},
 	// AtomCode's installer chooses /usr/local/bin or ~/.local/bin by
 	// writability (`.local\bin\atomcode.exe` on Windows); `atomcode upgrade`
 	// exists, but its installed-binary update path is not exercised here, so
@@ -403,17 +404,10 @@ func installedVersion(bin string) string {
 	})
 }
 
-// runVersion runs bin --version with nothing on its stdin; a var so tests
-// can fake it.
-var runVersion = func(bin string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := proc.ProbeContext(ctx, bin, "--version")
-	cmd.Stdin = nil // /dev/null: one that would ask something gets nothing
-	cmd.Env = append(os.Environ(), "NO_COLOR=1")
-	out, _ := cmd.CombinedOutput()
-	return string(out)
-}
+// runVersion is what bin says its version is (proc.Version: read from its
+// npm package, else bin --version, not run again after it failed); a var so
+// tests can fake it.
+var runVersion = proc.Version
 
 // latestVersion is the newest version where u would update from.
 func latestVersion(u *updater) string {

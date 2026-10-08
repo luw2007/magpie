@@ -46,7 +46,8 @@ function serve(lang, web, posted, st) {
 async function open(engine, lang, web, posted, st, t) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   t.after(() => browser.close());
-  const page = await (await browser.newContext({ viewport: { width: 900, height: 700 } })).newPage();
+  // tall enough that Lightweight mode is over the window's foot: rows were added above it
+  const page = await (await browser.newContext({ viewport: { width: 900, height: 1000 } })).newPage();
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -71,6 +72,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const where = () => page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop).map((e) => e.scrollTop)]);
       const before = await where();
       const click = async (loc) => {
+        // the last save's answer draws Settings again, every option replaced:
+        // one measured before that is gone (null) by the time it is clicked
+        await page.waitForFunction(() => prefsBusy === 0);
         const b = await loc.boundingBox();
         await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
       };

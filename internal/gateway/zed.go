@@ -45,6 +45,8 @@ func (s *Server) serveZed(w http.ResponseWriter, r *http.Request, from provider.
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	// the vendor's own API is told the answer's format in words
+	req = req.inSystem()
 	req.Model = model
 	ask := s.askZed(p.Account.User, model)
 	if req.WebSearch && !searching(r.Context()) {
@@ -179,6 +181,7 @@ func (s *Server) askZed(user, model string) round {
 			}
 			break
 		}
+		res = notAnAPIReply(res, "") // a web page served 200 (#1012)
 		if res.StatusCode/100 != 2 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body.Close()

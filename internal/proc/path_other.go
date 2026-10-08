@@ -167,6 +167,22 @@ func shellEnv() (string, map[string]string) {
 			sh = "/bin/sh"
 		}
 	}
+	return askShell(sh)
+}
+
+// askShell runs sh as a terminal opens it and reads what shellEnv says.
+//
+// The shell is a probe (ProbeContext): it leads a session of its own, with
+// no controlling terminal. An interactive zsh in magpie's session took the
+// terminal it was started from — it puts itself in the foreground, as a
+// shell does for its jobs — and while it ran, magpie's own process group
+// was in the background there: Ctrl-C no longer reached `magpie web`, and
+// anything in that group touching the terminal (the bash asked beside it,
+// whose profile runs in magpie's group, an agent's CLI) had the kernel stop
+// the whole group, magpie with it (DD on Discord: magpie web → zsh:
+// suspended (tty input)). A timeout also killed only the shell, leaving
+// what its profile started holding the terminal; a probe's whole group goes.
+func askShell(sh string) (string, map[string]string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// interactive too, since many put PATH in .zshrc/.bashrc
@@ -174,10 +190,21 @@ func shellEnv() (string, map[string]string) {
 	if filepath.Base(sh) == "nu" || filepath.Base(sh) == "nushell" {
 		args = []string{"-i", "-l", "-c", shellProbe(sh)}
 	}
-	cmd := CommandContext(ctx, sh, args...)
+	cmd := ProbeContext(ctx, sh, args...)
 	cmd.Stdin = nil
 	out, _ := cmd.Output()
 	return parseShellEnv(string(out), shellMark)
+}
+
+// ShellPath is the PATH the shell sh (zsh, bash, fish) has in a terminal
+// opened now, whether or not it is the login shell; nil when it doesn't
+// say within a few seconds.
+func ShellPath(sh string) []string {
+	p, _ := askShell(sh)
+	if p == "" {
+		return nil
+	}
+	return filepath.SplitList(p)
 }
 
 // shellMark tells shellEnv's answer apart from whatever the profile prints.
