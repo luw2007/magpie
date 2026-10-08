@@ -76,25 +76,39 @@ async function editUsagePool(pool = {}, discovered) {
 // would stretch checkbox rows and inject heavy dividers between every pick).
 function renderKeyBinding(p, k) {
   const box = el("div", "kbind");
-  const selected = new Set(k.poolRefs || []);
+  // Staged in the editor's draft (draft.keyBindings, by key id) and saved
+  // with its Save, as the rest of the editor is; Cancel drops them.
+  const staged = draft?.keyBindings?.[k.id];
+  const selected = new Set(staged ? staged.poolRefs : k.poolRefs || []);
   const available = new Set(usageConfig.pools.map(pool => pool.id));
   const choices = [...usageConfig.pools, ...[...selected].filter(id => !available.has(id)).map(id => ({ id, name: id, unavailable: true }))];
+  const modelsOf = () => modelsInput.value.split(",").map(s => s.trim()).filter(Boolean);
+  const stage = () => {
+    if (!draft) return;
+    const models = modelsOf(), now = [...selected];
+    const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+    const wasModels = k.models?.length ? k.models : ["*"];
+    if (same([...now].sort(), [...(k.poolRefs || [])].sort()) && same(models.length ? models : ["*"], wasModels)) {
+      if (draft.keyBindings) delete draft.keyBindings[k.id];
+    } else {
+      draft.keyBindings = draft.keyBindings || {};
+      draft.keyBindings[k.id] = { poolRefs: now, models };
+    }
+  };
 
   // Pool section header with hint.
   const poolsSection = el("section", "kbind-section");
   poolsSection.append(el("h4", "", t("Quota pools")));
-  poolsSection.append(el("p", "hint", t("Pick every pool this key may draw from. Usage is the maximum across picked pools for each window, never a sum.")));
+  poolsSection.append(el("p", "hint", t("Pick every pool this key may draw from. Usage is the maximum across picked pools for each window, never a sum. Saved with the editor's Save.")));
 
   const poolsWrap = el("div", "kbind-pools");
   for (const pool of choices) {
-    const source = usageConfig.sources.find(s => s.id === pool.sourceRef);
-    const srcLabel = pool.sourceRef ? (source?.name ? `${source.name} · ${pool.sourceRef}` : pool.sourceRef) : t("no source");
     const label = el("label", "kbind-chip" + (pool.unavailable ? " unavailable" : ""));
     const tick = input("", "", "checkbox");
     tick.checked = selected.has(pool.id);
-    tick.onchange = () => tick.checked ? selected.add(pool.id) : selected.delete(pool.id);
+    tick.onchange = () => { tick.checked ? selected.add(pool.id) : selected.delete(pool.id); stage(); };
     const meta = el("span", "kbind-meta");
-    meta.textContent = (pool.name || pool.id) + " · " + (available.has(pool.id) ? srcLabel : t("unavailable"));
+    meta.textContent = (pool.name || pool.id) + (available.has(pool.id) ? "" : " · " + t("unavailable"));
     label.append(tick, meta);
     poolsWrap.append(label);
   }
@@ -106,15 +120,11 @@ function renderKeyBinding(p, k) {
   const modelsSection = el("section", "kbind-section");
   modelsSection.append(el("h4", "", t("Model scope")));
   const modelWrap = el("div", "kbind-models");
-  const modelsInput = input((k.models?.length ? k.models : ["*"]).join(", "), t("* = any model; comma-separated IDs, e.g. gpt-5.1,gpt-5.1-mini"));
+  const modelsInput = input((staged ? (staged.models.length ? staged.models : ["*"]) : (k.models?.length ? k.models : ["*"])).join(", "), t("* = any model; comma-separated IDs, e.g. gpt-5.1,gpt-5.1-mini"));
+  modelsInput.oninput = stage;
   modelWrap.append(modelsInput);
   modelsSection.append(modelWrap);
   box.append(modelsSection);
-
-  // Save footer: a dedicated bar, not another flex row.
-  const footer = el("div", "kbind-foot");
-  footer.append(usageConfigButton(t("Save binding"), () => accountAction("keys/binding", { id: p.id, ref: k.id, poolRefs: [...selected], models: modelsInput.value.split(",").map(s => s.trim()).filter(Boolean) }, t("Binding saved"))));
-  box.append(footer);
   return box;
 }
 loadUsageConfig();

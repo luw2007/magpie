@@ -883,6 +883,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// quota left goes to the back (provider.Provider.Sink); a
 			// save that leaves it out keeps it
 			Sink *bool `json:"sink"`
+			// KeyBindings, for save: the quota pools and model scope the
+			// editor's key rows picked, by key id; all or none are made with
+			// the rest of the Save, and keys it leaves out keep theirs
+			KeyBindings map[string]provider.KeyBinding `json:"keyBindings"`
 			// Test, for test: models to send a request each, in place of
 			// one per endpoint
 			Test []string `json:"test"`
@@ -1150,6 +1154,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 								in.Keys[i].Key = in.Key
 								break
 							}
+						}
+					}
+					if len(req.KeyBindings) > 0 {
+						in.Keys = append([]provider.KeyAccount(nil), in.Keys...)
+						if err := provider.ApplyKeyBindings(&in, req.KeyBindings); err != nil {
+							fail(rw, err)
+							return
 						}
 					}
 					// what the editor doesn't show, set from the CLI or the

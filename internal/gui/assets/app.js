@@ -8165,7 +8165,7 @@ function drawEditor(p, presetID) {
       body.baseAPI = draft.api === "openai" ? "chat" : draft.api;
     }
     if (custom) { body.icon = draft.icon || "generic"; body.balanceURL = (draft.balanceURL || "").trim(); body.balancePath = (draft.balancePath || "").trim(); body.modelsURL = (draft.modelsURL || "").trim(); }
-    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
+    if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p), keyBindingsOfDraft(p)); }
     body.searches = !!draft.searches && searchable();
     body.pinUpstream = !!draft.pinUpstream;
     body.unredacted = !!draft.unredacted && onLAN();
@@ -9686,6 +9686,13 @@ function routingOfDraft(p) {
   if (draft?.affinity !== undefined && draft.affinity !== (p.affinity || "")) out.affinity = draft.affinity;
   if (draft?.sink !== undefined && draft.sink !== !!p.sink) out.sink = draft.sink;
   return out;
+}
+// keyBindingsOfDraft: the quota pools and model scope staged on its keys'
+// rows (usage-config.js renderKeyBinding), for the editor's Save, by key id
+function keyBindingsOfDraft(p) {
+  const out = {};
+  for (const k of p.keyList || []) if (draft?.keyBindings?.[k.id]) out[k.id] = draft.keyBindings[k.id];
+  return Object.keys(out).length ? { keyBindings: out } : {};
 }
 function renderRouting(p) {
   const routingNow = () => draft.routing ?? (p.routing || "");

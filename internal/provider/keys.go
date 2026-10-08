@@ -391,27 +391,62 @@ func RemoveKeys(id string, refs []string) (removed int, err error) {
 	return n, nil
 }
 
-func SetKeyBinding(id, ref string, poolRefs []string, models []string) error {
-	pools := QuotaPools()
-	refs := make([]string, 0, len(poolRefs))
+// KeyBinding is the quota pools and model scope a key is set to.
+type KeyBinding struct {
+	PoolRefs []string `json:"poolRefs"`
+	Models   []string `json:"models"`
+}
+
+// checkBinding validates and cleans one key's pools and models.
+func checkBinding(pools []QuotaPool, poolRefs, models []string) (refs, cleaned []string, err error) {
+	refs = make([]string, 0, len(poolRefs))
 	for _, ref := range poolRefs {
 		ref = strings.TrimSpace(ref)
 		if ref == "" {
-			return errors.New("quota pool reference must not be empty")
+			return nil, nil, errors.New("quota pool reference must not be empty")
 		}
 		if slices.Contains(refs, ref) {
-			return fmt.Errorf("duplicate quota pool %q", ref)
+			return nil, nil, fmt.Errorf("duplicate quota pool %q", ref)
 		}
 		if !slices.ContainsFunc(pools, func(p QuotaPool) bool { return p.ID == ref }) {
-			return fmt.Errorf("unknown quota pool %q", ref)
+			return nil, nil, fmt.Errorf("unknown quota pool %q", ref)
 		}
 		refs = append(refs, ref)
 	}
-	models = cleanList(models)
-	for _, m := range models {
+	cleaned = cleanList(models)
+	for _, m := range cleaned {
 		if m != "*" && strings.ContainsAny(m, "*?[]") {
-			return fmt.Errorf("model %q must be an exact ID or *", m)
+			return nil, nil, fmt.Errorf("model %q must be an exact ID or *", m)
 		}
 	}
+	return refs, cleaned, nil
+}
+
+func SetKeyBinding(id, ref string, poolRefs []string, models []string) error {
+	refs, models, err := checkBinding(QuotaPools(), poolRefs, models)
+	if err != nil {
+		return err
+	}
 	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].PoolRefs, p.Keys[i].Models = refs, models; return nil })
+}
+
+// ApplyKeyBindings sets the pools and models of several keys of p, by key
+// id, in memory: all or none, so one bad pick saves nothing. Keys not named
+// keep theirs.
+func ApplyKeyBindings(p *Provider, bindings map[string]KeyBinding) error {
+	pools := QuotaPools()
+	keys := append([]KeyAccount(nil), p.Keys...)
+	for ref, b := range bindings {
+		i, ok := findKey(p, ref)
+		if !ok {
+			return fmt.Errorf("%s has no such key %q", p.Name, ref)
+		}
+		refs, models, err := checkBinding(pools, b.PoolRefs, b.Models)
+		if err != nil {
+			return fmt.Errorf("key %s: %w", ref, err)
+		}
+		keys[i].PoolRefs, keys[i].Models = refs, models
+	}
+	p.Keys = keys
+	return nil
 }

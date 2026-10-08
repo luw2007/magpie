@@ -65,6 +65,20 @@ requires fresh measured readings for every member; if one account fails or is
 unknown, the pool allowance is unknown rather than zero. This usage association
 does not change the relay's account-routing policy.
 
+Each key row in the provider editor carries its own pool ticks and model scope
+(`renderKeyBinding`, `usage-config.js`). They are staged in `draft.keyBindings`
+(by key id) and sent with the editor's Save as `keyBindings`
+(`{keyId: {poolRefs, models}}`, `keyBindingsOfDraft` in `app.js`); Cancel drops
+them, and there is no separate "Save binding" button. `POST /api/provider/save`
+applies them with `provider.ApplyKeyBindings` on top of `old.Keys`, so every
+key's secret, name, on/off, protocol and weight stay as stored; validation is
+all-or-none (unknown key id, unknown or duplicate pool, bad model pattern fail
+the whole Save). Keys the payload omits keep their bindings, so one key can
+hold `google` and the other `google-2`. `POST /api/keys/binding` and
+`provider.SetKeyBinding` remain for CLI/API callers.
+Available pool chips display only the pool name (or its ID if unnamed), without
+repeating source details; missing pools retain an unavailable indication.
+
 Quota history (`quota-history.json`, `GET /api/usage/quotas/history`) keeps these
 accounts' trend lines too, under the pool's own identity: source ID, pool ID and
 upstream account ID (`QuotaHistory.sourceRef/poolRef/accountId`, empty
