@@ -4172,16 +4172,15 @@
   }
 
   new ResizeObserver(() => layout()).observe(stage);
-  // the list is as tall as leaves the stage in sight above it: the reader
-  // scrolls the list, not the page, and a request picked plays in view.
-  // Its top stays where it is as it is sized, so a row just clicked does too
+  // Fill the Requests page below its filters; each list scrolls independently.
+  // Its top stays fixed while sizing, so a selected row does too.
   function fitReqs() {
     const v = $("#view-routing");
     if (v.hidden || !reqs.offsetParent) return;
     const above = reqs.getBoundingClientRect().top - v.getBoundingClientRect().top + v.scrollTop;
     const room = v.clientHeight - above - 28;
-    const h = Math.round(Math.max(216, Math.min(420, room))) + "px";
-    if (reqs.style.maxHeight !== h) reqs.style.maxHeight = h;
+    const h = Math.round(Math.max(216, room)) + "px";
+    if (reqs.style.height !== h) reqs.style.height = h;
   }
   // the accounts beside the requests end where they do, so a new height
   // resizes what the other observers have just been told of: size the

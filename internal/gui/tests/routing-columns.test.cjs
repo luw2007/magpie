@@ -87,7 +87,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const reqs = await box(".rt-reqs"), acts = await box(".rt-acts");
       assert(acts.left >= reqs.right, "side by side");
       assert(Math.abs(acts.bottom - reqs.bottom) <= 1, `the lists end on one line: ${reqs.bottom} / ${acts.bottom}`);
-      assert(acts.scroll, "the rest of the accounts scroll");
+      const viewBottom = () => page.locator("#view-routing").evaluate((e) => e.getBoundingClientRect().bottom);
+      assert(Math.abs(reqs.bottom - (await viewBottom() - 28)) <= 1, "requests fill the available viewport even with a short history");
       // a request on one line: its destination and numbers beside its model
       const oneLine = () => page.locator(".rt-req").evaluateAll((rs) => rs.every((r) => {
         const y = (s) => { const b = r.querySelector(s).getBoundingClientRect(); return b.width ? b.top : null; };
@@ -114,6 +115,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const clipped = await page.locator(".rt-act .mdls code").evaluateAll((es) => es.some((e) => e.getBoundingClientRect().right > e.closest(".rt-act").getBoundingClientRect().right + 1));
         assert.equal(clipped, false, `${width}px: models stay inside the narrower account column`);
         assert(await oneLine(), `${width}px: side by side, each request still on one line`);
+        for (const height of [800, 1400]) {
+          await page.setViewportSize({ width, height });
+          await page.waitForTimeout(200);
+          const left = await box(".rt-reqs"), right = await box(".rt-acts");
+          assert(Math.abs(left.bottom - (await viewBottom() - 28)) <= 1, `${width}×${height}: requests fill the available height`);
+          assert(Math.abs(left.bottom - right.bottom) <= 1, `${width}×${height}: both lists resize together`);
+        }
       }
 
       // the Codex account's three models on their own line, none in the tally
