@@ -7,7 +7,8 @@
 // plugin's accounts, weighed least used first (another order again); each
 // provider's rows read in its list's order, and after the subscription's
 // accounts are dragged (Alt+↓ in its editor) and the plugin's rearranged,
-// the stage, shown again, reads in the new orders.
+// the stage, shown again, reads in the new orders. The relay's three keys
+// fold into one row (#1319); the test opens it to read their order.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -79,7 +80,7 @@ function fixture(lang) {
 }
 
 // the stage's rows, as each provider's seats read top to bottom
-const seated = (page) => page.locator(".rt-accts > li[title]").evaluateAll((ls) => {
+const seated = (page) => page.locator(".rt-accts > li[title]:not(.rt-fold)").evaluateAll((ls) => {
   const by = {};
   for (const l of ls) { const p = l.title.split(/[@#]/)[0]; (by[p] ||= []).push(l.querySelector(".who").textContent); }
   return by;
@@ -98,7 +99,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", f.route);
       await page.goto("http://magpie.test/?view=routing");
       await openPane(page, "live");
-      await page.locator(".rt-accts > li[title]").nth(8).waitFor();
+      // the relay's keys start folded (the accounts' folds, fewer than six, start open)
+      await page.locator(".rt-accts > li.rt-fold:not(.open)").click();
+      await page.locator(".rt-accts > li[title]:not(.rt-fold)").nth(8).waitFor();
       assert.deepEqual(await seated(page), listed(f), "each provider's rows in its list's order, not by name nor as weighed");
       assert.deepEqual(listed(f).antigravity, ["ag-a@x.test", "ag-c@x.test", "ag-b@x.test"]);
 
@@ -120,7 +123,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await openPane(page, "live");
       await page.waitForFunction((want) => {
         const by = {};
-        for (const l of document.querySelectorAll(".rt-accts > li[title]")) { const p = l.title.split(/[@#]/)[0]; (by[p] ||= []).push(l.querySelector(".who").textContent); }
+        for (const l of document.querySelectorAll(".rt-accts > li[title]:not(.rt-fold)")) { const p = l.title.split(/[@#]/)[0]; (by[p] ||= []).push(l.querySelector(".who").textContent); }
         return JSON.stringify(by) === JSON.stringify(want);
       }, listed(f), { timeout: 4000 }).catch(() => {});
       assert.deepEqual(await seated(page), listed(f), "the stage follows the drag");

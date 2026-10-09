@@ -83,6 +83,14 @@ type quotaHist map[string]map[string][]QuotaPoint
 
 var quotaHistMu sync.Mutex
 
+// lastNoted is each account's newest noted reading's time, kept per history
+// file and in memory only: a batch whose readings are all older notes
+// nothing new for that file (#1358).
+var (
+	lastNoted     = map[string]time.Time{}
+	lastNotedPath string
+)
+
 func quotaHistPath() string { return filepath.Join(filepath.Dir(Path()), "quota-history.json") }
 
 func parseQuotaHist(b []byte) (quotaHist, error) {
@@ -93,7 +101,8 @@ func parseQuotaHist(b []byte) (quotaHist, error) {
 	return h, nil
 }
 
-func readQuotaHist() quotaHist {
+// readQuotaHist is the history file's read; tests count the reads.
+var readQuotaHist = func() quotaHist {
 	if b, err := os.ReadFile(quotaHistPath()); err == nil {
 		h, _ := parseQuotaHist(b)
 		return h
@@ -267,6 +276,28 @@ func quotaHistReading(q SubscriptionQuota, now time.Time) (key string, at time.T
 func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 	quotaHistMu.Lock()
 	defer quotaHistMu.Unlock()
+	path := quotaHistPath()
+	if lastNotedPath != path {
+		// another history file: the noted times say nothing about it
+		lastNoted, lastNotedPath = map[string]time.Time{}, path
+	}
+	// A batch of cached readings notes nothing new: every reading's time is
+	// no newer than what was last noted for its account, so the file need
+	// not be read and parsed for that batch again (#1358).
+	skip := true
+	for _, q := range qs {
+		key, at, ok := quotaHistReading(q, now)
+		if !ok {
+			continue // a reading kept from before isn't a new one
+		}
+		if lastNoted[key].Before(at) {
+			lastNoted[key] = at
+			skip = false
+		}
+	}
+	if skip {
+		return
+	}
 	var h quotaHist
 	changed := false
 	for _, q := range qs {
