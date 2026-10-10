@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // magpie accounts add, signing in to a plugin's provider removed from
@@ -101,10 +101,7 @@ func TestPluginLoginReadsUsageAfresh(t *testing.T) {
 // plugin (FakeCo) added, as TestAccountsOfAPlugin sets one up.
 func fakeCoHome(t *testing.T) context.Context {
 	t.Helper()
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)

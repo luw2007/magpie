@@ -163,7 +163,11 @@ func TestMaxRPMAgentGoneWhileWaiting(t *testing.T) {
 	if res, _, err := chatOnce(context.Background(), gw); err != nil || res.StatusCode != 200 {
 		t.Fatalf("first: %v %v", err, res)
 	}
-	who := meterWho(provider.Provider{ID: "rl", Key: "k"})
+	saved, err := provider.Find("rl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	who := meterWho(*saved)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

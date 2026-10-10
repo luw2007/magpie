@@ -378,3 +378,75 @@ func TestObjectRootNestedUnion(t *testing.T) {
 		t.Errorf("kind %s", kind)
 	}
 }
+
+// A plain Codex agent_message, which Grok's backend refuses with 422
+// "unknown item type", goes as the user's message: its sender and
+// recipient said first, its text and images as they came, in its place
+// among the calls beside it; a request without tools too. The plugin
+// does the same (opencode-grok-auth 0.1.11, plugins#61).
+func TestGrokBodyAgentMessageGoesAsUser(t *testing.T) {
+	task := `{"type":"agent_message","author":"/root","recipient":"/root/research","content":[{"type":"input_text","text":"Message Type: NEW_TASK\nPayload:\nresearch the failure"}]}`
+	want := `{"input":[{"content":[{"text":"From /root to /root/research\n\n","type":"input_text"},{"text":"Message Type: NEW_TASK\nPayload:\nresearch the failure","type":"input_text"}],"role":"user","type":"message"}]}`
+	if got := string(grokBody([]byte(`{"input":[` + task + `]}`))); got != want {
+		t.Fatalf("task:\ngot  %s\nwant %s", got, want)
+	}
+
+	before := `{"type":"function_call","call_id":"call_1","name":"send_message","arguments":"{}"}`
+	after := `{"type":"function_call_output","call_id":"call_1","output":"sent"}`
+	reply := `{"type":"agent_message","author":"/root/research","recipient":"/root","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nfound the cause"},{"type":"input_image","image_url":"data:image/png;base64,fixture"}]}`
+	var got struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(grokBody([]byte(`{"tools":[],"input":[`+before+`,`+reply+`,`+after+`]}`)), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Input) != 3 || got.Input[0]["type"] != "function_call" || got.Input[2]["type"] != "function_call_output" || got.Input[2]["call_id"] != "call_1" {
+		t.Fatalf("input %v", got.Input)
+	}
+	msg, _ := json.Marshal(got.Input[1])
+	if w := `{"content":[{"text":"From /root/research to /root\n\n","type":"input_text"},{"text":"Message Type: FINAL_ANSWER\nPayload:\nfound the cause","type":"input_text"},{"image_url":"data:image/png;base64,fixture","type":"input_image"}],"role":"user","type":"message"}`; string(msg) != w {
+		t.Fatalf("reply:\ngot  %s\nwant %s", msg, w)
+	}
+
+	// one sender alone, or none, says what it has
+	for in, w := range map[string]string{
+		`{"type":"agent_message","author":"/root","content":[{"type":"input_text","text":"x"}]}`:    `[{"text":"From /root\n\n","type":"input_text"},{"text":"x","type":"input_text"}]`,
+		`{"type":"agent_message","recipient":"/root","content":[{"type":"input_text","text":"x"}]}`: `[{"text":"To /root\n\n","type":"input_text"},{"text":"x","type":"input_text"}]`,
+		`{"type":"agent_message","content":[{"type":"input_text","text":"x"}]}`:                     `[{"text":"x","type":"input_text"}]`,
+	} {
+		var g struct {
+			Input []struct {
+				Type    string          `json:"type"`
+				Content json.RawMessage `json:"content"`
+			} `json:"input"`
+		}
+		json.Unmarshal(grokBody([]byte(`{"input":[`+in+`]}`)), &g)
+		if len(g.Input) != 1 || g.Input[0].Type != "message" || string(g.Input[0].Content) != w {
+			t.Errorf("%s\n-> %+v", in, g.Input)
+		}
+	}
+}
+
+// A sealed, empty or unknown agent_message is never converted or dropped:
+// the gateway's guard for a sealed task still sees it. A history with
+// none goes byte for byte.
+func TestGrokBodyLeavesSealedAgentMessage(t *testing.T) {
+	for _, item := range []string{
+		`{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"sealed fixture"}]}`,
+		`{"type":"agent_message","content":[{"type":"input_text","text":"header"},{"type":"encrypted_content","encrypted_content":"sealed fixture"}]}`,
+		`{"type":"agent_message","content":[{"type":"input_text","encrypted_content":"sealed fixture"}]}`,
+		`{"type":"agent_message","encrypted_content":"sealed fixture","content":[{"type":"input_text","text":"header"}]}`,
+		`{"type":"agent_message","content":[{"type":"future_content","payload":"keep me"}]}`,
+		`{"type":"agent_message","content":[]}`,
+		`{"type":"agent_message","content":null}`,
+	} {
+		body := `{"input":[` + item + `]}`
+		if got := string(grokBody([]byte(body))); got != body {
+			t.Errorf("%s\n-> %s", body, got)
+		}
+	}
+	same := `{ "input": [{"type":"message","role":"user","content":"hello"}] }`
+	if got := string(grokBody([]byte(same))); got != same {
+		t.Fatalf("an ordinary history was changed: %s", got)
+	}
+}

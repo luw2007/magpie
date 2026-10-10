@@ -158,7 +158,7 @@ func (m model) updateLibrary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.flash, m.flashOK = "fetching "+r.name+" from GitHub again…", true
-		return m, libCmd(func() (*library.Result, error) { return library.UpdateSkill(r.name) }, "updated "+r.name)
+		return m, libCmd(func() (*library.Result, error) { return library.UpdateSkill(r.name, false) }, "updated "+r.name)
 	case "i":
 		if r.own {
 			m.flash, m.flashOK = r.name+" is put there by the agent's app itself, each time it starts: it stays as it is", false

@@ -26,6 +26,7 @@ type resumeHarness struct {
 	p      provider.Provider
 	logs   string
 	config string
+	extra  string // fields each request has besides its own, each with a comma after it
 }
 
 func newResumeHarness(t *testing.T) *resumeHarness {
@@ -35,6 +36,14 @@ func newResumeHarness(t *testing.T) *resumeHarness {
 
 // newReplyHarness is a resumeHarness whose Claude Code answers reply.
 func newReplyHarness(t *testing.T, reply string) *resumeHarness {
+	t.Helper()
+	return newScriptHarness(t, reply, "")
+}
+
+// newScriptHarness is a resumeHarness whose Claude Code answers reply,
+// after it has run start, shell lines of its own ($sid is its session,
+// $file its file, $log its log).
+func newScriptHarness(t *testing.T, reply, start string) *resumeHarness {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script stands in for Claude Code")
@@ -62,8 +71,15 @@ case " $* " in
      mkdir -p "$CLAUDE_CONFIG_DIR/projects/$proj"
      file="$CLAUDE_CONFIG_DIR/projects/$proj/$sid.jsonl" ;;
 esac
+` + start + `
 echo '{"type":"system","subtype":"init","session_id":"'$sid'"}'
 while read -r line; do
+  case $line in *'"type":"control_request"'*)
+    # acknowledged as Claude Code does: initialize, a settings change
+    id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+    echo '{"type":"control_response","response":{"subtype":"success","request_id":"'$id'"}}'
+    continue ;;
+  esac
   echo "told $line" >> $log
   if [ -n "$file" ]; then echo "$line" >> "$file"; fi
   echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-sonnet-5","usage":{"input_tokens":1}}}}'
@@ -91,7 +107,7 @@ func (h *resumeHarness) ask(system string, said ...string) {
 		}
 		msgs = append(msgs, fmt.Sprintf(`{"role":"user","content":%q}`, m))
 	}
-	body := `{"model":"claude-sonnet-5","max_tokens":100,"system":"` + system + `","tools":[{"name":"read","input_schema":{"type":"object"}}],"messages":[` + strings.Join(msgs, ",") + `]}`
+	body := `{"model":"claude-sonnet-5","max_tokens":100,` + h.extra + `"system":"` + system + `","tools":[{"name":"read","input_schema":{"type":"object"}}],"messages":[` + strings.Join(msgs, ",") + `]}`
 	rec := httptest.NewRecorder()
 	var u Usage
 	if code, msg := h.s.serveClaudeSubscription(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, h.p, "claude-sonnet-5", []byte(body), &u); code != 200 {

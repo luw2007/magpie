@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	// the zone /usage names its resets in: Windows has no zone database,
 	// and without one a reset was read in the machine's own zone
@@ -19,19 +20,37 @@ import (
 
 // claudeCLIUsage runs Claude Code's /usage for the account it is signed in
 // to and is what it printed. The gateway, which runs Claude Code, sets it
-// (UsageClaudeVia).
-var claudeCLIUsage func(ctx context.Context) (string, error)
+// (UsageClaudeVia). It is held for reading while it runs, as
+// loginUsageFor is: Allowances reads Claude's usage in the background, and
+// tests swap it.
+var claudeCLIUsage struct {
+	sync.RWMutex
+	f func(ctx context.Context) (string, error)
+}
 
-// UsageClaudeVia sets how Claude Code's /usage runs.
-func UsageClaudeVia(f func(ctx context.Context) (string, error)) { claudeCLIUsage = f }
+// UsageClaudeVia sets how Claude Code's /usage runs. It returns once no
+// run is still going through the one it replaces.
+func UsageClaudeVia(f func(ctx context.Context) (string, error)) {
+	claudeCLIUsage.Lock()
+	claudeCLIUsage.f = f
+	claudeCLIUsage.Unlock()
+}
+
+// runClaudeUsage is what Claude Code's /usage printed, through
+// claudeCLIUsage; errClaudeCannotRun when nothing set it.
+func runClaudeUsage(ctx context.Context) (string, error) {
+	claudeCLIUsage.RLock()
+	defer claudeCLIUsage.RUnlock()
+	if claudeCLIUsage.f == nil {
+		return "", errClaudeCannotRun
+	}
+	return claudeCLIUsage.f(ctx)
+}
 
 // readClaudeUsage is the allowance of the account Claude Code is signed in
 // to, from its /usage.
 func readClaudeUsage(ctx context.Context) ([]QuotaWindow, error) {
-	if claudeCLIUsage == nil {
-		return []QuotaWindow{}, errClaudeCannotRun
-	}
-	text, err := claudeCLIUsage(ctx)
+	text, err := runClaudeUsage(ctx)
 	if err != nil {
 		return []QuotaWindow{}, err
 	}

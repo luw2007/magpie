@@ -73,6 +73,14 @@ type Account struct {
 	body   func(body []byte) []byte // request tweaks the backend insists on
 	models func() []catalog.Model
 	fetch  func(ctx context.Context) ([]catalog.Model, error)
+	// magpieList is set on an account whose fetch asks no vendor and
+	// keeps a copy of models, magpie's own list (Claude's, from the
+	// models.dev catalog; Factory's, compiled in): the list served is
+	// always models as it is now, never the copy, which held a model
+	// listed after it out until the next Refresh (wakaka on Discord:
+	// Claude Haiku 5.5, in Claude Code on the same account, missing from
+	// magpie).
+	magpieList bool
 
 	// auto is set on a Copilot account: the session of Copilot's Auto,
 	// the model it picks for the account (copilot_auto.go).
@@ -660,6 +668,7 @@ func claudeProvider(acct *Account) Provider {
 	// one that would go straight to the API with its sign-in is refused
 	acct.sign = func(context.Context, *http.Request, []byte) error { return errClaudeViaCLI }
 	acct.models = func() []catalog.Model { return catalog.Provider("anthropic") }
+	acct.magpieList = true
 	// Claude's models are the ones magpie knows: listing them would ask
 	// Anthropic with the account's sign-in, which magpie never does
 	acct.fetch = func(context.Context) ([]catalog.Model, error) {
@@ -831,6 +840,14 @@ const codexClientID = "app_EMoamEEZ73f0CkXaXp7hrann" // Codex CLI's own OAuth cl
 // so tests can point it elsewhere.
 var codexTokenURL = "https://auth.openai.com/oauth/token"
 
+// CodexTokenURLForTest points ChatGPT's token endpoint at a test server,
+// for the CLI's tests; the func it returns puts it back.
+func CodexTokenURLForTest(u string) func() {
+	old := codexTokenURL
+	codexTokenURL = u
+	return func() { codexTokenURL = old }
+}
+
 // CodexBase is where a ChatGPT account's Codex requests go; a var so tests
 // can point it elsewhere.
 var CodexBase = "https://chatgpt.com/backend-api/codex"
@@ -849,8 +866,9 @@ type codexAuth struct {
 
 func codexAccount(home string) (Provider, bool) {
 	path := filepath.Join(home, ".codex", "auth.json")
+	b, err := os.ReadFile(path)
 	var a codexAuth
-	if !readJSON(path, &a) || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
+	if err != nil || json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
 		return Provider{}, false
 	}
 	id := jwtClaims(a.Tokens.IDToken)
@@ -858,6 +876,10 @@ func codexAccount(home string) (Provider, bool) {
 		User: codexUser(id), Plan: claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type")}
 	if acct.User == "" {
 		acct.User = "ChatGPT"
+	} else {
+		// as it is saved, as liveLogin names it: a second Team seat of
+		// the email is "email · Team · <workspace>" (#1424)
+		acct.User = codexLiveName(acct.User, bytes.TrimSpace(b))
 	}
 	acct.sign = codexSign(func(ctx context.Context) (string, string, error) { return codexToken(ctx, path) })
 	acct.body = codexBody

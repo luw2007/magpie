@@ -151,6 +151,10 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 		}
 		s, _ = t.MCP.side(s)
 		old := entries[s.Name]
+		if err := t.MCP.foreign(old); err != nil {
+			res.fail(id, "mcp:"+s.Name, err)
+			continue
+		}
 		if old != nil {
 			if cur, ok := t.MCP.current(s.Name, old, s); ok && cur.same(s) && t.MCP.has(s) && !t.MCP.behind(s, old) {
 				mine = append(mine, s.Name)
@@ -226,6 +230,10 @@ type SkillView struct {
 	// Behind are the agents given it as a copy whose copy differs from it,
 	// till the next sync makes it again
 	Behind []string `json:"behind,omitempty"`
+	// Edited is set for one from GitHub changed here since it was fetched,
+	// in the library or in an agent's copy: an update replaces that, so
+	// the page asks first (#1449)
+	Edited bool `json:"edited,omitempty"`
 }
 
 // View is the Library page.
@@ -244,6 +252,10 @@ type View struct {
 	Backups      string            `json:"backups"`
 	SkillGroups  []SkillGroup      `json:"skillGroups"`
 	CopySkills   bool              `json:"copySkills"` // the library gives skills as copies (#896)
+	// CheckDue is set when the skills from GitHub weren't checked for
+	// updates since magpie started, or not for a while: the page checks
+	// them as it shows them (#1449)
+	CheckDue bool `json:"checkDue,omitempty"`
 }
 
 // Read is the whole page: the library, and what's found in the agents.
@@ -352,6 +364,7 @@ func Read(problems []Problem) (*View, error) {
 		}
 		sv.Check = lastCheck(s.Name)
 		sv.Behind = behind[s.Name]
+		sv.Edited, _ = l.editState(s, targets)
 		v.Skills = append(v.Skills, sv)
 	}
 	v.FoundServers = foundServers(l)
@@ -362,6 +375,7 @@ func Read(problems []Problem) (*View, error) {
 	v.NewSkills = newSkills(l)
 	v.Projects = projectViews(l, problems)
 	v.SkillGroups = l.skillGroups()
+	v.CheckDue = checkDue(l)
 	return v, nil
 }
 

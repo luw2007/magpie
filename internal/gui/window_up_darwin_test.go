@@ -85,10 +85,22 @@ func init() {
 			expect("covered", true)
 			application.InvokeSync(func() { cover.Close() })
 
-			// hidden with magpie, as by Command-H
-			application.InvokeSync(app.Hide)
-			waitFor("magpie is hidden", func() bool { return !windowOpen(h.main) })
-			expect("hidden with magpie", true)
+			// hidden with magpie, as by Command-H. Opening asked the Mac to
+			// activate magpie (Focus), and on a loaded CI machine that
+			// activation can land after the hide, which unhides magpie and
+			// shows the window again: the hide and the check are one step on
+			// the main thread, and a hide undone that way is done again.
+			var hiddenUp bool
+			waitFor("magpie is hidden", func() bool {
+				if windowOpen(h.main) {
+					app.Hide()
+				}
+				hiddenUp = kept()
+				return !windowOpen(h.main)
+			})
+			if !hiddenUp {
+				fail("hidden with magpie: the window counts as up=false, want true")
+			}
 			application.InvokeSync(app.Show)
 			waitFor("magpie is shown again", func() bool { return windowOpen(h.main) })
 

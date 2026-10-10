@@ -48,7 +48,7 @@ func (s *Server) retrieve(path, operation string) http.HandlerFunc {
 		usage.Saw(agentOf(r))
 		p, model, ok := resolveRetrievalModel(asked)
 		if !ok {
-			msg := fmt.Sprintf("magpie knows no model %q", asked)
+			msg := unknownModel(asked, "")
 			if off, isOff := provider.SwitchedOff(asked); isOff {
 				msg = switchedOff(off, asked)
 			}
@@ -189,6 +189,7 @@ func (s *Server) retrieveFrom(ctx context.Context, p provider.Provider, url stri
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if p.IsRemoteMagpie() {
+		req.Header.Set("User-Agent", "magpie/"+Version)
 		passOnCaller(ctx, req)
 	}
 	if err := p.Sign(ctx, req, provider.Chat, body); err != nil {

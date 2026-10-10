@@ -468,6 +468,10 @@
     }
   }
 
+  // the model a request went on: the one asked for, or the one set for
+  // Codex's subagents that magpie put a subagent on in its place
+  const wentOn = (r) => (r.subagent && !r.subagent.kept ? r.subagent.to : r.model);
+
   // why routing put the first where it did
   function firstWhy(r) {
     const f = r.order[0];
@@ -476,7 +480,7 @@
     if (r.sealedTask && r.leadAccount === f.id) return t("{who} goes first: it answered the parent agent and may be needed to read this encrypted task.", { who: w });
     if (r.order.length === 1) {
       if (f.rest) return t("{who} is the only one, so it's tried though it is resting.", { who: w });
-      return f.kind === "account" ? t("{who} is the only account on for {model} — nothing to choose between.", { who: w, model: r.model })
+      return f.kind === "account" ? t("{who} is the only account on for {model} — nothing to choose between.", { who: w, model: wentOn(r) })
         : t("{name} has one key on — nothing to choose between.", { name: f.name });
     }
     if (f.rest) return t("Every one is resting after a failure, so {who}, first in line, is tried all the same.", { who: w });
@@ -776,7 +780,10 @@
   // what it says of ZCode's Start Plan turning a request away (#425,
   // provider.ZCodeStartBlockedHint), in place of BLOCKED
   const ZCODE_BLOCKED = "ZCode's Start Plan still turned this request away, though magpie sends it as the ZCode app does; it can be a network block of this IP, or ZCode checking for something new. Use an account with a GLM Coding Plan, or add another provider to this group";
-  const HINTS = [WB_REFUSED, BLOCKED, ZCODE_BLOCKED];
+  // what it adds to Antigravity's 429 for Claude Code's and the Agent SDK's
+  // system prompt (antigravityTurnedAwayHint, #666, #1425)
+  const AG_TURNED_AWAY = "Antigravity answers this 429 to the system prompt of Claude Code and the Claude Agent SDK (Claude Desktop's chats) whatever quota is left, so it is not a quota and waiting won't help; use another provider for these chats, or put one after Antigravity in a routing group";
+  const HINTS = [WB_REFUSED, BLOCKED, ZCODE_BLOCKED, AG_TURNED_AWAY];
 
   function trySaid(r, i) {
     const tr = r.tries[i], w = tried(r, tr), agent = agentName(r.agent);
@@ -1530,8 +1537,41 @@
       }
     }
     renderSteps(r);
+    holdStory();
     renderCtx(r);
   }
+  // holdStory keeps the story of the live request, its head and its lines,
+  // as tall as it has been since the reader began following live, at this
+  // width: a request under way is told in fewer lines than one answered
+  // ("is answering…", then "answered in 4.0 s…" over two lines at a
+  // phone's width), and its head gets View usage and Replay, taller than
+  // the words, once it is done. So each new request moved the context
+  // window under it up and back down (dumplings on Discord: the card
+  // jittered on every request). A request picked, a replay or a past day
+  // is drawn at its own height. A change of width measures it again at
+  // once, as it is then (the list coming in under it can take a
+  // scrollbar's width off it before the first live request)
+  let storyHold = { key: "", h: [0, 0] }, storyDrawn = "";
+  function holdStory() {
+    const follow = !pinned && !rp && !day;
+    const w = steps.clientWidth;
+    const key = JSON.stringify([follow, w, document.documentElement.lang]);
+    if (key === storyHold.key && storyDrawn === headKey + stepsKey) return;
+    if (key !== storyHold.key) storyHold = { key, h: [0, 0] };
+    storyDrawn = headKey + stepsKey;
+    [logHead, steps].forEach((e, i) => {
+      e.style.minHeight = "";
+      if (!follow || !w) return;
+      const h = e.getBoundingClientRect().height;
+      storyHold.h[i] = Math.max(storyHold.h[i], h);
+      if (storyHold.h[i] > h) e.style.minHeight = storyHold.h[i] + "px";
+    });
+  }
+  new ResizeObserver(() => {
+    holdStory();
+    // grown since it was measured (a font come in): that is its height
+    [logHead, steps].forEach((e, i) => { storyHold.h[i] = Math.max(storyHold.h[i], e.getBoundingClientRect().height); });
+  }).observe(steps);
   // renderCtx draws the request's context window under its story, with
   // its session's prompts request by request; drawn again only when what
   // it shows changes. Live, the next request is patched into the card
@@ -1605,7 +1645,7 @@
     const main = r.order.find((x) => !x.fallback);
     items.push([r.group
       ? t("{agent} asked for the routing group {name}: {members}", { agent: agentName(r.agent), name: r.group.name, members: treeText(r.group) })
-      : main && main.model !== r.model
+      : main && main.model !== r.model && wentOn(r) === r.model
       ? t("{agent} asked for {model}: {name} serves it, and the vendor is asked for {sent}", { agent: agentName(r.agent), model: r.model, name: main.name, sent: main.model })
       : t("{agent} asked for {model}", { agent: agentName(r.agent), model: r.model }) + " → " + (main?.name || r.provider), ""]);
     if (r.kind) items.push([kindWhy(r), "aside kind"]);
@@ -1742,6 +1782,11 @@
   const upstreamWhy = (tr) => t("The aggregator passed the request on to {upstream}, as its reply says: the provider that actually answered it.", { upstream: tr.upstream });
   function kindWhy(r) {
     const agent = agentName(r.agent);
+    // the model set for Codex's subagents in place of the lead's pick, or
+    // why the lead's pick stood
+    if (purposeOf(r.kind) === "kind:collab_spawn" && r.subagent) return r.subagent.kept
+      ? t("{agent} requested a subagent on {model} and it stayed there: its subagents are set to {to}, but {why}.", { agent, model: r.subagent.asked, to: r.subagent.to, why: t(r.subagent.kept) })
+      : t("{agent} requested a subagent on {model}; magpie put it on {to}, the model set for its subagents.", { agent, model: r.subagent.asked, to: r.subagent.to });
     if (purposeOf(r.kind) === "kind:collab_spawn") return r.group
       ? t("{agent} requested a subagent; magpie selects its model within this routing group.", { agent })
       : t("{agent} requested a subagent on {model}.", { agent, model: r.model });

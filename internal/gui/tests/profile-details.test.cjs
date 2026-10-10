@@ -69,7 +69,7 @@ function server(lang, calls, count) {
 
 const words = {
   en: { model: "model", effort: "effort", high: "high", def: "agent default", follows: "follows the main model (magpie/a/main)", subagents: "subagents", servers: "MCP servers", skills: "Skills", instructions: "Instructions", on: "on", apply: "Apply", list: "Model list", all: "every model shown", hidden8: "8 hidden", picked3: "only the 3 picked" },
-  zh: { model: "模型", effort: "推理强度", high: "高", def: "Agent 默认值", follows: "跟随主模型（magpie/a/main）", subagents: "子 agent", servers: "MCP 服务器", skills: "技能", instructions: "指令", on: "开启", apply: "应用", list: "模型列表", all: "全部显示", hidden8: "已隐藏 8 个", picked3: "仅显示所选的 3 个" },
+  zh: { model: "模型", effort: "推理强度", high: "高", def: "Agent 默认值", follows: "跟随主模型（magpie/a/main）", subagents: "子代理", servers: "MCP 服务器", skills: "技能", instructions: "指令", on: "开启", apply: "应用", list: "模型列表", all: "全部显示", hidden8: "已隐藏 8 个", picked3: "仅显示所选的 3 个" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {

@@ -142,6 +142,14 @@ func TestTaggedRepos(t *testing.T) {
 	if x := byRepo["someone/flaky-entry"]; x.License != "" {
 		t.Fatalf("NOASSERTION is no license: %+v", x)
 	}
+	// its own picture, package.json's magpie.icon, as an installed
+	// plugin's provider has it; none when it gives none
+	if x := byRepo["someone/flaky-entry"]; !strings.HasPrefix(x.Icon, "data:image/svg+xml;base64,") {
+		t.Fatalf("magpie.icon: %q", x.Icon)
+	}
+	if c.Icon != "" {
+		t.Fatalf("no magpie.icon, yet %q", c.Icon)
+	}
 	if x := byRepo["someone/word-guard"]; x.Kind != "middleware" || x.Package != "@magpie-community/middleware-word-guard" || x.License != "" {
 		t.Fatalf("a middleware alone: %+v", x)
 	}

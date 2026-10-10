@@ -166,7 +166,9 @@ var claudeAliases = []string{"default", "best", "opus", "sonnet", "haiku", "fabl
 // auto-compact window (CLAUDE_CODE_AUTO_COMPACT_WINDOW, the autoCompactWindow
 // setting) is only ever the smaller of its own value and this one, so this
 // is what tells it where a 128K or a 400K model runs out. A name marked [1m]
-// is 1M whatever it says.
+// is 1M whatever it says. It is the one window Claude Code knows for any
+// such model (2.1.293: none is taken from a gateway), Claude Desktop's Code
+// tab's too, which runs on this settings.json (claudeDesktopWindow).
 const claudeContextEnv = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
 
 // claudeCompactEnv is where Claude Code compacts a conversation, the smaller
@@ -650,13 +652,15 @@ func claudeIn(at place) *Agent {
 	// writeCaps says what magpie's models can do, the ones in models first;
 	// Claude Desktop's ids too while it runs on magpie, its Code tab being
 	// Claude Code on this settings.json
+	desktopOn := func() bool {
+		return at.id == "" && at.sys == nil && desktopWired(desktopPathsOf(desktopDirs(desktopdir.OS, at.home, os.Getenv)))
+	}
 	writeCaps := func(models ...string) error {
 		if env(claudeCapsEnv) != "" && !capsOurs() {
 			forget(capsKey)
 			return nil
 		}
-		desktop := at.id == "" && at.sys == nil && desktopWired(desktopPathsOf(desktopDirs(desktopdir.OS, at.home, os.Getenv)))
-		v := claudeCapabilities(models, desktop)
+		v := claudeCapabilities(models, desktopOn())
 		if v == "" {
 			return dropCaps()
 		}
@@ -665,6 +669,31 @@ func claudeIn(at place) *Agent {
 		}
 		stash(map[string]string{capsKey: v})
 		return edit.SetJSON(path, edit.KV{Path: "env." + claudeCapsEnv, Value: v})
+	}
+	// writeWindow tells Claude Code the window of the models it runs on
+	// (claudeWindow), and while Claude Desktop runs on magpie, of those its
+	// Code tab runs it on too (claudeDesktopWindow): the least of them, as
+	// one value serves them all. One the user set is theirs.
+	writeWindow := func(main string, tiers map[string]string) error {
+		if env(claudeContextEnv) != "" && !windowOurs() {
+			forget(windowKey)
+			return nil
+		}
+		w := claudeWindow(main, tiers)
+		if desktopOn() {
+			if d := claudeDesktopWindow(); d > 0 && (w == 0 || d < w) {
+				w = d
+			}
+		}
+		if w <= 0 {
+			return dropWindow()
+		}
+		v := strconv.Itoa(w)
+		stash(map[string]string{windowKey: v})
+		if v == env(claudeContextEnv) {
+			return nil
+		}
+		return edit.SetJSON(path, edit.KV{Path: "env." + claudeContextEnv, Value: v})
 	}
 	// what was last written that an open Claude Code session doesn't see:
 	// it reads settings.json at start-up, only its env as it goes
@@ -908,15 +937,8 @@ func claudeIn(at place) *Agent {
 		stash(map[string]string{mainKey: main, wroteAt: at.gw()})
 		// the new model's window replaces the old one's, when magpie knows
 		// it; one the user set is theirs
-		if env(claudeContextEnv) == "" || windowOurs() {
-			if w := claudeWindow(main, tiers); w > 0 {
-				kvs = append(kvs, edit.KV{Path: "env." + claudeContextEnv, Value: strconv.Itoa(w)})
-				stash(map[string]string{windowKey: strconv.Itoa(w)})
-			} else if err := dropWindow(); err != nil {
-				return err
-			}
-		} else {
-			forget(windowKey)
+		if err := writeWindow(main, tiers); err != nil {
+			return err
 		}
 		models := []string{main}
 		for _, t := range claudeTiers {
@@ -1312,8 +1334,15 @@ func claudeIn(at place) *Agent {
 				}
 			}
 			models := []string{mainModel()}
+			tiers := map[string]string{}
 			for _, t := range claudeTiers {
-				models = append(models, env(tierEnv(t)))
+				tiers[t] = env(tierEnv(t))
+				models = append(models, tiers[t])
+			}
+			// the windows of the models as they are now, Claude Desktop's
+			// among them (#1458)
+			if err := writeWindow(mainModel(), tiers); err != nil {
+				return err
 			}
 			if err := writeCompact(); err != nil {
 				return err
@@ -1677,6 +1706,33 @@ func claudeWindow(main string, tiers map[string]string) int {
 			if c := window[v]; c > 0 && (w == 0 || c < w) {
 				w = c
 			}
+		}
+	}
+	return w
+}
+
+// claudeDesktopWindow is the least window of the models Claude Desktop's
+// Code tab runs Claude Code on that it takes claudeContextEnv for, 0 when
+// it knows none. Desktop hands Claude Code the id it lists a model by
+// (gateway.DesktopID) and nothing of its window: it reads the gateway's
+// max_input_tokens only to offer a 1M entry (2.31226.1), and Claude Code
+// takes no window from a gateway's /v1/models (its model catalog is
+// Anthropic's alone, and even there one past 200K counts as 200K for a
+// model it doesn't know). So a mythos-magpie id of a 272K model ran as
+// 200K, and with the auto-compact window shown in its place, a 1M one as
+// that (#1458). Left out are a model listed by its "[1m]" id, which is 1M
+// whatever this says, and one named as a Claude model Claude Code knows,
+// which has its own; Claude Code takes one value for all the rest, so it
+// is the least, which none of them outgrows.
+func claudeDesktopWindow() int {
+	shown, _ := provider.CatalogFor("claude-desktop")
+	w := 0
+	for _, e := range shown {
+		if e.Context <= 0 || gateway.DesktopListed1M(e) || claudeName(gateway.DesktopID(e)) != "" {
+			continue
+		}
+		if w == 0 || e.Context < w {
+			w = e.Context
 		}
 	}
 	return w

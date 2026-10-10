@@ -138,6 +138,9 @@ func dshAt(at place) *Agent {
 			dshWrites.Lock()
 			defer dshWrites.Unlock()
 			for _, f := range dshProfiles(dir) {
+				if err := dshKeepPick(f); err != nil {
+					return err
+				}
 				if err := dshSetFile(f, "", true, nil, gw()); err != nil {
 					return err
 				}
@@ -576,7 +579,10 @@ func dshGet(dir string) string {
 
 // dshStart reads the model a profile's sessions start on: the one last picked
 // in dsh, saved in its settings, which go over every profile, else the
-// agent-default-model entry of the home layer or the profile's own.
+// agent-default-model entry of the home layer or the profile's own. dsh 0.2
+// keeps a pick in that entry itself: a settings.yaml left by 0.1.x is
+// imported into the profile it next boots and renamed settings.yaml.imported,
+// which nothing reads (#1392).
 func dshStart(dir string, items []dshItem) string {
 	items = dshOver(dir, items)
 	sel := edit.GetYAMLMap(filepath.Join(dir, "settings.yaml"), "agent-default-model")
@@ -820,6 +826,35 @@ func dshSet(dir, v, gw string) error {
 		return edit.DelYAML(settings, "agent-default-model")
 	}
 	return nil
+}
+
+// dshKeepPick hands a profile's start back to the user where dsh saved their
+// own pick into magpie's agent-default-model entry. Since 0.2 dsh no longer
+// keeps a pick in ~/.dsh/settings.yaml: its /model (and the one-time import
+// that renames settings.yaml to settings.yaml.imported) writes the config of
+// the profile's last agent-default-model entry, which is magpie's, mark and
+// all (#1392). A start there off magpie's route is the user's then, and
+// Disconnect leaves it as it is, as it left a pick in settings.yaml before;
+// what magpie stashed from before it wrote the entry is older than that pick.
+// One still on the old wiring names DeepSeek's row for magpie's models and
+// stays magpie's.
+func dshKeepPick(f string) error {
+	head, items, err := dshRead(f)
+	if err != nil || dshOldWiring(items) {
+		return nil
+	}
+	i := dshFind(items, "agent-default-model")
+	if i < 0 || !items[i].magpie {
+		return nil
+	}
+	if p := dshConfig(items[i])["provider"]; p == "" || p == dshRoute || dshConfig(items[i])["model"] == "" {
+		return nil
+	}
+	lines := append([]string{}, items[i].lines...)
+	lines[0] = strings.TrimRight(strings.Replace(lines[0], dshMark, "", 1), " ")
+	items[i] = dshItem{id: items[i].id, lines: lines}
+	unstash(dshStashKey(f, "agent-default-model"))
+	return dshWrite(f, head, items)
 }
 
 // dshEnv puts the key for the gateway in $DSH_HOME/.env and dsh's own key

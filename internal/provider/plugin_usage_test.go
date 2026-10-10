@@ -5,23 +5,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // A plugin's accounts show their allowance as the built-ins' do: beside
 // each account, on the usage page, and to the gateway, a window counting
 // only some models holding back those alone.
 func TestPluginUsage(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	claudeHome(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle)
@@ -165,10 +162,7 @@ func TestPluginUsage(t *testing.T) {
 // built-ins' did, and a clean one takes the mark off; one the network
 // failed shows the last reading, as a built-in's did.
 func TestPluginUsageLapse(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	claudeHome(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle)
@@ -229,10 +223,7 @@ func TestPluginUsageLapse(t *testing.T) {
 // marks or clears as before. TestPluginFailover's refused account lost
 // its mark to a reading of its allowance begun just before the 401.
 func TestPluginUsageReadOlderThanAnswer(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	claudeHome(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle)
@@ -320,10 +311,7 @@ func TestPluginUsageReadOlderThanAnswer(t *testing.T) {
 // serves, as each of a built-in's accounts had: a key that has fewer
 // doesn't take on the first account's.
 func TestPluginAccountModels(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	claudeHome(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle)
@@ -379,10 +367,7 @@ func TestMovedProviderName(t *testing.T) {
 // A models hook that finds the sign-in refused and says so marks the
 // account, as a built-in whose model list the vendor refused marked it.
 func TestPluginModelsSayExpired(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("no bun on PATH")
-	}
+	bun := testenv.Bun(t)
 	claudeHome(t)
 	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle)

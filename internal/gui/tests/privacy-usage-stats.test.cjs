@@ -71,7 +71,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await isOn(w.personal);
       assert.equal(saved.at(-1).noUsageStats, true, JSON.stringify(saved.at(-1)));
 
-      // not counted at all: nothing to share, no switch
+      // not counted at all: nothing to share, no switch. With personal data
+      // masked, its kinds' rows put this one below the window: scrolled to
+      // as a reader does, since a script doesn't scroll Settings in WebKit
+      await page.mouse.move(450, 300);
+      for (let i = 0; i < 20 && (await row(w.count).boundingBox()).y > 600; i++) {
+        await page.mouse.wheel(0, 200);
+        await page.waitForTimeout(80);
+      }
       await row(w.count).getByRole("button", { name: w.off, exact: true }).click();
       await isOff(w.count);
       await row(w.share).waitFor({ state: "detached" });

@@ -357,16 +357,19 @@ func keepUnloaded(ps, last []Provider) []Provider {
 			_ = json.Unmarshal(b, &last)
 		}
 	}
-	told := map[string]bool{}
+	told, ids := map[string]bool{}, map[string]bool{}
 	for _, p := range ps {
-		told[p.Spec] = true
+		told[p.Spec], ids[p.ID] = true, true
 	}
 	installed := map[string]bool{}
 	for _, e := range list().Plugins {
 		installed[e.Spec] = true
 	}
 	for _, p := range last {
-		if installed[p.Spec] && !told[p.Spec] {
+		// a provider another plugin serves now (two plugins sign in to
+		// it, and the other was installed or picked for it) isn't kept as
+		// this one's too: it would be listed twice under one id
+		if installed[p.Spec] && !told[p.Spec] && !ids[p.ID] {
 			ps = append(ps, p)
 		}
 	}

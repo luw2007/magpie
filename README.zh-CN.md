@@ -22,17 +22,6 @@
   <img src="site/public/img/agents-zh-light.png" width="900" alt="magpie 的 Agents 页：Claude Code 用 Kimi K3，Codex 用 DeepSeek V4 Pro，Gemini CLI 用 GLM-5.3，都在一个列表里选">
 </picture>
 
-<br>
-
-<table>
-<tr>
-<td align="center" width="25%"><h3>45+</h3>个 Agent，一张表</td>
-<td align="center" width="25%"><h3>4</h3>种接口协议，一个网关</td>
-<td align="center" width="25%"><h3>5</h3>种路由模式</td>
-<td align="center" width="25%"><h3>0</h3>个需要手改的配置文件</td>
-</tr>
-</table>
-
 </div>
 
 <br>
@@ -57,7 +46,7 @@
 curl -fsSL https://usemagpie.ai/install.sh | sh
 ```
 
-<sub>Mac 版已签名并公证，每个版本都会自动更新。网络受限时可用 `--proxy` 或 `--mirror`。也可以 `go install github.com/yetone/magpie@latest`，或者用 [Docker 镜像](docs/reference.md#docker)。</sub>
+<sub>Mac 版已签名并公证，每个版本都会自动更新。网络受限时可用 `--proxy` 或 `--mirror`。也可以 `go install github.com/yetone/magpie@latest`，或者用 [Docker 镜像](https://usemagpie.ai/docs/zh/docker)。</sub>
 
 **2 · 添加 provider。**打开 magpie，进入 **Providers → 添加 provider**。选一个预设、粘贴 key，或者登录一个订阅。
 
@@ -81,7 +70,7 @@ magpie tui                                      # 全部功能，在终端里
 <table>
 <tr><td>
 
-Claude Code · Claude Desktop · Codex · Gemini CLI · Antigravity CLI · OpenCode · OpenChamber · MiMo Code · Pi · oh-my-pi · Aside · OmO · Goose · Cursor CLI · Cursor Private Inference · Zed · VS Code Chat · VS Code Insiders · VSCodium Chat · JetBrains Air · Copilot (JetBrains) · Copilot CLI · Crush · DeepSeek Harness · Reasonix Studio · Command Code · fx · Devin · Hermes Agent · Mister Morph · Kimi Code · Qwen Code · Muse Code · Empryo · MiniMax Code · Droid · Cline · Qoder · Qoder CN · Grok Build · ZCode · WorkBuddy · CodeBuddy Code · Pencil · T3 Code · OpenHanako · AtomCode · Alma · Cindy
+Claude Code · Claude Desktop · Codex · Gemini CLI · Antigravity CLI · OpenCode · OpenChamber · MiMo Code · Pi · oh-my-pi · Aside · OmO · Goose · Cursor CLI · Cursor Private Inference · Zed · VS Code Chat · VS Code Insiders · VSCodium Chat · JetBrains Air · Copilot (JetBrains) · Copilot CLI · Crush · DeepSeek Harness · Reasonix Studio · Command Code · fx · Devin · Hermes Agent · Mister Morph · Kimi Code · Qwen Code · Muse Code · Empryo · MiniMax Code · Droid · Cline · Qoder · Qoder CN · Grok Build · ZCode · WorkBuddy · CodeBuddy Code · Pencil · T3 Code · OpenHanako · AtomCode · Snow CLI · Alma · Cindy
 
 </td></tr>
 </table>
@@ -190,6 +179,23 @@ flowchart LR
   <img width="760" src="site/public/img/routing-zh-light.png" alt="路由页：四个 Agent 经过 magpie 连到七个 provider，实时显示">
 </picture>
 
+<table>
+<tr>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/public/img/intent-trace-zh-dark.png">
+  <img src="site/public/img/intent-trace-zh-light.png" alt="一轮意图路由，逐步解释">
+</picture>
+</td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/public/img/nested-routing-zh-dark.png">
+  <img src="site/public/img/nested-routing-zh-light.png" alt="路由组里套路由组">
+</picture>
+</td>
+</tr>
+</table>
+
 ### 插件
 
 ```sh
@@ -251,8 +257,8 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
 | | |
 | :-- | :-- |
 | **局域网** | 打开「在局域网共享」，给每个客户端一个命名的网关 key，各自设每天、每周或每月的 token 和花费上限 |
-| **远程 magpie** | 笔记本用台式机上那个 magpie 的 provider、账号和路由组，同时照样配置自己的 Agent |
-| **Docker** | 在服务器或 NAS 上跑 `ghcr.io/yetone/magpie`，用 Web 界面管理 |
+| **[远程 magpie](https://usemagpie.ai/docs/zh/remote)** | 笔记本用台式机上那个 magpie 的 provider、账号和路由组，同时照样配置自己的 Agent |
+| **[Docker](https://usemagpie.ai/docs/zh/docker)** | 在服务器或 NAS 上跑 `ghcr.io/yetone/magpie`，用 Web 界面管理 |
 | **同步** | 备份到文件，或者通过 WebDAV（坚果云、Nextcloud……）或 S3 在多台机器间同步 |
 
 ### 还有
@@ -272,6 +278,8 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
 | **[插件](https://usemagpie.ai/docs/zh/plugins)** | 使用插件和编写插件 |
 | **[意图路由](https://usemagpie.ai/docs/zh/intent)** | 按每轮对话的内容选择模型 |
 | **[导入链接](https://usemagpie.ai/docs/zh/import)** | 给 provider 网站用的「添加到 magpie」按钮 |
+| **[远程 magpie](https://usemagpie.ai/docs/zh/remote)** | 在其他电脑上用同一个 magpie 的 provider 和路由组 |
+| **[Docker](https://usemagpie.ai/docs/zh/docker)** | 在服务器或 NAS 上运行 magpie |
 
 ## 隐私
 

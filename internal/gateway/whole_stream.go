@@ -255,6 +255,9 @@ func anthropicWholeEvents(b []byte) []wholeEvent {
 	}
 	start := maps.Clone(v)
 	start["content"], start["stop_reason"], start["stop_sequence"] = raw([]any{}), raw(nil), raw(nil)
+	// auto mode's review of the reply's calls is the last thing a stream
+	// says, in its message_delta, where Claude Code reads it (automode.go)
+	delete(start, "safeguard_results")
 	var usage obj
 	if json.Unmarshal(v["usage"], &usage) == nil && usage != nil {
 		// the output is counted as it is said, in message_delta
@@ -306,6 +309,9 @@ func anthropicWholeEvents(b []byte) []wholeEvent {
 	stop := obj{"stop_reason": orNull(v["stop_reason"]), "stop_sequence": orNull(v["stop_sequence"]), "stop_details": orNull(v["stop_details"])}
 	if c, ok := v["container"]; ok {
 		stop["container"] = c
+	}
+	if r, ok := v["safeguard_results"]; ok {
+		stop["safeguard_results"] = r
 	}
 	end := obj{"delta": raw(stop)}
 	if usage != nil {

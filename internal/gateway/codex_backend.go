@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
@@ -90,6 +92,17 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 				s.codexTitle(w, r, body, to)
 				return
 			}
+			// a subagent on one of Codex's own models, put on the model
+			// set for Codex's subagents, a ChatGPT account's in magpie;
+			// the request on the model asked for when it can't be, the
+			// trace saying why (codexUpstreamOn, serve)
+			if !strings.Contains(model, "/") {
+				pick := codexSubagentPick(r, agentOf(r), requestCallKind(r.Header, requestSessionMetadata(r.Header, body)), model)
+				r = withSubagentPick(r, pick)
+				if pick.Moved() {
+					body, model = withModel(body, pick.To), pick.To
+				}
+			}
 		}
 		// The namespace owns the route even if a model is not in the catalog.
 		// Unknown providers/groups must fail locally, never fall through to OpenAI.
@@ -135,6 +148,12 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			writeError(w, provider.Responses, 400, AccountHeader+" names one of magpie's Codex accounts, and Codex isn't signed in to ChatGPT here with any on in magpie")
 			return
 		}
+	}
+	if r.Method == http.MethodPost && rest == "/responses" {
+		withGatewaySession(w, r)
+		var recorded func()
+		w, recorded = recordConversation(w, r, provider.Responses, body)
+		defer recorded()
 	}
 	s.codexUpstream(w, r, rest, body)
 }
@@ -503,6 +522,11 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	if apiKey(r.Header) && rest != "/models" {
 		base = codexAPIBase
 	}
+	if r.Method == http.MethodPost && rest == "/responses" && base == provider.CodexBase {
+		// a replayed web search the request doesn't declare the tool for
+		// is refused by the ChatGPT backend (#1270), as on an account's
+		body = provider.DeclareSearch(body, strings.EqualFold(r.Header.Get("X-OpenAI-Internal-Codex-Responses-Lite"), "true"))
+	}
 	u := base + rest
 	if r.URL.RawQuery != "" {
 		u += "?" + r.URL.RawQuery
@@ -533,7 +557,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		seat := Weighed{ID: "codex", Provider: "openai", Name: "OpenAI", Icon: "openai", Who: who, Kind: "account", Agent: "codex", Model: model}
 		link := s.titlePrompts.observe(r, body, metadata, kind, start)
 		captureTitle = link != nil && isTitleKind(kind)
-		tr = s.trace.begin(Route{imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Provider: "openai",
+		tr = s.trace.begin(Route{imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Provider: "openai", Subagent: subagentPickOf(r),
 			Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Effort: effort, Start: start}}})
 		promptRead := s.inspectPrompt(tr, provider.Responses, body)
 		end = func(status int, msg string, tokens, out int) {
@@ -1209,6 +1233,73 @@ func withoutBareReasoning(body []byte) []byte {
 			Enc  string `json:"encrypted_content"`
 		}
 		if json.Unmarshal(it, &t) == nil && t.Type == "reasoning" && t.Enc == "" {
+			continue
+		}
+		kept = append(kept, it)
+	}
+	if len(kept) == len(items) {
+		return body
+	}
+	q["input"], _ = json.Marshal(kept)
+	b, err := json.Marshal(q)
+	if err != nil {
+		return body
+	}
+	return b
+}
+
+// reasoningTextRefused is how unfit remembers a provider turning away, for
+// model, reasoning items with their text in them (withoutReasoningText).
+func reasoningTextRefused(model string) string { return "reasoning text\x00" + model }
+
+// reasoningContentRefusal is OpenAI's refusal of a reasoning item with its
+// text in it, naming the item: "Invalid 'input[1].content': array too
+// long. Expected an array with maximum length 0, but got an array with
+// length 1 instead." (the ChatGPT backend's; a relay's may word the rest
+// otherwise, #1411)
+var reasoningContentRefusal = regexp.MustCompile(`input\[(\d+)\]\.content'?:? array too long`)
+
+// refusesReasoningText is a 400 refusing the reasoning text in a Responses
+// request: the item the refusal names is reasoning with text in it.
+func refusesReasoningText(status int, b, body []byte) bool {
+	if !badRequest(status) {
+		return false
+	}
+	m := reasoningContentRefusal.FindSubmatch(b)
+	if m == nil {
+		return false
+	}
+	it := gjson.GetBytes(body, "input."+string(m[1]))
+	return it.Get("type").String() == "reasoning" && len(it.Get("content").Array()) > 0
+}
+
+// withoutReasoningText is a Responses request without the reasoning items
+// that carry their text (content parts), as another vendor's model wrote
+// them: DeepSeek's, which a routing group handed Codex with its own
+// encrypted_content beside the text. OpenAI's API, the ChatGPT backend and
+// a relay in front of them take a reasoning item's content only empty, and
+// turn the whole request away over one (#1411); its seal is no more theirs
+// than its text, so the item goes, as codexInput leaves it out for one of
+// Codex's own models.
+func withoutReasoningText(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"reasoning"`)) {
+		return body
+	}
+	var q map[string]json.RawMessage
+	if json.Unmarshal(body, &q) != nil {
+		return body
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(q["input"], &items) != nil {
+		return body
+	}
+	kept := items[:0:0]
+	for _, it := range items {
+		var t struct {
+			Type    string            `json:"type"`
+			Content []json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(it, &t) == nil && t.Type == "reasoning" && len(t.Content) > 0 {
 			continue
 		}
 		kept = append(kept, it)

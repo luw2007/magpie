@@ -38,6 +38,9 @@ type Tagged struct {
 	Package string `json:"package,omitempty"`
 	Version string `json:"version,omitempty"`
 	Kind    string `json:"kind,omitempty"` // "middleware" when that is all it is
+	// its package.json's magpie.icon, as an installed plugin gives its
+	// provider one: an https URL or a data:image URI, as it is written
+	Icon string `json:"icon,omitempty"`
 }
 
 // Where GitHub is asked, moved by tests.
@@ -196,7 +199,7 @@ func askTagged(ctx context.Context) ([]Tagged, error) {
 			if branch == "" {
 				branch = "HEAD"
 			}
-			pb, err := fetchJSON(pc, githubRaw+"/"+t.Repo+"/"+url.PathEscape(branch)+"/package.json", 256<<10)
+			pb, err := fetchJSON(pc, githubRaw+"/"+t.Repo+"/"+url.PathEscape(branch)+"/package.json", 2<<20)
 			if err != nil {
 				read = errors.Is(err, errNotFound)
 				return
@@ -208,6 +211,7 @@ func askTagged(ctx context.Context) ([]Tagged, error) {
 				Exports json.RawMessage `json:"exports"`
 				Magpie  struct {
 					Middleware string `json:"middleware"`
+					Icon       string `json:"icon"`
 				} `json:"magpie"`
 			}
 			if json.Unmarshal(pb, &pj) != nil || !pkgName.MatchString(pj.Name) {
@@ -215,6 +219,11 @@ func askTagged(ctx context.Context) ([]Tagged, error) {
 				return
 			}
 			t.Package, t.Version = pj.Name, pj.Version
+			// a picture, as host.js's iconOf takes one: magpie checks and
+			// keeps it before the page shows it (the GUI's /api/plugins/github)
+			if ic := strings.TrimSpace(pj.Magpie.Icon); len(ic) <= 3<<19 && (strings.HasPrefix(strings.ToLower(ic), "https://") || strings.HasPrefix(strings.ToLower(ic), "data:image/")) {
+				t.Icon = ic
+			}
 			if strings.TrimSpace(pj.Magpie.Middleware) != "" && pj.Main == "" && len(pj.Exports) == 0 {
 				t.Kind = "middleware"
 			}

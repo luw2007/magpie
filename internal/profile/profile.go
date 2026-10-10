@@ -226,10 +226,13 @@ func Apply(p Profile) (Applied, error) {
 }
 
 // ApplyFields writes every value in p that differs from what is set now.
+// Only agents found on this computer are written: a profile synced from
+// another one may name agents missing here, and writing their config would
+// make them look installed.
 // It returns the number of changes made and the first error encountered.
 func ApplyFields(p map[string]string) (int, error) {
 	agents := map[string]*agent.Agent{}
-	for _, a := range agent.All() {
+	for _, a := range agent.Detected() {
 		agents[a.ID] = a
 	}
 	keys := make([]string, 0, len(p))

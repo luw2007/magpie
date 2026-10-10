@@ -757,6 +757,9 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 					if p.BalanceToken == "" {
 						ps[i].BalanceToken = k.BalanceToken
 					}
+					if p.AccessKeyID == "" && p.SecretAccessKey == "" {
+						ps[i].AccessKeyID, ps[i].SecretAccessKey = k.AccessKeyID, k.SecretAccessKey
+					}
 				}
 			}
 			sources = slices.Clone(sources)

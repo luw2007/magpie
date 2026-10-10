@@ -26,7 +26,14 @@ cache.
    up on the turn (`letGo`).
 2. `subscriptionBridge.unshelve`: the saved session of a run let go past
    `idleMost` (`b.shelf`, at most `shelfMost`), which a new Claude Code
-   starts from with `--resume`, told the turn's messages alone.
+   starts from with `--resume`, told the turn's messages alone. It is
+   sent `initialize` first, which Claude Code answers only once it has
+   loaded the session; one that can't load it exits 1 ("No conversation
+   found with session ID") without answering. `start` then lets the
+   session go and goes on to step 3 in the same request, logged "Claude
+   Code could not go on from the conversation's saved session". Before,
+   the turn got 502 "Claude Code ended" with the safety context set, and
+   an empty reply without it.
 3. `retire`, then a new run told the whole conversation. When it has
    replies in it, the turns already answered are wrapped in
    `<conversation_history>`, with a note that the images and files in them
@@ -36,6 +43,12 @@ cache.
    earlier images read as just sent. A first turn, or messages with no
    reply among them, are told as before. `start` logs "a new Claude Code
    is told the whole conversation" with the message and image counts.
+
+A Claude Code that ends before it answers a control request
+(`cliControl`: `initialize`, the safety context) is reported with its
+exit status and the end of its stderr (`endedBefore`), as one that ends
+before it reads its input is (`whyEnded`). The tool-results path and
+`resume` already start a new run when the one they found has ended.
 
 ## A turn the client gives up on (`letGo`, #780, #1365)
 
@@ -194,7 +207,7 @@ carries none.
 ## Verification
 
 ```sh
-go test -tags nogui ./internal/gateway/ -run 'ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns' -count=1
+go test -tags nogui ./internal/gateway/ -run 'ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy' -count=1
 ```
 
 `claude_rewritten_test.go` has a case for each relaxation and one for each

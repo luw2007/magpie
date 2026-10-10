@@ -45,6 +45,9 @@ type Route struct {
 	Rule          *RuleHit     `json:"rule,omitempty"`          // the group's rules for it, when it has any
 	SealedTask    bool         `json:"sealedTask,omitempty"`    // only ChatGPT accounts can read this subagent's task
 	LeadAccount   string       `json:"leadAccount,omitempty"`   // the parent account put first for a sealed task
+	// Subagent is a Codex subagent's request put on the model set for
+	// Codex's subagents, or kept on the one asked for and why
+	Subagent *SubagentPick `json:"subagent,omitempty"`
 	// Nested: the rules of the groups in the group, down the way to the
 	// one that went first, each as it decided
 	Nested   []NestedRule `json:"nested,omitempty"`

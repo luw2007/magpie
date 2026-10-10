@@ -36,7 +36,7 @@ func (p Provider) Available() []catalog.Model {
 		// a gateway's Jev among its chat models, with its window and input
 		ms = slices.Clone(ms)
 		for i, m := range ms {
-			if p.DecidesModel(m.ID) {
+			if p.isDecision(m) {
 				ms[i] = withDecideFacts([]catalog.Model{m})[0]
 			}
 		}
@@ -60,7 +60,7 @@ func (p Provider) available() []catalog.Model {
 			}
 		}
 	}
-	if live, _, ok := p.live(); ok {
+	if live, _, ok := p.live(); ok && (p.Account == nil || !p.Account.magpieList) {
 		if p.Account != nil && p.Account.unusable != nil {
 			// a model the list offers that the account was refused
 			// (Copilot's, copilot_refused.go)
@@ -1265,12 +1265,13 @@ func providerEntries() []Entry {
 func buildEntries() []Entry {
 	var out []Entry
 	s := settings.Load()
+	gone := retiredNow() // its vendor said it is retired (retired.go)
 	for _, p := range All() {
 		if !p.On() || p.DecideOnly() { // a dedicated decision API only routes
 			continue
 		}
 		for _, m := range p.Exposed() {
-			if !p.DecidesModel(m.ID) {
+			if !p.isDecision(m) && !gone[p.ID+"/"+m.ID] {
 				out = append(out, entryFor(p, m, s))
 			}
 		}
@@ -1365,7 +1366,12 @@ func entryIn(entries []Entry, id string) (Entry, bool) {
 
 // Resolve maps an id an agent sent to a provider and the vendor's model id.
 // It accepts catalog ids, "provider/model" for any model (exposed or not),
-// and the bare model id when exactly one provider serves it.
+// and a bare model id: the first provider in the Providers order (All)
+// that exposes it, else the one provider that lists it unexposed. The
+// gateway asks GroupFor first, so with found groups on a bare id several
+// providers serve is that group, its members in the same order (MOMO on
+// Discord: glm-5.3 under opencode-go and a6api). magpie writes only
+// provider/model ids into agents' configs, so a bare one is the user's.
 // A group's id resolves to its first member.
 func Resolve(id string) (Provider, string, bool) {
 	// Claude Code's mark for a model with a 1M window; it drops it before
@@ -1506,6 +1512,26 @@ func (p Provider) replyLimit(m catalog.Model, s settings.Settings) int {
 	}
 	return output
 }
+
+// OutputWithin is a reply limit as it is published beside a window: kept
+// within it. models.dev lists some models' output above the window their
+// vendor's own list gives (Grok's grok-4.7: 500000 against the 256000 its
+// backend says, #1438; deepseek-chat's 384000 against 128000, #338), and a
+// client that reads both sizes its replies past what the window holds. An
+// unknown window or output is left as it is. Every place that hands out the
+// pair uses it — the agents' files, the gateway's model lists, the GUI and
+// the CLI — while a request is still lowered only to the model's own limit
+// (Entry.Output, withMaxOutput).
+func OutputWithin(window, output int) int {
+	if window > 0 && output > window {
+		return window
+	}
+	return output
+}
+
+// PublishedOutput is e's reply limit as it is handed out beside its window
+// (OutputWithin).
+func (e Entry) PublishedOutput() int { return OutputWithin(e.Context, e.Output) }
 
 func outputOf(s settings.Settings, providerID, model string) int {
 	if n := s.ModelOutputs[providerID+"/"+model]; n > 0 {

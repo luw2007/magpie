@@ -9,6 +9,7 @@ package library
 // written with the value, the token would be in its file after all.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -39,6 +40,8 @@ const (
 	// refGoose: ${NAME} in a header, each name listed in env_keys; a
 	// command's variable only through env_keys, under its own name
 	refGoose
+	// refDsh: a !!js expression reading process.env (dshRef)
+	refDsh
 )
 
 // envSyntax is how the agent reads a reference in a remote server's
@@ -156,6 +159,18 @@ func (f *mcpFile) refsOf() envSyntax {
 		// headers and env, and refuses one unset (dist/cli.mjs
 		// resolveEnvPlaceholders)
 		return envSyntax{refDollar, refDollar}
+	case fmtDsh:
+		// DeepSeek Harness evaluates a YAML !!js value of a plugin's config
+		// as it activates the row, with its own process in reach (dsh
+		// 0.2.0-rc.2: cordis-plugin-include's entryListSchema reads the
+		// tag, quoted or not; cordis-plugin-loader's interpolate evaluates
+		// it all through the config). dsh-mcp-client's README gives a
+		// command GITHUB_TOKEN: !!js process.env.GITHUB_TOKEN, and a command
+		// needs it so: it inherits dsh's environment without the
+		// credential-shaped names (dsh-subprocess scrubbedParentEnv). Tried
+		// (#1435): the server got the token, and with the variable unset
+		// dsh left the server out, saying its config is invalid.
+		return envSyntax{refDsh, refDsh}
 	}
 	// None: Claude Desktop gives a command its env as written and only
 	// HOME, LOGNAME, PATH, SHELL, TERM and USER of its own (2.7032's app.asar
@@ -166,12 +181,13 @@ func (f *mcpFile) refsOf() envSyntax {
 	// and env on (kimi_cli/cli/__init__.py, fastmcp mcp_config.py). Cline's
 	// settings are plain strings (@cline/core 0.0.90). ZCode expands only
 	// its plugins' servers, not mcp.servers (zcode.cjs createTransport).
+	// Zed hands a command its env and a url its headers as written
+	// (zed-industries/zed 2c99f547: crates/context_server/src/transport/
+	// stdio_transport.rs command.envs, http.rs build_request).
 	// Alma
 	// 0.4.164 JSON.parses mcp.json and hands a command its env and a url
 	// its headers as written (out/main/index.js createStdioTransport,
-	// connectRemoteServer). DeepSeek
-	// Harness takes only a YAML !!js expression (dsh-mcp-client README),
-	// which magpie doesn't write. Devin's docs name ${env:NAME} for OAuth
+	// connectRemoteServer). Devin's docs name ${env:NAME} for OAuth
 	// fields only (extensibility/mcp/configuration.mdx), so its headers
 	// and env aren't known to read one.
 	return envSyntax{}
@@ -320,6 +336,123 @@ var (
 	openCodeRef = regexp.MustCompile(`\{env:([A-Za-z_][A-Za-z0-9_]*)\}`)
 	cursorRef   = regexp.MustCompile(`\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}`)
 )
+
+// dshEnvRef is the expression dsh reads a variable whole with.
+var dshEnvRef = regexp.MustCompile(`^process\.env\.([A-Za-z_][A-Za-z0-9_]*)$`)
+
+// dshRef is a value with references as the !!js expression dsh evaluates
+// to it, or false for one with none. A variable whole is process.env.NAME,
+// as dsh-mcp-client's README writes one, so dsh leaves the server out
+// while it's unset. In a longer value each variable is
+// (process.env.NAME ?? "") and the text around it JSON strings, which
+// JavaScript reads the same: what the user wrote is never code, and an
+// unset variable is empty rather than "undefined".
+func dshRef(v string) (dshJS, bool) {
+	if n := whole(v); n != "" {
+		return dshJS("process.env." + n), true
+	}
+	ms := envRef.FindAllStringSubmatchIndex(v, -1)
+	if len(ms) == 0 {
+		return "", false
+	}
+	var parts []string
+	lit := func(s string) {
+		if s != "" {
+			b, _ := json.Marshal(s)
+			parts = append(parts, string(b))
+		}
+	}
+	at := 0
+	for _, m := range ms {
+		lit(v[at:m[0]])
+		parts = append(parts, `(process.env.`+v[m[2]:m[3]]+` ?? "")`)
+		at = m[1]
+	}
+	lit(v[at:])
+	return dshJS(strings.Join(parts, " + ")), true
+}
+
+// dshPart is one operand of a longer value dshRef writes: a JSON string,
+// or a variable with "" in its place while unset.
+var dshPart = regexp.MustCompile(`^(?:"(?:[^"\\]|\\.)*"|\(process\.env\.([A-Za-z_][A-Za-z0-9_]*) \?\? ""\))`)
+
+// dshUnref is the value an expression dshRef writes stands for, its
+// references as the library writes them; false for any other expression,
+// which is dsh's to work out.
+func dshUnref(e dshJS) (string, bool) {
+	s := string(e)
+	if m := dshEnvRef.FindStringSubmatch(s); m != nil {
+		return "${" + m[1] + "}", true
+	}
+	var b strings.Builder
+	refs := 0
+	for i := 0; i == 0 || s != ""; i++ {
+		if i > 0 {
+			rest, ok := strings.CutPrefix(s, " + ")
+			if !ok {
+				return "", false
+			}
+			s = rest
+		}
+		m := dshPart.FindStringSubmatchIndex(s)
+		if m == nil {
+			return "", false
+		}
+		if m[2] >= 0 {
+			b.WriteString("${" + s[m[2]:m[3]] + "}")
+			refs++
+		} else {
+			var lit string
+			if json.Unmarshal([]byte(s[:m[1]]), &lit) != nil {
+				return "", false
+			}
+			b.WriteString(lit)
+		}
+		s = s[m[1]:]
+	}
+	if refs == 0 {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// dshRefs is m as dsh's entry has it, a value with a reference as its
+// expression; nil stays nil.
+func dshRefs(m map[string]string) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if e, ok := dshRef(v); ok {
+			out[k] = e
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// dshUnrefs is a dsh entry's headers or env with each expression dshRef
+// writes read back as the value it stands for; any other value, and
+// anything but a map, as it is.
+func dshUnrefs(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	out := make(map[string]any, len(m))
+	for k, x := range m {
+		if e, ok := x.(dshJS); ok {
+			if s, ok := dshUnref(e); ok {
+				out[k] = s
+				continue
+			}
+		}
+		out[k] = x
+	}
+	return out
+}
 
 // fromAgent is a value the agent has, with its references as the library
 // writes them.

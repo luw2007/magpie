@@ -246,7 +246,7 @@ type wslKind struct {
 
 var wslKinds = []wslKind{
 	{id: "codex", name: "Codex", dir: ".codex", bin: "codex", in: codexIn,
-		restart: "builds its model list at start-up — restart it (and the Codex app's WSL connection) to see this.",
+		restart: "builds its model list at start-up — restart it, the app-server its sessions share (" + provider.CodexDaemonRestart + " there) and the Codex app's WSL connection to see this.",
 		asleep: func(key string) func(map[string]string) []Option {
 			switch key {
 			case "model", "subagent":
@@ -255,10 +255,7 @@ var wslKinds = []wslKind{
 				}
 			case "effort":
 				return func(cur map[string]string) []Option {
-					if e := catalog.Efforts(append(catalog.Codex(), magpieModels("codex")...), cur["model"]); len(e) > 0 {
-						return static(e...)
-					}
-					return static("low", "medium", "high", "xhigh")
+					return codexEfforts(append(catalog.Codex(), magpieModels("codex")...), cur["model"])
 				}
 			}
 			return nil
@@ -443,6 +440,11 @@ var wslKinds = []wslKind{
 				return append(atomcodeOwnModels("", cur["model"]), viaMagpie("atomcode", magpieID+"/")...)
 			}
 		}},
+	// Snow CLI's ~/.snow, its profiles the distro's own; a stopped
+	// distro's are looked at once it is started
+	{id: "snow", name: "Snow CLI", dir: ".snow", bin: "snow", in: snowIn,
+		restart: "reads its profile at start-up — restart open snow sessions to use this.",
+		asleep:  wslOwnAsleep("snow", "model")},
 	// no dir: Antigravity keeps its folders in ~/.gemini too, so only the
 	// command says Gemini CLI is there
 	{id: "gemini", name: "Gemini CLI", bin: "gemini", in: geminiIn,

@@ -93,14 +93,17 @@ type Model struct {
 
 // Session is one agent session.
 type Session struct {
-	ReadOnly bool      `json:"read_only,omitempty"`
-	Agent    string    `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, droid, cursor, hermes, alma
-	ID       string    `json:"id"`
-	Cwd      string    `json:"cwd"`
-	Title    string    `json:"title"` // the name it was given, else the agent's own title, else the first prompt
-	Start    time.Time `json:"start"`
-	Last     time.Time `json:"last"`
-	Models   []Model   `json:"models"`
+	ReadOnly bool `json:"read_only,omitempty"`
+	// Gateway: seen only through magpie's gateway, with no file of the
+	// agent's on this computer (external.go)
+	Gateway bool      `json:"gateway,omitempty"`
+	Agent   string    `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, droid, cursor, hermes, alma
+	ID      string    `json:"id"`
+	Cwd     string    `json:"cwd"`
+	Title   string    `json:"title"` // the name it was given, else the agent's own title, else the first prompt
+	Start   time.Time `json:"start"`
+	Last    time.Time `json:"last"`
+	Models  []Model   `json:"models"`
 	Tokens
 	Cost     float64 `json:"cost"`     // USD at the effective price, for the priced models
 	Unpriced int     `json:"unpriced"` // models that spent tokens but have no known price

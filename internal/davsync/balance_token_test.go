@@ -12,7 +12,8 @@ import (
 )
 
 // A computer sending no keys leaves the server's balance token in place,
-// just as it leaves its API keys. Sending keys replaces the token too.
+// just as it leaves its API keys. Sending keys replaces the token too. A
+// Volcengine access key (#1427) goes the same way, ID and Secret together.
 func TestTakeBalanceToken(t *testing.T) {
 	for _, c := range []struct {
 		name                     string
@@ -37,12 +38,14 @@ func TestTakeBalanceToken(t *testing.T) {
 				server.Key, server.BalanceToken = "sk-server", "balance-server"
 				server.Keys = []provider.KeyAccount{{ID: "stable-server", Key: "sk-server"}}
 				server.KeyID = "stable-server"
+				server.AccessKeyID, server.SecretAccessKey = "AK-server", "SK-server"
 			}
 			incoming := provider.Provider{ID: "relay", Name: "New", Chat: "https://new.example.com/v1", BalanceToken: c.token}
 			if c.incomingKeys {
 				incoming.Key = "sk-new"
 				incoming.Keys = []provider.KeyAccount{{ID: "stable-new", Key: "sk-new"}}
 				incoming.KeyID = "stable-new"
+				incoming.AccessKeyID, incoming.SecretAccessKey = "AK-new", "SK-new"
 			}
 			to := backup.Bundle{Keys: c.serverKeys, Providers: []provider.Provider{server}}
 			from := backup.Bundle{Keys: c.incomingKeys, Providers: []provider.Provider{incoming}}
@@ -54,15 +57,21 @@ func TestTakeBalanceToken(t *testing.T) {
 			if got.BalanceToken != c.want || got.Name != incoming.Name || got.Chat != incoming.Chat {
 				t.Fatalf("merged: %+v, want balance token %q and the incoming name and URL", got, c.want)
 			}
-			// The merge preserves whichever side's KeyAccount secrets the
-			// scoped-keys flag selected — Provider.Key is transient and
-			// not synthesized by take(), so we assert via Keys[].Key.
+			// The merge preserves whichever side's credential set the
+			// scoped-keys flag selected.
 			if c.serverKeys || c.incomingKeys {
 				if len(got.Keys) != 1 || got.Keys[0].Key == "" {
 					t.Fatalf("expected one key with secret to survive merge, got Keys=%v", got.Keys)
 				}
 			} else if len(got.Keys) != 0 {
 				t.Fatalf("keyless merge should carry no keys, got Keys=%v", got.Keys)
+			}
+			wantAK, wantSK := incoming.AccessKeyID, incoming.SecretAccessKey
+			if c.serverKeys && !c.incomingKeys {
+				wantAK, wantSK = server.AccessKeyID, server.SecretAccessKey
+			}
+			if got.AccessKeyID != wantAK || got.SecretAccessKey != wantSK {
+				t.Fatalf("access key: %q %q, want %q %q", got.AccessKeyID, got.SecretAccessKey, wantAK, wantSK)
 			}
 			if to.Keys != (c.serverKeys || c.incomingKeys) || (to.Keys || (to.ProvidersKeys != nil && *to.ProvidersKeys)) != (c.serverKeys || c.incomingKeys) {
 				t.Fatalf("keys flag after merge: %+v", to)
@@ -105,7 +114,7 @@ func TestSyncBalanceToken(t *testing.T) {
 			// Computer a provisions relay -------------------------------
 			use(a)
 			if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Chat: "https://relay.example.com/v1",
-				Key: "sk-a", BalanceToken: "balance-a"}); err != nil {
+				Key: "sk-a", BalanceToken: "balance-a", AccessKeyID: "AK-a", SecretAccessKey: "SK-a"}); err != nil {
 				t.Fatal(err)
 			}
 			if err := Configure(cfg); err != nil {
@@ -113,15 +122,12 @@ func TestSyncBalanceToken(t *testing.T) {
 			}
 			now()
 
-			// Bundle never serializes Provider.Key (runtime field); secrets
-			// live only in Keys[i].Key. ProvidersKeys decides whether
-			// Keys[i].Key and BalanceToken survive the upload: true keeps
-			// as-saved (sk-a, balance-a); false redacts (empty).
-			wantFirstBal := ""
+			// Provider.Key is runtime-only; Keys[i].Key carries inference secrets.
+			wantToken, wantSecret := "", ""
 			if serverKeys {
-				wantFirstBal = "balance-a"
+				wantToken, wantSecret = "balance-a", "SK-a"
 			}
-			if got := remote(); got.Keys != serverKeys || len(got.Providers) != 1 || got.Providers[0].BalanceToken != wantFirstBal {
+			if got := remote(); got.Keys != serverKeys || len(got.Providers) != 1 || got.Providers[0].BalanceToken != wantToken || got.Providers[0].SecretAccessKey != wantSecret {
 				t.Fatalf("first upload: %+v", got)
 			}
 			r := remote().Providers[0]
@@ -138,7 +144,7 @@ func TestSyncBalanceToken(t *testing.T) {
 			// Computer b overwrites relay -------------------------------
 			use(b)
 			if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay b", Chat: "https://relay.example.com/v1",
-				Key: "sk-b", BalanceToken: "balance-b"}); err != nil {
+				Key: "sk-b", BalanceToken: "balance-b", AccessKeyID: "AK-b", SecretAccessKey: "SK-b"}); err != nil {
 				t.Fatal(err)
 			}
 			keyless := cfg
@@ -148,71 +154,42 @@ func TestSyncBalanceToken(t *testing.T) {
 			}
 			now()
 
-			// b's keyless download from server. In keyless mode the bundle
-			// round-trip may have redacted Keys[0].Key on BOTH sides
-			// (server also runs through withoutKeys when cfg.Keys=false).
-			// normalizeKeys does NOT synthesize Provider.Key from an empty
-			// Keys[0].Key — so ps[0].Key and Keys[0].Key both stay "" in
-			// the keyless-server path. BalanceToken path is separate:
-			// take() preserves the server's balance-a only when it has
-			// keys server-side; withoutKeys clears it too, so b ends up
-			// with its own balance-b on both paths below.
-			localBal := "balance-b"
+			localKey, localToken, localSecret := "sk-b", "balance-b", "SK-b"
 			if serverKeys {
-				localBal = "balance-a"
+				localKey, localToken, localSecret = "sk-a", "balance-a", "SK-a"
 			}
 			ps, _ := provider.Stored()
-			if len(ps) != 1 {
-				t.Fatalf("b after download: no providers: %+v", ps)
-			}
-			if ps[0].BalanceToken != localBal {
-				t.Fatalf("b after download BalanceToken got %q, want %q: %+v", ps[0].BalanceToken, localBal, ps[0])
-			}
-			wantKey := "sk-b"
-			if serverKeys {
-				wantKey = "sk-a"
-			}
-			if ps[0].Key != wantKey {
-				t.Fatalf("b after download key got %q, want %q", ps[0].Key, wantKey)
+			p, err := provider.Find("relay")
+			if err != nil || len(ps) != 1 || p.Key != localKey || p.BalanceToken != localToken || p.SecretAccessKey != localSecret {
+				t.Fatalf("b after download: raw=%+v normalized=%+v err=%v", ps, p, err)
 			}
 
-			p := ps[0]
 			p.Name, p.BalanceToken = "Renamed", "balance-b-new"
-			if err := provider.Save(p); err != nil {
+			if err := provider.Save(*p); err != nil {
 				t.Fatal(err)
 			}
 			now()
 
-			// b's keyless upload → ProvidersKeys = false → withoutKeys
-			// redacts both Keys[i].Key and BalanceToken. take() on server
-			// merge: server had its own scoped-keys policy, so whichever
-			// was true wins, keyless server → redacted incoming wins.
-			wantAfterUpBal := ""
-			if serverKeys {
-				wantAfterUpBal = "balance-a"
-			}
 			r = remote().Providers[0]
-			if remote().Keys != serverKeys || len(remote().Providers) != 1 || remote().Providers[0].Name != "Renamed" || r.BalanceToken != wantAfterUpBal {
-				t.Fatalf("after b's keyless upload: %+v", remote())
+			if got := remote(); got.Keys != serverKeys || len(got.Providers) != 1 || got.Providers[0].Name != "Renamed" || got.Providers[0].BalanceToken != wantToken || got.Providers[0].SecretAccessKey != wantSecret {
+				t.Fatalf("after b's keyless upload: %+v", got)
 			}
 			if serverKeys {
 				if len(r.Keys) != 1 || r.Keys[0].Key != "sk-a" {
 					t.Fatalf("after b's keyless upload should keep server sk-a, got %+v", r)
 				}
-			} else {
-				if r.Key != "" || slices.ContainsFunc(r.Keys, func(k provider.KeyAccount) bool { return k.Key != "" }) {
-					t.Fatalf("after b's keyless upload should redact key, got %+v", r)
-				}
+			} else if r.Key != "" || slices.ContainsFunc(r.Keys, func(k provider.KeyAccount) bool { return k.Key != "" }) {
+				t.Fatalf("after b's keyless upload should redact key, got %+v", r)
 			}
-			if ps, _ := provider.Stored(); len(ps) != 1 || ps[0].BalanceToken != "balance-b-new" {
-				t.Fatalf("upload changed b's token: %+v", ps)
+			if p, err := provider.Find("relay"); err != nil || p.BalanceToken != "balance-b-new" {
+				t.Fatalf("upload changed b's token: %+v %v", p, err)
 			}
 
 			// Computer a sees the rename -------------------------------
 			use(a)
 			now()
-			if ps, _ := provider.Stored(); len(ps) != 1 || ps[0].Name != "Renamed" || ps[0].Key != "sk-a" || ps[0].BalanceToken != "balance-a" {
-				t.Fatalf("a after download: %+v", ps)
+			if p, err := provider.Find("relay"); err != nil || p.Name != "Renamed" || p.Key != "sk-a" || p.BalanceToken != "balance-a" || p.AccessKeyID != "AK-a" || p.SecretAccessKey != "SK-a" {
+				t.Fatalf("a after download: %+v %v", p, err)
 			}
 		})
 	}

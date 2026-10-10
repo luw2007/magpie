@@ -746,8 +746,12 @@ type Via struct {
 // Vias is what the gateway sent each session's calls to since a time, by
 // agent id and the session's id ("codex|<id>"), the most calls first.
 func Vias(since time.Time) map[string][]Via {
+	return cachedVias(since)
+}
+
+func buildVias(snapshot *logSnapshot, since time.Time) map[string][]Via {
 	out := map[string][]Via{}
-	readLogSnapshot().visit(since, func(r Record) {
+	snapshot.visit(since, func(r Record) {
 		if r.IsRejected() || r.Session == "" || r.Model == "" {
 			return
 		}

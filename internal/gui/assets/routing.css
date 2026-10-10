@@ -119,7 +119,7 @@
 .rt-log { padding-top: 10px; margin-top: 10px; border-top: 1px solid var(--line); }
 .rt-log-head { display: flex; align-items: center; font-size: 12px; font-weight: 600; color: var(--fg); }
 .rt-log-head .grow { flex: 1; }
-.rt-steps { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 5px; counter-reset: rt; }
+.rt-steps { list-style: none; margin: 6px 0 0; padding: 0; display: grid; align-content: start; gap: 5px; counter-reset: rt; }
 .rt-steps li { position: relative; padding-left: 20px; font-size: 12.5px; line-height: 1.45; color: var(--fg-2); }
 .rt-steps li::before { content: ""; position: absolute; left: 5px; top: .5em; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .rt-steps li.why { color: var(--fg); }

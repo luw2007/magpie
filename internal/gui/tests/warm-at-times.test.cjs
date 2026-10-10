@@ -54,6 +54,10 @@ const W = {
   de: { one: "Startet das 5-Stunden-Zeitfenster jedes Kontos täglich zu dieser Uhrzeit", many: "Startet das 5-Stunden-Zeitfenster jedes Kontos täglich zu jeder dieser Uhrzeiten", add: "Uhrzeit hinzufügen", rm: "15:05 entfernen", off: "Aus" },
 };
 
+// the reader's locale with their language: WebKit draws a time field in
+// the locale's clock (12-hour en-US, 24-hour zh, ja, de), not the machine's
+const LOCALE = { en: "en-US", zh: "zh-CN", ja: "ja-JP", de: "de-DE" };
+
 // what of the Daily warm-up row runs off its side, or is squeezed
 const sideways = (page) => page.evaluate(() => {
   const out = [];
@@ -61,10 +65,26 @@ const sideways = (page) => page.evaluate(() => {
   if (de.scrollWidth > de.clientWidth) out.push("page");
   if (v.scrollWidth > v.clientWidth) out.push("view");
   const row = document.querySelector("#warmAtSegs").closest(".row"), rr = row.getBoundingClientRect();
+  // the width a time field takes when nothing presses on it: a copy in a
+  // .warm-at of its own, out of the flow, in the same row. A 24-hour
+  // "09:00" is ~59px in WebKit and a 12-hour "09:00 AM" ~82px, so the
+  // floor is the field's own text, not a fixed width (#1353)
+  const natural = (i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "warm-at";
+    wrap.style.cssText = "position:absolute; left:0; top:0; width:max-content; visibility:hidden";
+    const c = i.cloneNode();
+    c.value = i.value;
+    wrap.append(c);
+    row.append(wrap);
+    const w = c.getBoundingClientRect().width;
+    wrap.remove();
+    return w;
+  };
   for (const e of row.querySelectorAll(".name, .sub, .segs, input, button")) {
     const b = e.getBoundingClientRect();
     if (b.right > rr.right + 0.5 || b.left < rr.left - 0.5) out.push(e.className || e.tagName);
-    if (e.tagName === "INPUT" && b.width < 60) out.push("time field squeezed to " + b.width);
+    if (e.tagName === "INPUT" && b.width < natural(e) - 0.5) out.push(`time field squeezed to ${b.width} of ${natural(e)}`);
   }
   const name = row.querySelector(".name").getBoundingClientRect();
   if (name.width < 40) out.push("name squeezed to " + name.width);
@@ -81,7 +101,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // motion as most readers have it: with Reduce Motion, app.css's
         // .01ms transition on every element puts off the room the page
         // makes at its foot, and a control pressed there isn't held
-        const page = await (await browser.newContext({ viewport: { width, height: 800 } })).newPage();
+        const page = await (await browser.newContext({ viewport: { width, height: 800 }, locale: LOCALE[lang] })).newPage();
         page.setDefaultTimeout(5000);
         const errors = [], posts = [];
         page.on("pageerror", (e) => errors.push(e.message));

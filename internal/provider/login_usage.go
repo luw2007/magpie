@@ -35,12 +35,31 @@ type loginRead struct {
 }
 
 // loginUsageFor, when set, stands in for LoginUsage's readings (tests),
-// as UsageClaudeVia does for Claude's own.
-var loginUsageFor func(ctx context.Context, agent string) map[string]SubscriptionQuota
+// as UsageClaudeVia does for Claude's own. It is held for reading while it
+// runs: Allowances reads in the background and returns without waiting,
+// so a reading it began can outlast the test that set the stand-in.
+var loginUsageFor struct {
+	sync.RWMutex
+	f func(ctx context.Context, agent string) map[string]SubscriptionQuota
+}
 
-// LoginUsageVia has tests stand in for LoginUsage's readings.
+// LoginUsageVia has tests stand in for LoginUsage's readings. It returns
+// once no reading is still running through the one it replaces, and none
+// starts through it after.
 func LoginUsageVia(f func(ctx context.Context, agent string) map[string]SubscriptionQuota) {
-	loginUsageFor = f
+	loginUsageFor.Lock()
+	loginUsageFor.f = f
+	loginUsageFor.Unlock()
+}
+
+// loginUsageStandIn is the stand-in's reading, and false when there is none.
+func loginUsageStandIn(ctx context.Context, agent string) (map[string]SubscriptionQuota, bool) {
+	loginUsageFor.RLock()
+	defer loginUsageFor.RUnlock()
+	if loginUsageFor.f == nil {
+		return nil, false
+	}
+	return loginUsageFor.f(ctx, agent), true
 }
 
 // LoginUsage is the allowance used by each of an agent's accounts, by
@@ -57,8 +76,8 @@ func LoginUsage(ctx context.Context, agent string) map[string]SubscriptionQuota 
 // counts its own minute from then, not from when it asked (#1295).
 func loginUsageAt(ctx context.Context, agent string) (map[string]SubscriptionQuota, time.Time) {
 	asked := time.Now()
-	if loginUsageFor != nil {
-		return loginUsageFor(ctx, agent), asked
+	if out, ok := loginUsageStandIn(ctx, agent); ok {
+		return out, asked
 	}
 	out := map[string]SubscriptionQuota{}
 	if agent == "grok" {

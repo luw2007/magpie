@@ -313,16 +313,27 @@ func TestCollectCarriesTypedKeysOnlyWhenAsked(t *testing.T) {
 				t.Fatal(err)
 			}
 			row := providerRow(t, b, typedProviderID)
-			if keys {
-				if row.Key != fixtureTypedKey || row.BalanceToken != fixtureBalance {
-					t.Errorf("a keyed bundle left a typed key or balance token out: %+v", row)
+			// Fork identity: Provider.Key is a runtime mirror and is never
+			// saved; the typed key and the second key are both persisted
+			// KeyAccounts with their own ids, in the order typed.
+			secrets := make([]string, 0, len(row.Keys))
+			for _, k := range row.Keys {
+				if k.ID == "" {
+					t.Errorf("a saved key lost its persistent identity: %+v", row.Keys)
 				}
-				if len(row.Keys) != 1 || row.Keys[0].Key != fixtureSecondKey {
-					t.Errorf("a keyed bundle left a typed second key out: %+v", row.Keys)
+				secrets = append(secrets, k.Key)
+			}
+			if keys {
+				if row.BalanceToken != fixtureBalance {
+					t.Errorf("a keyed bundle left a typed balance token out: %+v", row)
+				}
+				if !slices.Equal(secrets, []string{fixtureTypedKey, fixtureSecondKey}) {
+					t.Errorf("a keyed bundle left a typed key out: %+v", row.Keys)
 				}
 				return
 			}
-			if row.Key != "" || row.BalanceToken != "" || len(row.Keys) != 0 {
+			// A keyless bundle keeps each key's identity and name, blanked.
+			if row.Key != "" || row.BalanceToken != "" || len(row.Keys) != 2 || slices.ContainsFunc(secrets, func(s string) bool { return s != "" }) {
 				t.Errorf("a keyless bundle carried a typed credential: %+v", row)
 			}
 			// The key is out of the bundle, not merely blanked in it.

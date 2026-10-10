@@ -46,6 +46,8 @@
     <a href="/docs/start">Get started</a>
     <a href="/docs/intent">Intent routing</a>
     <a href="/docs/plugins">Plugins</a>
+    <a class="toc-only" href="/docs/remote">Remote magpie</a>
+    <a class="toc-only" href="/docs/docker">Docker</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie-releases/releases">Releases</a>
@@ -145,6 +147,7 @@
       <tr><td>Codex</td><td><code>~/.codex/config.toml</code>: a <code>[model_providers.magpie]</code> table and the model, with the list in <code>magpie-models.json</code>. Your ChatGPT sign-in is left alone</td></tr>
       <tr><td>OpenCode, MiMo Code, Pi, Crush</td><td>A <code>magpie</code> provider entry, and <code>magpie/provider/model</code></td></tr>
       <tr><td>AtomCode</td><td><code>~/.atomcode/config.toml</code>: a <code>magpie</code> provider account and one model entry per catalog model</td></tr>
+      <tr><td>Snow CLI</td><td><code>~/.snow/profiles/magpie.json</code>: a <code>magpie</code> profile, made the active one (Snow App takes it in with "Sync Snow CLI API config")</td></tr>
       <tr><td>Gemini CLI</td><td><code>GOOGLE_GEMINI_BASE_URL</code> pointed at the gateway, API-key auth, and the model</td></tr>
     </table></div>
     <p><b>A running session keeps the model it started with.</b> Agents read their config when they start, so the change applies to the next session. Codex builds its model list at start-up too: restart the Codex app and open <code>codex</code> sessions after a switch.</p>
@@ -284,6 +287,8 @@ IP-CIDR6,::1/128,DIRECT,no-resolve</pre>
     <a href="/">Home</a>
     <a href="/docs/intent">Intent routing</a>
     <a href="/docs/plugins">Plugins</a>
+    <a href="/docs/remote">Remote magpie</a>
+    <a href="/docs/docker">Docker</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie">GitHub</a>

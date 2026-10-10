@@ -443,6 +443,16 @@ func nameAlike(ls []savedLogin) []savedLogin {
 	return ls
 }
 
+// codexLiveName is the name the ChatGPT account Codex is signed in to
+// (auth, as auth.json has it; user, codexUser's) goes by: the one it is
+// saved under, which may not be codexUser's (codexName). Two seats of one
+// email in two Team workspaces read alike by codexUser's, and everything
+// that goes by the account's name — its allowance, its rests, its cap,
+// the Routing page — took the one Codex is on for the other one (#1424).
+func codexLiveName(user string, auth json.RawMessage) string {
+	return codexName(readLogins(), savedLogin{Agent: "codex", User: user, Auth: auth})
+}
+
 // codexUser names a ChatGPT account from its ID token's claims: its email,
 // and for a seat in a workspace the plan too, so it reads apart from a
 // personal plan of the same email.
@@ -612,8 +622,7 @@ func liveLogin(agent string) (savedLogin, bool) {
 		}
 		l := savedLogin{Agent: agent, User: user, Plan: claimString(id, "https://api.openai.com/auth", "chatgpt_plan_type"),
 			Auth: json.RawMessage(bytes.TrimSpace(b))}
-		// by the name it is saved under, which may not be codexUser's
-		l.User = codexName(readLogins(), l)
+		l.User = codexLiveName(user, l.Auth)
 		return l, true
 	case "claude":
 		c, _, ok := claudeCredential()

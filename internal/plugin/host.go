@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -491,6 +492,54 @@ type writeReq struct {
 type Loaded struct {
 	Spec  string `json:"spec"`
 	Error string `json:"error,omitempty"`
+	// Provides are the provider ids its auth hooks sign in to
+	Provides []string `json:"provides,omitempty"`
+	// ServedBy is, for each of them another plugin signs in to and
+	// serves, that plugin's spec: the host runs one plugin per provider
+	// id (Prefer)
+	ServedBy map[string]string `json:"servedBy,omitempty"`
+}
+
+// Clash is a provider id more than one plugin signs in to. The host runs
+// one of them for it: the one the user picked (Prefer), else the last in
+// plugins.json, as OpenCode does. The others' sign-in to it goes unused.
+type Clash struct {
+	ID string `json:"id"` // the provider id, OpenCode's
+	By string `json:"by"` // the spec of the plugin that serves it
+	// With are the other plugins that sign in to it
+	With []string `json:"with"`
+}
+
+// Clashes are the provider ids each loaded plugin shares with another,
+// by the plugin's spec.
+func Clashes(loaded []Loaded) map[string][]Clash {
+	who := map[string][]string{}
+	var ids []string
+	for _, l := range loaded {
+		for _, id := range l.Provides {
+			if who[id] == nil {
+				ids = append(ids, id)
+			}
+			who[id] = append(who[id], l.Spec)
+		}
+	}
+	out := map[string][]Clash{}
+	for _, id := range ids {
+		specs := who[id]
+		if len(specs) < 2 {
+			continue
+		}
+		by := ""
+		for _, l := range loaded {
+			if slices.Contains(specs, l.Spec) && l.ServedBy[id] == "" {
+				by = l.Spec
+			}
+		}
+		for _, s := range specs {
+			out[s] = append(out[s], Clash{ID: id, By: by, With: slices.DeleteFunc(slices.Clone(specs), func(x string) bool { return x == s })})
+		}
+	}
+	return out
 }
 
 var (
@@ -807,6 +856,7 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		"piPath":        pi,
 		"directory":     settings.Dir(),
 		"config":        l.Config,
+		"prefer":        l.Prefer,
 		"plugins":       items,
 	}, &res)
 	if err != nil {

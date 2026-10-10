@@ -24,7 +24,7 @@ import (
 // — the subscriptions magpie remembers, how much of each one's allowance is
 // used, and switching the agent between them.
 func accountsCmd(args []string) error {
-	const usage = "usage: magpie accounts [claude|codex|grok|copilot|gemini|antigravity|zed|factory|mimo|<plugin>] [--json] | magpie accounts add <claude|codex|gemini|antigravity|zed|factory|mimo|<plugin>> | magpie accounts add copilot [--host <name>.ghe.com] | magpie accounts refresh [--json] | magpie accounts checkin [--json] | magpie accounts switch|forget <claude|codex|gemini|antigravity|zed|factory|mimo|<plugin>> <email> | magpie accounts switch|forget copilot <login>[@<name>.ghe.com] [--host <name>.ghe.com] | magpie accounts project <gemini|antigravity> <email> <gcp-project-id>"
+	const usage = "usage: magpie accounts [claude|codex|grok|copilot|gemini|antigravity|zed|factory|mimo|<plugin>] [--json] | magpie accounts add <claude|codex|gemini|antigravity|zed|factory|mimo|<plugin>> | magpie accounts add copilot [--host <name>.ghe.com] | magpie accounts import <codex|claude|antigravity|factory> <file>... [--yes] | magpie accounts refresh [--json] | magpie accounts checkin [--json] | magpie accounts switch|forget <claude|codex|gemini|antigravity|zed|factory|mimo|<plugin>> <email> | magpie accounts switch|forget copilot <login>[@<name>.ghe.com] [--host <name>.ghe.com] | magpie accounts project <gemini|antigravity> <email> <gcp-project-id>"
 	agentID := func(s string) (string, error) {
 		switch strings.ToLower(s) {
 		case "claude", "cc":
@@ -67,6 +67,9 @@ func accountsCmd(args []string) error {
 			fmt.Println(green.Render("✓"), args[3], "now uses Google Cloud project", args[4])
 		}
 		return nil
+	}
+	if len(args) > 1 && args[1] == "import" {
+		return importAccounts(args[2:])
 	}
 	if len(args) > 1 && args[1] == "refresh" {
 		return refreshAccounts(len(args) > 2 && args[2] == "--json")
@@ -430,6 +433,142 @@ func addAccount(agentID string) error {
 		return fmt.Errorf("sign-in didn't finish: %s", st.Error)
 	}
 	return fmt.Errorf("sign-in canceled")
+}
+
+// importUsage is how `magpie accounts import` is run.
+const importUsage = "usage: magpie accounts import <codex|claude|antigravity|factory> <file>... [--yes]"
+
+// importAccounts: `magpie accounts import <agent> <file>... [--yes]` brings
+// in accounts from other tools' files, as the window's "Import accounts from
+// a file…" does (#1453): Codex's auth.json, Cockpit Tools', CLIProxyAPI's
+// and Sub2API's exports for ChatGPT; Claude Code's .credentials.json and
+// CLIProxyAPI's for Claude; Antigravity Cockpit's, Antigravity Manager's
+// and CLIProxyAPI's for Antigravity; Factory API keys. The files are only
+// read. What importing does to the tool the file came from is said first,
+// and nothing is imported until that is agreed to (--yes agrees).
+func importAccounts(args []string) error {
+	yes := false
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "--yes", "-y":
+			yes = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) < 2 {
+		return fmt.Errorf("%s", importUsage)
+	}
+	var id string
+	switch strings.ToLower(rest[0]) {
+	case "codex", "chatgpt":
+		id = "codex"
+	case "claude", "cc":
+		id = "claude"
+	case "antigravity", "ag":
+		id = "antigravity"
+	case "factory", "droid":
+		id = "factory"
+		if provider.Moved(id) {
+			return fmt.Errorf("Factory runs on its plugin now: add the key with magpie accounts add factory")
+		}
+	default:
+		return fmt.Errorf("%q: accounts can be imported for codex, claude, antigravity and factory\n%s", rest[0], importUsage)
+	}
+	paths := rest[1:]
+	files := make([]string, len(paths))
+	for i, p := range paths {
+		// a file that can't be read stops the import: what it holds isn't
+		// known, so it isn't taken for a file with nothing in it
+		st, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		if st.Size() > 4<<20 {
+			return fmt.Errorf("%s is too big to be an export", p)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files[i] = string(b)
+	}
+	var say []string
+	switch id {
+	case "codex":
+		say = []string{"Each account's sign-in is refreshed with ChatGPT before it is added, as signing in does.",
+			"That spends the file's sign-in: the tool it came from (Codex CLI on another computer, Cockpit Tools, CLIProxyAPI) is signed out of that account and has to sign in again. From then on the account is magpie's.",
+			"The files are only read, never changed. An account magpie holds already is left as it is."}
+	case "claude":
+		say = []string{provider.ClaudeRisk,
+			"Each account is kept as the file has it. Claude Code renews its sign-in the first time it uses it, and the file's copy then stops working: the tool it came from has to sign in again.",
+			"The files are only read, never changed."}
+	case "antigravity":
+		say = []string{provider.AntigravityRisk, "Each account's sign-in is refreshed with Google before it is added."}
+	case "factory":
+		say = []string{"Each key is asked whose Factory account it is before it is added."}
+	}
+	for _, s := range say {
+		fmt.Println(bold.Render("!"), s)
+	}
+	if !yes {
+		fmt.Print("Import? [y/N] ")
+		var answer string
+		fmt.Scanln(&answer)
+		if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+			return fmt.Errorf("import canceled")
+		}
+	}
+	ctx, stop := interruptContext()
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	var res []provider.ImportedAccount
+	var err error
+	switch id {
+	case "codex", "claude":
+		res, err = provider.ImportLogins(ctx, id, files)
+	case "antigravity":
+		res, err = provider.ImportGoogleAccounts(ctx, id, files)
+	case "factory":
+		res, err = provider.ImportFactoryKeys(ctx, files)
+	}
+	if err != nil {
+		if len(paths) == 1 {
+			return fmt.Errorf("%s: %w", paths[0], err)
+		}
+		return err
+	}
+	took := 0
+	for _, r := range res {
+		who := r.User
+		if r.File > 0 && r.File <= len(paths) {
+			who = paths[r.File-1]
+		}
+		switch r.Status {
+		case "added":
+			took++
+			plan := ""
+			if r.Plan != "" {
+				plan = " · " + r.Plan
+			}
+			fmt.Println(green.Render("✓"), "added", who+plan)
+		case "updated":
+			took++
+			fmt.Println(green.Render("✓"), who, muted.Render("· in magpie already, now with this sign-in"))
+		case "exists":
+			took++
+			fmt.Println(muted.Render("="), who, muted.Render("· in magpie already with this sign-in, left as it is"))
+		default:
+			fmt.Println(bold.Render("✗"), who+":", r.Error)
+		}
+	}
+	if took == 0 {
+		return fmt.Errorf("nothing imported")
+	}
+	fmt.Println(faint.Render("  see them: magpie accounts " + id))
+	return nil
 }
 
 // openInBrowser opens url in the user's browser. It is a variable so the

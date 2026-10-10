@@ -486,8 +486,22 @@ func callbackBaseURL() string {
 
 // from, when set, is the conversation's session a run let go past idleMost
 // saved (unshelve): Claude Code goes on with it, told only the messages
-// since.
+// since. One that can't go on from it is let go with the session, and a
+// new Claude Code is told the whole conversation: Claude Code that can't
+// load a session ("No conversation found with session ID") exits before it
+// reads its input, and the turn was answered 502 "Claude Code ended"
+// (FrierenF on Discord).
 func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
+	run, events, err := b.startRun(ctx, req, model, configDir, owner, from)
+	if err != nil && from != nil {
+		log.Printf("claude: Claude Code could not go on from the conversation's saved session (%v); a new one is told the whole conversation", err)
+		return b.startRun(ctx, req, model, configDir, owner, nil)
+	}
+	return run, events, err
+}
+
+// startRun is start's Claude Code, from the saved session from when set.
+func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
 	binary, err := claudeBinary()
 	if err != nil {
 		return nil, nil, err
@@ -630,9 +644,13 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
 		run.readOutput(stdout)
 	}()
 
-	if len(req.Safeguards) > 0 {
+	if len(req.Safeguards) > 0 || from != nil {
 		// Initialize the SDK before applying settings. Send the potentially
-		// large context over stdin rather than an environment entry.
+		// large context over stdin rather than an environment entry. A
+		// Claude Code resumed from a saved session answers it only once
+		// it has loaded the session, and one that can't exits instead
+		// (start tells a new one the whole conversation): told the turn
+		// first, it ended with no reply.
 		if err := run.cliControl(map[string]any{"subtype": "initialize"}); err != nil {
 			run.abort()
 			return nil, nil, err
@@ -700,10 +718,13 @@ func (r *subscriptionRun) setSafeguards(req *Request) error {
 func (r *subscriptionRun) cliControl(request map[string]any) error {
 	id := randomToken()
 	ch := make(chan controlReply, 1)
+	// one that ended says how, and the last it wrote to stderr: "Claude
+	// Code ended" alone left the user nothing to act on
+	what := fmt.Sprintf("answered magpie's %v request", request["subtype"])
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return errors.New("Claude Code ended")
+		return r.endedBefore(what)
 	}
 	if r.controls == nil {
 		r.controls = map[string]chan controlReply{}
@@ -724,14 +745,14 @@ func (r *subscriptionRun) cliControl(request map[string]any) error {
 	select {
 	case reply, ok := <-ch:
 		if !ok {
-			return errors.New("Claude Code ended")
+			return r.endedBefore(what)
 		}
 		if reply.Subtype != "success" {
 			return fmt.Errorf("Claude settings: %s", reply.Error)
 		}
 		return nil
 	case <-t.C:
-		return errors.New("Claude Code did not acknowledge safety context")
+		return fmt.Errorf("Claude Code has not %s in 10s", what)
 	}
 }
 
@@ -2988,11 +3009,17 @@ func (r *subscriptionRun) tell(line []byte) error {
 // whyEnded says how the run's Claude Code ended, or that magpie ended it,
 // and the last it wrote to stderr.
 func (r *subscriptionRun) whyEnded() error {
+	return r.endedBefore("read its input")
+}
+
+// endedBefore is whyEnded for a run that ended before it did what: its
+// exit status (once Wait has it) and its stderr's tail.
+func (r *subscriptionRun) endedBefore(what string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	why := "exited before it read its input"
+	why := "exited before it " + what
 	if r.killed {
-		why = "was ended by magpie before it read its input"
+		why = "was ended by magpie before it " + what
 	} else if r.exit != nil {
 		why += " (" + r.exit.Error() + ")"
 	}

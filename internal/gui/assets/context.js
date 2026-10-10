@@ -250,7 +250,7 @@
     tip.hidden = true;
     const contents = el("div", "ctx-contents"), ch = el("div", "ctx-contents-head"), list = el("div", "ctx-rows");
     contents.append(ch, list);
-    let parts = null, cur = null, cacheShown = false, chKey = "";
+    let parts = null, cur = null, cacheShown = false, lastCache = null, cacheWhose = "", chKey = "";
     let tab = opts.tab || "all", more = false;
 
     const showTip = (target) => {
@@ -372,8 +372,19 @@
         };
         title = fold;
       }
-      const st = el("span", "ctx-state " + (live ? "live" : p.counted ? "counted" : "est"));
-      st.append(el("i"), t(live ? "Live" : p.counted ? "Counted" : "Estimated"));
+      // the state's words are all there, one shown: the pill is as wide as
+      // the widest in any language, so the model beside it doesn't move as
+      // a request goes from Live to Counted (dumplings on Discord: each
+      // request made the card jitter)
+      const state = live ? "live" : p.counted ? "counted" : "est";
+      const st = el("span", "ctx-state " + state);
+      const words = el("span", "ctx-state-w");
+      for (const [k, w] of [["live", "Live"], ["counted", "Counted"], ["est", "Estimated"]]) {
+        const word = el("span", k === state ? "on" : "", t(w));
+        if (k !== state) word.setAttribute("aria-hidden", "true");
+        words.append(word);
+      }
+      st.append(el("i"), words);
       st.title = t(live ? "The request is on its way: the prompt is estimated from what the agent sent"
         : p.counted ? "As many tokens as the vendor counted; the parts are measured from the request and scaled to it"
         : "Estimated from what the agent sent: the vendor didn't say how many tokens it read");
@@ -411,7 +422,7 @@
       }
       const big = el("div", "ctx-big");
       big.append(el("b", "", fmtK(p.tokens)));
-      big.append(el("span", "", window ? " / " + fmtK(window) + " " + t("tokens") : " " + t("tokens")));
+      big.append(el("span", "", window ? "/ " + fmtK(window) + " " + t("tokens") : t("tokens")));
       const sub = el("div", "ctx-sub");
       if (window) {
         const bits = [t("{pct} full", { pct: pct(full) })];
@@ -424,22 +435,35 @@
       top.append(used);
 
       const cache = cacheOf(r) || opts.cache;
-      if ((cache && p.counted !== false) || (live && cacheShown)) {
-        // a request under way has read no cache yet: its place is kept,
-        // empty, so the grid under it doesn't move up and back down
-        const c = el("div", "ctx-stat ctx-cache");
-        const hit = cache && p.counted !== false ? cache.read / cache.total : null;
+      // another agent or session drawn in the card has no last request's
+      // cache to show: its place stays, with a dash till it is read
+      const whose = r.agent + " " + (opts.series?.[0]?.id ?? "");
+      if (whose !== cacheWhose) lastCache = null;
+      cacheWhose = whose;
+      const known = cache && p.counted !== false ? cache : null;
+      if (known || cacheShown) {
+        // once shown, the cache keeps its place, so nothing under it moves
+        // up and back down. A request under way has read no cache yet:
+        // the last request's stays, dimmed and named as the last one's,
+        // until this one's answer says (dumplings on Discord: each new
+        // request flashed it to "—" and an empty bar, the dash against
+        // 命中). Nothing to show is said in words, with no bar
+        const shown = known || (live ? lastCache : null);
+        const c = el("div", "ctx-stat ctx-cache" + (!known && shown ? " was" : shown ? "" : " none"));
         c.append(el("div", "ctx-k", t("Prompt cache")));
         const cb = el("div", "ctx-big");
-        cb.append(el("b", "", hit === null ? "—" : pct(hit)), el("span", "", " " + t("hit")));
+        cb.append(el("b", "", shown ? pct(shown.read / shown.total) : "—"), el("span", "", t("hit")));
         const bar = el("div", "ctx-bar");
         const fillBar = el("i");
-        fillBar.style.width = ((hit || 0) * 100).toFixed(1) + "%";
+        fillBar.style.width = (shown ? (shown.read / shown.total) * 100 : 0).toFixed(1) + "%";
         bar.append(fillBar);
-        c.append(cb, bar, el("div", "ctx-sub", hit === null ? " " : t("{cached} cached · {fresh} new", { cached: fmtK(cache.read), fresh: fmtK(cache.total - cache.read) })));
+        c.append(cb, bar, el("div", "ctx-sub", known ? t("{cached} cached · {fresh} new", { cached: fmtK(known.read), fresh: fmtK(known.total - known.read) })
+          : shown ? t("The last request's · this one is on its way")
+          : live ? t("Read once the vendor answers") : t("The vendor didn't say")));
         top.append(c);
         cacheShown = true;
-      } else cacheShown = false;
+        if (known) lastCache = known;
+      }
 
       // the grid: its cells made once, each patched to what it shows now
       grid.setAttribute("aria-label", t("{used} of {window} tokens used", { used: fmtK(p.tokens), window: fmtK(window || p.tokens) }));

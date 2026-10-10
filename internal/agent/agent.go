@@ -40,6 +40,10 @@ type Option struct {
 	// Context is the tokens the model takes, when known; the picker marks
 	// the large ones
 	Context int `json:"context,omitempty"`
+	// Takes, on an effort field's default (Value ""), is the level the
+	// agent takes for the model with none set (Codex: the catalog entry's
+	// default_reasoning_level), shown beside "default"
+	Takes string `json:"takes,omitempty"`
 	// Direct names who the agent asks for this model itself, on its own
 	// sign-in or key, with magpie not in the way ("Anthropic"): its config
 	// then names no magpie endpoint, which is right, not a failed setup
@@ -261,11 +265,30 @@ func (a *Agent) Detected() bool {
 	if _, err := os.Stat(a.Path); err == nil {
 		return true
 	}
-	if a.Dir != "" && !a.dirShared && isDir(a.Dir) {
+	if a.Dir != "" && !a.dirShared && agentDir(a.Dir) {
 		return true
 	}
 	if a.Bin != "" {
 		if _, err := exec.LookPath(a.Bin); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// agentDir reports whether p is a folder an agent itself made. Skill
+// installers (npx skills and the like) make <folder>/skills for every agent
+// they know, installed or not; a folder holding nothing else is theirs.
+func agentDir(p string) bool {
+	es, err := os.ReadDir(p)
+	if err != nil {
+		return isDir(p)
+	}
+	if len(es) == 0 {
+		return true
+	}
+	for _, e := range es {
+		if n := e.Name(); n != "skills" && n != ".DS_Store" {
 			return true
 		}
 	}

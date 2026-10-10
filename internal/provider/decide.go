@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // JevLatest is the Jev a decision provider is asked with when the user
@@ -81,11 +82,20 @@ func (p Provider) DecidesModel(model string) bool {
 	if p.DecideOnly() {
 		return true
 	}
-	if p.listsDecisions() {
+	if p.IsRemoteMagpie() || p.listsDecisions() {
 		// OpenRouter's Jev Router (typesafe/jev-router) is a chat model
 		return slices.ContainsFunc(p.decideListed(), func(m catalog.Model) bool { return m.ID == model })
 	}
 	return jevID(model) || p.DecideVia() == ViaCloudflare && CloudflareClef(model)
+}
+
+// isDecision uses a listed remote model's marker without reading its whole
+// list again. Other providers keep their endpoint and name-based rules.
+func (p Provider) isDecision(m catalog.Model) bool {
+	if p.IsRemoteMagpie() {
+		return m.Decides
+	}
+	return p.DecidesModel(m.ID)
 }
 
 // OpenRouter lists its decision models apart from its chat models (ARNO
@@ -109,11 +119,10 @@ func (p Provider) listsDecisions() bool { return openRouterDecisions(p.Decide) !
 // list of its decision models, beside its chat models' list.
 func decisionsID(id string) string { return id + ".decisions" }
 
-// DecisionModels are the decision models a provider that serves
-// conversations too lists apart from them (OpenRouter's), for its editor
-// to show beside its chat models; nil for any other provider.
+// DecisionModels are the decision models listed separately from a provider's
+// conversations: OpenRouter's own list, or a remote magpie's marked models.
 func (p Provider) DecisionModels() []catalog.Model {
-	if p.DecideOnly() || !p.listsDecisions() {
+	if !p.IsRemoteMagpie() && (p.DecideOnly() || !p.listsDecisions()) {
 		return nil
 	}
 	return p.decideModels()
@@ -185,6 +194,9 @@ const (
 // the gateway's own path (Vercel's /typesafe or /v4/ai, Cloudflare's
 // /client/v4).
 func (p Provider) DecideVia() string {
+	if p.IsRemoteMagpie() {
+		return ViaSystemOne
+	}
 	base := strings.TrimRight(p.Decide, "/")
 	switch h := HostOf(base); {
 	case strings.HasSuffix(base, "/v4/ai"):
@@ -202,6 +214,12 @@ func (p Provider) DecideVia() string {
 func (p Provider) Jev() string {
 	if p.DecideModel != "" {
 		return p.DecideModel
+	}
+	if p.IsRemoteMagpie() {
+		if models := p.decideListed(); len(models) > 0 {
+			return models[0].ID
+		}
+		return ""
 	}
 	switch p.DecideVia() {
 	case ViaVercel, ViaVercelEval:
@@ -299,6 +317,11 @@ func withDecideFacts(ms []catalog.Model) []catalog.Model {
 }
 
 func (p Provider) decideListed() []catalog.Model {
+	if p.IsRemoteMagpie() {
+		live, _, _ := catalog.Live(p.ID)
+		// Live returns a filtered copy, so it can be compacted in place.
+		return slices.DeleteFunc(live, func(m catalog.Model) bool { return !m.Decides })
+	}
 	if p.listsDecisions() && !p.DecideOnly() {
 		if live, _, ok := catalog.Live(decisionsID(p.ID)); ok && len(live) > 0 {
 			return live
@@ -457,17 +480,22 @@ func (p Provider) cloudflareAccount(ctx context.Context) (string, error) {
 // group's classifier names them.
 func Deciders() []Entry {
 	var out []Entry
+	s := settings.Load()
 	for _, p := range All() {
 		if !p.Decides() || !p.On() {
 			continue
 		}
 		ms := p.Exposed()
-		if !p.DecideOnly() && (len(p.Models) == 0 || p.listsDecisions()) {
+		if !p.DecideOnly() && (len(p.Models) == 0 || p.listsDecisions() || p.IsRemoteMagpie()) {
 			ms = p.decideModels() // the conversation picker's limit does not hide Jev
 		}
 		for _, m := range ms {
-			if p.DecidesModel(m.ID) {
-				out = append(out, Entry{ID: p.ID + "/" + m.ID, Model: m.ID, Name: m.Name, Provider: p})
+			if p.isDecision(m) {
+				if p.IsRemoteMagpie() {
+					out = append(out, entryFor(p, m, s))
+				} else {
+					out = append(out, Entry{ID: p.ID + "/" + m.ID, Model: m.ID, Name: m.Name, Provider: p})
+				}
 			}
 		}
 	}
@@ -512,7 +540,10 @@ func RouteDecider(model string) (Provider, string, error) {
 		if !p.On() {
 			return Provider{}, "", decideBadRequest("%s is switched off in magpie", p.Name)
 		}
-		return p, p.Jev(), nil
+		if m := p.Jev(); m != "" {
+			return p, m, nil
+		}
+		return Provider{}, "", decideBadRequest("%s lists no decision models", p.Name)
 	}
 	var listed []Provider
 	for _, p := range on {
@@ -637,6 +668,12 @@ func deciderByID(id string) (Provider, bool) {
 // its own free call (Vercel's TypeSafe models or credits, Cloudflare's
 // Workers AI models or account lookup), then exposes its one Jev.
 func (p Provider) fetchDecide(ctx context.Context) ([]catalog.Model, error) {
+	if p.IsRemoteMagpie() {
+		if _, err := p.fetch(ctx); err != nil {
+			return nil, err
+		}
+		return p.decideModels(), nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	switch p.DecideVia() {

@@ -24,6 +24,11 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-state.counted i { background: var(--green); }
 .ctx-state.live { background: var(--green-soft); color: var(--green); }
 .ctx-state.live i { background: var(--green); animation: ctx-pulse 1.4s ease-in-out infinite; }
+/* every word of the state in one cell, the one that is on shown: the pill
+   is as wide whatever the request's state, so nothing beside it moves */
+.ctx-state-w { display: inline-grid; }
+.ctx-state-w > span { grid-area: 1 / 1; text-align: center; white-space: nowrap; }
+.ctx-state-w > span:not(.on) { visibility: hidden; }
 @keyframes ctx-pulse { 50% { opacity: .35; transform: scale(.8); } }
 
 .ctx-k { display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
@@ -31,7 +36,9 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-top { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px 28px; }
 .ctx-top > :only-child { grid-column: 1 / -1; }
 .ctx-stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.ctx-big { display: flex; align-items: baseline; gap: 0; white-space: nowrap; color: var(--muted); font-size: 13px; }
+/* the figure and its words apart: a flex item's leading space is dropped,
+   so the gap is the space ("—命中" read as one, dumplings on Discord) */
+.ctx-big { display: flex; align-items: baseline; gap: .35em; white-space: nowrap; color: var(--muted); font-size: 13px; }
 .ctx-big b { font-size: 28px; line-height: 1.1; font-weight: 600; letter-spacing: -.02em; color: var(--fg); }
 .ctx-sub { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 :root[lang="zh"] .ctx-sub, :root[lang="ja"] .ctx-sub { letter-spacing: .02em; }
@@ -42,6 +49,15 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-bar { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--k-free); overflow: hidden; }
 .ctx-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--green); transform-origin: left; animation: ctx-grow .7s var(--ease, ease) both; }
 .ctx-cache .ctx-bar { margin: 3px 0 2px; }
+.ctx-cache .ctx-bar i { transition: width .3s var(--ease, ease); }
+/* under way: the last request's cache, dimmed till this one's comes */
+.ctx-cache :is(.ctx-big, .ctx-bar) { transition: opacity .3s var(--ease, ease); }
+.ctx-cache.was :is(.ctx-big, .ctx-bar) { opacity: .45; }
+/* nothing to show: a dash and the words why, no empty bar; the bar keeps
+   its room, so the card doesn't move when the figure comes */
+.ctx-cache.none .ctx-big b { color: var(--faint); }
+.ctx-cache.none .ctx-bar { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .ctx-cache .ctx-bar i, .ctx-cache :is(.ctx-big, .ctx-bar) { transition: none; } }
 @keyframes ctx-grow { from { transform: scaleX(0); } }
 
 /* the window, a cell for each 1/400 of it */

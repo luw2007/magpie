@@ -225,9 +225,12 @@ var grokTools = map[string]bool{"function": true, "web_search": true, "x_search"
 // A tool_choice with no tools
 // left goes too: the backend turns the request away over it ("A
 // tool_choice was set on the request but no tools were specified"), as it
-// would Codex's compaction summary, sent without tools (#378).
+// would Codex's compaction summary, sent without tools (#378). A Codex
+// agent_message (a subagent's task, or its reply in the lead's history),
+// which the backend turns away with 422 "unknown item type", goes as the
+// user's message, its sender and recipient said first (grokAgentMessage).
 func grokBody(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"tools"`)) && !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`"tool_choice"`)) && !bytes.Contains(body, []byte(`"namespace"`)) {
+	if !bytes.Contains(body, []byte(`"tools"`)) && !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`"tool_choice"`)) && !bytes.Contains(body, []byte(`"namespace"`)) && !bytes.Contains(body, []byte(`"agent_message"`)) {
 		return body
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -281,7 +284,11 @@ func grokBody(body []byte) []byte {
 		}
 	}
 	input, _ := m["input"].([]any)
-	for _, it := range input {
+	for i, it := range input {
+		if msg, ok := grokAgentMessage(it); ok {
+			input[i], it = msg, msg
+			dirty = true
+		}
 		if im, ok := it.(map[string]any); ok && flatCall(im) {
 			dirty = true
 		}
@@ -300,6 +307,57 @@ func grokBody(body []byte) []byte {
 		return body
 	}
 	return b
+}
+
+// grokAgentMessage is a plain Codex agent_message as the user's message
+// Grok's backend takes: "From <author> to <recipient>" first, then its text
+// and images as they came, in its place among the input. One sealed
+// (encrypted_content on it or on a part), empty, or with a part of another
+// kind is left as it is: magpie reads no sealed task, and the gateway's
+// guard for one (hasSealedAgentMessage) still sees it. The plugin does the
+// same (@magpie-community/opencode-grok-auth 0.1.11, plugins#61).
+func grokAgentMessage(it any) (map[string]any, bool) {
+	im, ok := it.(map[string]any)
+	if !ok || im["type"] != "agent_message" {
+		return nil, false
+	}
+	if _, sealed := im["encrypted_content"]; sealed {
+		return nil, false
+	}
+	parts, _ := im["content"].([]any)
+	if len(parts) == 0 {
+		return nil, false
+	}
+	for _, p := range parts {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if _, sealed := pm["encrypted_content"]; sealed {
+			return nil, false
+		}
+		_, isText := pm["text"].(string)
+		_, isURL := pm["image_url"].(string)
+		if !(pm["type"] == "input_text" && isText || pm["type"] == "input_image" && isURL) {
+			return nil, false
+		}
+	}
+	from, _ := im["author"].(string)
+	to, _ := im["recipient"].(string)
+	header := ""
+	switch {
+	case from != "" && to != "":
+		header = "From " + from + " to " + to
+	case from != "":
+		header = "From " + from
+	case to != "":
+		header = "To " + to
+	}
+	content := parts
+	if header != "" {
+		content = append([]any{map[string]any{"type": "input_text", "text": header + "\n\n"}}, parts...)
+	}
+	return map[string]any{"type": "message", "role": "user", "content": content}, true
 }
 
 // liteNamespace is the namespace Codex's Responses Lite groups its own

@@ -141,6 +141,9 @@ const (
 	// fmtAlma is Alma's ~/.config/alma/mcp.json: a url is streamable HTTP
 	// (SSE when that fails) unless transport says sse, a command stdio
 	fmtAlma
+	// fmtZed is Zed's settings.json context_servers: command/args/env, or
+	// url/headers, which Zed speaks streamable HTTP to
+	fmtZed
 )
 
 // mcpFile is the file an agent keeps its user-wide MCP servers in.
@@ -180,6 +183,8 @@ func (f *mcpFile) key() string {
 		return "extensions"
 	case fmtZCode:
 		return "mcp.servers"
+	case fmtZed:
+		return "context_servers"
 	}
 	return "mcpServers"
 }
@@ -189,7 +194,7 @@ func (f *mcpFile) supports(s *Server) error {
 	if f.Format == fmtDesktop && s.Remote() {
 		return errNoRemote
 	}
-	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode) {
+	if s.Transport == "sse" && (f.Format == fmtCodex || f.Format == fmtGoose || f.Format == fmtDsh || f.Format == fmtPiNative || f.Format == fmtGrok || f.Format == fmtCommandCode || f.Format == fmtZed) {
 		return errNoSSE
 	}
 	if f.Format == fmtDsh && s.Name != "" && !dshServerName.MatchString(s.Name) {
@@ -206,6 +211,23 @@ func (f *mcpFile) supports(s *Server) error {
 // backslash in it, or …/npx.cmd.
 var windowsPath = regexp.MustCompile(`^[A-Za-z]:[\\/]|\\|(?i)\.(?:exe|cmd|bat|ps1)$`)
 
+// foreign says why an entry by the server's name that magpie can't read as
+// a server is one it mustn't write over, or nil: Zed's server from an
+// extension is its "settings" alone, which a command written beside it
+// would take the place of, and taking the server off Zed then would take
+// the extension's settings with it.
+func (f *mcpFile) foreign(old map[string]any) error {
+	if f.Format != fmtZed || old == nil {
+		return nil
+	}
+	if _, ok := f.decode("", old); ok {
+		return nil
+	}
+	return errZedExtension
+}
+
+var errZedExtension = errors.New("Zed has a server by this name from one of its extensions, which magpie leaves as it is: give the server another name to give it to Zed")
+
 // errNoRemote is what the page says of an app that reaches only a server
 // it runs itself (Claude Desktop, whose remote ones are its Connectors).
 var errNoRemote = errors.New("no-remote")
@@ -213,7 +235,8 @@ var errNoRemote = errors.New("no-remote")
 // errNoSSE is what the page says of an agent that can't reach a server
 // over SSE (Codex, Goose, DeepSeek Harness, Pi's own MCP, Grok Build — its
 // type = "sse" is taken, but it speaks streamable HTTP to it all the same,
-// Command Code, whose own add refuses sse).
+// Command Code, whose own add refuses sse, Zed, whose only remote transport
+// POSTs to the url: crates/context_server/src/transport/http.rs).
 var errNoSSE = errors.New("no-sse")
 
 // ordered is a JSON object that keeps its keys in the order given, so an
@@ -366,7 +389,12 @@ func (f *mcpFile) encode(s *Server) ordered {
 			optional("environment", s.Env)
 		}
 		add("enabled", true)
-	case fmtCursor, fmtDesktop:
+	case fmtCursor, fmtDesktop, fmtZed:
+		// Zed's own Add Local Server and Add Remote Server write these keys
+		// (docs/src/ai/mcp.md); its settings read a command as the Stdio
+		// form and a url as the Http one, with no "source" or "type"
+		// (crates/settings_content/src/project.rs
+		// ContextServerSettingsContent, zed-industries/zed 2c99f547)
 		if s.Remote() {
 			add("url", s.URL)
 			optional("headers", s.Headers)
@@ -563,16 +591,21 @@ func (f *mcpFile) encode(s *Server) ordered {
 			add("tool_timeout_sec", t)
 		}
 	case fmtDsh:
+		// a reference is a !!js expression dsh evaluates (dshRef)
 		add("serverName", s.Name)
 		if s.Remote() {
 			add("transport", "streamable-http")
 			add("url", s.URL)
-			optional("headers", s.Headers)
+			if len(s.Headers) > 0 {
+				add("headers", dshRefs(s.Headers))
+			}
 		} else {
 			add("transport", "stdio")
 			add("command", s.Command)
 			add("args", list(s.Args))
-			optional("env", s.Env)
+			if len(s.Env) > 0 {
+				add("env", dshRefs(s.Env))
+			}
 		}
 	}
 	return o
@@ -677,17 +710,26 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
 			local(str(m, "command"), m["args"], m["env"])
 		}
 	case fmtDsh:
-		// a value dsh works out itself (!!js) isn't one magpie can hold
+		// a variable read as dshRef writes it is a reference; any other
+		// value dsh works out itself (!!js) isn't one magpie can hold
+		headers, env := dshUnrefs(m["headers"]), dshUnrefs(m["env"])
 		for _, k := range owned[fmtDsh] {
-			if hasJS(m[k]) {
+			v := m[k]
+			switch k {
+			case "headers":
+				v = headers
+			case "env":
+				v = env
+			}
+			if hasJS(v) {
 				return nil, false
 			}
 		}
 		switch str(m, "transport") {
 		case "stdio":
-			local(str(m, "command"), m["args"], m["env"])
+			local(str(m, "command"), m["args"], env)
 		case "streamable-http":
-			remote("http", str(m, "url"), m["headers"])
+			remote("http", str(m, "url"), headers)
 		}
 	case fmtHermes, fmtKimi, fmtDevin, fmtAlma:
 		// each takes a url over a command when an entry has both
@@ -748,7 +790,7 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
 		} else {
 			local(str(m, "command"), m["args"], m["env"])
 		}
-	default: // Claude Code, Cursor, Copilot, Crush, ZCode, omp, Grok
+	default: // Claude Code, Cursor, Copilot, Crush, ZCode, omp, Grok, Zed
 		t := str(m, "type")
 		if u := str(m, "url"); u != "" {
 			if t != "sse" {
@@ -898,6 +940,8 @@ var owned = map[mcpFormat][]string{
 	// the flat shape's keys go when magpie writes the entry again
 	fmtCline:       {"transport", "type", "transportType", "url", "headers", "command", "args", "cwd", "env"},
 	fmtCommandCode: {"transport", "type", "url", "headers", "command", "args", "env"},
+	// enabled, remote, timeout and oauth are the user's
+	fmtZed: {"url", "headers", "command", "args", "env"},
 
 	// a url agy read in place of serverUrl goes when magpie writes one
 	fmtAntigravity: {"type", "serverUrl", "url", "headers", "command", "args", "env"},

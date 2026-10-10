@@ -866,7 +866,13 @@ func modelOutput(args []string) error {
 			fmt.Println(muted.Render(id), faint.Render("· is not a model this provider serves"))
 			return nil
 		}
-		fmt.Println(bold.Render(tokenCount(e.Output)), muted.Render("· "+id))
+		// the limit agents are told and the gateway's model list gives:
+		// within the model's window (#1438)
+		out := e.PublishedOutput()
+		fmt.Println(bold.Render(tokenCount(out)), muted.Render("· "+id))
+		if out < e.Output {
+			fmt.Println(faint.Render("  · " + tokenCount(e.Output) + ", kept within its " + tokenCount(e.Context) + " window"))
+		}
 		switch {
 		case s.ModelOutputs[id] > 0 && s.ModelOutputs[p.ID+"/*"] > 0:
 			// the model's own limit is what it answers with, and --reset

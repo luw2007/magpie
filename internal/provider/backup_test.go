@@ -1,15 +1,15 @@
 package provider
 
 import (
-
-	"slices"
 	"path/filepath"
-
+	"slices"
 	"testing"
 )
 
 // Restoring and syncing a keyless provider keep this machine's balance
 // token. A token supplied explicitly, or keys supplied with none, replaces it.
+// A Volcengine access key (#1427) is kept the same way, the ID and Secret
+// together.
 func TestBackupBalanceToken(t *testing.T) {
 	for _, op := range []struct {
 		name string
@@ -40,7 +40,8 @@ func TestBackupBalanceToken(t *testing.T) {
 					t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
 					t.Setenv("PATH", h)
 					here := Provider{ID: "relay", Name: "Relay old", Chat: "https://old.example.com/v1",
-						Keys: []KeyAccount{{ID: "main", Name: "main", Key: "sk-here", Protocol: Chat}, {ID: "spare", Name: "spare", Key: "sk-spare", Protocol: Anthropic}}, BalanceToken: "balance-here"}
+						Keys: []KeyAccount{{ID: "main", Name: "main", Key: "sk-here", Protocol: Chat}, {ID: "spare", Name: "spare", Key: "sk-spare", Protocol: Anthropic}}, BalanceToken: "balance-here",
+						AccessKeyID: "AK-here", SecretAccessKey: "SK-here"}
 					here.normalizeKeys()
 					if err := Save(here); err != nil {
 						t.Fatal(err)
@@ -59,16 +60,17 @@ func TestBackupBalanceToken(t *testing.T) {
 					if got.BalanceToken != c.want || got.Name != p.Name || got.Chat != p.Chat {
 						t.Fatalf("restored: %+v, want balance token %q and the incoming name and URL", got, c.want)
 					}
-					wantKey := p.Key
-					if wantKey == "" && len(p.Keys) == 0 {
-						wantKey = here.Key
-					}
 					wantKeys := p.Keys
-					if len(wantKeys) == 0 && p.Key == "" {
+					wantAK, wantSK := p.AccessKeyID, p.SecretAccessKey
+					if len(wantKeys) == 0 {
 						wantKeys = here.Keys
+						wantAK, wantSK = here.AccessKeyID, here.SecretAccessKey
 					}
-					if got.Key != wantKey || len(got.Keys) != len(wantKeys) {
-						t.Fatalf("keys: %+v, want key %q and %d keys", got, wantKey, len(wantKeys))
+					if got.AccessKeyID != wantAK || got.SecretAccessKey != wantSK {
+						t.Fatalf("access key: %q %q, want %q %q", got.AccessKeyID, got.SecretAccessKey, wantAK, wantSK)
+					}
+					if len(got.Keys) != len(wantKeys) {
+						t.Fatalf("keys: %+v, want %d keys", got, len(wantKeys))
 					}
 					for i := range got.Keys {
 						if got.Keys[i].Key != wantKeys[i].Key || got.Keys[i].Name != wantKeys[i].Name ||

@@ -177,7 +177,8 @@ func (a *Agent) changedAt(files []string, reads func() string) time.Time {
 
 // Stale is how many copies of the agent are running that started before
 // magpie last changed what it reads at start: they still have the list
-// they started with until reopened. Zero where it can't be told (Windows).
+// they started with until reopened. On Windows only the Codex daemon is
+// told.
 func (a *Agent) Stale() int { return len(a.StaleCopies()) }
 
 // StaleCopy is a copy of an agent still running on the list it started
@@ -206,6 +207,11 @@ type StaleCopy struct {
 // files, and isn't counted.
 func (a *Agent) StaleCopies() []StaleCopy {
 	pats, files, reads := a.startsWith()
+	// Windows lists its processes slowly and without their start: only
+	// the Codex daemon, as KeepCodexDaemonCurrent last found it
+	if a.ID == "codex" && a.WSL == "" && runtime.GOOS == "windows" {
+		return codexDaemonBehind()
+	}
 	if len(pats) == 0 || a.WSL != "" || runtime.GOOS == "windows" {
 		return nil
 	}

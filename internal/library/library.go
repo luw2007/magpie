@@ -102,6 +102,7 @@ func load() (*Library, error) {
 	if l.Applied == nil {
 		l.Applied = map[string]*Applied{}
 	}
+	l.heal() // magpie's own servers run this computer's magpie (self_here.go)
 	return l, nil
 }
 
@@ -210,6 +211,7 @@ func change(f func(l *Library) error) (*Result, error) {
 	if err := f(l); err != nil {
 		return nil, err
 	}
+	l.heal() // a server f brought in, from another computer too
 	if err := l.save(); err != nil {
 		return nil, err
 	}

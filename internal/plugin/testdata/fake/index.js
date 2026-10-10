@@ -83,6 +83,8 @@ export const FakePlugin = async ({ client }) => ({
     // a model's -fast (=tier: see the models hook)
     if (process.env.FAKE_FAST === "1") cfg.provider[ID].models["fake-1-fast"] = { name: "Fake One Fast", limit: { context: 1000, output: 100 } }
     if (process.env.FAKE_RESPONSES) cfg.provider[ID].models["fake-resp"] = { name: "Fake Responses", provider: { npm: "@ai-sdk/openai" }, limit: { context: 4000, output: 400 } }
+    // $FAKE_GROK: a Grok model on Responses, as Grok's plugin serves it
+    if (process.env.FAKE_GROK) cfg.provider[ID].models["grok-4.7"] = { name: "Grok 4.7", provider: { npm: "@ai-sdk/openai" }, limit: { context: 4000, output: 400 } }
     // $FAKE_DEEPSEEK: a DeepSeek model, as Cline's cline-pass/deepseek-v4-pro
     if (process.env.FAKE_DEEPSEEK) cfg.provider[ID].models["deepseek-v4-pro"] = { name: "DeepSeek V4 Pro", limit: { context: 1000, output: 100 } }
     // $FAKE_OFF: a model that stops thinking at none and one that can't,

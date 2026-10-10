@@ -53,6 +53,12 @@ type Provider struct {
 	KeyID  string       `json:"-"`                // stable identity of the runtime credential
 	Keys   []KeyAccount `json:"keys,omitempty"`
 
+	// AccessKeyID and SecretAccessKey are a Volcengine account's access
+	// key (TakesVolcAccessKey), separate from the inference credentials in
+	// Keys. They are backed up and synced under the same credential policy.
+	AccessKeyID     string `json:"accessKeyID,omitempty"`
+	SecretAccessKey string `json:"secretAccessKey,omitempty"`
+
 	// Base URLs, one per protocol the vendor serves natively. magpie appends
 	// the usual paths: chat/responses bases end in /v1 (OpenAI style),
 	// the Anthropic base is the root (what ANTHROPIC_BASE_URL takes).
@@ -674,6 +680,9 @@ func AddCopy(p Provider, from string) (string, error) {
 	}
 	if p.BalanceToken == "" {
 		p.BalanceToken = src.BalanceToken
+	}
+	if p.AccessKeyID == "" && p.SecretAccessKey == "" {
+		p.AccessKeyID, p.SecretAccessKey = src.AccessKeyID, src.SecretAccessKey
 	}
 	if p.ZhipuTeam == nil {
 		p.ZhipuTeam = src.ZhipuTeam

@@ -129,6 +129,7 @@ line; agents connected to magpie lose it when it quits.
 | T3 Code      | `~/.t3/userdata/settings.json` (`$T3CODE_HOME/userdata`) | provider (a `magpie` provider instance on Claude Code, magpie's models as its custom models) |
 | OpenHanako   | `~/.hanako/provider-catalog.json` + `agents/<id>/config.yaml` (`$HANA_HOME`; its local API while it runs) | model (the primary agent's; magpie's models as a provider) |
 | AtomCode     | `~/.atomcode/config.toml` (`$ATOMCODE_HOME`) | model, effort (a `magpie` provider account, one model table per catalog model as its own sign-in writes) |
+| Snow CLI     | `~/.snow/profiles/magpie.json` (`$SNOW_CONFIG_DIR`), made the active profile and copied to `config.json` | model (the user's other profiles' models too; Snow App takes the profile in with "Sync Snow CLI API config") |
 | Alma         | Alma's local API (`localhost:23001`, while Alma runs; alma-server's data in `$ALMA_DATA_DIR`, `$XDG_DATA_HOME/alma` or `~/.local/share/alma` on Linux) | model (Alma's default; magpie's models as a provider), and Image Generation's model when it is Auto: the one magpie draws with |
 
 Provider-scoped agents (OpenCode, MiMo Code, Pi, OmO, Aside, Goose, Crush, omp, Hermes Agent) take `provider/model`.
@@ -230,6 +231,12 @@ separate Responses endpoint, `catalog=` to borrow a models.dev list, and
 `models=` to name the models to expose. Anything a preset does not know can
 be overridden the same way.
 
+A model whose vendor answers that it is deprecated or retired (OpenCode
+Zen's 410 "Model exo-free has been deprecated.") leaves that provider's
+models in `magpie models`, `/v1/models` and every agent's list, even while
+the vendor's own list still names it. It comes back once a request for it
+as `provider/model` is answered, or after a week.
+
 `magpie provider set <id> header.<Name>=<value>` sends a header of your own
 on every request to a key+URL provider (an empty value removes it; signed-in
 accounts ignore them). It replaces a header of the same name magpie would
@@ -300,8 +307,23 @@ Completions, token counting — and a model the shared magpie's provider serves
 on another API only is turned into that API once, never on both computers.
 Its list is the models the shared magpie's agents are shown, each named with
 its provider there (`Claude Sonnet 5 · Relay A · office`) — the ids stay ids
-(`office/relay-a/claude-sonnet-5`), only these labels carry the names — and its image
-models are listed under Settings → Images and draw through it.
+(`office/relay-a/claude-sonnet-5`), only these labels carry the names.
+Its image and video models are discovered automatically and served through
+its image generation/edit and video creation/status/content APIs. System One
+is also configured automatically at its `/v1/systemone`: refresh the remote
+provider's model list to discover its decision models, including Jev, Clef
+and models with custom names. These appear as decision models rather than
+chat models. A bare provider id such as `office` asks the first listed
+decision model; it does not pick another model to satisfy a key's limits.
+If the key permits only another model, use its full `office/provider/model`
+id to avoid a 403. Embeddings and rerank requests use the remote's corresponding
+APIs, and its exposed retrieval models are kept when fetching its list.
+These remain in agent model lists as on the remote; being listed does not
+mean an embedding or rerank model can hold a conversation.
+The remote must serve the requested API and model, and allow the supplied
+key to use them. Responses uses HTTP, including SSE, rather than WebSocket.
+An older remote without decision-model discovery still serves its existing
+APIs; update it and refresh the list to expose System One models here.
 Its quotas show too: the Usage page, the menu bar and `magpie quota` list the
 shared magpie's cards named with it (`Codex · office`, id `office/codex`), as
 that magpie last read them — only the computer holding the sign-ins asks the
@@ -420,12 +442,18 @@ key only the models an account or key it may use serves, the Routing
 view's left-out list marking what the key held out. A key with no
 accounts listed may use every account, as keys always did.
 
-While LAN sharing is enabled, remote requests require an enabled gateway key
-sent as Bearer, `x-api-key`, `x-goog-api-key` or `?key=`. Loopback remains
-permissive: any token works, including a stale or disabled gateway key.
-Only a valid, enabled key is attributed to its named identity.
-Without sharing, an explicitly exposed `MAGPIE_ADDR` keeps its original open
-access, including old `sk-magpie-…` tokens, without key authentication.
+While LAN sharing is enabled, or `MAGPIE_ADDR` puts the gateway on the
+network (a host other than loopback or `localhost`: `0.0.0.0` in the Docker
+image, a server's address), remote requests require an enabled gateway key
+sent as Bearer, `x-api-key`, `x-goog-api-key` or `?key=`; one without gets
+401. A request is remote when its peer isn't loopback, which includes
+Docker's port publishing (the peer is the bridge, not the host's loopback)
+and a WSL distro under NAT. Loopback remains permissive: any token works,
+including a stale or disabled gateway key. Only a valid, enabled key is
+attributed to its named identity. Neither shared nor on the network, a
+remote request is refused (403). A `MAGPIE_ADDR` pinned to one interface's
+address asks a key even of this computer's agents calling that address;
+`0.0.0.0` with agents on `127.0.0.1` doesn't.
 Sharing listens on every interface, unless `MAGPIE_ADDR` names a host of its
 own: `MAGPIE_ADDR=127.0.0.1:3425` behind Tailscale Serve, or one interface's
 address, stays where it is while shared, and what reaches it from elsewhere
@@ -466,7 +494,8 @@ HTTP proxy, Caddy, nginx) is someone else's, and is answered as one from
 another machine (#1022): it carries a forwarding header (`Forwarded`,
 `X-Forwarded-For`, `X-Real-IP`, `Cf-Connecting-IP`, `True-Client-IP`,
 `Tailscale-User-Login`), which no agent sends. Without sharing it is refused;
-with sharing it needs an enabled gateway key, as from the network. This
+with sharing, or a `MAGPIE_ADDR` on the network, it needs an enabled gateway
+key, as from the network. This
 covers every route: the model APIs, quotas, MCP sign-ins. To serve magpie
 through a Cloudflare Tunnel, turn on **Settings → Share on local network**,
 add a gateway key for each client, point the tunnel's service at
@@ -530,6 +559,20 @@ A provider id magpie already has (google, openai, anthropic) is
 `<id>-plugin`. In the app, Settings → Plugins adds and removes them, and
 the providers they sign in to are in Add provider → From plugins.
 
+Sometimes two installed plugins sign in to the same provider id, for
+example a third-party plugin and your own copy of it. One of them serves
+that id: the one you picked, or else the one added last. Both plugins stay
+listed, and each row in Plugins › Installed says which one serves the
+provider. The other row has **Use for <provider>**, which switches the
+provider to it. `magpie plugin` prints the same thing, and
+
+```sh
+magpie plugin use ~/dev/my-acme-auth acme   # this plugin serves acme from now on
+```
+
+makes the pick. Each plugin can still be switched off or removed on its
+own.
+
 A package is pi's when its `package.json` has a `pi` manifest, the
 `pi-package` keyword, or depends on `@earendil-works/pi-coding-agent`.
 magpie installs pi beside it and loads it with pi's own loader; the
@@ -554,6 +597,8 @@ OpenCode ignores:
   host, which magpie fetches once and keeps, or a `data:image/…` URI;
   PNG, JPEG, GIF, WebP, ICO or SVG, at most 1 MB. Anything else is ignored,
   and the icon the plugin market lists for the plugin is shown instead.
+  The `package.json` icon is also the card's picture under Discover →
+  Unofficial, on GitHub for a repository tagged `magpie-plugin`.
 - **An API key's field**: a `type: "api"` method's `label` titles the key's
   field, as OpenCode's dialog does (one that only says "API key" reads
   "<provider> API key"), and its `placeholder` is the hint inside the field
@@ -1085,6 +1130,20 @@ Assist Standard and Enterprise, which need a Google Cloud project named
 Antigravity account it sees used outside Antigravity, so magpie asks before
 adding one; use an account you can afford to lose.
 
+Accounts signed in elsewhere can be imported from their files instead of
+signed in again: *Import accounts from a file…* under a subscription's
+accounts, or `magpie accounts import <codex|claude|antigravity|factory>
+<file>... [--yes]`. For ChatGPT that takes Codex's `auth.json` and the
+exports of Cockpit Tools, CLIProxyAPI and Sub2API, as many files as you
+like. Each ChatGPT sign-in is refreshed before it is added, which checks
+it and makes magpie its only holder: the tool the file came from (Codex on
+another computer, Cockpit Tools, CLIProxyAPI) is signed out of that
+account and has to sign in again. The files are only read. An account
+magpie has already is left as it is, two Team seats of one email stay two
+accounts, and an entry with only an access token (a ChatGPT web session)
+is refused, since it would stop working within days with nothing to renew
+it.
+
 ### Connecting anything else
 
 The gateway listens on `127.0.0.1:3425` (`MAGPIE_ADDR` changes it) and starts
@@ -1096,9 +1155,11 @@ agent configs still use the local gateway address.
 Building an app or agent that should use magpie, or get a row on the
 Agents page: see [Integrating your app or agent](integrating.md).
 
-A reverse proxy must enforce authentication itself, or you must enable
-Settings → Share on local network and use an enabled gateway key
-(Gateway → Gateway keys) for external clients. A public URL with no port of
+External clients behind a reverse proxy need an enabled gateway key
+(Gateway → Gateway keys): with Settings → Share on local network on, or a
+`MAGPIE_ADDR` on the network, magpie asks for one; otherwise it refuses
+them, unless the proxy authenticates its clients itself
+(`MAGPIE_TRUST_PROXY=1`, below). A public URL with no port of
 its own — a reverse proxy's `https://magpie.example.com` — is the address
 `magpie web` prints for its own page too, so the proxy must forward `/v1`
 and `/v1beta` to the gateway's port and the rest to the page's. When the
@@ -1135,8 +1196,17 @@ request to which is translated anyway.
 Requests pass straight through when the vendor speaks the agent's API and
 are translated otherwise, streaming, tool calls and reasoning included. The
 key is `magpie` (any value works; the gateway only listens on loopback), and
-models are named `provider/model`. Anything with a base-URL setting can use
-it:
+models are named `provider/model`.
+
+- A routing group is asked by its id (`group/<id>`) or its name.
+- A bare model id (`glm-5.3`) works too. When several providers serve it,
+  it goes to the routing group magpie found for it, which asks them in the
+  order of the Providers page and falls over to the next. With found
+  groups off, it goes to the first of them in that order alone.
+- Every reply names who answered in `X-Magpie-Provider` (the provider)
+  and `X-Magpie-Model` (`provider/model`), and so does the usage log.
+
+Anything with a base-URL setting can use it:
 
 | Tool speaks | Base URL                   | Environment                                   |
 | ----------- | -------------------------- | --------------------------------------------- |
@@ -1373,16 +1443,18 @@ docker build -t magpie .
 docker run -d --name magpie -p 127.0.0.1:3425:3425 -p 127.0.0.1:3430:3430 -v magpie-config:/config magpie
 ```
 
-3425 is the gateway for agents. Until it is shared (below) it takes any key,
-`Bearer magpie` included, from anyone who reaches it, so the ports above are
-published on the host's loopback only; Docker's `-p 3425:3425` would put it
-on every interface of the host, past its firewall. To reach it from other
-machines, turn on Settings → Share on local network in the browser UI (or
-put `"lan": true` in `/config/magpie/settings.json`). Turning it on in Settings
-creates a named **Magpie** key. With settings edited by hand, run
-`magpie gateway-key add "Docker client"` in the container to create a key
-without the browser UI. A request from outside the container must carry one of
-those keys as its API key. Only then publish the port beyond 127.0.0.1.
+3425 is the gateway for agents. Inside the container it takes any key; a
+request from outside it, the host's own included, must carry an enabled
+gateway key as its API key, and one without gets 401. Make one in the
+browser UI (Gateway → Gateway keys) or with
+`docker exec magpie magpie gateway-key add "Docker client"`. Sharing
+(Settings → Share on local network) isn't needed for this; turning it on
+also creates a key named **Magpie**. The ports above are published on the
+host's loopback; Docker's `-p 3425:3425` puts the gateway on every interface
+of the host, for other machines to reach. Upgrading from an earlier image:
+an agent outside the container that sends `magpie`, or another key that
+isn't an enabled gateway key, now gets 401 ("the API key sent is not an
+enabled magpie gateway key"); give it a gateway key.
 Inside the container
 magpie only sees the container's own address (Docker's 172.17.x), so set
 `-e MAGPIE_PUBLIC_URL=http://<the host's or NAS's address>:3425` (the port
@@ -1445,7 +1517,7 @@ services:
     image: ghcr.io/yetone/magpie:latest
     restart: unless-stopped
     ports:
-      # Keep both ports on loopback until LAN sharing and a gateway key exist.
+      # 127.0.0.1: the host alone; every caller outside the container needs a gateway key.
       - "127.0.0.1:3425:3425"
       - "127.0.0.1:3430:3430"
     environment:
@@ -1458,10 +1530,10 @@ services:
 ```
 
 Open `http://127.0.0.1:3430/?k=<random-key>` through an SSH tunnel to
-configure providers. Turn on *Share on local network*, then create a gateway
-key for each remote agent host. After that, change the gateway mapping to
-`3425:3425` (or bind it only to the NAS interface or VPN address) and recreate
-the container so remote agents can reach it. For Internet access, prefer a
+configure providers, then create a gateway key for each remote agent host.
+To let remote agents reach it, change the gateway mapping to `3425:3425` (or
+bind it only to the NAS interface or VPN address) and recreate the
+container. For Internet access, prefer a
 VPN such as Tailscale or WireGuard; a reverse proxy or tunnel forwarding to
 Magpie over loopback needs a gateway key from its clients, as the network does.
 

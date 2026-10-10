@@ -61,6 +61,11 @@ type List struct {
 	// section says what a plugin reads of it
 	// (provider.google.options.projectId).
 	Config map[string]any `json:"config,omitempty"`
+	// Prefer is the plugin the user picked for a provider id more than
+	// one plugin signs in to (a plugin of their own beside a third
+	// party's): provider id → that plugin's spec. Without it the last of
+	// them in Plugins serves the id, as in OpenCode.
+	Prefer map[string]string `json:"prefer,omitempty"`
 }
 
 var listMu sync.Mutex
@@ -137,7 +142,7 @@ func list() List {
 // copy, so nothing they change reaches what list keeps.
 func Load() List {
 	l := list()
-	return List{Plugins: clonePlugins(l.Plugins), Config: cloneMap(l.Config)}
+	return List{Plugins: clonePlugins(l.Plugins), Config: cloneMap(l.Config), Prefer: maps.Clone(l.Prefer)}
 }
 
 // clonePlugins copies the entries, their options with them.
@@ -407,6 +412,13 @@ func add(ctx context.Context, spec, version string) (Entry, error) {
 		return x.Spec == spec || n == name
 	}); i >= 0 {
 		e.Options = l.Plugins[i].Options
+		// a provider id the user picked it for stays its (another version,
+		// or its package from a git repository in place of npm's)
+		for id, s := range l.Prefer {
+			if s == l.Plugins[i].Spec {
+				l.Prefer[id] = spec
+			}
+		}
 		l.Plugins[i] = e
 	} else {
 		l.Plugins = append(l.Plugins, e)
@@ -464,22 +476,33 @@ func notPlugin(target string) error {
 	return errors.New(why)
 }
 
-// Update installs the version of each npm plugin its spec says now
-// (latest, for the most part: npm's newest, asked now, installAt), and
-// fetches each git one again.
+// Update installs npm's newest version (asked now, installAt) of each npm
+// plugin, and fetches each git one again. A plugin pinned to a version
+// that npm has a newer one of is updated too, and unpinned, as its row's
+// Update does: the page counts it in Update all, and the CLI's update
+// says it installs the newest of each (ARNO on Discord: a plugin updated
+// with Update all still said an update was out, pinned where it was). A
+// pinned one already at npm's newest stays as its spec says.
 func Update(ctx context.Context) error {
 	var errs []error
 	for _, e := range Load().Plugins {
 		if !IsPath(e.Spec) {
 			v := ""
-			if !IsGit(e.Spec) && !Pinned(e.Spec) {
+			if !IsGit(e.Spec) {
 				v = newestOf(ctx, Name(e.Spec))
 			}
 			var err error
-			if v != "" {
+			switch {
+			case v != "" && Pinned(e.Spec):
+				if update.Newer(v, Installed(e.Spec)) {
+					_, err = add(ctx, Name(e.Spec), v)
+				} else {
+					err = reinstall(ctx, e.Spec)
+				}
+			case v != "":
 				err = installAt(ctx, Name(e.Spec), v)
-			} else {
-				// pinned, a git one, or npm not answering: as its spec says
+			default:
+				// a git one, or npm not answering: as its spec says
 				err = reinstall(ctx, e.Spec)
 			}
 			if err != nil {
@@ -495,17 +518,29 @@ func Update(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// indexOf is the plugin name means in l: the one added as name exactly,
+// else the one of that package. A plugin of the user's own (a folder)
+// beside a third party's is each told apart by its own spec, so taking
+// one away or switching it off never reaches the other.
+func indexOf(l List, name string) int {
+	if i := slices.IndexFunc(l.Plugins, func(x Entry) bool { return x.Spec == name }); i >= 0 {
+		return i
+	}
+	return slices.IndexFunc(l.Plugins, func(x Entry) bool { return Name(x.Spec) == name })
+}
+
 // Remove takes a plugin off the list (and out of plugins/).
 func Remove(ctx context.Context, name string) error {
 	listMu.Lock()
 	l := Load()
-	i := slices.IndexFunc(l.Plugins, func(x Entry) bool { return Name(x.Spec) == name || x.Spec == name })
+	i := indexOf(l, name)
 	if i < 0 {
 		listMu.Unlock()
 		return fmt.Errorf("no plugin %q", name)
 	}
 	e := l.Plugins[i]
 	l.Plugins = slices.Delete(l.Plugins, i, i+1)
+	maps.DeleteFunc(l.Prefer, func(_, s string) bool { return s == e.Spec })
 	err := save(l)
 	listMu.Unlock()
 	if err != nil {
@@ -525,11 +560,38 @@ func SetOff(name string, off bool) error {
 	listMu.Lock()
 	defer listMu.Unlock()
 	l := Load()
-	i := slices.IndexFunc(l.Plugins, func(x Entry) bool { return Name(x.Spec) == name || x.Spec == name })
+	i := indexOf(l, name)
 	if i < 0 {
 		return fmt.Errorf("no plugin %q", name)
 	}
 	l.Plugins[i].Off = off
+	if err := save(l); err != nil {
+		return err
+	}
+	Restart()
+	return nil
+}
+
+// Prefer has the plugin named serve provider id, which another plugin
+// signs in to as well (Clash): the host runs it for id from now on, the
+// other one keeping its other providers. A plugin removed takes its picks
+// with it; one switched off leaves the id to the others until it is on
+// again.
+func Prefer(name, id string) error {
+	listMu.Lock()
+	defer listMu.Unlock()
+	l := Load()
+	i := indexOf(l, name)
+	if i < 0 {
+		return fmt.Errorf("no plugin %q", name)
+	}
+	if id == "" {
+		return errors.New("no provider given")
+	}
+	if l.Prefer == nil {
+		l.Prefer = map[string]string{}
+	}
+	l.Prefer[id] = l.Plugins[i].Spec
 	if err := save(l); err != nil {
 		return err
 	}
@@ -543,7 +605,7 @@ func SetOptions(name string, opts map[string]any) error {
 	listMu.Lock()
 	defer listMu.Unlock()
 	l := Load()
-	i := slices.IndexFunc(l.Plugins, func(x Entry) bool { return Name(x.Spec) == name || x.Spec == name })
+	i := indexOf(l, name)
 	if i < 0 {
 		// a short name, as the community's READMEs write it: param-override
 		// for @magpie-community/middleware-param-override

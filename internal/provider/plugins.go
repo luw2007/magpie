@@ -283,7 +283,9 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 	a := &Account{Agent: "plugin", User: user, Plan: l.Plan, Stream: true, plugin: &pp, pluginKey: acct.Key}
 	if pp.ID == "grok" {
 		// Codex's namespaced tools go to Grok flat, as the built-in sends
-		// them (#404): the plugin's own rewrite would leave them out
+		// them (#404): the plugin's own rewrite would leave them out; and
+		// a plain agent_message goes as the user's message, as the plugin
+		// itself sends it from 0.1.11
 		a.body = grokBody
 	}
 	if pp.ID == "zed" {

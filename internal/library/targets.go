@@ -323,6 +323,14 @@ func targetOf(a *agent.Agent) *Target {
 		t.Instructions = filepath.Join(a.Dir, "ATOMCODE.md")
 		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtOmp}
 		t.Skills = filepath.Join(a.Dir, "skills")
+	case "zed":
+		// Zed reads its MCP servers from context_servers in the settings.json
+		// magpie sets its model in (~/.config/zed, $XDG_CONFIG_HOME/zed,
+		// %APPDATA%\Zed or $MAGPIE_ZED_CONFIG_DIR: agent.zed), and reloads
+		// the file as it changes (crates/settings_content/src/project.rs
+		// ProjectSettingsContent.context_servers, zed-industries/zed
+		// 2c99f547; lc on Discord)
+		t.MCP = &mcpFile{Path: a.Path, Format: fmtZed}
 	case "claude-desktop":
 		// Claude Desktop reads only commands from its file: a remote server
 		// is added in its own Connectors settings. In its 3p mode (magpie's

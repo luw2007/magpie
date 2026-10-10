@@ -36,7 +36,7 @@ type modelJSON struct {
 	Own      bool     `json:"ownImages,omitempty"` // its vendor's answer, which a staged Restore default shows
 	On       bool     `json:"on"`                  // exposed to agents
 	Context  int      `json:"context,omitempty"`   // the window agents are told: the user's, else Listed
-	Output   int      `json:"output,omitempty"`    // the reply limit agents are told (provider.ReplyLimit)
+	Output   int      `json:"output,omitempty"`    // the reply limit agents are told: provider.ReplyLimit within Context (provider.OutputWithin)
 	Listed   int      `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's
 	Max      int      `json:"max,omitempty"`       // the most its context may be set to, above Listed
 	Free     bool     `json:"free,omitempty"`      // costs the subscription nothing
@@ -114,6 +114,10 @@ type providerJSON struct {
 	// a Zhipu or Z.ai key's team, for a team's GLM Coding Plan (#236):
 	// set, if empty, for those providers alone, which the editor asks it of
 	ZhipuTeam *provider.ZhipuTeam `json:"zhipuTeam,omitempty"`
+	// a Volcengine account's access key, which its plan's windows are
+	// read with (provider.TakesVolcAccessKey): whether the provider takes
+	// one, its ID, and whether a Secret is saved; never the Secret itself
+	AccessKey *accessKeyJSON `json:"accessKey,omitempty"`
 	// ModelTest is why its models can't each be sent a test request, ""
 	// when they can (provider.ModelTest): the editor says so on a chip's
 	// right-click rather than offer no menu
@@ -122,9 +126,9 @@ type providerJSON struct {
 	// System One question (provider.AsksDecideModels): a mixed
 	// provider's Jev too, beside its conversation models
 	DecideTest bool `json:"decideTest,omitempty"`
-	// Deciders are its decision models when it lists them apart from its
-	// chat models (OpenRouter's): those, and no Jev-named chat model
-	Deciders []string `json:"deciders,omitempty"`
+	// Deciders explicitly identifies decision models for OpenRouter and
+	// remote magpie. An empty remote list suppresses name-based guessing.
+	Deciders *[]string `json:"deciders,omitempty"`
 
 	Key struct {
 		Set      bool   `json:"set"`
@@ -199,6 +203,13 @@ type moveJSON struct {
 
 // stepPlanJSON: whether a StepFun provider's platform sign-in is kept, and
 // where and how the user gets one
+// accessKeyJSON is a provider's Volcengine access key as the editor sees
+// it: the ID, and whether a Secret is saved, never the Secret.
+type accessKeyJSON struct {
+	ID        string `json:"id"`
+	SecretSet bool   `json:"secretSet"`
+}
+
 type stepPlanJSON struct {
 	Site        string `json:"site"`
 	SignedIn    bool   `json:"signedIn"`
@@ -293,6 +304,9 @@ type presetJSON struct {
 	// ZhipuTeam: a key of it may be on a team's GLM Coding Plan, whose
 	// organization and project the editor offers to take
 	ZhipuTeam bool `json:"zhipuTeam,omitempty"`
+	// AccessKey: a Volcengine Ark plan, whose windows are read with the
+	// account's access key, which the editor offers to take
+	AccessKey bool `json:"accessKey,omitempty"`
 	// a partner's tagline by language, and the languages it is listed in
 	Notes map[string]string `json:"notes,omitempty"`
 	Langs []string          `json:"langs,omitempty"`
@@ -305,10 +319,13 @@ type gatewayJSON struct {
 	URL     string   `json:"url"`
 	LAN     bool     `json:"lan"`
 	LANURLs []string `json:"lanURLs,omitempty"`
-	Open    bool     `json:"open,omitempty"` // listens beyond loopback with no key: anyone reaching it is let in
-	Running bool     `json:"running"`
-	Mine    bool     `json:"mine"`   // this process serves it
-	Window  bool     `json:"window"` // the magpie serving it shows its routing
+	// OnNetwork: MAGPIE_ADDR puts it beyond loopback (a server, a Docker
+	// image), so every caller is shown a gateway key, and LAN is true too:
+	// callers from elsewhere, a container's host among them, need one
+	OnNetwork bool `json:"onNetwork,omitempty"`
+	Running   bool `json:"running"`
+	Mine      bool `json:"mine"`   // this process serves it
+	Window    bool `json:"window"` // the magpie serving it shows its routing
 	// Version is another magpie's, serving it, and Older says it is older
 	// than this one: agents' requests are then sent as that version sends
 	// them, without this one's fixes (#506)
@@ -448,6 +465,9 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 			*out.ZhipuTeam = *p.ZhipuTeam
 		}
 	}
+	if provider.TakesVolcAccessKey(p) || p.AccessKeyID != "" || p.SecretAccessKey != "" {
+		out.AccessKey = &accessKeyJSON{ID: p.AccessKeyID, SecretSet: p.SecretAccessKey != ""}
+	}
 	if site := provider.StepFunSite(p); site != "" {
 		out.StepPlan = &stepPlanJSON{site, provider.StepFunSignedIn(site), provider.StepFunSignInURL(site), provider.StepFunBookmarklet()}
 	}
@@ -528,7 +548,8 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		if imageSet {
 			images = said
 		}
-		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: p.WindowOf(m), Output: p.ReplyLimitIn(m, set), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own}
+		window := p.WindowOf(m)
+		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own}
 		if i := slices.IndexFunc(most, func(c catalog.Model) bool { return c.ID == m.ID }); j.Max == 0 && i >= 0 {
 			j.Max = most[i].MaxContext
 		}
@@ -568,14 +589,21 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		seen[m.ID] = true
 		out.Models = append(out.Models, named(m, exposed[m.ID]))
 	}
-	// OpenRouter's decision models, listed apart from its chat models
-	// (ARNO on Discord), after them
+	// Keep an explicit empty list for remote magpie: the editor must not
+	// guess that a Jev Router chat model answers System One.
+	var deciders []string
+	if p.IsRemoteMagpie() {
+		deciders = []string{}
+	}
 	for _, m := range p.DecisionModels() {
-		out.Deciders = append(out.Deciders, m.ID)
+		deciders = append(deciders, m.ID)
 		if !seen[m.ID] {
 			seen[m.ID] = true
 			out.Models = append(out.Models, named(m, exposed[m.ID]))
 		}
+	}
+	if deciders != nil {
+		out.Deciders = &deciders
 	}
 	// picks the vendor list does not know go first, so they are visible
 	for _, m := range p.Exposed() {
@@ -658,12 +686,13 @@ func providersState() providersJSON {
 		s.Presets = append(s.Presets, presetJSON{PresetDef: pa.PresetDef, Added: have[pa.ID], Notes: pa.Notes, Langs: pa.Langs, New: !have[pa.ID] && !provider.PartnerNoticed(pa.ID)})
 	}
 	for _, pr := range provider.Presets() {
-		team := provider.TakesZhipuTeam(provider.Provider{Chat: pr.Chat, Responses: pr.Responses, Anthropic: pr.Anthropic})
-		s.Presets = append(s.Presets, presetJSON{PresetDef: pr, Added: have[pr.ID], ZhipuTeam: team})
+		bases := provider.Provider{Chat: pr.Chat, Responses: pr.Responses, Anthropic: pr.Anthropic}
+		team := provider.TakesZhipuTeam(bases)
+		s.Presets = append(s.Presets, presetJSON{PresetDef: pr, Added: have[pr.ID], ZhipuTeam: team, AccessKey: provider.TakesVolcAccessKey(bases)})
 	}
 	cat := provider.Catalog()
-	s.Gateway = gatewayJSON{URL: gateway.URL(), Open: gateway.OpenToAnyone(), Models: len(cat), Calls: []gateway.Call{}, Groups: []gwGroupJSON{}}
-	s.Gateway.LAN = settings.Load().LAN
+	s.Gateway = gatewayJSON{URL: gateway.URL(), OnNetwork: gateway.OnNetwork(), Models: len(cat), Calls: []gateway.Call{}, Groups: []gwGroupJSON{}}
+	s.Gateway.LAN = settings.Load().LAN || s.Gateway.OnNetwork
 	if s.Gateway.LAN {
 		s.Gateway.LANURLs = gateway.LANURLs()
 	}
@@ -671,7 +700,7 @@ func providersState() providersJSON {
 		if e.Group == "" {
 			continue
 		}
-		g := gwGroupJSON{ID: e.ID, Name: e.Name, Icons: e.Icons, Efforts: e.Efforts, Images: e.Images, Context: e.Context, Output: e.Output}
+		g := gwGroupJSON{ID: e.ID, Name: e.Name, Icons: e.Icons, Efforts: e.Efforts, Images: e.Images, Context: e.Context, Output: e.PublishedOutput()}
 		if _, ms, ok := findGroup(e.ID); ok {
 			for _, m := range ms {
 				if id := m.Provider.ID + "/" + m.Model; !slices.Contains(g.Members, id) {
@@ -867,6 +896,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// ClearBalanceToken drops the saved balance token, which a
 			// blank one in the form otherwise keeps
 			ClearBalanceToken bool `json:"clearBalanceToken"`
+			// AccessKeyID is a Volcengine access key's ID, "" for none; a
+			// save that leaves it out keeps it. Its Secret (SecretAccessKey)
+			// is kept when sent blank, unless ClearAccessKey drops it.
+			AccessKeyID    *string `json:"accessKeyID"`
+			ClearAccessKey bool    `json:"clearAccessKey"`
 			// From is the id the provider had: another is a rename
 			From string `json:"from"`
 			// CopyOf, with New, is the provider the new one is a copy of
@@ -1033,6 +1067,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				pr.Key, pr.Models, pr.Fallback, pr.Headers, pr.BalanceToken, pr.Contexts = in.Key, in.Models, in.Fallback, in.Headers, in.BalanceToken, in.Contexts
 				pr.Keys, pr.KeyID = in.Keys, in.KeyID
 				pr.ZhipuTeam = in.ZhipuTeam
+				pr.SecretAccessKey = in.SecretAccessKey
 				pr.Searches = in.Searches
 				pr.PinUpstream = in.PinUpstream
 				pr.Unredacted = in.Unredacted
@@ -1107,6 +1142,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					}
 				}
 			}
+			if req.AccessKeyID != nil {
+				in.AccessKeyID = strings.TrimSpace(*req.AccessKeyID)
+			}
+			in.SecretAccessKey = strings.TrimSpace(in.SecretAccessKey)
 			var old *provider.Provider
 			if req.New {
 				// Add a second preset or reused name beside the first.
@@ -1174,6 +1213,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				// a Zhipu key's team likewise: {} clears it
 				if in.ZhipuTeam == nil && old != nil {
 					in.ZhipuTeam = old.ZhipuTeam
+				}
+				// a Volcengine access key likewise: its ID kept when left
+				// out, its Secret when sent blank, unless the form dropped it
+				if req.AccessKeyID == nil && old != nil {
+					in.AccessKeyID = old.AccessKeyID
+				}
+				if in.SecretAccessKey == "" && old != nil && !req.ClearAccessKey {
+					in.SecretAccessKey = old.SecretAccessKey
 				}
 				if in.Key == "" && old != nil {
 					in.Key = old.Key
@@ -1263,6 +1310,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				}
 			}
 			provider.ForgetBalances()
+			if old == nil || old.AccessKeyID != in.AccessKeyID || old.SecretAccessKey != in.SecretAccessKey {
+				// the plan's windows are read afresh with the new access key
+				provider.ForgetPlanQuotas()
+			}
 			// a new key means a new vendor list is worth a try; keep it short
 			if p, err := provider.Find(in.ID); err == nil && p.Ready() && (old == nil || old.Key != p.Key) {
 				ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
@@ -1601,17 +1652,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		st.Moved = moved
 		writeJSON(rw, st)
 	})
-	// Codex's background app-server, left on the account before a switch:
-	// restarting it (which ends the Codex sessions on it), or letting it be.
+	// Codex's background app-server, left on the account before a switch
+	// or on the model list before a change (the Agents row's Restart):
+	// restarting it (Codex 0.162's sessions on it reconnect, after a turn
+	// running, for up to a minute; an older Codex's end), or letting it be.
 	mux.HandleFunc("POST /api/codex/daemon/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		switch r.PathValue("action") {
 		case "restart":
-			ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 			defer cancel()
 			if err := provider.RestartCodexDaemon(ctx); err != nil {
 				fail(rw, err)
 				return
 			}
+			agent.CodexDaemonRestarted()
 		case "dismiss":
 			provider.DismissCodexDaemon()
 		default:

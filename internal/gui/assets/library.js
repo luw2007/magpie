@@ -21,6 +21,7 @@
   let probe = null;      // skills found at a source: { source, candidates, pick:Set, agents:Set }
   let probing = false;
   let checking = false;  // asking GitHub which skills it has changed
+  let autoChecked = false; // the page checked by itself, as the server said it was due (#1449)
   let modal = null;      // what the library has open in the dialog
 
   const GLYPH = {
@@ -1796,7 +1797,14 @@
         if (checking) c.classList.add("busy");
         rh.append(c);
       }
-      const stale = lib.skills.filter((s) => s.check?.status === "update");
+      // not checked since magpie started, or not for a while: the page
+      // checks by itself, once, after it is drawn (#1449)
+      if (lib.checkDue && !checking && !autoChecked) {
+        autoChecked = true;
+        setTimeout(() => checkSkills(true), 0);
+      }
+      // one changed here is updated from its own row, which asks first
+      const stale = lib.skills.filter((s) => s.check?.status === "update" && !s.edited);
       if (stale.length) {
         const n = stale.length;
         const u = button(t("Update {n}", { n }), "action lib-updall", async (e, b) => {
@@ -2199,7 +2207,8 @@
     who.append(el("div", "sub", filtering && hits.length !== n ? t("{n} of {total} skills", { n: hits.length, total: n })
       : n === 1 ? t("1 skill") : t("{n} skills", { n })));
     const tags = el("div", "lib-tags");
-    const stale = g.skills.filter((s) => s.check?.status === "update");
+    // one changed here is updated from its own row, which asks first (#1449)
+    const stale = g.skills.filter((s) => s.check?.status === "update" && !s.edited);
     if (stale.length) {
       const u = button(t("Update {n}", { n: stale.length }), "action lib-updall", async (e, b) => {
         b.classList.add("busy");
@@ -2917,9 +2926,19 @@
       take(v);
       const res = v.result || {};
       const up = res.updated?.length || 0, no = res.unupdated || [];
+      // one changed here is left as it is (#1449): said apart from those
+      // that couldn't be fetched
+      const isEdited = (p) => lib.skills.some((s) => s.edited && "skill:" + s.name === p.what);
+      const kept = no.filter(isEdited).map((p) => p.what.replace(/^skill:/, "")), failed = no.filter((p) => !isEdited(p));
       if (no.length) {
-        const p = no[0];
-        status(t("{name} wasn't updated: {error}", { name: p.what.replace(/^skill:/, ""), error: p.error }) + (no.length > 1 ? " " + t("(and {n} more)", { n: no.length - 1 }) : "") + (up ? " · " + t("{n} up to date", { n: up }) : ""), "warn", 8000);
+        const parts = [];
+        if (failed.length) {
+          const p = failed[0];
+          parts.push(t("{name} wasn't updated: {error}", { name: p.what.replace(/^skill:/, ""), error: p.error }) + (failed.length > 1 ? " " + t("(and {n} more)", { n: failed.length - 1 }) : ""));
+        }
+        if (kept.length) parts.push(t("Kept as you changed them: {names}. Update each from its row to replace your changes.", { names: kept.join(", ") }));
+        if (up) parts.push(t("{n} up to date", { n: up }));
+        status(parts.join(" · "), "warn", 10000);
       } else report(res, t("{n} skills up to date", { n: up }));
       render();
     } catch (e) {
@@ -3226,7 +3245,9 @@
 
   // Which skills GitHub changed since they were installed: each row says,
   // and the heading offers to update just those.
-  async function checkSkills() {
+  // quiet is the page's own check as it opens the skills: it says only
+  // what there is to update or add, and nothing when there is nothing.
+  async function checkSkills(quiet) {
     if (checking) return;
     checking = true;
     render();
@@ -3238,12 +3259,17 @@
       let msg = n ? (n === 1 ? t("1 skill has an update") : t("{n} skills have updates", { n })) : t("Every skill is up to date");
       const more = lib.newSkills?.length || 0;
       if (more) msg += " · " + (more === 1 ? t("1 more skill in their repositories") : t("{n} more skills in their repositories", { n: more }));
-      if (unknown.length) {
+      if (quiet) {
+        const said = [];
+        if (n) said.push(n === 1 ? t("1 skill has an update") : t("{n} skills have updates", { n }));
+        if (more) said.push(more === 1 ? t("1 more skill in their repositories") : t("{n} more skills in their repositories", { n: more }));
+        if (said.length) status(said.join(" · "), "ok");
+      } else if (unknown.length) {
         msg += " · " + t("{n} couldn't be checked: {error}", { n: unknown.length, error: checkError(unknown[0].check) });
         status(msg, "warn", 8000);
       } else status(msg, "ok");
     } catch (e) {
-      status(e.message, "err", 6000);
+      if (!quiet) status(e.message, "err", 6000);
     }
     checking = false;
     // drawn after the await, a page that can't be drawn says why, as one
@@ -3405,6 +3431,9 @@
     } else if (c?.status === "unknown") {
       nm.append(tag(t("Not checked"), "lib-unchecked", checkError(c)));
     }
+    // changed here since it was fetched from GitHub (#1449): an update asks
+    // before it replaces that
+    if (s.edited) nm.append(tag(t("Changed here"), "warn lib-edited", t("You changed it since it was fetched from GitHub. Updating asks before it replaces your changes.")));
     // a copy in an agent that differs from the library's skill (#896): a
     // sync makes it again
     if (s.behind?.length) {
@@ -3437,6 +3466,7 @@
     const acts = el("div", "lib-rowacts");
     if (s.kind === "github" || s.origin) {
       const u = button("", "lib-icon", async (e, b) => {
+        if (s.edited) return confirmUpdateEdited(s);
         b.classList.add("busy");
         await change("skills/update", { name: s.name }, t("{name} is up to date", { name: s.name }));
         b.classList.remove("busy");
@@ -3445,6 +3475,7 @@
       u.title = s.origin ? t("Update from GitHub ({repo}, as CC Switch installed it)", { repo: s.origin.replace(/^https:\/\/github\.com\//, "") }) : t("Update from GitHub");
       if (c?.status === "current") u.title += "\n" + t("Up to date with GitHub") + "\n" + checkLine(c);
       else if (c?.status === "update") u.title += "\n" + checkLine(c);
+      if (s.edited) u.title += "\n" + t("Changed here: asks before it replaces your changes");
       acts.append(u);
     }
     const rm = button("", "lib-icon danger", () => confirmRemoveSkill(s));
@@ -3456,6 +3487,26 @@
     row.onclick = () => viewSkill(s);
     row.title = t("Read {name}'s SKILL.md", { name: s.name });
     return row;
+  }
+
+  // An update of a skill changed here replaces the change (#1449): asked in
+  // the page, and the version replaced is kept with the backups.
+  function confirmUpdateEdited(s) {
+    const ed = el("div", "editor lib-editor lib-update-edited");
+    const head = el("div", "ehead");
+    head.append(glyph(GLYPH.up), el("b", "", t("Replace your changes to {name}?", { name: s.name })));
+    ed.append(head);
+    ed.append(el("p", "lib-confirm", t("You changed {name} here since it was fetched from GitHub. Updating puts GitHub's version in its place. Yours is kept in magpie's backups (Backups, at the foot of the Library).", { name: s.name })));
+    const bar = el("div", "bar");
+    const go = button(t("Update"), "primary", async () => {
+      go.disabled = true;
+      if (await change("skills/update", { name: s.name, replace: true }, t("{name} is up to date; your version is in the backups", { name: s.name }))) closeLibModal(true);
+      else go.disabled = false;
+    });
+    bar.append(el("span", "grow"), button(t("Keep mine"), "", closeLibModal), go);
+    ed.append(bar);
+    modal = { save: () => go.click() };
+    openLib(ed);
   }
 
   function confirmRemoveSkill(s) {

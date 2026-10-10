@@ -219,10 +219,21 @@ func DismissCodexDaemon() {
 
 // RestartCodexDaemon has Codex restart its app-server, which reads the
 // sign-in again: `codex app-server daemon restart`, run with the codex CLI
-// magpie finds and the Codex home it signs Codex in through. The Codex
-// sessions attached to it are ended.
+// magpie finds and the Codex home it signs Codex in through. Codex 0.162's
+// sessions attached to it reconnect to the new one, a turn running is let
+// finish first (for up to a minute); an older Codex's are ended.
 func RestartCodexDaemon(ctx context.Context) error {
-	cmd, err := codexDaemonCommand(ctx, "restart")
+	codexRestarting.Lock()
+	defer codexRestarting.Unlock()
+	if err := restartCodexDaemon(ctx, codexHome()); err != nil {
+		return err
+	}
+	DismissCodexDaemon()
+	return nil
+}
+
+func restartCodexDaemon(ctx context.Context, home string) error {
+	cmd, err := codexDaemonCommand(ctx, home, "restart")
 	if err != nil {
 		return err
 	}
@@ -232,21 +243,163 @@ func RestartCodexDaemon(ctx context.Context) error {
 		}
 		return errors.New("codex app-server daemon restart: " + err.Error())
 	}
-	DismissCodexDaemon()
 	return nil
 }
 
 // codexDaemonCommand is `codex app-server daemon <verb>`, with CODEX_HOME
 // set to the home magpie switches, and nothing to read on stdin (Codex
 // waits on a stdin left open).
-func codexDaemonCommand(ctx context.Context, verb string) (*exec.Cmd, error) {
+func codexDaemonCommand(ctx context.Context, home, verb string) (*exec.Cmd, error) {
 	exe := codexExecutable()
 	if exe == "" {
 		return nil, errors.New("the codex CLI isn't installed, or magpie can't find it")
 	}
 	cmd := proc.CommandContext(ctx, exe, "app-server", "daemon", verb)
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "CODEX_HOME=") })
-	cmd.Env = append(env, "CODEX_HOME="+codexHome())
+	cmd.Env = append(env, "CODEX_HOME="+home)
 	cmd.Stdin = nil // os/exec reads it from the null device
 	return cmd, nil
 }
+
+// The daemon also builds Codex's model list once, as it starts, from
+// config.toml and the catalog it names (codex-rs app-server's models
+// manager): a codex session started after magpie wires Codex in, or takes
+// it out, attaches to the daemon left running and shows the list from
+// before — Codex's own models, or magpie's — until it restarts (luci on
+// Discord, Codex 0.162). It runs per CODEX_HOME, not per terminal, and
+// has no idle exit. Restarting it with no codex session attached ends
+// nothing, so magpie does that itself (KeepCodexDaemonCurrent); with one
+// attached, the Agents page offers it.
+
+// A CodexDaemonCheck is what KeepCodexDaemonCurrent found and did.
+type CodexDaemonCheck struct {
+	// Behind: a daemon runs that started before what it reads changed
+	Behind bool
+	// Since is when that daemon started
+	Since time.Time
+	// Attached is how many codex sessions may be on it, which magpie
+	// doesn't restart it under
+	Attached int
+	// Restarted: magpie restarted it, and new sessions get the new list
+	Restarted bool
+	Err       error
+}
+
+// codexRestarting keeps one restart of the daemon at a time.
+var codexRestarting sync.Mutex
+
+// KeepCodexDaemonCurrent restarts the managed app-server of the Codex home
+// home when it started before changed (when magpie last changed what Codex
+// reads at start) and no codex session is attached to it. One that can't
+// be found or timed, or a restart already under way, is left as it is.
+func KeepCodexDaemonCurrent(ctx context.Context, home string, changed time.Time) CodexDaemonCheck {
+	var c CodexDaemonCheck
+	if changed.IsZero() {
+		return c
+	}
+	ps, err := listProcesses(ctx)
+	if err != nil {
+		return c
+	}
+	pid := findCodexDaemon(ps, home)
+	if pid == 0 {
+		return c
+	}
+	since, ok := daemonStarted(home, pid)
+	// a second's slack: the pid file and the config are written by
+	// different programs, whose clocks round differently
+	if !ok || !since.Before(changed.Add(-time.Second)) {
+		return c
+	}
+	c.Behind, c.Since, c.Attached = true, since, codexClients(ps, home)
+	if c.Attached > 0 || !codexRestarting.TryLock() {
+		return c
+	}
+	defer codexRestarting.Unlock()
+	if c.Err = restartCodexDaemon(ctx, home); c.Err == nil {
+		c.Restarted = true
+	}
+	return c
+}
+
+// daemonStarted is when the daemon pid started: the time Codex wrote its
+// pid file, which it does once, as the daemon comes up, on every OS. ok is
+// false when no pid file of home's names pid.
+func daemonStarted(home string, pid int) (time.Time, bool) {
+	for _, name := range []string{"app-server.pid", "daemon.pid"} {
+		p := filepath.Join(home, "app-server-daemon", name)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if id, ok := parsePIDFile(b); !ok || id != pid {
+			continue
+		}
+		if st, err := os.Stat(p); err == nil {
+			return st.ModTime(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// codexClients counts the codex sessions that may be attached to home's
+// daemon: codex run in a terminal (its TUI, exec, resume, an app-server
+// proxy); not the daemon, its helpers and the commands that drive it, nor
+// an app's or an editor's codex, which serve themselves. One started for
+// another CODEX_HOME is left out where that can be read.
+func codexClients(ps []proc.Process, home string) int {
+	n := 0
+	for _, p := range ps {
+		if !isCodexClient(p.Args) {
+			continue
+		}
+		if h, ok := processCodexHome(p.PID); ok && h != "" && filepath.Clean(h) != filepath.Clean(home) {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// isCodexClient reports whether a command line is a codex session that
+// may attach to the daemon.
+func isCodexClient(args string) bool {
+	exe, rest := splitExe(args)
+	base := strings.ToLower(exe[strings.LastIndexAny(exe, `/\`)+1:])
+	if base != "codex" && base != "codex.exe" {
+		return false
+	}
+	// an app's (ChatGPT.app's CodexCLI.app) or an editor extension's; ps
+	// leaves a path's spaces unquoted, so "…/Codex Computer Use.app/
+	// Contents/MacOS/…" reads as a program named Codex: the whole line
+	// is looked at
+	if strings.Contains(args, ".app/Contents/") || strings.Contains(exe, "/extensions/") || strings.Contains(exe, `\extensions\`) {
+		return false
+	}
+	f := strings.Fields(rest)
+	if slices.Contains(f, "exec-server") || slices.Contains(f, "mcp-server") {
+		return false
+	}
+	if i := slices.Index(f, "app-server"); i >= 0 {
+		// the daemon, its helpers, `daemon restart` and other apps'
+		// app-servers serve; a proxy is a client of the daemon
+		return i+1 < len(f) && f[i+1] == "proxy"
+	}
+	return true
+}
+
+// splitExe parts a command line into the program and its arguments, the
+// program quoted as Windows lists it (`"C:\Program Files\…\codex.exe" …`).
+func splitExe(args string) (exe, rest string) {
+	args = strings.TrimSpace(args)
+	if q, ok := strings.CutPrefix(args, `"`); ok {
+		if exe, rest, ok = strings.Cut(q, `"`); ok {
+			return exe, rest
+		}
+	}
+	exe, rest, _ = strings.Cut(args, " ")
+	return exe, rest
+}
+
+// CodexHome is the Codex home magpie wires and signs Codex in through.
+func CodexHome() string { return codexHome() }

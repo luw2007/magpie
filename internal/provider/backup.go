@@ -103,6 +103,9 @@ func preserveBackupKeys(p *Provider, h Provider) {
 	if keyless && p.BalanceToken == "" {
 		p.BalanceToken = h.BalanceToken
 	}
+	if keyless && p.AccessKeyID == "" && p.SecretAccessKey == "" {
+		p.AccessKeyID, p.SecretAccessKey = h.AccessKeyID, h.SecretAccessKey
+	}
 	if p.Key == "" && len(p.Keys) == 0 {
 		p.Keys = slices.Clone(h.Keys)
 	}
