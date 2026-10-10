@@ -13191,15 +13191,13 @@ function renderQuotas() {
       if (folded.has(sub)) continue;
       if (sub.poolRef) {
         card.dataset.card = trayCardID(sub);
-        card.append(el("div", "hint", `Pool: ${quotaName(sub)} · Source: ${sub.sourceRef || "Unknown"} · Account: ${sub.accountId || "Source-wide"} · Keys: ${(sub.keyRefs || []).join(", ") || "None"}`));
-        card.append(el("div", "hint", `Status: ${sub.status || "unknown"}${sub.error ? " · " + sub.error : ""}${sub.asOf ? ` · ${sub.status === "measured" ? "Measured" : "Last known"}: ` + new Date(sub.asOf).toLocaleString() : ""}`));
         if (sub.loadPercent !== undefined && sub.loadPercent !== null) card.append(el("div", "hint", `Load: ${sub.loadPercent}%`));
       }
       // "Every model" by the account, or the card's name: where the click
       // was, whichever way the meters under it grow or shrink
       const [meters, every] = familyQuota(sub);
       const brief = several && !usageAcctOpen(sub, subs);
-      if (sub.user) {
+      if (sub.user && (!sub.poolRef || several || sub.user.toLowerCase() !== quotaName(first).toLowerCase())) {
         const who = el("div", "subscription-account" + (brief ? " brief" : ""));
         who.dataset.card = trayCardID(sub);
         const u = el("span", "user", sub.user);

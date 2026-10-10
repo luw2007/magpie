@@ -149,6 +149,13 @@ Usage curves (`quotaHistOf` in `app.js`) match a pool card to its history by
 a card with no matching history draws no curve, and a stale card draws only the
 history it has, never a point made from its figures.
 
+Usage-source pool cards show their display name and allowance meters without
+Pool/Source/Account/Keys or a separate status paragraph. A single account whose
+name matches the heading (case-insensitively) is not repeated; distinct accounts
+remain named. The existing reading footer, stale warning and error display stay
+visible, and sources that report load retain their load figure. Pool bindings
+and history identity are unchanged.
+
 ## Verification
 
 ```sh
