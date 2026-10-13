@@ -498,6 +498,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/magpie/quotas/history", s.quotasHistory)
 	mux.HandleFunc("GET "+provider.RemoteCardsPath, s.quotaCards)
 	mux.HandleFunc("POST "+provider.RemoteRefreshPath, s.quotaCardsRefresh)
+	mux.HandleFunc("GET "+usage.PeersPath, s.usageDays)
 	mux.HandleFunc("GET /v1/magpie/route", s.sessionRoute)
 	mux.HandleFunc("GET /v1/magpie/concurrency", s.concurrency)
 	mux.HandleFunc("GET /v1/magpie/limit", s.keyLimit)

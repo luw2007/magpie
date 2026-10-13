@@ -13,6 +13,7 @@ import (
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // Sharing gates remote access; each authorized remote call carries the same
@@ -328,7 +329,7 @@ func TestNetworkGatewayGuardsEveryRoute(t *testing.T) {
 		{"GET", "/"}, {"GET", "/v1"}, {"GET", "/v1/models"}, {"GET", "/models"}, {"GET", "/v1/models/x"},
 		{"GET", "/muse-code/models"}, {"GET", "/api/hello"},
 		{"GET", "/v1/magpie/quotas"}, {"GET", "/v1/magpie/quotas/history"},
-		{"GET", provider.RemoteCardsPath}, {"POST", provider.RemoteRefreshPath},
+		{"GET", provider.RemoteCardsPath}, {"POST", provider.RemoteRefreshPath}, {"GET", usage.PeersPath},
 		{"GET", "/v1/magpie/route?session=s"}, {"GET", "/v1/magpie/concurrency"}, {"GET", "/v1/magpie/limit"},
 		{"POST", "/v1/chat/completions"}, {"POST", "/chat/completions"},
 		{"POST", "/v1/responses"}, {"POST", "/responses"}, {"GET", "/v1/responses"}, {"GET", "/responses"},

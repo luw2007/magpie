@@ -68,6 +68,33 @@ An older peer without the decision-list extension continues serving its
 other APIs but must be updated before its decisions can be discovered.
 See [`decide.go`](../../internal/provider/decide.go).
 
+### Usage across computers
+
+A remote magpie's own days of calls are pulled and listed with this
+computer's, each row naming the computer it was made on. The remote answers
+`GET /v1/magpie/usage/days?since=<date>` (`usage.PeersPath`,
+[`gateway/usage_peers.go`](../../internal/gateway/usage_peers.go)) with its
+`usage.PeerDays`: what its ledger lists of each call (times, tokens, models,
+providers, status), never a request's content, and not the calls it only
+passed on (`Via`), which the computer that made them counts. Access is the
+quotas' rule: this machine, or another with an enabled gateway key while the
+gateway is shared.
+
+`usage.PullPeers` ([`usage/peers.go`](../../internal/usage/peers.go)) runs
+15 seconds after the gateway starts and every 5 minutes, only in the magpie
+serving the gateway. The first pull of a remote takes the 90-day window
+(`SharedDays`), later ones yesterday and today. Days are kept under
+`usage-peers/`, laid out as sync's `usage-others/`; sync never writes or drops
+them, so turning sync off or a day leaving its server doesn't remove what a
+peer answered. A day for the same computer in both is read once, from
+`usage-peers/`. A day naming this computer is ignored. A remote that can't
+be asked keeps showing what it last answered and the error is logged. Each
+computer remains the only writer of its own calls: nothing is pushed, and
+nothing aggregated is passed on to a third magpie.
+
+Verification: `TestPullPeersAggregatesRemoteDays`, `TestUsageDaysEndpoint`,
+`TestNetworkGatewayGuardsEveryRoute`.
+
 The CLI and TUI report model-list fetch errors for remote and other mixed providers
 (such as OpenRouter, serving conversation and decision models). Only a
 decision-only provider keeps the separate decision discovery behavior

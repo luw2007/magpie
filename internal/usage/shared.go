@@ -8,6 +8,7 @@ package usage
 // times, tokens, models, providers, status — never a request's content.
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -47,6 +48,11 @@ func dir() string { return filepath.Dir(provider.Path()) }
 
 // OthersDir is where the other computers' days are kept: one folder each.
 func OthersDir() string { return filepath.Join(dir(), "usage-others") }
+
+// PeersDir is where days pulled straight from a remote magpie are kept, laid
+// out as OthersDir is. Sync never touches it: turning sync off or a day
+// leaving the server must not drop what a peer answered.
+func PeersDir() string { return filepath.Join(dir(), "usage-peers") }
 
 // Computer is this computer's id and name, the id made the first time and
 // kept in usage-computer.json, which no backup or sync carries.
@@ -122,12 +128,16 @@ func OwnDays(since time.Time) map[string][]SharedCall {
 }
 
 // sharedFile is where another computer's day is kept here.
-func sharedFile(computer, day string) string {
-	return filepath.Join(OthersDir(), computer, day+".json")
+func sharedFile(computer, day string) string { return fileIn(OthersDir(), computer, day) }
+
+func fileIn(root, computer, day string) string {
+	return filepath.Join(root, computer, day+".json")
 }
 
 // KeepShared keeps another computer's day here, over the one kept before.
-func KeepShared(d SharedDay) error {
+func KeepShared(d SharedDay) error { return keepIn(OthersDir(), d) }
+
+func keepIn(root string, d SharedDay) error {
 	if !validID(d.Computer) {
 		return os.ErrInvalid
 	}
@@ -138,24 +148,27 @@ func KeepShared(d SharedDay) error {
 	if err != nil {
 		return err
 	}
-	f := sharedFile(d.Computer, d.Day)
+	f := fileIn(root, d.Computer, d.Day)
+	if old, err := os.ReadFile(f); err == nil && bytes.Equal(old, b) {
+		return nil // unchanged: the request page's caches keep their stamp
+	}
 	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
 		return err
 	}
 	if err := edit.WriteAtomic(f, b); err != nil {
 		return err
 	}
-	if d.Name != "" && d.Day >= latestDay(d.Computer) {
-		edit.WriteAtomic(nameFile(d.Computer), []byte(d.Name))
+	if d.Name != "" && d.Day >= latestIn(root, d.Computer) {
+		edit.WriteAtomic(nameIn(root, d.Computer), []byte(d.Name))
 	}
 	return os.Chmod(f, 0o600)
 }
 
-// nameFile keeps what another computer is called, as its latest day says.
-func nameFile(computer string) string { return filepath.Join(OthersDir(), computer, "name") }
+// nameIn keeps what another computer is called, as its latest day says.
+func nameIn(root, computer string) string { return filepath.Join(root, computer, "name") }
 
-func latestDay(computer string) string {
-	days, _ := os.ReadDir(filepath.Join(OthersDir(), computer))
+func latestIn(root, computer string) string {
+	days, _ := os.ReadDir(filepath.Join(root, computer))
 	last := ""
 	for _, d := range days {
 		if day, ok := strings.CutSuffix(d.Name(), ".json"); ok && day > last {
@@ -165,37 +178,38 @@ func latestDay(computer string) string {
 	return last
 }
 
-// sharedNames are the other computers kept here, by id, and what each is called.
+// sharedNames are the other computers kept here, by id, and what each is
+// called, whether their days came by sync or were pulled from a remote magpie.
 func sharedNames() map[string]string {
 	out := map[string]string{}
-	kept := SharedKept()
-	if len(kept) == 0 {
-		return out
-	}
 	self, _ := Computer()
-	for _, k := range kept {
-		c, _, _ := strings.Cut(k, "/")
-		if c == self || out[c] != "" {
-			continue
-		}
-		name, _ := os.ReadFile(nameFile(c))
-		out[c] = strings.TrimSpace(string(name))
-		if out[c] == "" {
-			out[c] = c
+	for _, root := range []string{PeersDir(), OthersDir()} {
+		for _, k := range keptIn(root) {
+			c, _, _ := strings.Cut(k, "/")
+			if c == self || out[c] != "" {
+				continue
+			}
+			name, _ := os.ReadFile(nameIn(root, c))
+			out[c] = strings.TrimSpace(string(name))
+			if out[c] == "" {
+				out[c] = c
+			}
 		}
 	}
 	return out
 }
 
-// SharedKept are the other computers' days kept here, as "<id>/<day>".
-func SharedKept() []string {
+// SharedKept are the other computers' days kept here by sync, as "<id>/<day>".
+func SharedKept() []string { return keptIn(OthersDir()) }
+
+func keptIn(root string) []string {
 	var out []string
-	cs, _ := os.ReadDir(OthersDir())
+	cs, _ := os.ReadDir(root)
 	for _, c := range cs {
 		if !c.IsDir() {
 			continue
 		}
-		days, _ := os.ReadDir(filepath.Join(OthersDir(), c.Name()))
+		days, _ := os.ReadDir(filepath.Join(root, c.Name()))
 		for _, d := range days {
 			if day, ok := strings.CutSuffix(d.Name(), ".json"); ok {
 				out = append(out, c.Name()+"/"+day)
@@ -207,19 +221,22 @@ func SharedKept() []string {
 }
 
 // DropShared lets another computer's day go, and its folder with its last.
-func DropShared(computer, day string) {
+func DropShared(computer, day string) { dropIn(OthersDir(), computer, day) }
+
+func dropIn(root, computer, day string) {
 	if !validID(computer) {
 		return
 	}
-	os.Remove(sharedFile(computer, day))
-	if latestDay(computer) == "" {
-		os.Remove(nameFile(computer))
-		os.Remove(filepath.Join(OthersDir(), computer))
+	os.Remove(fileIn(root, computer, day))
+	if latestIn(root, computer) == "" {
+		os.Remove(nameIn(root, computer))
+		os.Remove(filepath.Join(root, computer))
 	}
 }
 
 // DropAllShared lets every other computer's usage go: sync, or its sharing
-// of usage, was turned off.
+// of usage, was turned off. Days pulled from a remote magpie are kept: they
+// do not come by sync.
 func DropAllShared() { os.RemoveAll(OthersDir()) }
 
 // sharedSource is one kept day, for the request page to read when it changed.
@@ -230,32 +247,34 @@ type sharedSource struct {
 }
 
 // sharedSources are the days kept from day since on (all for zero), and
-// whether any is kept at all, of any day; this computer's id is never among them.
+// whether any is kept at all, of any day; this computer's id is never among
+// them. A day both pulled from a remote magpie and synced is read once, from
+// the pulled copy, which is the fresher.
 func sharedSources(since time.Time) (out []sharedSource, some bool) {
-	kept := SharedKept()
-	if len(kept) == 0 {
-		return nil, false
-	}
 	self, _ := Computer()
 	from := ""
 	if !since.IsZero() { // a day's calls began where it was a day: one before
 		from = since.AddDate(0, 0, -1).Format(time.DateOnly)
 	}
-	for _, k := range kept {
-		c, day, _ := strings.Cut(k, "/")
-		if c == self || !validID(c) {
-			continue
+	seen := map[string]bool{}
+	for _, root := range []string{PeersDir(), OthersDir()} {
+		for _, k := range keptIn(root) {
+			c, day, _ := strings.Cut(k, "/")
+			if c == self || !validID(c) {
+				continue
+			}
+			some = true
+			if day < from || seen[k] {
+				continue
+			}
+			p := fileIn(root, c, day)
+			fi, err := os.Stat(p)
+			if err != nil {
+				continue
+			}
+			seen[k] = true
+			out = append(out, sharedSource{path: p, computer: c, day: day, size: fi.Size(), mod: fi.ModTime()})
 		}
-		some = true
-		if day < from {
-			continue
-		}
-		p := sharedFile(c, day)
-		fi, err := os.Stat(p)
-		if err != nil {
-			continue
-		}
-		out = append(out, sharedSource{path: p, computer: c, day: day, size: fi.Size(), mod: fi.ModTime()})
 	}
 	return out, some
 }

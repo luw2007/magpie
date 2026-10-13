@@ -157,6 +157,16 @@ func remoteMagpies() []Provider {
 	return out
 }
 
+// RemoteMagpies are the remote magpies this magpie uses, for the other
+// views that read one (usage_peers).
+func RemoteMagpies() []Provider { return remoteMagpies() }
+
+// RemoteGet asks remote magpie p's gateway at path for its {"data": …}
+// list, with p's key and the answers' errors told as the cards' are.
+func RemoteGet(ctx context.Context, p Provider, path string, dst any) error {
+	return remoteJSON(ctx, p, http.MethodGet, path, dst)
+}
+
 // RemoteCards is every remote magpie's cards, named for this computer.
 func RemoteCards(ctx context.Context) []SubscriptionQuota {
 	ps := remoteMagpies()
