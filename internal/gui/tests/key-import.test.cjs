@@ -43,6 +43,7 @@ function serve(lang, posts) {
       p.keyList = [...p.keyList, { id: "cccccccccc", name: "", masked: "sk-…new", on: true }, { id: "dddddddddd", name: "", masked: "sk-…nw2", on: true }];
       return json({ ...providers, added: 2, had: 1 });
     }
+    if (url.pathname === "/api/usage/sources" || url.pathname === "/api/usage/pools") return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
@@ -90,8 +91,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(await page.locator('.acc[data-account-id="bbbbbbbbbb"] .key-rest').textContent(), w.rest);
       assert.equal(await page.locator('.acc[data-account-id="aaaaaaaaaa"] .key-rest').count(), 0);
       await page.getByRole("button", { name: w.another }).click();
+      // the dialog's soft-refresh animation moves the button for a moment, and
+      // Playwright answers a moved hit target by re-scrolling the click into view
+      // (a different alignment): let it finish, then take the baseline
+      await page.waitForFunction(() => document.getAnimations().every((a) => a.effect.getComputedTiming().iterations === Infinity || a.playState !== "running"));
+      const several = page.locator(".acc.adding").getByRole("button", { name: w.several });
+      await several.scrollIntoViewIfNeeded();
       const sc = await scrolled(page);
-      await page.locator(".acc.adding").getByRole("button", { name: w.several }).click();
+      await several.click();
       const box = page.locator(".acc.adding.bulk textarea");
       await box.waitFor();
       assert.equal(await scrolled(page), sc, "a click scrolled");

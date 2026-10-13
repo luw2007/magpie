@@ -5,10 +5,12 @@ package codexcat
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -40,6 +42,34 @@ func DefaultEffort(e []string) string {
 	return e[0]
 }
 
+// NewSessionEffort is the effort a new Codex session starts at, as the
+// top of this machine's Codex config.toml says it (model_reasoning_effort,
+// magpie's "New sessions" effort, or the one Codex's own picker last
+// saved); "" when it is unset or the config can't be read.
+func NewSessionEffort() string {
+	v, _ := edit.GetTOMLTop(filepath.Join(catalog.CodexHome(), "config.toml"), "model_reasoning_effort")
+	return v
+}
+
+// ModelDefault is the default_reasoning_level of a model of these levels
+// with chosen set for new sessions: chosen when the model takes it, else
+// the level of its own nearest chosen (catalog.NearestEffort: by
+// strength, a tie going up — xhigh on a model of high and max is max), the
+// one the gateway would send it at anyway. Codex takes a model's default
+// when it is switched to: the CLI's /model offers it first and saves it as
+// the effort, and the Codex app keeps the current effort only for a model
+// that lists it. With the middle of the road there, a session started at
+// xhigh dropped to medium on a switch to a routing group (Creat.wu on
+// Discord). Nothing chosen, or nothing near it, keeps DefaultEffort.
+func ModelDefault(levels []string, chosen string) string {
+	if chosen != "" {
+		if n := catalog.NearestEffort(chosen, levels); slices.Contains(levels, n) {
+			return n
+		}
+	}
+	return DefaultEffort(levels)
+}
+
 // TakesEffort is the effort Codex takes for the model id when none is set:
 // the default_reasoning_level of the entry it reads for it. Codex's own
 // model and a ChatGPT account's (codex/) keep their entry from Codex's
@@ -59,11 +89,17 @@ func TakesEffort(ms []catalog.Model, id string) string {
 	return DefaultEffort(e)
 }
 
-// Catalog renders models as a whole models.json.
-func Catalog(ms []catalog.Model) []byte {
+// Catalog renders models as a whole models.json, for the effort this
+// machine's Codex starts new sessions at (NewSessionEffort).
+func Catalog(ms []catalog.Model) []byte { return CatalogAt(ms, NewSessionEffort()) }
+
+// CatalogAt renders models as a whole models.json for a Codex that starts
+// new sessions at effort ("" for its models' own defaults): each model's
+// default_reasoning_level is ModelDefault's.
+func CatalogAt(ms []catalog.Model, effort string) []byte {
 	out := struct {
 		Models []any `json:"models"`
-	}{Models: Entries(ms, 0)}
+	}{Models: entriesAt(ms, 0, effort)}
 	if out.Models == nil {
 		out.Models = []any{}
 	}
@@ -149,8 +185,13 @@ type model struct {
 
 // Entries renders models as models.json entries, ranked after the first
 // `after`. Only fields Codex requires or that change behaviour are set; the
-// rest take Codex's defaults.
+// rest take Codex's defaults. A model's default effort is ModelDefault's
+// for the effort this machine's Codex starts new sessions at.
 func Entries(ms []catalog.Model, after int) []any {
+	return entriesAt(ms, after, NewSessionEffort())
+}
+
+func entriesAt(ms []catalog.Model, after int, effort string) []any {
 	own := CacheEntries()
 	v1 := V1()
 	work := settings.Load()
@@ -181,9 +222,13 @@ func Entries(ms []catalog.Model, after int) []any {
 		// or a group one is in, gets the tier Codex's own catalog gives its
 		// GPT models
 		if slug, ok := strings.CutPrefix(m.ID, "codex/"); m.Fast || ok && strings.HasPrefix(slug, "gpt-") {
-			e.Tiers = append(e.Tiers, tier{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"})
+			e.Tiers = append(e.Tiers, fastTier)
 		} else if m.OwnTier {
 			e.Tiers = ownTiers(own, m)
+		} else if len(m.Tiers) > 0 {
+			// another magpie's model: the tiers it offers its own Codex
+			// (#1234)
+			e.Tiers = namedTiers(own, m.Tiers)
 		}
 		// an OpenAI model: a ChatGPT account's (codex/), or a group one is
 		// in (Fast, see provider.codexListed)
@@ -213,7 +258,7 @@ func Entries(ms []catalog.Model, after int) []any {
 		}
 		e.AgentsEffort = agentsEffort(own, m)
 		if len(m.Efforts) > 0 {
-			d := DefaultEffort(m.Efforts)
+			d := ModelDefault(m.Efforts, effort)
 			e.DefaultEffort = &d
 			e.Summaries = true
 		}
@@ -367,6 +412,70 @@ func ownTiers(own map[string]map[string]any, m catalog.Model) []tier {
 	return []tier{}
 }
 
+// fastTier is Fast as Codex's own catalog writes it on its GPT models.
+var fastTier = tier{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"}
+
+// namedTiers are the tiers ids name, each as Codex's own catalog writes it
+// on any of its models, else by its id: Fast's "priority" as Codex names it.
+func namedTiers(own map[string]map[string]any, ids []string) []tier {
+	ts := []tier{}
+	for _, id := range ids {
+		t := tier{ID: id, Name: id}
+		if id == fastTier.ID {
+			t = fastTier
+		}
+	found:
+		for _, slug := range slices.Sorted(maps.Keys(own)) {
+			raw, _ := own[slug]["service_tiers"].([]any)
+			for _, r := range raw {
+				o, _ := r.(map[string]any)
+				if o["id"] == id {
+					t.Name, _ = o["name"].(string)
+					t.Description, _ = o["description"].(string)
+					t.Name = cmp.Or(t.Name, id)
+					break found
+				}
+			}
+		}
+		ts = append(ts, t)
+	}
+	return ts
+}
+
+// ServiceTiers are the service tiers Entries offers Codex on each of ms,
+// by id, where it offers any: what this magpie's list tells another magpie
+// that has it as its provider, so that one's Codex is offered them too
+// (#1234).
+func ServiceTiers(ms []catalog.Model) map[string][]tier {
+	out := map[string][]tier{}
+	for _, e := range Entries(ms, 0) {
+		switch e := e.(type) {
+		case *model:
+			if len(e.Tiers) > 0 {
+				out[e.Slug] = e.Tiers
+			}
+		case map[string]any:
+			slug, _ := e["slug"].(string)
+			raw, _ := e["service_tiers"].([]any)
+			var ts []tier
+			for _, r := range raw {
+				o, _ := r.(map[string]any)
+				id, _ := o["id"].(string)
+				if id == "" {
+					continue
+				}
+				name, _ := o["name"].(string)
+				desc, _ := o["description"].(string)
+				ts = append(ts, tier{ID: id, Name: name, Description: desc})
+			}
+			if slug != "" && len(ts) > 0 {
+				out[slug] = ts
+			}
+		}
+	}
+	return out
+}
+
 // Order ranks entries — Codex's own, as the backend gives them, and
 // magpie's from Entries — in the order the user put them in (#855): Codex
 // lists its models by priority, lowest first. The ones at names go first,
@@ -465,9 +574,13 @@ func CacheEntries() map[string]map[string]any {
 // subagent's task, so a GPT lead can't hand one to a magpie-served
 // subagent; in V1 the task goes as text (#141). With settings.CodexAgentsV1
 // the OpenAI entries magpie hands Codex say "v1"; nothing else in them
-// changes. Codex keeps what it was handed in models_cache.json, versions
-// and all, so what the backend itself said is kept aside (originals) and
-// put back when the cache is read again (CacheEntries).
+// changes. Codex's own features.multi_agent_v2 still wins over the entry, so
+// where it is on in the config magpie routes the setting can't reach Codex:
+// magpie says so (internal/agent/codex.go, and the Settings row) and leaves
+// the config alone — turning the key off there is the user's. Codex keeps
+// what it was handed in models_cache.json, versions and all, so what the
+// backend itself said is kept aside (originals) and put back when the cache
+// is read again (CacheEntries).
 
 // V1 reports whether the OpenAI models magpie hands Codex say "v1".
 func V1() bool { return settings.Load().CodexAgentsV1 }

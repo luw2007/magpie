@@ -69,6 +69,8 @@ function fixture(lang, theme, posts, requests) {
       return json(providers);
     }
     if (url.pathname === "/api/usage/quotas") return json([]);
+    // usage-config.js loads these with the page; the real routes answer arrays (usage_config.go)
+    if (url.pathname === "/api/usage/sources" || url.pathname === "/api/usage/pools") return json([]);
     if (url.pathname === "/api/usage") return json({ ...totals(rows), callerKeys: callerKeys(), agents: [], models: [], series: [], bucket: "day", path: "~/.config/magpie/usage.jsonl" });
     if (url.pathname === "/api/usage/requests") { requests.push(url.searchParams); return json(ledger(url.searchParams)); }
     if (url.pathname === "/api/usage/requests/export") {
@@ -134,7 +136,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(await page.locator("#usageKeys .num b").allTextContents(), ["2.2K", "1.1K"]);
       assert.deepEqual(await page.locator("#usageKeys .cost").allTextContents(), ["≈$0.400", "≈$0.200"]);
       assert(!/Workspace|Personal/.test(await page.locator("#usageKeys").textContent()));
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await page.locator(".led tbody tr").first().waitFor();
       assert.equal(await page.locator(".led tbody tr").first().locator("td").nth(3).textContent(), "Relay · relay.example");
       assert((await page.locator(".led tbody tr").first().locator("td").nth(3).getAttribute("title")).includes("relay.example"));
@@ -162,6 +164,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(!requests.at(-1).has("key") && !requests.at(-1).has("callerKey"));
       assert.equal(await page.locator(".led tbody tr").last().locator("td").nth(3).textContent(), "Relay · relay.example");
       await page.setViewportSize({ width: 560, height: 700 });
+      // WebKit applies the sidebar's media rule to the new width at the next
+      // frame (matchMedia already answers for it), so measure after that frame
+      await page.waitForFunction(() => !document.body.classList.contains("side-nav"));
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       assert(await page.locator("#view-usage").evaluate((v) => v.scrollWidth <= v.clientWidth));
       if (process.env.ARTIFACT_DIR) {
         await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });

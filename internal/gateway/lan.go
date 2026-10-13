@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/subtle"
 	"log"
 	"net"
 	"net/http"
@@ -226,14 +227,29 @@ func (s *Server) Relisten() error {
 	return nil
 }
 
-// lanGuard: a request from another machine — any peer that isn't
+// lanGuard: a request from an address the allow list (allow.go) leaves out
+// is refused first, whatever key it carries. A request from another machine — any peer that isn't
 // loopback, and a proxy's or tunnel's on loopback — needs an enabled gateway
 // key, and is answered at all only while the gateway is shared or listens on
 // the network (OnNetwork). Loopback clients may still use any token,
 // including a stale named key.
 func lanGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ownCallback(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// the allow list comes before the key: one that leaked is of no
+		// use from an address left out of it
+		if refuseNotAllowed(w, r) {
+			return
+		}
 		remote := !local(r)
+		if !remote && rebound(r) {
+			log.Printf("refused %s %s: a web page reached loopback under the name %q", r.Method, r.URL.Path, r.Host)
+			writeError(w, provider.Chat, http.StatusForbidden, "magpie doesn't answer a browser that reached it as "+r.Host+" (a web site's name pointed at this computer): call it as localhost or 127.0.0.1, or send an enabled gateway key")
+			return
+		}
 		if remote && !remoteKeyed() {
 			if proxied(r) {
 				log.Printf("refused %s %s through a proxy or tunnel: magpie isn't shared", r.Method, r.URL.Path)
@@ -255,6 +271,111 @@ func lanGuard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// callbacks are the callback tokens of the Claude subscription runs now
+// live (addCallback, dropCallback).
+var callbacks = struct {
+	sync.Mutex
+	tokens map[string]bool
+}{tokens: map[string]bool{}}
+
+// addCallback makes token, a run's callback token (randomToken: 24 bytes
+// from crypto/rand), one ownCallback takes, until dropCallback.
+func addCallback(token string) {
+	callbacks.Lock()
+	callbacks.tokens[token] = true
+	callbacks.Unlock()
+}
+
+func dropCallback(token string) {
+	callbacks.Lock()
+	delete(callbacks.tokens, token)
+	callbacks.Unlock()
+}
+
+// ownCallback: r is the MCP helper of a Claude Code magpie runs handing a
+// tool call back, on the path it was given — POST claudeMCPPath and the
+// callback token of a run now live, nothing else. It is let in without a
+// gateway key from wherever it comes: the helper calls the address the
+// gateway listens on, and with MAGPIE_ADDR on one interface's address (a
+// LAN, Tailscale or loopback-alias IP), which isn't loopback, it was asked
+// for a key it doesn't have (401). Its tool call never reached the run,
+// so every turn with tool results found no run waiting and started a new
+// Claude Code told the whole conversation, its prompt cache written anew
+// (#1546, jiayeZhu). The token, unguessable and handed to the helper in a
+// file only this user reads, is what lets it in: a wrong, spent or missing
+// one, another method, or any other path is judged as every request is.
+func ownCallback(r *http.Request) bool {
+	if r.Method != http.MethodPost || r.URL.RawPath != "" {
+		return false
+	}
+	token, ok := strings.CutPrefix(r.URL.Path, claudeMCPPath)
+	if !ok || token == "" {
+		return false
+	}
+	callbacks.Lock()
+	defer callbacks.Unlock()
+	found := false
+	for t := range callbacks.tokens {
+		if subtle.ConstantTimeCompare([]byte(t), []byte(token)) == 1 {
+			found = true
+		}
+	}
+	return found
+}
+
+// rebound: a browser sent this request to loopback under a hostname that
+// isn't this computer's — a web site whose DNS answered 127.0.0.1 after its
+// page loaded (DNS rebinding). The page is then same-origin with the
+// gateway: it sends no Origin on a GET, or one equal to the Host, so
+// corsGuard lets it by, and on loopback a call needs no key, so the page
+// could read the models and quotas and spend the user's subscriptions.
+// Agents call magpie as localhost or an IP, and send none of a browser's
+// marks; a hostname of this computer's own (MAGPIE_PUBLIC_URL's,
+// MAGPIE_ADDR's, its own name, a container runtime's name for the host)
+// isn't a web site's. An enabled gateway key, which such a page can't
+// know, still lets a call in.
+func rebound(r *http.Request) bool {
+	if !fromBrowser(r) || ownHost(r.Host) {
+		return false
+	}
+	return !slices.ContainsFunc(callerKeys(r), func(k string) bool { _, ok := access.Authenticate(k); return ok })
+}
+
+// fromBrowser: the request carries what a browser puts on every request
+// and a page's script can't take off.
+func fromBrowser(r *http.Request) bool {
+	return r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" ||
+		r.Header.Get("Sec-Fetch-Mode") != "" || strings.HasPrefix(r.UserAgent(), "Mozilla/")
+}
+
+// containerHostNames are the names container runtimes give the host.
+var containerHostNames = []string{"host.docker.internal", "gateway.docker.internal", "host.containers.internal", "host.orb.internal", "docker.for.mac.localhost"}
+
+// ownHost: host (a Host header) names this computer — an IP, localhost,
+// *.localhost, or one of the names above.
+func ownHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(strings.Trim(host, "[]")), ".")
+	if host == "" || net.ParseIP(host) != nil || host == "localhost" || strings.HasSuffix(host, ".localhost") || slices.Contains(containerHostNames, host) {
+		return true
+	}
+	if strings.EqualFold(host, PublicHost()) {
+		return true
+	}
+	if h, _, err := net.SplitHostPort(Addr()); err == nil && strings.EqualFold(host, h) {
+		return true
+	}
+	if name, err := os.Hostname(); err == nil {
+		name = strings.TrimSuffix(strings.ToLower(name), ".local")
+		if name != "" && (host == name || host == name+".local") {
+			return true
+		}
+	}
+	return false
 }
 
 // callerGuard also covers embedded handlers used by the web app and tests.
@@ -280,6 +401,14 @@ func identifyCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool
 		}
 	}
 	if !ok && !local(r) {
+		if over, retry := tooManyAuthFails(); over {
+			// A flood of wrong keys: stop answering each one (no 401 oracle,
+			// no unbounded work) until the bucket refills. A valid key never
+			// reaches here, so a real caller is not held.
+			w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+			writeError(w, provider.Chat, http.StatusTooManyRequests, "too many failed authentications; slow down and send an enabled magpie gateway key")
+			return r, false
+		}
 		msg := refusedKey(callerKey(r))
 		log.Printf("refused %s %s from %s: %s", r.Method, r.URL.Path, r.RemoteAddr, msg)
 		writeError(w, provider.Chat, http.StatusUnauthorized, msg)
@@ -317,6 +446,9 @@ func accountOf(p provider.Provider) string {
 func appendUsage(r *http.Request, rec usage.Record) {
 	if rec.Session == "" {
 		rec.Session = sessionOf(r.Header)
+	}
+	if rec.Subagent == "" {
+		rec.Subagent, rec.ParentAgent = subagentOf(r.Header)
 	}
 	who := access.Caller(r.Context())
 	rec.CallerKeyID, rec.CallerKeyName = who.KeyID, who.KeyName

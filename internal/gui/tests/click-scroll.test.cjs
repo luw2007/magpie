@@ -153,6 +153,27 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
     });
 
+    // The browser tells of a scroll at the next frame. A scroll by code made
+    // just before a click, and heard of only after it, was kept as where the
+    // reader was (#1554: Playwright's click scrolled the skill picker's chip
+    // into view while the view slid in, and the view stayed 5px down).
+    await t.test("a scroll the page hears of after the click is still put back", async () => {
+      await reset();
+      await page.locator(view).evaluate((v) => {
+        const s = document.createElement("div");
+        s.style.cssText = "flex:none;height:1600px";
+        const b = document.createElement("button");
+        b.id = "late"; b.textContent = "late"; b.style.flex = "none";
+        v.append(s, b, Object.assign(document.createElement("div"), { style: "flex:none;height:600px" }));
+      });
+      await scrollTo("#late");
+      const was = await page.locator(view).evaluate((v) => v.scrollTop);
+      // the scroll and the click in one task: no frame between them
+      await page.locator(view).evaluate((v) => { v.scrollTop += 40; document.querySelector("#late").click(); });
+      await settle(page);
+      assert.equal(await page.locator(view).evaluate((v) => v.scrollTop), was, "the scroll before the click must be put back");
+    });
+
     await t.test("a control under what it unrolls goes down with it", async () => {
       await reset();
       await page.locator(view).evaluate((v) => {
@@ -193,23 +214,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator(view).evaluate((v) => v.scrollTop), 0);
     });
 
-    await t.test("the room kept for a click goes as the reader scrolls back", async () => {
-      await reset(1440);
-      await dayButtons.nth(1).click();
-      await page.locator("#rtMore").evaluate((m) => { const s = document.createElement("div"); s.style.cssText = "height:900px"; m.prepend(s); });
-      await page.locator(".rt-req").first().waitFor();
-      await settle(page);
-      await scrollTo(".rt-days", 0);
-      await dayButtons.nth(0).click(); // Live: none, the page shorter
-      await settle(page);
-      assert(await page.locator(view).evaluate((v) => !!v.querySelector(":scope > .view-room")), "room must be kept");
-      const box = await page.locator(view).boundingBox();
-      await page.mouse.move(box.x + box.width / 2, box.y + 60);
-      for (let i = 0; i < 30; i++) { await page.mouse.wheel(0, -40); await page.waitForTimeout(20); }
-      await page.waitForTimeout(300);
-      assert.equal(await page.locator(view).evaluate((v) => v.querySelector(":scope > .view-room")), null, "the room must go");
-    });
-
     await t.test("the reader's wheel still scrolls after a click", async () => {
       await reset();
       await page.locator(view).evaluate((v) => { const s = document.createElement("div"); s.style.cssText = "flex:none;height:1600px"; v.append(s); });
@@ -226,12 +230,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     // the wheel only after the scroll (WebKit under load, panel-arrange's
     // wheel to the foot put back to 0). The app's own wheel listener is told
     // late here, with the browser's own trusted event, as it is then.
+    //
+    // Each check waits for the page to hear the wheel and for the reader's
+    // moment that opens (readerScrolls) to end, not for a fixed time: on a
+    // busy machine the 60ms timer ran late, the code's scroll then fell
+    // inside that moment and stood as the reader's, and later still the
+    // wheel was unheard when the view was looked at (#1660).
     await t.test("a wheel the page hears of after its scroll is still the reader's", async () => {
       await context.addInitScript(() => {
         const add = EventTarget.prototype.addEventListener;
+        window.__wheelsHeard = 0;
+        const heard = (fn, e) => { try { fn(e); } finally { window.__wheelsHeard++; } };
         window.addEventListener = function (type, fn, o) {
           if (type !== "wheel") return add.call(this, type, fn, o);
-          return add.call(this, type, (e) => (window.__lateWheel ? setTimeout(() => fn(e), 60) : fn(e)), o);
+          return add.call(this, type, (e) => (window.__lateWheel ? setTimeout(() => heard(fn, e), 60) : heard(fn, e)), o);
         };
       });
       await reset();
@@ -240,22 +252,39 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const box = await page.locator(view).boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + 60);
       const scrollTop = () => page.locator(view).evaluate((v) => v.scrollTop);
+      // the wheel, looked at once the page has heard it and the reader's
+      // moment it opened is over: what the view shows then stays
+      const wheel = async (dy) => {
+        const n = await page.evaluate(() => window.__wheelsHeard);
+        await page.mouse.wheel(0, dy);
+        await page.waitForFunction((n) => window.__wheelsHeard > n, n);
+        await page.waitForFunction(() => performance.now() >= purposeUntil);
+      };
+      // a scroll by code is put back at the frame it is told of
+      const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r)))));
       for (const click of [false, true]) {
         // with nothing clicked, and with a click held
-        if (click) await dayButtons.nth(1).click();
+        if (click) {
+          // the day bar is above the fold after the first wheel: back to the
+          // top, by the reader's own wheel, so the click needs no scroll
+          await wheel(-5000);
+          await dayButtons.nth(1).click();
+        }
         const was = await scrollTop();
-        await page.mouse.wheel(0, 300);
-        await page.waitForTimeout(400);
+        await wheel(300);
         assert((await scrollTop()) > was + 100, `the late-heard wheel must scroll the view${click ? " after a click" : ""}`);
       }
       // a scroll by code is still put back, the wheel that follows it not
       // giving it to the reader
       const was = await scrollTop();
       await page.locator(view).evaluate((v) => { v.scrollTop -= 200; });
-      await page.waitForTimeout(100);
+      await frames();
       assert.equal(await scrollTop(), was, "code's scroll is put back");
-      await page.mouse.wheel(0, -40);
-      await page.waitForTimeout(400);
+      // the wheel made well after it: what was put back from 50ms before a
+      // wheel is taken as that wheel's own (givesBack); a busy machine only
+      // widens this gap
+      await page.waitForTimeout(100);
+      await wheel(-40);
       assert(Math.abs((await scrollTop()) - (was - 40)) <= 1, "the wheel moves the view by its own step only");
       await page.evaluate(() => { window.__lateWheel = false; });
     });

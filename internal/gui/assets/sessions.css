@@ -20,6 +20,9 @@
 .sm-trash-btn.on { background: var(--pill); color: var(--fg); }
 .sm-body { display: flex; flex-direction: column; gap: 8px; flex: none; }
 .sm-note { margin: 0 2px; }
+/* where a session said what was searched for, the words themselves marked */
+.row .sub.sm-hit { color: var(--fg-2); }
+.sm-hit mark { background: var(--accent-soft); color: var(--fg); border-radius: 3px; padding: 0 1px; font-weight: 500; }
 .sm-bar { gap: 8px; padding: 0 11px; }
 .sm-bar .grow { flex: 1; }
 .sm-bar .sm-delete, .sm-bar .sm-empty { display: inline-flex; align-items: center; gap: 5px; }

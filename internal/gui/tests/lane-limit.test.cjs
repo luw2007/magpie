@@ -51,6 +51,7 @@ function serve(lang, posts, lanes) {
     if (url.pathname === "/api/lanes") { lanes.reads++; return json(lanes.now); }
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
+    if (url.pathname === "/api/usage/sources" || url.pathname === "/api/usage/pools") return json([]);
     if (url.pathname.startsWith("/api/provider/") && route.request().method() === "POST") {
       const action = url.pathname.slice("/api/provider/".length), body = route.request().postDataJSON();
       posts.push({ action, body });

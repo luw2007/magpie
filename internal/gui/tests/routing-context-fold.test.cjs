@@ -4,10 +4,9 @@
 // what fills the window, a part each, beside how full it is (PILIPALA on
 // X: on a wide window the card took the screen, and the requests and the
 // magpies flying were out of sight under it; Jeremy.Zhou on Discord: the
-// page is too crowded). Folded, the stage and the request list are in view
-// without scrolling at 1440x900 and 1920x1080; at a narrow 440px the head
-// is all the card takes (the stage and the story stacked above it are what
-// is left before the list). Unfolding by its title doesn't move the page. A
+// page is too crowded). Folded, the stage is in view without scrolling at
+// 1440x900 and 1920x1080; at a narrow 440px the head
+// is all the card takes. Unfolding by its title doesn't move the page. A
 // request picked keeps the fold; one opened from the Usage page's Context
 // tab shows its card unfolded, that request only, and the reader's choice
 // is untouched. In Chromium and WebKit, in English, Chinese and German.
@@ -16,6 +15,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = Date.now();
@@ -81,7 +81,8 @@ async function open(browser, lang, width, height) {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang));
   await page.goto("http://magpie.test/?view=routing");
-  await page.locator(".rt-req").nth(routes.length - 1).waitFor();
+  // the list is on the Requests pane, behind the Live one the page opens on: it is drawn, not in view
+  await page.locator(".rt-req").nth(routes.length - 1).waitFor({ state: "attached" });
   await page.locator(".rt-ctx > *").first().waitFor();
   await page.waitForTimeout(500);
   return { context, page, errors };
@@ -90,11 +91,14 @@ async function open(browser, lang, width, height) {
 // does): a card opened afresh can sit under the window's bottom
 async function click(page, b) {
   const h = page.viewportSize().height;
+  // the page starts under the window's header, which takes a click over it:
+  // a button scrolled to just under the window's top edge is still hidden
+  const top = (await page.locator("#view-routing").boundingBox()).y;
   for (let i = 0; i < 20; i++) {
     const r = await b.boundingBox();
-    if (r && r.y >= 0 && r.y + r.height <= h) break;
+    if (r && r.y >= top && r.y + r.height <= h) break;
     await page.mouse.move(page.viewportSize().width / 2, h / 2);
-    await page.mouse.wheel(0, r && r.y < 0 ? -200 : 200);
+    await page.mouse.wheel(0, r && r.y < top ? -200 : 200);
     await page.waitForTimeout(100);
   }
   await b.click();
@@ -110,7 +114,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     for (const [width, height] of [[1920, 1080], [1440, 900], [440, 900]]) {
       for (const lang of Object.keys(words)) {
-        await t.test(`${lang} ${width}x${height}: folded to one line, the stage and the requests in view`, async () => {
+        await t.test(`${lang} ${width}x${height}: folded to one line, the stage in view`, async () => {
           const { context, page, errors } = await open(browser, lang, width, height);
           const box = page.locator(".rt-ctx");
           const fold = box.locator(".ctx-fold");
@@ -125,15 +129,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const at = await page.evaluate(() => {
             const r = (s) => document.querySelector(s).getBoundingClientRect();
             const card = r(".rt-ctx .ctx-card"), head = r(".rt-ctx .ctx-head"), bar = r(".rt-ctx .ctx-stack"), c = document.querySelector(".rt-ctx .ctx-card");
-            return { vh: innerHeight, stage: r(".rt-stage").bottom, head: r(".rt-req-head").top + 24, row: r(".rt-req").bottom, cardH: card.height, headH: head.height,
+            return { vh: innerHeight, stage: r(".rt-stage").bottom, cardH: card.height, headH: head.height,
               bar: bar.width, barIn: bar.right <= head.right + 0.5, over: c.scrollWidth - c.clientWidth, wide: document.documentElement.scrollWidth <= innerWidth };
           });
           assert.equal(await scrollTop(page), 0);
           assert(at.stage <= at.vh, `the magpies' stage is in view: ${JSON.stringify(at)}`);
-          if (width >= 1440) {
-            assert(at.head <= at.vh, `the request list's heading is in view: ${JSON.stringify(at)}`);
-            assert(at.row <= at.vh, `the first request is in view: ${JSON.stringify(at)}`);
-          }
           assert(at.cardH < 60 && at.headH === 20, `one line: ${JSON.stringify(at)}`);
           assert(at.bar >= 24 && at.barIn, `the bar is there and in the line: ${JSON.stringify(at)}`);
           assert(at.over <= 0 && at.wide, `nothing runs over: ${JSON.stringify(at)}`);
@@ -144,10 +144,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     }
 
     await t.test("unfolded by its title without moving the page", async () => {
-      const { context, page, errors } = await open(browser, "en", 1440, 900);
-      // the reader scrolls down a little first, so a click that moved the page would show
-      await page.mouse.move(700, 500);
-      await page.mouse.wheel(0, 120);
+      // a short window, so the Live pane is taller than it and the page can scroll
+      const { context, page, errors } = await open(browser, "en", 1440, 360);
+      // the reader wheels down to the title (the end of the page, 199px), so the
+      // click has nothing to scroll into view itself and a click that moved the page would show
+      await page.mouse.move(700, 200);
+      await page.mouse.wheel(0, 400);
       await page.waitForTimeout(400);
       const y = await scrollTop(page);
       assert(y > 0, "the page scrolled");
@@ -169,11 +171,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     await t.test("a request picked keeps the fold; one opened for its context window shows it, for itself only", async () => {
       const { context, page, errors } = await open(browser, "en", 1440, 900);
+      const pick = async (i) => { await openPane(page, "requests"); await page.locator(".rt-req").nth(i).click(); await page.waitForTimeout(300); };
       const shut = () => page.locator(".rt-ctx .ctx-card").evaluate((c) => c.classList.contains("shut"));
       const crumb = () => page.locator(".rt-ctx .ctx-crumbs").evaluate((c) => c.textContent.split(" › ").pop());
       const y = await scrollTop(page);
-      await page.locator(".rt-req").nth(3).click();
-      await page.waitForTimeout(300);
+      await pick(3);
       assert.equal(await shut(), true, "a request picked stays folded");
       assert.equal(await crumb(), "#109");
       assert.equal(await scrollTop(page), y, "the pick doesn't move the page");
@@ -185,8 +187,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator(".rt-ctx .ctx-fold").getAttribute("aria-expanded"), "true");
       assert.equal(await stored(page), "1", "the reader's own choice is untouched");
 
-      await page.locator(".rt-req").nth(5).click();
-      await page.waitForTimeout(300);
+      await pick(5);
       assert.equal(await shut(), true, "the next request is folded again");
       assert.equal(await crumb(), "#107");
       assert.equal(await page.locator(".rt-ctx .ctx-fold").getAttribute("aria-expanded"), "false");
@@ -197,7 +198,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await click(page, page.locator(".rt-ctx .ctx-fold"));
       assert.equal(await shut(), true, "the title folds it");
       assert.equal(await stored(page), "1");
-      await click(page, page.locator(".rt-req").nth(5));
+      await openPane(page, "requests");
+      await page.locator(".rt-req").nth(5).click();
       await page.evaluate((r) => window.openRoute(r.id, r.time), routes[2]);
       await page.waitForTimeout(300);
       assert.equal(await crumb(), "#103");

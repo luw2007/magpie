@@ -86,6 +86,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const steps = async () => page.locator(".rt-steps li").evaluateAll((ls) => ls.map((l) => [l.className, l.textContent]));
       const row = page.locator(".rt-req").nth(0);
       await row.click();
+      await page.waitForFunction(() => document.querySelector("#rtPages .opt")?.getAttribute("aria-pressed") === "true");
       await page.waitForTimeout(400);
       let got = await steps();
       // the vendor's words as they were, without magpie's hint in them

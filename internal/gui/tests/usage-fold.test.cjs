@@ -122,6 +122,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // an account opens and folds on its own, where it is
       const acct = (key, user) => page.locator(`#subscriptionUsage > [data-key=${key}] .subscription-account`, { hasText: user });
       const two = acct("codex", "two@example.com");
+      // wheeled to, as a reader would (the page holds still for a script's
+      // scroll): packed into columns (#860), Codex's card is under ZCode's,
+      // past this short window's foot
+      const wheelTo = async (l) => {
+        for (let i = 0; i < 20; i++) {
+          const y = (await l.boundingBox()).y;
+          if (y > 60 && y + 40 < 300) break;
+          await page.mouse.wheel(0, y > 60 ? 60 : -60);
+          await page.waitForTimeout(150);
+        }
+        await page.waitForTimeout(300);
+      };
+      await wheelTo(two.locator(".quota-acct-fold"));
       const twoAt = await two.evaluate((e) => e.getBoundingClientRect().top);
       const scrolled = await view.evaluate((v) => v.scrollTop);
       assert.equal(await two.locator(".quota-acct-fold").getAttribute("aria-expanded"), "false");
@@ -131,6 +144,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await two.evaluate((e) => e.getBoundingClientRect().top), twoAt, "the account stays where it was");
       got = await cards(page);
       assert.deepEqual([by("Codex").full, by("Codex").brief, by("Codex").more], [["one@example.com", "two@example.com"], [], w.brief]);
+      await wheelTo(acct("workbuddy", "alpha@example.com").locator(".quota-acct-fold"));
       await acct("workbuddy", "alpha@example.com").locator(".quota-acct-fold").click();
       got = await cards(page);
       assert.deepEqual(by("WorkBuddy").brief, ["alpha@example.com"]);
@@ -207,6 +221,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.addInitScript(() => { try { if (!sessionStorage.getItem("set")) { localStorage.clear(); localStorage.setItem("magpie.quotaRange", "off"); sessionStorage.setItem("set", "1"); } } catch {} });
     await page.goto("http://magpie.test/?view=usage");
     await page.waitForSelector(".subscription-account .user");
+    // packUsage lays the cards out over a few frames (fonts, the quotas' second
+    // read, the observer); a count taken mid-way reads a layout that is gone a
+    // frame later (12 on screen, cards thousands of pixels down, then 16). Wait
+    // for the cards to stand still for ten frames, then count.
+    await page.evaluate(() => new Promise((done) => {
+      const at = () => [...document.querySelectorAll("#subscriptionUsage > *")].map((c) => { const r = c.getBoundingClientRect(); return Math.round(r.top) + "," + Math.round(r.bottom); }).join(";");
+      let last = "", still = 0;
+      const frame = () => { const now = at(); still = now === last ? still + 1 : 0; last = now; if (still >= 10) done(); else requestAnimationFrame(frame); };
+      requestAnimationFrame(frame);
+    }));
     const seen = () => page.evaluate(() => {
       const box = document.querySelector("#subscriptionUsage");
       // an account's bars: what follows its row; a card without accounts: its bars

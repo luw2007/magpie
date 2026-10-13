@@ -51,8 +51,17 @@ func gatewayExternal(g usage.GatewaySession) sessions.ExternalSession {
 	return e
 }
 
+// gatewayListed is a gateway session as a list shows it: titled by what it
+// was first asked, when magpie recorded it, not by its ses_… id (YOU on
+// Discord)
+func gatewayListed(g usage.GatewaySession) sessions.ExternalSession {
+	e := gatewayExternal(g)
+	e.Title = sessions.GatewayTitle(g.Agent, g.ID)
+	return e
+}
+
 func gatewaySession(g usage.GatewaySession) sessions.Session {
-	return sessions.MergeExternal(nil, []sessions.ExternalSession{gatewayExternal(g)})[0]
+	return sessions.MergeExternal(nil, []sessions.ExternalSession{gatewayListed(g)})[0]
 }
 
 func sessionRoutes(mux *http.ServeMux, w Windows) {
@@ -86,7 +95,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		gateway := listedGateway(usage.GatewaySessions(time.Time{}, nativeKeys))
 		ext := make([]sessions.ExternalSession, 0, len(gateway))
 		for _, g := range gateway {
-			ext = append(ext, gatewayExternal(g))
+			ext = append(ext, gatewayListed(g))
 		}
 		list = sessions.MergeExternal(list, ext)
 		if len(list) > n {
@@ -275,10 +284,23 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 // file is saved under: the session found as listed, never a path from the
 // page. It is made whole before any of it is sent, so a file that can't be
 // read is an error and not half a download.
+//
+// A session only magpie's gateway recorded is written from that record, as
+// transcript reads it: the agent of one that reaches this magpie through a
+// remote magpie ran on another machine, so there is no file of it here, and
+// its download was a 400 "no such session" (akic404 on Discord).
 func sessionMarkdown(agentID, id string) (stem string, md []byte, err error) {
 	s, ok := sessions.Find(agentID, id)
+	var t sessions.Transcript
 	if !ok {
-		return "", nil, errors.New("no such session")
+		g, found := usage.GatewaySessionByID(agentID, id, nil)
+		if !found {
+			return "", nil, errors.New("no such session")
+		}
+		if t, err = sessions.GatewayTranscript(agentID, id); err != nil {
+			return "", nil, err
+		}
+		s = gatewaySession(g)
 	}
 	name := s.Agent
 	for _, a := range agent.Clients() {
@@ -287,7 +309,12 @@ func sessionMarkdown(agentID, id string) (stem string, md []byte, err error) {
 		}
 	}
 	var b bytes.Buffer
-	if err := sessions.WriteMarkdown(&b, s, wslName(name, s)); err != nil {
+	if ok {
+		err = sessions.WriteMarkdown(&b, s, wslName(name, s))
+	} else {
+		err = sessions.WriteGatewayMarkdown(&b, s, name, t)
+	}
+	if err != nil {
 		return "", nil, err
 	}
 	short := []rune(s.ID)
@@ -318,19 +345,30 @@ func wslName(name string, s sessions.Session) string {
 // than a few seconds old it is read again behind, for the next ask.
 var statsMemo struct {
 	sync.Mutex
-	m map[int]*statsKept
+	m    map[int]*statsKept
+	asks uint64
 }
 
 type statsKept struct {
 	at   time.Time
 	st   sessions.Stats
 	busy bool
+	// used is the memo's ask count when this range was last asked: a count,
+	// not a clock, since Windows' clock can give two asks the same time.
+	used uint64
 }
+
+// statsMemoMost is how many distinct ?days values the memo keeps: each one is
+// a whole sessions.Stats, and ?days takes any number a caller sends, so the
+// least recently asked one is let go when a new value comes past it.
+const statsMemoMost = 8
 
 func statsFor(days int) sessions.Stats {
 	days = max(0, days)
 	statsMemo.Lock()
 	if k := statsMemo.m[days]; k != nil {
+		statsMemo.asks++
+		k.used = statsMemo.asks
 		if !k.busy && time.Since(k.at) > 10*time.Second {
 			k.busy = true
 			go func() {
@@ -351,7 +389,17 @@ func statsFor(days int) sessions.Stats {
 		statsMemo.m = map[int]*statsKept{}
 	}
 	if statsMemo.m[days] == nil {
-		statsMemo.m[days] = &statsKept{at: time.Now(), st: st}
+		if len(statsMemo.m) >= statsMemoMost {
+			oldest := -1
+			for d, k := range statsMemo.m {
+				if oldest == -1 || k.used < statsMemo.m[oldest].used {
+					oldest = d
+				}
+			}
+			delete(statsMemo.m, oldest)
+		}
+		statsMemo.asks++
+		statsMemo.m[days] = &statsKept{at: time.Now(), st: st, used: statsMemo.asks}
 	}
 	statsMemo.Unlock()
 	return st
@@ -370,7 +418,7 @@ func combinedSessionStats(days int) sessions.Stats {
 	gs, gd := usage.GatewaySessionWindowExcept(since, nativeKeys)
 	ext := make([]sessions.ExternalSession, 0, len(gs))
 	for _, g := range gs {
-		ext = append(ext, gatewayExternal(g))
+		ext = append(ext, gatewayListed(g))
 	}
 	daily := make([]sessions.ExternalDayUsage, 0, len(gd))
 	for _, d := range gd {
@@ -389,11 +437,15 @@ func warmSessions() {
 	}
 	go func() {
 		time.Sleep(3 * time.Second)
-		warmUp(
-			func() { statsFor(0) },
-			func() { statsFor(30) },
-			func() { usage.QueryPage(usage.All, usage.Filter{}, 0, 50) },
-		)
+		// with few readers, as nobody waits on it yet: after an update
+		// that reads every file again, it held every core (#1665)
+		sessions.Warm(func() {
+			warmUp(
+				func() { statsFor(0) },
+				func() { statsFor(30) },
+				func() { usage.QueryPage(usage.All, usage.Filter{}, 0, 50) },
+			)
+		})
 	}()
 }
 

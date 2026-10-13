@@ -79,9 +79,15 @@ func TestGrokPluginDraws(t *testing.T) {
 	if code != 200 || len(a.Data) != 1 {
 		t.Fatalf("%d %s", code, raw)
 	}
+	// a newer image model by its bare name, as with the built-in (#1857,
+	// TestGrokDrawsANewerModelByItsBareName)
+	code, a, raw = postImages(t, New(), "/v1/images/generations", "application/json", `{"model":"grok-imagine-image-2.0","prompt":"a magpie"}`)
+	if code != 200 || len(a.Data) != 1 {
+		t.Fatalf("bare grok-imagine-image-2.0: %d %s", code, raw)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(paths) != 1 || paths[0] != "/v1/images/generations" || !strings.Contains(bodies[0], `"model":"grok-imagine-image"`) || !strings.Contains(bodies[0], `"aspect_ratio":"16:9"`) {
+	if len(paths) != 2 || paths[0] != "/v1/images/generations" || !strings.Contains(bodies[0], `"model":"grok-imagine-image"`) || !strings.Contains(bodies[0], `"aspect_ratio":"16:9"`) || !strings.Contains(bodies[1], `"model":"grok-imagine-image-2.0"`) {
 		t.Fatalf("asked %v %v", paths, bodies)
 	}
 }

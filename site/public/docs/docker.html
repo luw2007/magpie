@@ -134,6 +134,12 @@ docker logs magpie</pre>
       <pre id="ex-signin">docker exec -it magpie magpie accounts add codex</pre>
     </div>
     <p>Open the link it prints, sign in, then paste the address the browser ended on. The browser UI can also import sign-ins from a file.</p>
+    <p>A Claude subscription is signed in to and answered through Claude Code, which the image doesn’t have. Have magpie download Anthropic’s own build first: it says the version, where it comes from and where it goes, asks, and checks the download’s SHA-256 against Anthropic’s manifest. It is kept in <code>/config/cache</code>; run it again for a newer one. <code>magpie accounts add claude</code> offers it too when Claude Code is missing.</p>
+    <div class="code">
+      <span class="lang">Shell</span>
+      <button class="copy" data-copy="ex-claude-code">Copy</button>
+      <pre id="ex-claude-code">docker exec -it magpie magpie claude-code install</pre>
+    </div>
 
     <h2 id="volume"><a class="anchor" href="#volume">What is kept</a></h2>
     <p>Everything magpie writes is under <code>/config</code>, so a restart, or a new container on the same volume, keeps your providers, keys, sign-ins and plugins.</p>
@@ -141,7 +147,7 @@ docker logs magpie</pre>
       <tr><th>Path</th><th>Holds</th></tr>
       <tr><td><code>/config/magpie</code></td><td>magpie’s own files: <code>settings.json</code>, providers, gateway keys, routing groups</td></tr>
       <tr><td><code>/config/home</code></td><td>the container’s <code>HOME</code>: sign-ins kept where their agent keeps them (<code>~/.codex</code>, <code>~/.claude</code>…)</td></tr>
-      <tr><td><code>/config/cache</code></td><td>the model catalog, and Bun, which plugins run on (downloaded the first time one is used)</td></tr>
+      <tr><td><code>/config/cache</code></td><td>the model catalog, Bun, which plugins run on (downloaded the first time one is used), and the Claude Code <code>magpie claude-code install</code> downloaded</td></tr>
       <tr><td><code>/config/data</code>, <code>/config/state</code></td><td>the rest of what magpie keeps</td></tr>
     </table></div>
     <p>A volume made by an older image keeps working: magpie adds the folders it lacks when it starts. Only sign-ins made with that older image, which lived outside the volume, have to be made again.</p>
@@ -152,17 +158,19 @@ docker logs magpie</pre>
       <tr><td><code>MAGPIE_ADDR</code></td><td>where the gateway listens. The image sets <code>0.0.0.0:3425</code>, so the published port reaches it.</td></tr>
       <tr><td><code>MAGPIE_PUBLIC_URL</code></td><td>the address other machines reach the gateway at, such as <code>http://192.168.1.20:3425</code> (the host’s or the NAS’s, on the published port), or a reverse proxy’s base URL. In the container magpie sees only Docker’s own <code>172.17.x</code> address; with this set, the address it shows and prints is the one to use.</td></tr>
       <tr><td><code>MAGPIE_WEB_KEY</code></td><td>the browser UI’s key, kept across restarts (16+ characters)</td></tr>
+      <tr><td><code>MAGPIE_ALLOW_IPS</code></td><td>the only addresses other machines may reach the gateway and the browser UI from, as IPs and CIDR ranges: <code>203.0.113.7,10.0.0.0/8,2001:db8::/32</code>. Any other address gets 403, even with a gateway key. Unset lets every address in, each with a key. See <a href="#allow">Allowed addresses</a>.</td></tr>
       <tr><td><code>HOME</code>, <code>XDG_CONFIG_HOME</code>, <code>XDG_CACHE_HOME</code>, <code>XDG_DATA_HOME</code>, <code>XDG_STATE_HOME</code></td><td>set by the image to the folders under <code>/config</code> above; leave them</td></tr>
     </table></div>
 
     <h2 id="share"><a class="anchor" href="#share">Gateway keys and other machines</a></h2>
     <ol class="steps">
-      <li><b>Make a key for each client</b><span class="ui">Gateway</span> → <span class="ui">Gateway keys</span>, or in a terminal <code>docker exec magpie magpie gateway-key add "Laptop"</code>, which prints the new <code>sk-magpie-key-…</code>. Every request from outside the container, the host’s own included, must carry an enabled gateway key, and one without gets 401. A key can have its own daily, weekly or monthly limit and its own list of models (<code>magpie gateway-key limit</code>, <code>magpie gateway-key models</code>).</li>
+      <li><b>Make a key for each client</b><span class="ui">Gateway</span> → <span class="ui">Gateway keys</span>, or in a terminal <code>docker exec magpie magpie gateway-key add "Laptop"</code>, which prints the new <code>sk-magpie-key-…</code>. Every request from outside the container, the host’s own included, must carry an enabled gateway key, and one without gets 401. A key can have its own daily, weekly, monthly or every-N-days limit and its own list of models (<code>magpie gateway-key limit</code>, <code>magpie gateway-key models</code>).</li>
       <li><b>Publish the port</b>Recreate the container with <code>-p 3425:3425</code>, or bound to the NAS’s LAN or VPN address (<code>-p 192.168.1.20:3425:3425</code>), and with <code>-e MAGPIE_PUBLIC_URL=http://192.168.1.20:3425</code>.</li>
     </ol>
     <p>On each other computer, point the agent at the gateway with one of those keys as its API key: <code>http://192.168.1.20:3425/v1</code> for an OpenAI client, <code>http://192.168.1.20:3425</code> for an Anthropic or Gemini one. Model ids are <code>provider/model</code>, or a routing group’s; <code>GET /v1/models</code> lists them. If that computer runs magpie itself, add the container as a <a href="/docs/remote">Remote magpie</a> instead, and magpie wires its agents for you.</p>
     <p><span class="ui">Settings</span> → <span class="ui">Share on local network</span> isn’t needed in the container: turning it on also makes a gateway key named <span class="ui">Magpie</span>, and the gateway asks for a key from outside the container either way.</p>
     <p><b>Upgrading from an earlier image.</b> An agent outside the container that sends <code>magpie</code>, or any other key that isn’t an enabled gateway key, now gets 401 (“the API key sent is not an enabled magpie gateway key”). Make it a key as above and put that in the agent’s settings. Agents that already send a gateway key, and a Remote magpie set up with one, keep working.</p>
+    <p id="allow"><b>Allowed addresses.</b> On a public host, set <code>-e MAGPIE_ALLOW_IPS=203.0.113.7,10.0.0.0/8</code> to the addresses your clients come from. A request from any other address is refused 403 before its key is looked at, so a key that leaks is no use from elsewhere; the refusal names the address it came from, as does the container’s log. magpie judges the address of the connection itself, never an <code>X-Forwarded-For</code> header, and a mistyped entry lets nothing in rather than everything. Docker’s default bridge network passes a client’s own address into the container, but a request from the host itself arrives from the bridge’s gateway (<code>172.17.0.1</code>), and Docker Desktop and rootless Docker show every client as one address of their own: add that, or check what the 403 says. Behind a reverse proxy or tunnel, every request comes from the proxy’s address, so limit who reaches magpie at the proxy. On the desktop app the same list is <span class="ui">Settings</span> → <span class="ui">Network and sharing</span> → <span class="ui">Allowed addresses</span>.</p>
     <div class="callout"><b>Over the internet, prefer a VPN</b> such as Tailscale or WireGuard to opening 3425. A reverse proxy or tunnel in front of the container is the network too: its clients need a gateway key like any other machine’s.</div>
 
     <h2 id="compose"><a class="anchor" href="#compose">Docker Compose on a NAS</a></h2>

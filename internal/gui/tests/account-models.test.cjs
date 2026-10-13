@@ -64,6 +64,7 @@ function serve(lang, posts) {
       p.accountModels = am;
       return json(providers);
     }
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];

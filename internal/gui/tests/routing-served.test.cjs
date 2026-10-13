@@ -91,6 +91,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // The selected request's story says so.
       const row = page.locator(".rt-req").nth(0);
       await row.click();
+      await page.waitForFunction(() => document.querySelector("#rtPages .opt")?.getAttribute("aria-pressed") === "true");
       await page.waitForTimeout(600);
       const story = page.locator(".rt-steps li.swap");
       assert.equal(await story.count(), 1);

@@ -26,6 +26,9 @@ import (
 // Each model's label is the other magpie's name for it, with its provider
 // there after it ("Claude Sonnet 5 · RelayA"), as its own agents see it:
 // two of its providers' models of one name are told apart here too.
+// Provider in model names Off here names each by its name there alone
+// (display_name, catalog.Model's Plain), whatever that magpie's own
+// setting put after it (ARNO on Discord).
 
 // Its video models come the same way (VideomakersHeader), marked "kind":
 // "video", and go on to its videos API (#545).

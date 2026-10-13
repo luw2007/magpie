@@ -149,6 +149,7 @@ func TestCORSKeyThroughTheServer(t *testing.T) {
 	for _, key := range []string{secret, ""} {
 		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatReq))
 		r.RemoteAddr = "127.0.0.1:50123"
+		r.Host = "127.0.0.1:3425"
 		r.Header.Set("Origin", "http://localhost:3000")
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set(SessionHeader, "browser-chat")
@@ -271,7 +272,7 @@ func TestForeignPagesRefused(t *testing.T) {
 		{"http://tauri.localhost", "127.0.0.1:3425", loop, ""},                       // Tauri's webview on Windows
 		{"https://app.example.com", "127.0.0.1:3425", loop, secret},                  // listed, with its key
 		{"http://192.168.1.5:3425", "192.168.1.5:3425", "192.168.1.9:50123", secret}, // the gateway's own origin, shared on the LAN
-		{"https://magpie.example.com", "magpie.example.com", loop, ""},               // its own origin behind a port-443 name
+		{"https://magpie.example.com", "magpie.example.com", loop, secret},           // its own origin behind a port-443 name, with a key (without one, a rebound page: TestReboundPageRefused)
 		{"null", "127.0.0.1:3425", loop, ""},                                         // a sandboxed frame, a file:// page
 		{"app://cherry", "127.0.0.1:3425", loop, ""},                                 // an Electron renderer
 		{"file://", "127.0.0.1:3425", loop, ""},
@@ -286,5 +287,107 @@ func TestForeignPagesRefused(t *testing.T) {
 	// usemagpie.ai still reads the Omarchy theme, and only that
 	if w := do(call{"GET", "/v1/magpie/omarchy", ""}, "https://usemagpie.ai", "127.0.0.1:3425", loop, ""); w.Code == http.StatusForbidden {
 		t.Errorf("usemagpie.ai's Omarchy theme: %d %s", w.Code, w.Body)
+	}
+}
+
+// A browser extension the user listed by its origin (#1051, SkyAerope on
+// Discord: an extension such as Sider, without host permissions, is held
+// to CORS like a page) is treated as a listed web page is, no more: its
+// preflight is answered, its keyed call reads the reply, and a call
+// without a gateway key is refused 401. An extension not listed is
+// answered as before — no CORS headers, so only one that holds host
+// permissions (and doesn't enforce CORS) reads anything.
+func TestCORSExtensionOrigin(t *testing.T) {
+	fresh(t)
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "plan", Name: "Plan", Key: "upstream-secret", Chat: up.URL + "/v1", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := access.Update("add-key", access.Change{Name: "Extension"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ext = "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+	const other = "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba"
+	const fox = "moz-extension://e0b5d7c7-c079-484b-8825-44d261383cb6"
+	srv := lanGuard(New().Handler())
+	do := func(method, origin, key string) *httptest.ResponseRecorder {
+		t.Helper()
+		var body io.Reader
+		if method == "POST" {
+			body = strings.NewReader(chatReq)
+		}
+		r := httptest.NewRequest(method, "/v1/chat/completions", body)
+		r.RemoteAddr = "127.0.0.1:50123"
+		r.Host = "127.0.0.1:3425"
+		r.Header.Set("Origin", origin)
+		r.Header.Set("Sec-Fetch-Mode", "cors")
+		r.Header.Set("User-Agent", "Mozilla/5.0 Chrome/140.0")
+		if method == "OPTIONS" {
+			r.Header.Set("Access-Control-Request-Method", "POST")
+			r.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+		} else {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		if key != "" {
+			r.Header.Set("Authorization", "Bearer "+key)
+		}
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		return w
+	}
+	// not listed: no CORS headers, as before; a web page listed doesn't list it
+	s := settings.Load()
+	s.CORSOrigins = []string{"http://localhost:3000"}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if w := do("OPTIONS", ext, ""); w.Code == http.StatusNoContent || w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("unlisted extension's preflight: %d %v", w.Code, w.Header())
+	}
+	if w := do("POST", ext, ""); w.Code != http.StatusOK || w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("unlisted extension, as before: %d %v %s", w.Code, w.Header(), w.Body)
+	}
+
+	// listed, written as the user might copy it
+	if s.CORSOrigins, err = settings.CleanOrigins([]string{"http://localhost:3000", "CHROME-EXTENSION://ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP/", fox}); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []string{ext, fox} {
+		w := do("OPTIONS", o, "")
+		if w.Code != http.StatusNoContent || w.Header().Get("Access-Control-Allow-Origin") != o ||
+			w.Header().Get("Access-Control-Allow-Headers") != "authorization, content-type" || !strings.Contains(w.Header().Get("Access-Control-Allow-Methods"), "POST") {
+			t.Errorf("%s preflight: %d %v", o, w.Code, w.Header())
+		}
+		if w := do("POST", o, secret); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ok") || w.Header().Get("Access-Control-Allow-Origin") != o {
+			t.Errorf("%s with its key: %d %v %s", o, w.Code, w.Header(), w.Body)
+		}
+	}
+	n := hits.Load()
+	// a listed extension needs a gateway key, as a listed page does
+	if w := do("POST", ext, ""); w.Code != http.StatusUnauthorized || w.Header().Get("Access-Control-Allow-Origin") != ext || !strings.Contains(w.Body.String(), "gateway key") {
+		t.Errorf("listed extension without a key: %d %v %s", w.Code, w.Header(), w.Body)
+	}
+	if w := do("POST", ext, "not-a-key"); w.Code != http.StatusUnauthorized {
+		t.Errorf("listed extension with a wrong key: %d %s", w.Code, w.Body)
+	}
+	if hits.Load() != n {
+		t.Fatal("a keyless call from a listed extension reached the vendor")
+	}
+	// another extension is still not listed
+	if w := do("OPTIONS", other, ""); w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("another extension's preflight: %d %v", w.Code, w.Header())
+	}
+	if w := do("POST", other, secret); w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("another extension: %d %v", w.Code, w.Header())
 	}
 }

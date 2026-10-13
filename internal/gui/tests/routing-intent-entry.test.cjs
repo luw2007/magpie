@@ -121,9 +121,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // above it, and the rule shows in the window
         const after = await byIntent.boundingBox();
         assert(Math.abs(after.y - bb.y) < 1, `the button moved from ${bb.y} to ${after.y}`);
-        const rb = await rule.boundingBox();
-        assert(rb.y >= 0 && rb.y + rb.height <= height, `the rule in view: ${JSON.stringify(rb)}`);
+        // the rule is 400-465px tall at 440px, taller than the room above the held
+        // button, so its top may sit above the window or under the sticky page head
+        // (which wraps to 125px there); the reader wheels it clear, and the box
+        // they type in must then show whole and take the click
         const box = rule.locator(".rt-cond.in input");
+        const hit = () => box.evaluate((b) => { const r = b.getBoundingClientRect(); return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
+        await page.mouse.move(Math.min(550, width / 2), 400);
+        for (let i = 0; i < 12 && !(await hit()); i++) {
+          await page.mouse.wheel(0, -60);
+          await page.waitForTimeout(100);
+        }
+        const ib = await box.boundingBox();
+        assert(ib.y >= 0 && ib.y + ib.height <= height, `the intent box in view: ${JSON.stringify(ib)}`);
+        assert(await box.evaluate((b) => { const r = b.getBoundingClientRect(); return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }), "the intent box is the element under its centre");
         assert(await box.evaluate((b) => b === document.activeElement), "the intent box has the focus");
         const cls = ed.locator(".rt-classifier");
         assert(await cls.isVisible(), "the classifier shows for the rule");

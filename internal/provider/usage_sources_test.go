@@ -132,11 +132,11 @@ func TestMalformedUsageConfigurationIsNotOverwritten(t *testing.T) {
 		{"save pool", func() error { return SaveQuotaPool(usageTestPool()) }},
 		{"delete pool", func() error { return DeleteQuotaPool("team") }},
 		{"restore", func() error {
-			_, _, err := RestoreConfiguration(nil, nil, []UsageSource{usageTestSource()}, []QuotaPool{usageTestPool()})
+			_, _, err := RestoreConfiguration(nil, nil, []UsageSource{usageTestSource()}, []QuotaPool{usageTestPool()}, false)
 			return err
 		}},
 		{"mirror", func() error {
-			return MirrorConfiguration(nil, nil, []UsageSource{usageTestSource()}, []QuotaPool{usageTestPool()})
+			return MirrorConfiguration(nil, nil, []UsageSource{usageTestSource()}, []QuotaPool{usageTestPool()}, false)
 		}},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {

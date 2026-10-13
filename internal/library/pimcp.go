@@ -140,10 +140,15 @@ func piDetect(d string) piPlugins {
 		var o struct {
 			Source     string
 			Extensions *[]string
+			Autoload   *bool
 		}
 		if json.Unmarshal(r, &s) != nil && json.Unmarshal(r, &o) == nil {
-			if o.Extensions != nil && len(*o.Extensions) == 0 {
-				continue // "extensions": [] loads none of the package's
+			// "extensions": [] loads none of the package's, and with
+			// "autoload": false only the extensions it names load
+			// (package-manager.js applyPackageDeltaFilter), so none when
+			// it names none (#1189, Kenoia)
+			if (o.Extensions != nil || o.Autoload != nil && !*o.Autoload) && (o.Extensions == nil || len(*o.Extensions) == 0) {
+				continue
 			}
 			s = o.Source
 		}
@@ -171,6 +176,9 @@ func piDetect(d string) piPlugins {
 			name, _ := piPackageName(t[1:])
 			off[name] = true
 			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(s), "+") {
+			continue // "+path" re-enables a path Pi found, it adds no source
 		}
 		name, v := piPackageName(s)
 		switch name {

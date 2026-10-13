@@ -204,8 +204,9 @@ func TestRestartCodexDaemon(t *testing.T) {
 	if got := read(".args"); got != "app-server daemon restart" {
 		t.Errorf("args %q", got)
 	}
-	home, _ := os.UserHomeDir()
-	if got, want := read(".home"), filepath.Join(home, ".codex"); got != want {
+	// the daemon of the CODEX_HOME magpie writes auth.json in, which is the
+	// user's own CODEX_HOME when that is set
+	if got, want := read(".home"), "/somewhere/else"; got != want || filepath.Clean(got) != filepath.Dir(codexAuthPath()) {
 		t.Errorf("CODEX_HOME %q, want %q (where magpie writes auth.json)", got, want)
 	}
 	if got := read(".stdin"); got != "other" {
@@ -395,5 +396,92 @@ func TestKeepCodexDaemonCurrentFails(t *testing.T) {
 	c := KeepCodexDaemonCurrent(context.Background(), home, time.Now())
 	if !c.Behind || c.Restarted || c.Err == nil {
 		t.Fatalf("%+v", c)
+	}
+}
+
+func TestFindCodexApp(t *testing.T) {
+	// the ChatGPT app's own app-server, as ps listed it on the owner's Mac
+	// (ChatGPT 26.1007), beside a terminal codex and the managed daemon
+	app := "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled -c plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true"
+	for want, ps := range map[int][]proc.Process{
+		9: {{PID: 3, Args: "codex"}, {PID: 4, Args: "/Users/me/.codex/packages/app-server-daemon/releases/0.162.0-aarch64-apple-darwin/bin/codex app-server --listen unix:///x --managed-daemon"}, {PID: 9, Args: app}},
+		8: {{PID: 8, Args: `"C:\Program Files\WindowsApps\OpenAI.Codex_1.0\app\resources\codex.exe" app-server`}},
+		0: {
+			{PID: 3, Args: "codex app-server proxy"},
+			{PID: 5, Args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex exec-server --remote x"},
+			{PID: 6, Args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server daemon restart"},
+			{PID: 7, Args: "/Users/me/.vscode/extensions/openai.chatgpt-1.0/bin/darwin-aarch64/codex app-server"},
+			{PID: 10, Args: "/Users/me/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService app-server"},
+		},
+	} {
+		if got := findCodexApp(ps); got != want {
+			t.Errorf("findCodexApp = %d, want %d (%v)", got, want, ps)
+		}
+	}
+}
+
+// The Codex app reads the sign-in once, as it opens: switched while it
+// runs, it stays on the account before, shows that account's limits and,
+// once they are spent, sends in no thread (CavillZhang on X). magpie says
+// so until the app is opened again.
+func TestCodexAppStale(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	app := new(int)
+	old := listProcesses
+	t.Cleanup(func() {
+		listProcesses = old
+		DismissCodexDaemon()
+		DismissCodexApp()
+	})
+	listProcesses = func(context.Context) ([]proc.Process, error) {
+		if *app < 0 {
+			return nil, errors.New("no ps")
+		}
+		ps := []proc.Process{{PID: 7, Args: "codex"}}
+		if *app > 0 {
+			ps = append(ps, proc.Process{PID: *app, Args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled"})
+		}
+		return ps, nil
+	}
+	recheck := func() { codexDaemonMu.Lock(); codexDaemonChecked = time.Time{}; codexDaemonMu.Unlock() }
+	DismissCodexApp()
+
+	noteCodexSwitch("a@x", "b@x")
+	if got := CodexAppStale(); got != "" {
+		t.Fatalf("app not open: %q", got)
+	}
+	*app = 60
+	noteCodexSwitch("a@x", "b@x")
+	if got := CodexAppStale(); got != "a@x" {
+		t.Fatalf("got %q, want a@x", got)
+	}
+	if got := CodexDaemonStale(); got != "" {
+		t.Fatalf("the app's app-server taken for the daemon: %q", got)
+	}
+	noteCodexSwitch("b@x", "c@x")
+	if got := CodexAppStale(); got != "a@x" {
+		t.Fatalf("after a third: got %q, want a@x", got)
+	}
+	noteCodexSwitch("c@x", "a@x")
+	if got := CodexAppStale(); got != "" {
+		t.Fatalf("back on its own: %q", got)
+	}
+	// quit and opened again: a new app-server, which read the new sign-in
+	noteCodexSwitch("a@x", "b@x")
+	*app = 61
+	recheck()
+	if got := CodexAppStale(); got != "" {
+		t.Fatalf("reopened: %q", got)
+	}
+	noteCodexSwitch("b@x", "a@x")
+	*app = -1
+	recheck()
+	if got := CodexAppStale(); got != "b@x" {
+		t.Fatalf("list failing: got %q, want b@x", got)
+	}
+	DismissCodexApp()
+	if got := CodexAppStale(); got != "" {
+		t.Fatalf("dismissed: %q", got)
 	}
 }

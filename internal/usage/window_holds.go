@@ -25,7 +25,7 @@ func WithWindowHolds(qs []provider.SubscriptionQuota, now time.Time) []provider.
 		return qs
 	}
 	s := readLogSnapshot()
-	return windowHolds(qs, now, s.first, apiPricer(), provider.Renamed(), func(fn func(Record)) { s.visit(since, fn) })
+	return windowHolds(qs, now, s.firstOwn, apiPricer(), provider.Renamed(), func(fn func(Record)) { s.visit(since, fn) })
 }
 
 // holdsSince is the earliest start of a window that could be reckoned.
@@ -96,7 +96,7 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 	sums := map[slot]*provider.WindowHolds{}
 	unpriced := map[slot]bool{}
 	read(func(r Record) {
-		if r.IsRejected() || r.Input+r.Output == 0 {
+		if r.IsRejected() || r.IsReported() || r.Input+r.Output == 0 {
 			return
 		}
 		if next, ok := renamed[r.Provider]; ok {

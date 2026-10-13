@@ -53,10 +53,13 @@ func TestFileErrorSaysUnreadable(t *testing.T) {
 func TestWriteErrorsSayLeftUnchanged(t *testing.T) {
 	p := Provider{ID: "new", Name: "New", Chat: "https://new.example.invalid/v1", Key: "synthetic-new"}
 	for name, run := range map[string]func() error{
-		"save":           func() error { return Save(p) },
-		"restore":        func() error { _, _, err := RestoreConfiguration([]Provider{p}, nil, nil, nil); return err },
-		"restore-groups": func() error { _, _, err := RestoreConfiguration(nil, []Group{{ID: "g", Members: []string{"new/m"}}}, nil, nil); return err },
-		"mirror":         func() error { return MirrorConfiguration([]Provider{p}, nil, nil, nil) },
+		"save":    func() error { return Save(p) },
+		"restore": func() error { _, _, err := RestoreConfiguration([]Provider{p}, nil, nil, nil, false); return err },
+		"restore-groups": func() error {
+			_, _, err := RestoreConfiguration(nil, []Group{{ID: "g", Members: []string{"new/m"}}}, nil, nil, false)
+			return err
+		},
+		"mirror": func() error { return MirrorConfiguration([]Provider{p}, nil, nil, nil, false) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			providerFileHome(t)

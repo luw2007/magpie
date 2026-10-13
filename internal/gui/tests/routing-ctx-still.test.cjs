@@ -97,7 +97,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const feed = { next: null };
         await page.route("**/*", serve(lang, feed));
         await page.goto("http://magpie.test/?view=routing");
-        await page.locator(".rt-req").nth(first.length - 1).waitFor();
+        await page.locator(".rt-req").nth(first.length - 1).waitFor({ state: "attached" }); // the list is on the Requests pane; the card watched is on Live
         await page.locator(".rt-ctx .ctx-cache").waitFor();
         await page.waitForTimeout(1500); // the cells come in, the first play ends
         // the width changes a little after the card is drawn, as when the

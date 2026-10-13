@@ -110,10 +110,22 @@ func (tc *gThinking) effort() string {
 // {parts:[{text}]}. droid sends no stream field; Factory answers SSE either
 // way, and a client that asked for JSON is given it after the fact.
 func buildGemini(r *Request, model string) ([]byte, error) {
+	req, err := geminiRequest(r, model, "gemini")
+	if err != nil {
+		return nil, err
+	}
+	req["model"] = model
+	return json.Marshal(req)
+}
+
+// geminiRequest is the request inside the Code Assist envelope that
+// buildCodeAssistSent builds for agent, unwrapped, with no stream field
+// and a systemInstruction with no role.
+func geminiRequest(r *Request, model, agent string) (map[string]any, error) {
 	var wrap struct {
 		Request map[string]any `json:"request"`
 	}
-	if err := json.Unmarshal(buildCodeAssistSent(r, model, "gemini"), &wrap); err != nil {
+	if err := json.Unmarshal(buildCodeAssistSent(r, model, agent), &wrap); err != nil {
 		return nil, err
 	}
 	if wrap.Request == nil {
@@ -122,9 +134,8 @@ func buildGemini(r *Request, model string) ([]byte, error) {
 	if si, ok := wrap.Request["systemInstruction"].(map[string]any); ok {
 		delete(si, "role")
 	}
-	wrap.Request["model"] = model
 	delete(wrap.Request, "stream")
-	return json.Marshal(wrap.Request)
+	return wrap.Request, nil
 }
 
 // geminiCamel spells a Gemini request's fields in camelCase. Google's API
@@ -265,7 +276,8 @@ func parseGemini(body []byte) (*Request, error) {
 					id = "call_" + newID()
 				}
 				names[fc.Name] = id
-				msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: id, Name: fc.Name, Args: parseArgs(string(fc.Args))})
+				// its thought signature goes back to Gemini as it came (#1445)
+				msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: id, Name: fc.Name, Args: parseArgs(string(fc.Args)), Signature: p.Signature})
 			case p.FunctionResponse != nil:
 				fr := p.FunctionResponse
 				id := fr.ID
@@ -292,8 +304,8 @@ func parseGemini(body []byte) (*Request, error) {
 				}
 			case p.Thought:
 				msg.Parts = append(msg.Parts, Part{Kind: Thinking, Text: p.Text, Signature: p.Signature})
-			case p.Text != "":
-				msg.Parts = append(msg.Parts, Part{Kind: Text, Text: p.Text})
+			case p.Text != "" || p.Signature != "":
+				msg.Parts = append(msg.Parts, Part{Kind: Text, Text: p.Text, Signature: p.Signature})
 			}
 		}
 		if len(msg.Parts) > 0 {
@@ -543,8 +555,12 @@ func geminiParts(parts []Part) []map[string]any {
 	for _, p := range parts {
 		switch p.Kind {
 		case Text:
-			if p.Text != "" {
-				out = append(out, map[string]any{"text": p.Text})
+			if p.Text != "" || p.Signature != "" {
+				part := map[string]any{"text": p.Text}
+				if p.Signature != "" {
+					part["thoughtSignature"] = p.Signature
+				}
+				out = append(out, part)
 			}
 		case Thinking:
 			if p.Text != "" {
@@ -555,11 +571,16 @@ func geminiParts(parts []Part) []map[string]any {
 				out = append(out, map[string]any{"inlineData": map[string]any{"mimeType": p.MediaType, "data": p.Data}})
 			}
 		case ToolCall:
-			id := p.ID
+			// a signature that rode in the id goes where Gemini has it
+			id, sig := unsignedID(p.ID)
 			if id == "" {
 				id = "call_" + newID()
 			}
-			out = append(out, map[string]any{"functionCall": map[string]any{"id": id, "name": p.Name, "args": argsOf(p)}})
+			part := map[string]any{"functionCall": map[string]any{"id": id, "name": p.Name, "args": argsOf(p)}}
+			if sig != "" {
+				part["thoughtSignature"] = sig
+			}
+			out = append(out, part)
 		}
 	}
 	return out
@@ -638,6 +659,10 @@ func (e *geminiEncoder) event(ev Event) {
 	case KThink:
 		e.flushTool()
 		e.chunk(geminiParts([]Part{{Kind: Thinking, Text: ev.Text}}), "", nil)
+	case KTextSig:
+		// Gemini's signature on its text, as Gemini streams it (#1445)
+		e.flushTool()
+		e.chunk([]map[string]any{{"text": "", "thoughtSignature": ev.Text}}, "", nil)
 	case KImage:
 		e.flushTool()
 		e.chunk(geminiParts([]Part{{Kind: Image, MediaType: ev.Name, Data: ev.Text}}), "", nil)

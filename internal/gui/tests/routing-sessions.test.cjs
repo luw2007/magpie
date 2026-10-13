@@ -4,6 +4,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { openPane } = require("./routing-pane.cjs");
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -187,6 +188,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.setViewportSize({ width: 1100, height: 1000 });
         await page.locator(".rt-reqs").screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-background-memory.png`) });
       }
+      // at 560 By request is under the groups, out of sight: a resize lets
+      // go of what the last click held in place (heldWidth), so the reader
+      // scrolls down to it
+      await reach(page, page.locator(".rt-group-by button").first());
       await page.locator(".rt-group-by button").first().click();
       assert.equal(await page.locator(".rt-req").count(), 11, "by-request view retains all requests");
       assert.deepEqual(errors, []);
@@ -499,6 +504,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, feed, fixture));
       t.after(async () => { feed.next?.([]); await browser.close(); });
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-group-by button").nth(1).click();
       const named = page.locator("button.rt-session").filter({ hasText: "Claude Code · 路由会话名" });
       await named.waitFor();

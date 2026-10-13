@@ -2,12 +2,15 @@ package gui
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"runtime"
 	"sort"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/sessions"
@@ -196,6 +199,13 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, out)
 	})
+	// search is the sessions of ?agent= whose conversation says ?q=, newest
+	// first, each with the words round its first match (YOU on Discord). A
+	// new query from the page cancels the request, and with it the search.
+	mux.HandleFunc("GET /api/sessions/search", func(rw http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		writeJSON(rw, searchSessions(r.Context(), q.Get("agent"), q.Get("q"), searchBudget))
+	})
 	// delete moves the sessions named to magpie's trash, one by one; one
 	// still being written is left, and said so. One seen only through the
 	// gateway, of any agent, has what magpie keeps of it moved there.
@@ -342,4 +352,132 @@ func forgetStats() {
 	statsMemo.Lock()
 	statsMemo.m = nil
 	statsMemo.Unlock()
+}
+
+// searchHitMax is the most sessions a search lists, and searchBudget how
+// long it reads before it says what it found so far.
+const searchHitMax = 200
+
+var searchBudget = 8 * time.Second
+
+type searchHitJSON struct {
+	ID string `json:"id"`
+	sessions.Hit
+}
+
+type searchJSON struct {
+	Hits []searchHitJSON `json:"hits"`
+	// Searched is how many sessions were read, of Total that could be
+	Searched int `json:"searched"`
+	Total    int `json:"total"`
+	// Cut: it stopped before reading them all, at searchHitMax hits or
+	// out of time
+	Cut bool `json:"cut,omitempty"`
+	// Unread: the agent's own sessions can't be read here (a database),
+	// only those magpie recorded through the gateway are searched
+	Unread bool `json:"unread,omitempty"`
+}
+
+// searchSessions reads an agent's sessions, newest first, a few at once, and
+// keeps those that say what was asked; every one is read only to its first
+// match.
+func searchSessions(ctx context.Context, agentID, query string, budget time.Duration) searchJSON {
+	out := searchJSON{Hits: []searchHitJSON{}}
+	needle := sessions.NeedleOf(query)
+	if agentID == "" || utf8.RuneCountInString(needle) < 2 {
+		return out
+	}
+	type job struct {
+		s    sessions.Session
+		last time.Time
+	}
+	var jobs []job
+	native := map[string]bool{}
+	if sessions.HasTranscript(agentID) {
+		for _, m := range sessions.ListAgent(agentID) {
+			native[m.ID] = true
+			jobs = append(jobs, job{m.Session, m.Last})
+		}
+	} else {
+		// what magpie recorded of them through the gateway is still read
+		out.Unread = true
+		for _, m := range sessions.ListAgent(agentID) {
+			native[m.ID] = true
+			jobs = append(jobs, job{sessions.Session{Gateway: true, Agent: m.Agent, ID: m.ID}, m.Last})
+		}
+	}
+	for _, g := range listedGateway(usage.GatewaySessions(time.Time{}, nil)) {
+		if g.Agent == agentID && !native[g.ID] {
+			jobs = append(jobs, job{sessions.Session{Gateway: true, Agent: g.Agent, ID: g.ID}, g.Last})
+		}
+	}
+	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i].last.After(jobs[j].last) })
+	out.Total = len(jobs)
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	type found struct {
+		i   int
+		hit sessions.Hit
+		ok  bool
+	}
+	work := make(chan int)
+	results := make(chan found)
+	var wg sync.WaitGroup
+	for range min(4, max(1, runtime.NumCPU()/2)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				var f found
+				f.i = i
+				s := jobs[i].s
+				if s.Gateway {
+					f.hit, f.ok, _ = sessions.SearchGateway(ctx, s.Agent, s.ID, needle)
+				} else {
+					f.hit, f.ok, _ = sessions.SearchSession(ctx, s, needle)
+				}
+				select {
+				case results <- f:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(work)
+		for i := range jobs {
+			select {
+			case work <- i:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() { wg.Wait(); close(results) }()
+	var hits []found
+	for f := range results {
+		if ctx.Err() != nil {
+			break
+		}
+		out.Searched++
+		if f.ok {
+			hits = append(hits, f)
+			if len(hits) >= searchHitMax {
+				break
+			}
+		}
+	}
+	if out.Searched < out.Total {
+		out.Cut = true
+	}
+	cancel()
+	for range results {
+		// what the readers were on ends with the cancel
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].i < hits[j].i })
+	for _, f := range hits {
+		out.Hits = append(out.Hits, searchHitJSON{ID: jobs[f.i].s.ID, Hit: f.hit})
+	}
+	return out
 }

@@ -42,7 +42,20 @@ type bunState struct {
 	Checked time.Time `json:"checked,omitzero"`
 }
 
-func bunRoot() string { return filepath.Join(filepath.Dir(catalog.CachePath()), "bun") }
+// bunRoot is where magpie keeps its Buns and their state.json. A musl
+// Linux keeps them under bun/musl: one version is a different build there,
+// so a machine whose C library changed under it (a container's image
+// moved from Debian to Alpine, or back) never runs the other one's build,
+// nor takes its state, whose Bad may list versions only the wrong build
+// failed (#1877). Everywhere else they stay in bun itself, where a Bun
+// downloaded before is.
+func bunRoot() string {
+	root := filepath.Join(filepath.Dir(catalog.CachePath()), "bun")
+	if t, err := bunTarget(); err == nil && strings.Contains(t, "-musl") {
+		root = filepath.Join(root, "musl")
+	}
+	return root
+}
 
 func bunDirOf(v string) string { return filepath.Join(bunRoot(), v) }
 

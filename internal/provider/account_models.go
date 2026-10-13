@@ -185,10 +185,10 @@ func SetModels(id string, models []string) error {
 		return err
 	}
 	ms := normalModels(models)
-	if slices.Equal(ms, normalModels(p.Models)) {
+	if slices.Equal(ms, normalModels(p.Models)) && !p.ServesNone() {
 		return nil
 	}
-	p.Models = ms
+	p.Models, p.NoModels = ms, false
 	return Save(*p)
 }
 

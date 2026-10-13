@@ -40,7 +40,7 @@ const desktopManifest = "manifest.json"
 // Desktop has, in its own folder and Claude-3p's alike: each one with a
 // manifest.json or the plugin's plugin.json.
 func desktopSkillRoots(desktopDir string) []string {
-	dirs := append([]string{desktopDir}, desktopdir.Here().All()...)
+	dirs := append([]string{desktopDir}, desktopdir.Everywhere()...)
 	var out []string
 	seen := map[string]bool{}
 	for _, d := range dirs {

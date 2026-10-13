@@ -92,6 +92,8 @@ func TestBalanceSourceByHost(t *testing.T) {
 		"https://api.commandcode.ai/provider/v1": "https://api.commandcode.ai/alpha/billing/credits",
 		"https://api.stepfun.com/step_plan/v1":   "https://api.stepfun.com/v1/accounts",
 		"https://api.stepfun.ai/v1":              "https://api.stepfun.ai/v1/accounts",
+		"https://ollama.com/v1":                  "https://ollama.com/api/balance",
+		"http://localhost:11434/v1":              "",
 		"https://relay.example.com/v1":           "",
 		"https://api.deepseek.com.evil/":         "",
 	} {

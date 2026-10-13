@@ -12,6 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [{ id: "a/sol", name: "sol", providerName: "A Cloud", icon: "generic" }];
@@ -41,6 +42,7 @@ function serve(lang) {
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
     if (url.pathname === "/api/groups") return json(groups);
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true, url: "http://127.0.0.1:3999" } });
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
@@ -60,6 +62,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "groups");
         const say = (key, vars = {}) => page.evaluate(([lang, key, vars]) => {
           const s = (lang !== "en" && I18N[lang]?.[key]) || key;
           return s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? `{${k}}`);
@@ -81,9 +84,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await hand.locator('.rt-pick[data-member="c/sol"]').getAttribute("title"), await say("No provider serves {id} now; it is skipped", { id: "c/sol" }));
 
         // the editor: its row muted, saying why
-        // the page puts back a scroll the reader didn't make, so at 420 the
-        // button is clicked where it is
-        await card.locator("button", { hasText: await say("Edit") }).dispatchEvent("click");
+        await card.locator("button", { hasText: await say("Edit") }).click();
         const ed = page.locator(".rt-gedit");
         const row = ed.locator(".fbrow", { has: page.locator(".n small", { hasText: `B Cloud · ${off}` }) });
         assert.equal(await row.count(), 1);

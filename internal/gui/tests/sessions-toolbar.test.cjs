@@ -8,11 +8,12 @@ const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
+// Eight agents' tabs fit the 1200px a wide window's page keeps to (面条 on
+// Discord); ten gave way to the menu there too.
 const agents = [
   ["qodercn", "Qoder CN", "qoder", 426], ["qoder", "Qoder", "qoder", 102],
   ["pi", "Pi", "pi", 89], ["claude", "Claude Code", "claudecode-color", 83],
-  ["deepseek", "DeepSeek Harness", "deepseek-color", 70], ["codex", "Codex", "codex-color", 37],
-  ["workbuddy", "WorkBuddy", "workbuddy-color", 24], ["opencode", "OpenCode", "opencode", 11],
+  ["codex", "Codex", "codex-color", 37], ["opencode", "OpenCode", "opencode", 11],
   ["zcode", "ZCode", "zcode", 10], ["grokbuild", "Grok Build", "xai", 3],
 ].map(([agent, name, icon, count]) => ({ agent, name, icon, count, deletable: true }));
 

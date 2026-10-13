@@ -15,6 +15,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const midnight = new Date();
@@ -130,7 +131,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the window, on the Overview
       const calls = { state: 0, overview: 0, requests: 0 }, cur = { v: 0 };
       const p = await open("http://magpie.test/?view=usage", { width: 1180, height: 760 }, calls, cur);
-      if (await p.locator("#usageTab .opt.on").evaluate((b) => b !== b.parentElement.firstElementChild)) await p.locator("#usageTab .opt").first().click();
+      if (await p.locator("#usageTab .opt.on").evaluate((b) => b !== b.parentElement.firstElementChild)) await p.locator(":is(#usageTab .opt, .nav-s):visible").first().click();
       const BAR = "#chart .bars .bar";
       await p.locator(BAR).first().waitFor();
       assert.equal(await p.locator(BAR).count(), DAYS);
@@ -151,7 +152,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await p.locator("#chart").isVisible(), true);
 
       // the Requests tab: its columns stay
-      await p.locator("#usageTab .opt").nth(1).click();
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       const COL = "#ledgerPane .led-chart rect.col";
       await p.locator(COL).first().waitFor();
       await p.waitForTimeout(300);
@@ -160,7 +161,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await back(p, calls, "requests");
       assert.deepEqual(await flashes(p), [], "the Requests chart isn't blanked");
       assert.deepEqual(await kept(p, COL), Array.from({ length: cols }, (_, i) => i + 1), "the same columns stay");
-      await p.locator("#usageTab .opt").first().click(); // the tab is remembered: leave it on the Overview
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").first().click(); // the tab is remembered: leave it on the Overview
 
       // the tray panel's Usage tab: not dimmed, not drawn again
       const pc = { state: 0, overview: 0, requests: 0 };
@@ -177,6 +178,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // the Routing page's groups: the same cards stay
       await p.locator('[data-view="routing"]').first().click();
+      await openPane(p, "groups");
       const GRP = "#view-routing .rt-group";
       await p.locator(GRP).first().waitFor();
       await p.waitForTimeout(300);

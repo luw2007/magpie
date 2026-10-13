@@ -44,6 +44,7 @@ function serve(lang, posts) {
       posts.push({ path: url.pathname, body: route.request().postDataJSON() });
       return json(providers);
     }
+    if (url.pathname === "/api/usage/sources" || url.pathname === "/api/usage/pools") return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     await route.fulfill({ body: await fs.readFile(file), contentType: { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)] });

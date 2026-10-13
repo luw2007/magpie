@@ -16,6 +16,16 @@
   let agent = "";
   try { agent = localStorage.getItem("magpie.sessionsAgent") || ""; } catch {}
   let query = "";
+  // The filter also finds a session by what was said in it: the server
+  // reads the agent's conversations a moment after the last keystroke, and
+  // a new keystroke cancels the read it was on (YOU on Discord: a session
+  // the gateway recorded is named ses_…, and its words are how it is
+  // remembered). found is that search, for one agent and one query.
+  let found = null;       // { agent, needle, hits: Map(id -> hit), busy, cut, unread, searched, total, error }
+  let searchCtl = null;
+  let searchT = 0;
+  const SEARCH_WAIT = 300;
+  const needleOf = (q) => q.trim().split(/\s+/).filter(Boolean).join(" ").toLowerCase();
   let trashOn = false;
   const picked = new Set();   // ids picked to delete, of the agent shown
   const opened = new Set();   // folders unfolded, by cwd
@@ -37,6 +47,12 @@
   // page when the agent or the filter changes.
   const SM_PAGE = 100;
   const drawnIn = new Map();
+  // The folders are drawn a page at a time too, under FOLDERS in drawnIn:
+  // an app that runs Codex once per picture in a folder of its own left
+  // 11,358 folders of one session each, and drawing them all made 114,000
+  // elements, held every click on the page for over a second, and slowed
+  // the Library page after it (yetone).
+  const FOLDERS = "\x00folders";
 
   // A session seen only through magpie's gateway has no folder magpie knows
   // (its agent's files are on another computer, in a container or under
@@ -61,6 +77,7 @@
       failed = "";
       talks.clear(); // read again when shown: a session may have gone on
       if (agent !== d.agent) { agent = d.agent; picked.clear(); }
+      if (query) searchSoon(); // the same words, in this agent's sessions
     } catch (e) {
       if (n !== loading) return;
       failed = e.message;
@@ -83,6 +100,7 @@
     trashOn = false;
     if (s.id) {
       query = "";
+      searchSoon();
       detail = s.id;
       openedFor = agent;
       opened.clear();
@@ -105,11 +123,68 @@
   }
 
   const current = () => data?.agents.find((a) => a.agent === data.agent);
+  // the search of what was said, when it is of the agent and words shown
+  const search = () => found && found.agent === data?.agent && found.needle === needleOf(query) ? found : null;
+  const hitOf = (s) => search()?.hits.get(s.id);
   const shown = () => {
     const q = query.trim().toLowerCase();
     const list = data?.sessions || [];
-    return q ? list.filter((s) => [s.title, s.cwd, s.id, ...(s.models || []).map((m) => m.model)].some((x) => (x || "").toLowerCase().includes(q))) : list;
+    return q ? list.filter((s) => hitOf(s) || [s.title, s.cwd, s.id, ...(s.models || []).map((m) => m.model)].some((x) => (x || "").toLowerCase().includes(q))) : list;
   };
+
+  // searchSoon searches what was said for the filter's words, once typing
+  // pauses; fewer than two letters search nothing
+  function searchSoon() {
+    clearTimeout(searchT);
+    const needle = needleOf(query);
+    if (!data?.agent || [...needle].length < 2) {
+      searchCtl?.abort();
+      searchCtl = null;
+      found = null;
+      return;
+    }
+    if (found && found.agent === data.agent && found.needle === needle && !found.busy && !found.error) return;
+    searchCtl?.abort();
+    searchCtl = null;
+    const mine = found = { agent: data.agent, needle, hits: new Map(), busy: true };
+    searchT = setTimeout(async () => {
+      const ctl = searchCtl = new AbortController();
+      try {
+        const r = await api(`sessions/search?agent=${encodeURIComponent(mine.agent)}&q=${encodeURIComponent(needle)}`, undefined, undefined, ctl.signal);
+        if (found !== mine) return;
+        found = { ...mine, busy: false, hits: new Map((r?.hits || []).map((h) => [h.id, h])), cut: !!r?.cut, unread: !!r?.unread, searched: r?.searched || 0, total: r?.total || 0 };
+      } catch (e) {
+        if (ctl.signal.aborted || found !== mine) return;
+        found = { ...mine, busy: false, error: e.message };
+      }
+      if (searchCtl === ctl) searchCtl = null;
+      if (view === "sessions" && !trashOn) { drawnIn.clear(); redrawList(); }
+    }, SEARCH_WAIT);
+  }
+
+  // what the search is doing, above the list, when it says more than the
+  // rows do
+  function searchNote() {
+    const f = search();
+    if (!f) return null;
+    let text = "";
+    if (f.busy) text = t("Searching what was said…");
+    else if (f.error) text = t("Couldn't search what was said: {error}", { error: f.error });
+    else if (f.unread) text = t("{agent}'s own files of its sessions can't be read here, so only what magpie recorded through the gateway is searched.", { agent: current()?.name || f.agent });
+    else if (f.cut) text = t("Searched what was said in the latest {n} of {total} sessions.", { n: f.searched, total: f.total });
+    if (!text) return null;
+    const p = el("p", "usage-note sm-note sm-search-note", text);
+    p.setAttribute("role", "status");
+    return p;
+  }
+
+  // the words round where a session said what was searched for
+  function hitLine(h) {
+    const d = el("div", "sub sm-hit");
+    d.append(h.before || "", el("mark", "", h.match), h.after || "");
+    d.title = (h.before || "") + h.match + (h.after || "");
+    return d;
+  }
 
   function draw() {
     const keepFocus = page.querySelector(".sm-agent-pick:focus, .sm-agents .opt:focus");
@@ -249,11 +324,11 @@
     q.type = "search";
     q.spellcheck = false;
     q.autocomplete = "off";
-    q.placeholder = t("Filter sessions");
+    q.placeholder = t("Search sessions");
     q.value = query;
     q.hidden = trashOn;
-    q.oninput = () => { query = q.value; drawnIn.clear(); redrawList(); };
-    q.onkeydown = (e) => { if (e.key === "Escape" && q.value) { e.stopPropagation(); q.value = ""; query = ""; drawnIn.clear(); redrawList(); } };
+    q.oninput = () => { query = q.value; drawnIn.clear(); searchSoon(); redrawList(); };
+    q.onkeydown = (e) => { if (e.key === "Escape" && q.value) { e.stopPropagation(); q.value = ""; query = ""; drawnIn.clear(); searchSoon(); redrawList(); } };
     const tr = el("button", "text sm-trash-btn" + (trashOn ? " on" : ""));
     tr.type = "button";
     tr.setAttribute("aria-pressed", String(trashOn));
@@ -475,60 +550,91 @@
     }
     tree.replaceChildren();
     folderBoxes.clear();
+    const note = searchNote();
+    if (note) tree.append(note);
     if (!list.length) {
-      tree.append(el("div", "empty-state", query ? t("No session matches.") : t("No sessions yet")));
+      if (!search()?.busy) tree.append(el("div", "empty-state", query ? t("No session matches.") : t("No sessions yet")));
       return;
     }
     const q = query.trim();
-    for (const [cwd, items] of groups) {
-      const open = !!q || opened.has(cwd);
-      const g = el("div", "list sm-group");
-      const r = el("div", "row sm-folder");
-      const writable = items.filter((s) => s.deletable);
-      // the folder's box picks every session of it shown, folded or not,
-      // for the bar's Delete; the bar still counts sessions (#527)
-      if (current()?.deletable && writable.length) {
-        const c = el("input", "sm-check sm-folder-check");
-        c.type = "checkbox";
-        // a session's own box ticked or not shows here at once
-        c.sync = () => {
-          c.checked = writable.every((s) => picked.has(s.id));
-          c.indeterminate = !c.checked && writable.some((s) => picked.has(s.id));
-        };
-        c.sync();
-        folderBoxes.set(cwd, c);
-        c.setAttribute("aria-label", t("Select every session in {folder}", { folder: groupName(cwd) }));
-        c.onclick = (e) => e.stopPropagation();
-        c.onchange = () => {
-          for (const s of writable) c.checked ? picked.add(s.id) : picked.delete(s.id);
-          redrawList();
-        };
-        r.append(c);
-      }
-      const fold = el("button", "fold");
-      fold.type = "button";
-      fold.setAttribute("aria-expanded", String(open));
-      fold.append(svg(CHEV_R, 10, 1.6), el("span", "name", groupName(cwd)));
-      fold.onclick = () => {
-        if (opened.has(cwd)) opened.delete(cwd); else opened.add(cwd);
+    const all = [...groups];
+    // a page of folders, or as many as were drawn before, and down to the
+    // folder of the session opened to its details
+    const at = detail ? all.findIndex(([, items]) => items.some((s) => s.id === detail)) : -1;
+    const n = Math.min(all.length, Math.max(drawnIn.get(FOLDERS) || SM_PAGE, at + 1));
+    for (const [cwd, items] of all.slice(0, n)) tree.append(folder(cwd, items, q));
+    if (n < all.length) tree.append(moreFolders(all, n, q));
+    toFocus();
+  }
+
+  // moreFolders adds the next page of folders above itself, as moreRow does
+  // a folder's sessions
+  function moreFolders(all, n, q) {
+    drawnIn.set(FOLDERS, n);
+    const b = el("button", "text sess-page-more sm-more-folders");
+    b.type = "button";
+    b.dataset.unrolls = ""; // it goes down with the folders it opens
+    const label = () => t("Show {n} more folders", { n: Math.min(SM_PAGE, all.length - n) });
+    b.textContent = label();
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const next = Math.min(all.length, n + SM_PAGE);
+      b.before(...all.slice(n, next).map(([cwd, items]) => folder(cwd, items, q)));
+      n = next;
+      drawnIn.set(FOLDERS, n);
+      if (n >= all.length) b.remove();
+      else b.textContent = label();
+    };
+    return b;
+  }
+
+  function folder(cwd, items, q) {
+    const open = !!q || opened.has(cwd);
+    const g = el("div", "list sm-group");
+    const r = el("div", "row sm-folder");
+    const writable = items.filter((s) => s.deletable);
+    // the folder's box picks every session of it shown, folded or not,
+    // for the bar's Delete; the bar still counts sessions (#527)
+    if (current()?.deletable && writable.length) {
+      const c = el("input", "sm-check sm-folder-check");
+      c.type = "checkbox";
+      // a session's own box ticked or not shows here at once
+      c.sync = () => {
+        c.checked = writable.every((s) => picked.has(s.id));
+        c.indeterminate = !c.checked && writable.some((s) => picked.has(s.id));
+      };
+      c.sync();
+      folderBoxes.set(cwd, c);
+      c.setAttribute("aria-label", t("Select every session in {folder}", { folder: groupName(cwd) }));
+      c.onclick = (e) => e.stopPropagation();
+      c.onchange = () => {
+        for (const s of writable) c.checked ? picked.add(s.id) : picked.delete(s.id);
         redrawList();
       };
-      const path = cwd === GW ? "" : cwd;
-      r.append(fold, el("span", "sub sm-path", path), el("span", "grow"), el("span", "note", t(items.length === 1 ? "{n} session" : "{n} sessions", { n: items.length })));
-
-      r.title = path;
-      g.append(r);
-      if (open) {
-        // a page, or as many as were drawn before, and down to the session
-        // opened to its details (from the Usage page's list, #752)
-        const at = detail ? items.findIndex((s) => s.id === detail) : -1;
-        const n = Math.min(items.length, Math.max(drawnIn.get(cwd) || SM_PAGE, at + 1));
-        for (const s of items.slice(0, n)) g.append(item(s));
-        if (n < items.length) g.append(moreRow(cwd, items, n));
-      }
-      tree.append(g);
+      r.append(c);
     }
-    toFocus();
+    const fold = el("button", "fold");
+    fold.type = "button";
+    fold.setAttribute("aria-expanded", String(open));
+    fold.append(svg(CHEV_R, 10, 1.6), el("span", "name", groupName(cwd)));
+    fold.onclick = () => {
+      if (opened.has(cwd)) opened.delete(cwd); else opened.add(cwd);
+      redrawList();
+    };
+    const path = cwd === GW ? "" : cwd;
+    r.append(fold, el("span", "sub sm-path", path), el("span", "grow"), el("span", "note", t(items.length === 1 ? "{n} session" : "{n} sessions", { n: items.length })));
+
+    r.title = path;
+    g.append(r);
+    if (open) {
+      // a page, or as many as were drawn before, and down to the session
+      // opened to its details (from the Usage page's list, #752)
+      const at = detail ? items.findIndex((s) => s.id === detail) : -1;
+      const n = Math.min(items.length, Math.max(drawnIn.get(cwd) || SM_PAGE, at + 1));
+      for (const s of items.slice(0, n)) g.append(item(s));
+      if (n < items.length) g.append(moreRow(cwd, items, n));
+    }
+    return g;
   }
 
   // moreRow adds the folder's next page of sessions above itself, leaving
@@ -581,6 +687,8 @@
       sub.prepend(p, " ");
     }
     who.append(sub);
+    const hit = hitOf(s);
+    if (hit) who.append(hitLine(hit));
     // what it spent, as the Usage page's list shows it
     r.append(who, ...sessSpent(s));
     if (s.resume) {

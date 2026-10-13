@@ -55,7 +55,7 @@ func sandbox(t *testing.T) string {
 	}
 	for _, f := range []string{
 		".claude/settings.json", ".codex/config.toml", ".gemini/settings.json",
-		".config/opencode/opencode.json", ".config/mimocode/mimocode.json", ".pi/agent/settings.json", ".config/goose/config.yaml",
+		".config/opencode/opencode.json", ".config/mimocode/mimocode.json", ".config/deveco/deveco.jsonc", ".pi/agent/settings.json", ".config/goose/config.yaml",
 		".cursor/cli-config.json", ".copilot/settings.json", ".config/crush/crush.json", ".dsh/profiles/web/cordis.patch.yml",
 	} {
 		write(t, filepath.Join(h, f), "")
@@ -107,7 +107,7 @@ func ids(ts []*Target) []string {
 func TestTargets(t *testing.T) {
 	sandbox(t)
 	got := ids(Targets())
-	for _, id := range []string{"claude", "codex", "gemini", "opencode", "mimocode", "pi", "goose", "cursor", "copilot", "crush", "dsh"} {
+	for _, id := range []string{"claude", "codex", "gemini", "opencode", "mimocode", "deveco", "pi", "goose", "cursor", "copilot", "crush", "dsh"} {
 		if !slices.Contains(got, id) {
 			t.Errorf("%s not a target: %v", id, got)
 		}

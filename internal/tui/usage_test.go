@@ -79,6 +79,9 @@ func TestQuotaLines(t *testing.T) {
 // — never touching a vendor's own balance string (that's quotaLines above).
 func TestFmtCostShowsChosenCurrency(t *testing.T) {
 	home(t)
+	// a currency read in the last second (an earlier run's ¥, -count) is
+	// kept; read this home's
+	costAt = time.Time{}
 
 	if got := fmtCost(usage.Totals{Cost: 1.23}); got != "≈$1.23" {
 		t.Fatalf("default currency: %q", got)
@@ -201,5 +204,25 @@ func TestQuotaLinesCreditsNotSpent(t *testing.T) {
 	}
 	if got := strings.Join(quotaLines(qs, true, false, 200, now), "\n"); !strings.Contains(got, "1.2K credits left · not spent") {
 		t.Errorf("set not to:\n%s", got)
+	}
+}
+
+// The Usage page's headline says how many calls its cost leaves out for
+// having no known price (#1856), not only a "+" after the sum.
+func TestUsagePageSaysCallsUnpriced(t *testing.T) {
+	home(t)
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local)
+	oldClock := usage.Clock
+	usage.Clock = func() time.Time { return now }
+	t.Cleanup(func() { usage.Clock = oldClock })
+	old := usage.LogCalls
+	usage.LogCalls = func(time.Time) []sessions.Call { return nil }
+	t.Cleanup(func() { usage.LogCalls = old })
+	for i := range 3 {
+		usage.Append(usage.Record{Time: now.Add(-time.Duration(i+1) * time.Minute), Agent: "claude", Provider: "relay", Model: "kimi-k3-auto", Input: 500, Output: 50, Status: 200})
+	}
+	m := press(t, model{w: 160, h: 60, page: pageUsage}, "t")
+	if v := m.viewUsage(); !strings.Contains(v, "(3 calls unpriced)") {
+		t.Fatal(v)
 	}
 }

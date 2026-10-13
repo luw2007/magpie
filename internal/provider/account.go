@@ -33,8 +33,10 @@ import (
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Account is the signed-in agent behind a provider.
@@ -183,17 +185,32 @@ func (p Provider) ListedAPIs(model string) []Protocol {
 // Sign authenticates a request to the provider, refreshing what needs it.
 // Plain providers get their key; accounts get the agent's tokens.
 func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, body []byte) error {
+	if p.Account != nil && settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	ctx = p.Via(ctx) // a sign-in refreshed on the way goes through its proxy
 	if p.Account != nil && p.Account.sign != nil {
 		return p.Account.sign(ctx, req, body)
+	}
+	if p.IsVertex() {
+		// a Google token, which goes nowhere but the project's own address
+		if base := p.vertexBase(); base == "" || !strings.HasPrefix(req.URL.String(), base+"/") {
+			return fmt.Errorf("%s is asked only at Vertex AI, at its project's address", p.Name)
+		}
+		tok, err := p.vertexAccessToken(ctx)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	for k, v := range AuthHeaders(p, proto) {
 		req.Header.Set(k, v)
 	}
 	// The user's own headers ride on plain key+URL providers, after auth so
 	// they can override a default when a gateway insists on a private scheme.
-	// Written to the map directly, not via Set, so the name keeps the exact
-	// case the user typed — some gateways match header names case-sensitively.
+	// Written with the name as the user typed it — some gateways match
+	// header names case-sensitively — in place of the same header in any
+	// other case (PutUserHeader), so it is sent once, theirs.
 	// A list the request has its own of (anthropic-beta) is added to, not
 	// replaced: the user's betas go after those the agent asked.
 	for k, v := range p.Headers {
@@ -201,7 +218,7 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 			MergeList(req.Header, k, v)
 			continue
 		}
-		req.Header[k] = []string{v}
+		catalog.PutUserHeader(req.Header, k, v)
 	}
 	return nil
 }
@@ -408,17 +425,26 @@ type claudeCredentialLocation struct {
 // claudeCredentialsPath is Claude Code's credentials file, where it keeps
 // its sign-in off the Mac's keychain.
 func claudeCredentialsPath() string {
-	dir := appdir.Getenv("CLAUDE_CONFIG_DIR")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".claude")
-	}
-	return filepath.Join(dir, ".credentials.json")
+	return filepath.Join(appdir.ClaudeDir(), ".credentials.json")
 }
 
 func readClaudeCredential() (claudeCredentials, claudeCredentialLocation, bool) {
+	if settings.AccountDiscoveryOff() {
+		return claudeCredentials{}, claudeCredentialLocation{}, false
+	}
+	var mine claudeKeychainItem
+	if claudeKeychain {
+		// the item under the account ($USER) is the sign-in Claude Code goes
+		// by, emptied or not: it reads no file beside it, so an emptied item
+		// is a sign-out even where an older file still parses, and a sign-in
+		// made in magpie is put in the item, not beside it (#1742)
+		mine = readClaudeKeychainItem(claudeKeychainAccount())
+		if mine.found && !mine.hex {
+			return mine.c, mine.loc, mine.ok
+		}
+	}
 	path := claudeCredentialsPath()
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := readAccountFile(path); err == nil {
 		if c, ok := parseClaudeCredentials(b); ok {
 			return c, claudeCredentialLocation{path: path}, true
 		}
@@ -426,34 +452,74 @@ func readClaudeCredential() (claudeCredentials, claudeCredentialLocation, bool) 
 	if !claudeKeychain {
 		return claudeCredentials{}, claudeCredentialLocation{}, false
 	}
-	// Claude Code reads the item under its account ($USER); by service
-	// alone the keychain may hand back another one — left from an earlier
-	// sign-in — which isn't the sign-in in use
-	account := claudeKeychainAccount()
-	var c claudeCredentials
-	var ok, wasHex bool
-	for _, args := range [][]string{{"-a", account}, nil} {
-		out, err := proc.Command("security", append([]string{"find-generic-password", "-s", "Claude Code-credentials", "-w"}, args...)...).Output()
-		if err != nil {
-			continue
-		}
-		var b []byte
-		b, wasHex = keychainText(bytes.TrimSpace(out))
-		if c, ok = parseClaudeCredentials(b); ok {
-			break
-		}
+	// neither the account's item, as Claude Code reads it, nor the file
+	// holds a sign-in. Left: the account's item as magpie wrote it before,
+	// over lines that `security -w` prints as hex (#70) — Claude Code reads
+	// that as no item, hence the file first — which is written again on one
+	// line, as Claude Code writes it; else by service alone another item,
+	// left from an earlier sign-in, that Claude Code never reads (58b67666)
+	i := mine
+	if !i.ok {
+		i = readClaudeKeychainItem("")
 	}
-	if !ok {
+	if !i.ok {
 		return claudeCredentials{}, claudeCredentialLocation{}, false
 	}
-	loc := claudeCredentialLocation{keychain: true, account: account}
-	if wasHex {
-		// written by magpie before it wrote them on one line: Claude Code
-		// reads that hex as no sign-in, so it is written again as it
-		// writes it
-		saveClaudeCredential(loc, c)
+	if i.hex {
+		// not through saveClaudeCredential: claudeCredential reads under
+		// claudeCacheMu, which caching would take again, and caches what
+		// this returns itself
+		writeClaudeCredential(i.loc, i.c)
 	}
-	return c, loc, ok
+	return i.c, i.loc, true
+}
+
+// claudeKeychainItem is what `security` reads of the "Claude Code-credentials"
+// item. found says an item is there that reads as a JSON object — the sign-in
+// Claude Code goes by, emptied or not (an item that reads as none it takes
+// for an absent one, and so does readClaudeDir of the item in a config
+// directory); ok, that it holds tokens to run on; hex, that magpie wrote it
+// over more than one line, which `security -w` prints as hex and Claude Code
+// reads as none (#70).
+type claudeKeychainItem struct {
+	c         claudeCredentials
+	loc       claudeCredentialLocation
+	ok, found bool
+	hex       bool
+}
+
+// readClaudeKeychainItem reads the item for a keychain account, or by
+// service alone when the account is "". Either way it is the one under
+// $USER that a sign-in is written back to.
+func readClaudeKeychainItem(account string) claudeKeychainItem {
+	args := []string{"find-generic-password", "-s", claudeHomeService(), "-w"}
+	if account != "" {
+		args = append(args, "-a", account)
+	}
+	out, err := proc.Command("security", args...).Output()
+	if err != nil {
+		return claudeKeychainItem{}
+	}
+	b, wasHex := keychainText(bytes.TrimSpace(out))
+	c, ok := parseClaudeCredentials(b)
+	if c.raw == nil {
+		return claudeKeychainItem{}
+	}
+	return claudeKeychainItem{
+		c: c, ok: ok, found: true, hex: wasHex,
+		loc: claudeCredentialLocation{keychain: true, account: claudeKeychainAccount()},
+	}
+}
+
+// claudeHomeService is the keychain item Claude Code keeps the sign-in
+// magpie reads as its own in: "Claude Code-credentials", or with
+// CLAUDE_CONFIG_DIR set, that directory's own (claudeDirService), as
+// Claude Code names it, beside the .credentials.json there.
+func claudeHomeService() string {
+	if d := appdir.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return claudeDirService(d)
+	}
+	return "Claude Code-credentials"
 }
 
 // claudeKeychainAccount is the account Claude Code keeps its sign-in
@@ -488,6 +554,9 @@ func keychainText(out []byte) ([]byte, bool) {
 }
 
 func claudeCredential() (claudeCredentials, claudeCredentialLocation, bool) {
+	if settings.AccountDiscoveryOff() {
+		return claudeCredentials{}, claudeCredentialLocation{}, false
+	}
 	claudeCacheMu.Lock()
 	defer claudeCacheMu.Unlock()
 	if time.Since(claudeCacheAt) < claudeCacheTTL {
@@ -512,6 +581,18 @@ func forgetClaudeCredential() {
 }
 
 func saveClaudeCredential(loc claudeCredentialLocation, c claudeCredentials) error {
+	if err := writeClaudeCredential(loc, c); err != nil {
+		return err
+	}
+	cacheClaudeCredential(c, loc)
+	return nil
+}
+
+// writeClaudeCredential writes c where loc says, leaving the cache alone.
+func writeClaudeCredential(loc claudeCredentialLocation, c claudeCredentials) error {
+	if discoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	b, err := c.marshal()
 	if err != nil {
 		return err
@@ -531,7 +612,7 @@ func saveClaudeCredential(loc claudeCredentialLocation, c claudeCredentials) err
 			return err
 		}
 	} else {
-		args := []string{"add-generic-password", "-U", "-s", "Claude Code-credentials"}
+		args := []string{"add-generic-password", "-U", "-s", claudeHomeService()}
 		if loc.account != "" {
 			args = append(args, "-a", loc.account)
 		}
@@ -540,13 +621,13 @@ func saveClaudeCredential(loc claudeCredentialLocation, c claudeCredentials) err
 			return fmt.Errorf("save Claude Code credentials: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 	}
-	cacheClaudeCredential(c, loc)
 	return nil
 }
 
 // claudeExecutable finds the claude CLI (proc.FindTool: claude.exe in
-// ~/.local/bin on Windows too, #839); a var so tests can fake it.
-var claudeExecutable = func() string { return proc.FindTool("claude") }
+// ~/.local/bin on Windows too, #839), else the one magpie downloaded
+// (claudecode.Find); a var so tests can fake it.
+var claudeExecutable = claudecode.Find
 
 // claudeIdentity asks Claude Code itself which account is active. Its credential
 // blob intentionally contains tokens and plan metadata but no display identity;
@@ -588,6 +669,9 @@ func claudeIdentity() (user, plan string, signedOut bool) {
 
 // askClaudeStatus runs `claude auth status`; ok is false when it gave no answer.
 func askClaudeStatus() (user, plan string, signedOut, ok bool) {
+	if settings.AccountDiscoveryOff() {
+		return "", "", false, false
+	}
 	path := claudeExecutable()
 	if path == "" {
 		return "", "", false, false
@@ -697,6 +781,9 @@ func refreshFailed(status int, agent, msg string) error {
 
 // Accounts lists the signed-in agents as providers.
 func Accounts() []Provider {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	rememberLogins(false)
 	home, _ := os.UserHomeDir()
 	cfg := appdir.Getenv("XDG_CONFIG_HOME")
@@ -794,7 +881,7 @@ func placeMoved(out, plugins []Provider) []Provider {
 }
 
 func readJSON(path string, v any) bool {
-	b, err := os.ReadFile(path)
+	b, err := readAccountFile(path)
 	if err != nil {
 		return false
 	}
@@ -865,8 +952,11 @@ type codexAuth struct {
 }
 
 func codexAccount(home string) (Provider, bool) {
-	path := filepath.Join(home, ".codex", "auth.json")
-	b, err := os.ReadFile(path)
+	if settings.AccountDiscoveryOff() {
+		return Provider{}, false
+	}
+	path := filepath.Join(appdir.CodexHomeIn(home), "auth.json")
+	b, err := readAccountFile(path)
 	var a codexAuth
 	if err != nil || json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
 		return Provider{}, false
@@ -1135,11 +1225,20 @@ func copilotStandIn(a copilotApp) (copilotApp, bool) {
 	return cli, ok && copilotSameAccount(cli, a)
 }
 
-// session is what this sign-in's requests carry. An editor's token GitHub
-// refuses is replaced by the Copilot CLI's sign-in of the same account,
-// sent as the CLI sends it; with none, the error names the file the
-// refused token is in, since it is read before the CLI's (#1238).
+// session is what this sign-in's requests carry, and what GitHub said of
+// it is kept on its account: refused, it is signed out; served, it isn't
+// (copilotSessionDone).
 func (a copilotApp) session(ctx context.Context) (copilotSession, error) {
+	s, err := a.trade(ctx)
+	copilotSessionDone(a, err)
+	return s, err
+}
+
+// trade gets this sign-in's session. An editor's token GitHub refuses is
+// replaced by the Copilot CLI's sign-in of the same account, sent as the
+// CLI sends it; with none, the error names the file the refused token is
+// in, since it is read before the CLI's (#1238).
+func (a copilotApp) trade(ctx context.Context) (copilotSession, error) {
 	if a.cli {
 		return copilotDirect(ctx, a)
 	}

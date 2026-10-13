@@ -13,8 +13,9 @@ import (
 	"github.com/yetone/magpie/internal/settings"
 )
 
-// corsGuard lets the web pages the user listed in Settings › Gateway
-// (settings.CORSOrigins, #1051) call the gateway from a browser: their
+// corsGuard lets the web pages and browser extensions the user listed
+// in Settings › Network (settings.CORSOrigins, #1051) call the gateway
+// from a browser: their
 // preflight is answered, and their calls get the headers that let the page
 // read the reply. Such a call carries an enabled gateway key — a page is
 // not an agent the user started, and on loopback a call needs no key, so
@@ -62,7 +63,7 @@ func corsGuard(next http.Handler) http.Handler {
 		keyed := access.Caller(r.Context()).KeyID != "" ||
 			slices.ContainsFunc(callerKeys(r), func(k string) bool { _, ok := access.Authenticate(k); return ok })
 		if !keyed {
-			writeError(w, provider.Chat, http.StatusUnauthorized, "a web page calls magpie with a gateway key: create one in magpie's Gateway page and send it as Authorization: Bearer <key> (or x-api-key)")
+			writeError(w, provider.Chat, http.StatusUnauthorized, "a web page or browser extension calls magpie with a gateway key: create one in magpie's Gateway page and send it as Authorization: Bearer <key> (or x-api-key)")
 			return
 		}
 		next.ServeHTTP(w, r)

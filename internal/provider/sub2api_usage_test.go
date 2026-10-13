@@ -161,8 +161,9 @@ func sub2apiServer(t *testing.T, body func() ([]byte, int)) (*httptest.Server, *
 	return srv, &asked
 }
 
-func sub2apiKey(srv *httptest.Server) Provider {
-	return Provider{ID: "sub2api", Name: "Sub2API", Chat: srv.URL + "/v1", Responses: srv.URL + "/v1",
+// sub2apiKey uses a test-specific provider ID and a stable key identity.
+func sub2apiKey(t *testing.T, srv *httptest.Server) Provider {
+	return Provider{ID: "sub2api-" + Slug(t.Name()), Name: "Sub2API", Chat: srv.URL + "/v1", Responses: srv.URL + "/v1",
 		Keys: []KeyAccount{{ID: "limited", Key: "sk-limited"}}, Key: "sk-limited", KeyID: "limited", BalanceURL: srv.URL + "/v1/usage"}
 }
 
@@ -175,14 +176,14 @@ func TestSub2APIKeyLimitsOnItsCard(t *testing.T) {
 	b := sub2apiUsage(t, true)
 	body.Store(&b)
 	srv, _ := sub2apiServer(t, func() ([]byte, int) { return *body.Load(), 200 })
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	if err := Save(p); err != nil {
 		t.Fatal(err)
 	}
 	card := func() SubscriptionQuota {
 		ForgetBalances()
 		for _, q := range KeyBalances(context.Background()) {
-			if q.Provider == "sub2api" {
+			if q.Provider == p.ID {
 				return q
 			}
 		}
@@ -247,26 +248,39 @@ func TestKeyAllowanceNeverWaits(t *testing.T) {
 		<-release
 		return weekUsed(t, "720", week), 200
 	})
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	if err := Save(p); err != nil {
 		t.Fatal(err)
 	}
-	var wg sync.WaitGroup
+	var releaseOnce sync.Once
+	let := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	// sub2api is held until release, so the looks coming back at all is
+	// their not waiting for it (#1617). The deadline only turns a wait into
+	// a FAIL, and is short of the read's own 30s.
+	type look struct {
+		a  Allowance
+		ok bool
+	}
+	looked := make(chan look, 10)
 	for range 10 {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			start := time.Now()
-			if a, ok := KeyAllowance(p); ok || a != nil {
-				t.Errorf("known before it was read: %+v", a)
-			}
-			if d := time.Since(start); d > time.Second {
-				t.Errorf("waited %v", d)
-			}
+			a, ok := KeyAllowance(p)
+			looked <- look{a, ok}
 		}()
 	}
-	wg.Wait()
-	close(release)
+	hang := time.After(10 * time.Second)
+	for range 10 {
+		select {
+		case l := <-looked:
+			if l.ok || l.a != nil {
+				t.Fatalf("known before it was read: %+v", l.a)
+			}
+		case <-hang:
+			t.Fatal("a look waited for the held read")
+		}
+	}
+	let()
 	a := waitAllowance(t, p, func(Allowance) bool { return true })
 	if used, _ := a.For("gpt-6-astra", time.Now()); used != 90 {
 		t.Fatalf("used = %v of %+v", used, a)
@@ -294,7 +308,7 @@ func TestKeyAllowanceFailedReadKeepsLast(t *testing.T) {
 		}
 		return weekUsed(t, "720", week), 200
 	})
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	if err := Save(p); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +349,7 @@ func TestKeyAllowanceForgottenMidRead(t *testing.T) {
 	})
 	var once sync.Once
 	t.Cleanup(func() { once.Do(func() { close(release) }) })
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	KeyAllowance(p)
 	for asked.Load() < 1 {
 		time.Sleep(5 * time.Millisecond)
@@ -366,7 +380,22 @@ func TestKeyAllowanceStaleMidRead(t *testing.T) {
 	})
 	var once sync.Once
 	t.Cleanup(func() { once.Do(func() { close(release) }) })
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
+	renewedHooks.Lock()
+	hooks := renewedHooks.fs
+	renewedHooks.Unlock()
+	t.Cleanup(func() {
+		renewedHooks.Lock()
+		renewedHooks.fs = hooks
+		renewedHooks.Unlock()
+	})
+	renewed := make(chan struct{})
+	var told sync.Once
+	OnRenewed(func(agent, user string) {
+		if agent == "" && user == KeyAllowanceID(p) {
+			told.Do(func() { close(renewed) })
+		}
+	})
 	KeyAllowance(p)
 	for asked.Load() < 1 {
 		time.Sleep(5 * time.Millisecond)
@@ -376,6 +405,14 @@ func TestKeyAllowanceStaleMidRead(t *testing.T) {
 	waitAllowance(t, p, func(a Allowance) bool { u, _ := a.For("gpt-6-astra", time.Now()); return u > 0 && u < 100 })
 	if n := asked.Load(); n != 2 {
 		t.Fatalf("asked %d times", n)
+	}
+	// the reading after tells the week renewed only after it is kept, so
+	// waitAllowance can return first: waited for here, or a later test's
+	// hook is told it
+	select {
+	case <-renewed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the week renewed was never told")
 	}
 }
 
@@ -392,7 +429,7 @@ func TestKeyAllowanceSeededFromItsCard(t *testing.T) {
 		}
 		return weekUsed(t, "720", week), 200
 	})
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	if err := Save(p); err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +479,7 @@ func TestKeyAllowanceOnlyForSub2APIKeys(t *testing.T) {
 func TestKeyAllowancePerKeyAndForgotten(t *testing.T) {
 	keyLimitsHome(t)
 	srv, asked := sub2apiServer(t, func() ([]byte, int) { return sub2apiUsage(t, true), 200 })
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	now := time.Now()
 	week := now.Add(72 * time.Hour)
 	noteKeyAllowance(p, []QuotaWindow{{Name: "7 days", Span: 7 * 24 * time.Hour, Used: 95, ResetsAt: &week}}, now)
@@ -499,7 +536,7 @@ func TestKeyAllowanceRenewed(t *testing.T) {
 		}
 		return []byte(`{"error":{"type":"api_error","message":"internal error"}}`), 502
 	})
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	if err := Save(p); err != nil {
 		t.Fatal(err)
 	}
@@ -511,17 +548,21 @@ func TestKeyAllowanceRenewed(t *testing.T) {
 		renewedHooks.fs = hooks
 		renewedHooks.Unlock()
 	})
-	var mu sync.Mutex
-	var told []string
-	OnRenewed(func(agent, user string) {
-		mu.Lock()
-		told = append(told, agent+"/"+user)
-		mu.Unlock()
-	})
 	id := KeyAllowanceID(p)
 	if id != keyAllowanceID(p) {
 		t.Fatalf("KeyAllowanceID = %q", id)
 	}
+	var mu sync.Mutex
+	var told []string
+	// only its own key's: another test's reading may still tell its own
+	OnRenewed(func(agent, user string) {
+		if user != id {
+			return
+		}
+		mu.Lock()
+		told = append(told, agent+"/"+user)
+		mu.Unlock()
+	})
 	reply := func(b []byte) { body.Store(&b) }
 	// read is a reading as routing's, done here rather than behind it
 	read := func(b []byte) {

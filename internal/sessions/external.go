@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"sort"
@@ -18,6 +19,7 @@ type ExternalModel struct {
 }
 type ExternalSession struct {
 	Agent, ID   string
+	Title       string // what it was first asked (GatewayTitle); its id when ""
 	Start, Last time.Time
 	Models      []ExternalModel
 	Daily       []ExternalDayUsage
@@ -31,6 +33,7 @@ type ExternalSession struct {
 // read-only (no file of the agent's to resume or open) with a gateway transcript
 // reader; magpie's own record of one is deleted by DeleteGateway.
 func MergeExternal(native []Session, external []ExternalSession) []Session {
+	names := desktopExternalTitles(external)
 	seen := map[string]bool{}
 	for _, s := range native {
 		seen[s.Agent+"|"+s.ID] = true
@@ -40,7 +43,7 @@ func MergeExternal(native []Session, external []ExternalSession) []Session {
 		if e.Agent == "" || e.ID == "" || seen[e.Agent+"|"+e.ID] {
 			continue
 		}
-		s := Session{ReadOnly: true, Gateway: true, Transcript: true, Agent: e.Agent, ID: e.ID, Title: e.ID, Start: e.Start, Last: e.Last, Models: []Model{}, Unpriced: e.Unpriced}
+		s := Session{ReadOnly: true, Gateway: true, Transcript: true, Agent: e.Agent, ID: e.ID, Title: cmp.Or(names[e.Agent+"|"+e.ID], e.Title, e.ID), Start: e.Start, Last: e.Last, Models: []Model{}, Unpriced: e.Unpriced}
 		for _, m := range e.Models {
 			s.Models = append(s.Models, Model{Model: m.Model, Tokens: m.Tokens, Cost: m.Cost, Priced: m.Priced})
 			s.Tokens.add(m.Tokens)
@@ -49,6 +52,23 @@ func MergeExternal(native []Session, external []ExternalSession) []Session {
 		out = append(out, s)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Last.After(out[j].Last) })
+	return out
+}
+
+// desktopExternalTitles are the names Desktop saved for the Claude Desktop
+// sessions among external (DesktopTitles), by Agent|ID. They come before
+// the gateway's recorded first prompt.
+func desktopExternalTitles(external []ExternalSession) map[string]string {
+	var ids []string
+	for _, e := range external {
+		if e.Agent == "claude-desktop" {
+			ids = append(ids, e.ID)
+		}
+	}
+	out := map[string]string{}
+	for id, name := range DesktopTitles(ids) {
+		out["claude-desktop|"+id] = name
+	}
 	return out
 }
 
@@ -115,11 +135,12 @@ func MergeExternalStats(st Stats, days []ExternalDayUsage, external []ExternalSe
 			d.Usage = append(d.Usage, Usage{Agent: u.Agent, Cwd: u.Cwd, Model: u.Model, Tokens: u.Tokens, Cost: u.Cost, Priced: u.Priced})
 		}
 	}
+	names := desktopExternalTitles(external)
 	for _, e := range external {
 		if e.ID == "" || e.Agent == "" {
 			continue
 		}
-		s := Summary{Key: e.Agent + ":" + e.ID, Agent: e.Agent, ID: e.ID, Last: e.Last, Tokens: e.Tokens, Cost: e.Cost, Priced: true, Models: []string{}, Days: []int{}, perDay: map[int]*summaryDay{}}
+		s := Summary{Key: e.Agent + ":" + e.ID, Agent: e.Agent, ID: e.ID, Title: cmp.Or(names[e.Agent+"|"+e.ID], e.Title), Last: e.Last, Tokens: e.Tokens, Cost: e.Cost, Priced: true, Models: []string{}, Days: []int{}, perDay: map[int]*summaryDay{}}
 		for _, u := range e.Daily {
 			day, err := time.ParseInLocation(time.DateOnly, u.Date, time.Local)
 			if err != nil {

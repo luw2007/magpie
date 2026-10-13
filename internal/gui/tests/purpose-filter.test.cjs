@@ -14,10 +14,18 @@ async function click(page, locator) {
   if (view) {
     const v = await page.locator("#" + view).boundingBox();
     await page.mouse.move(v.x + 40, v.y + v.height / 2);
+    // Wheel until the target is what a pointer would reach at its centre: a
+    // sticky header can cover a target that is inside the page's bounds.
     for (let i = 0; i < 80; i++) {
+      const hit = await locator.evaluate((e) => {
+        const r = e.getBoundingClientRect();
+        const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return { reached: !!top && (top === e || e.contains(top)), y: r.y + r.height / 2 };
+      });
       const b = await locator.boundingBox();
-      if (b.y >= v.y && b.y + b.height <= v.y + v.height) break;
-      await page.mouse.wheel(0, b.y < v.y ? -120 : 120);
+      if (hit.reached && b.y >= v.y && b.y + b.height <= v.y + v.height) break;
+      // above the middle of the page: covered by the header, so scroll up
+      await page.mouse.wheel(0, hit.y < v.y + v.height / 2 ? -120 : 120);
       await page.waitForTimeout(40);
     }
     await page.waitForTimeout(300);
@@ -71,6 +79,7 @@ function server(lang, asked) {
     if (url.pathname === "/api/usage/requests") { asked.push(url.searchParams); return json(ledger(url.searchParams)); }
     if (url.pathname === "/api/usage/requests/export") { asked.push(Object.assign(url.searchParams, { method: req.method() })); return json({ path: "~/Downloads/purpose.csv", rows: ledger(url.searchParams).total }); }
     if (url.pathname === "/api/usage/quotas") return json([]);
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
@@ -136,7 +145,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator("#ledPurpose span").textContent(), lang === "zh" ? "未标记" : "Unmarked");
       await choose("#ledPurpose", "kind:thread_title");
       await waitRows(100);
-      await click(page, page.locator("#ledStatus .opt").last());
+      await click(page, page.locator("#ledStatus .opt").nth(1)); // Failed
       await waitRows(1);
       await click(page, page.locator("#ledExport"));
       await page.waitForFunction(() => document.querySelector("#status")?.textContent.includes("purpose.csv"));
@@ -171,6 +180,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator(".rt-req").count(), 4);
       // Cross-page navigation must reveal a target excluded by the current purpose.
       await page.evaluate(() => window.openRoute(94, new Date().toISOString()));
+      await openPane(page, "requests");
       await page.waitForFunction(() => document.querySelectorAll(".rt-req").length === 8);
       assert.equal(await page.locator(".rt-req").count(), 8);
       await openPane(page, "requests");
@@ -220,6 +230,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", server(lang, []));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "requests");
       await page.locator(".rt-req").nth(7).waitFor();
       const names = await page.evaluate(() => Object.fromEntries(purposeOptions(["kind:thread_title", "unmarked", "kind:review"]).map((o) => [o.v, o.name])));
       const menu = page.locator(".rt-purpose-menu");
@@ -260,6 +271,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator(".rt-req").count(), 5, "the same union applies to history and sessions");
       // Cross-page navigation keeps the union if its target already matches.
       await page.evaluate(() => window.openRoute(95, new Date().toISOString()));
+      await openPane(page, "requests");
       assert.equal(await page.locator(".rt-req").count(), 5);
       assert.equal(await page.locator("#rtPurpose span").textContent(), label);
       for (const width of [1100, 560, 360]) {
@@ -281,8 +293,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await click(page, page.locator("#rtPurpose"));
       const view = await page.locator("#view-routing").boundingBox();
       await page.mouse.move(view.x + 10, view.y + 80);
-      await page.mouse.wheel(0, -200);
+      // a scroll closes it: down first if the view is at its top, and to the top again
+      if (!(await page.locator("#view-routing").evaluate((e) => e.scrollTop))) await page.mouse.wheel(0, 200);
+      await page.mouse.wheel(0, -2000);
       await menu.waitFor({ state: "detached" });
+      await page.waitForFunction(() => document.querySelector("#view-routing").scrollTop === 0);
       await click(page, page.locator("#rtPurpose"));
       await title.click();
       await unmarked.click();
@@ -294,6 +309,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await title.click();
       await unmarked.click();
       const all = await page.evaluate(() => t("All purposes"));
+      // the rows the two ticks asked for drawn, and the view at rest: the
+      // view is narrower beside the sidebar, and scrolls while they come in
+      for (let last = "", same = 0; same < 3; await page.waitForTimeout(100)) {
+        const now = await page.locator("#view-routing").evaluate((e) => [e.querySelectorAll(".rt-req").length, e.scrollTop, e.scrollHeight].join());
+        same = now === last ? same + 1 : 0;
+        last = now;
+      }
       const beforeAll = await page.locator("#view-routing").evaluate((e) => e.scrollTop);
       await menu.locator(".pm-item").filter({ has: page.locator(".pm-name", { hasText: all }) }).focus();
       await page.keyboard.press("Enter");

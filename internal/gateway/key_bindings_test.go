@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,7 +141,16 @@ func TestImageBindingUsesEligibleKeyAndRejectsNoEligibleKey(t *testing.T) {
 		t.Fatalf("image selection %d %s auth=%v", code, raw, auth)
 	}
 	code, _, raw = postImages(t, s, "/v1/images/generations", "application/json", `{"model":"art/blocked-image","prompt":"bird"}`)
-	if code != 404 || len(auth) != 1 {
-		t.Fatalf("ineligible key sent outbound %d %s auth=%v", code, raw, auth)
+	var denied struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &denied); err != nil {
+		t.Fatal(err)
+	}
+	if code != http.StatusForbidden || denied.Error.Type != "permission_error" || !strings.Contains(denied.Error.Message, "blocked-image") || len(auth) != 1 {
+		t.Fatalf("ineligible key must be denied without another outbound request: %d %s auth=%v", code, raw, auth)
 	}
 }

@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/settings"
@@ -120,7 +121,9 @@ var pluginsList struct {
 // changed; Load gives the mutable copy.
 func list() List {
 	path := listPath()
-	b, err := steady.ReadFile(path)
+	// one a crash left all zero (#1505) is its last good generation: the
+	// plugins installed are unknown, never none
+	b, err := lastgood.Read(path, lastgood.JSON)
 	if err != nil {
 		// Do not cache read failures; a later call will read the file again.
 		return List{}
@@ -188,24 +191,12 @@ func cloneJSON(v any) any {
 }
 
 // writeWhole writes b to p by a rename, so a magpie or the host reading
-// p meanwhile reads the old file or the new one, never one half-written;
-// read back with steady.ReadFile, which waits out the rename on Windows.
+// p meanwhile reads the old file or the new one, never one half-written,
+// and flushed to the disk first, so a machine that goes down meanwhile
+// doesn't leave p all zero (#1505); read back with steady.ReadFile, which
+// waits out the rename on Windows.
 func writeWhole(p string, b []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(p), filepath.Base(p)+".*")
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(b)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = steady.Rename(f.Name(), p)
-	}
-	if err != nil {
-		os.Remove(f.Name())
-	}
-	return err
+	return steady.WriteFile(p, b, 0o600)
 }
 
 func save(l List) error {
@@ -214,6 +205,9 @@ func save(l List) error {
 		return err
 	}
 	if err := os.MkdirAll(settings.Dir(), 0o700); err != nil {
+		return err
+	}
+	if err := lastgood.Keep(listPath(), lastgood.JSON, 0o600); err != nil {
 		return err
 	}
 	if err := writeWhole(listPath(), append(b, '\n')); err != nil {
@@ -412,6 +406,8 @@ func add(ctx context.Context, spec, version string) (Entry, error) {
 		return x.Spec == spec || n == name
 	}); i >= 0 {
 		e.Options = l.Plugins[i].Options
+		// whether they turned it off, which an add never changes
+		e.Off = l.Plugins[i].Off
 		// a provider id the user picked it for stays its (another version,
 		// or its package from a git repository in place of npm's)
 		for id, s := range l.Prefer {
@@ -445,6 +441,9 @@ func notPlugin(target string) error {
 		return nil
 	}
 	if f, _ := Middleware(target); f != "" {
+		return nil
+	}
+	if f, _ := Agent(target); f != "" {
 		return nil
 	}
 	var pkg struct {
@@ -627,9 +626,10 @@ func SetOptions(name string, opts map[string]any) error {
 
 // ShortName is a package's name without its scope and the words every
 // package of its kind has: model-map for @magpie-community/middleware-model-map,
-// zed for @magpie-community/opencode-zed-auth.
+// zed for @magpie-community/opencode-zed-auth. A plugin added from a folder
+// is named by its path, which on Windows ends after a backslash.
 func ShortName(pkg string) string {
-	if i := strings.LastIndex(pkg, "/"); i >= 0 {
+	if i := strings.LastIndexAny(pkg, `/\`); i >= 0 {
 		pkg = pkg[i+1:]
 	}
 	pkg = strings.TrimPrefix(strings.TrimPrefix(pkg, "middleware-"), "opencode-")
@@ -654,7 +654,10 @@ func install(ctx context.Context, spec string) error {
 	}
 	out, err := bunCommand(ctx, bun, Dir(), "add", "--ignore-scripts", spec).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bun add %s: %v: %s", spec, err, lastLines(string(out), 6))
+		if hint := missingLibs(string(out)); hint != "" {
+			return fmt.Errorf("bun add %s: %s: %w", spec, hint, err)
+		}
+		return fmt.Errorf("bun add %s: %v: %s", spec, cantStart(bun, err), lastLines(string(out), 6))
 	}
 	return nil
 }
@@ -820,7 +823,10 @@ func reinstall(ctx context.Context, spec string) error {
 	}
 	out, err := bunCommand(ctx, bun, Dir(), "update", "--ignore-scripts", name).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bun update %s: %v: %s", name, err, lastLines(string(out), 6))
+		if hint := missingLibs(string(out)); hint != "" {
+			return fmt.Errorf("bun update %s: %s: %w", name, hint, err)
+		}
+		return fmt.Errorf("bun update %s: %v: %s", name, cantStart(bun, err), lastLines(string(out), 6))
 	}
 	return nil
 }

@@ -34,6 +34,11 @@ import (
 // "Invalid input at messages.1.role" (#1407). A provider that refuses one is
 // sent its system messages' text at the end of the top-level system, and an
 // empty one left out.
+//
+// Copilot's Messages API turns away auto mode's `safeguards` (automode.go)
+// on its Claude models: 400 "safeguards: Extra inputs are not permitted"
+// (#1756, claude-opus-5.5). A provider that refuses it is sent none, and
+// Claude Code, finding no safeguard_results, reviews its actions locally.
 
 // The refusals, remembered in unfit under the provider's id as betas are.
 const (
@@ -41,6 +46,7 @@ const (
 	shapeDisplay    = "shape:thinking.display"     // display at all
 	shapeTurnEffort = "shape:messages[].output_config"
 	shapeTurnSystem = "shape:messages[].role=system"
+	shapeSafeguards = "shape:safeguards"
 )
 
 var (
@@ -48,6 +54,7 @@ var (
 	displayRefused      = regexp.MustCompile(`thinking\.(?:adaptive|enabled)\.display:? Extra inputs are not permitted`)
 	turnEffortRefused   = regexp.MustCompile(`messages\.\d+\.output_config:? Extra inputs are not permitted`)
 	turnRoleRefused     = regexp.MustCompile(`messages\.(\d+)\.role\b`)
+	safeguardsRefused   = regexp.MustCompile(`\bsafeguards:? Extra inputs are not permitted`)
 )
 
 // knownDisplay is a thinking.display every Anthropic endpoint has taken.
@@ -63,7 +70,8 @@ func (s *Server) refuseShapes(p provider.Provider, errBody, body []byte) bool {
 			fresh = true
 		}
 	}
-	if d := gjson.GetBytes(body, "thinking.display"); d.Exists() {
+	// the display as forwardOnce sends it: a budget turned adaptive asks one
+	if d := gjson.GetBytes(adaptiveThinking(body), "thinking.display"); d.Exists() {
 		if displayRefused.Match(errBody) {
 			mark(shapeDisplay)
 		} else if displayValueRefused.Match(errBody) && !knownDisplay(d.String()) {
@@ -72,6 +80,9 @@ func (s *Server) refuseShapes(p provider.Provider, errBody, body []byte) bool {
 	}
 	if turnEffortRefused.Match(errBody) && hasTurnEffort(body) {
 		mark(shapeTurnEffort)
+	}
+	if safeguardsRefused.Match(errBody) && gjson.GetBytes(body, "safeguards").Exists() {
+		mark(shapeSafeguards)
 	}
 	// a role refused at a message that is a system one, counted in the
 	// messages as they were sent; a refusal naming a user or assistant
@@ -90,6 +101,9 @@ func (s *Server) refuseShapes(p provider.Provider, errBody, body []byte) bool {
 func (s *Server) withoutRefusedShapes(p provider.Provider, body []byte) []byte {
 	if !s.fits(p.ID, shapeTurnSystem, provider.Anthropic) {
 		body = withSystemOnTop(body)
+	}
+	if !s.fits(p.ID, shapeSafeguards, provider.Anthropic) && gjson.GetBytes(body, "safeguards").Exists() {
+		body = withoutFields(body, "safeguards")
 	}
 	if !bytes.Contains(body, []byte(`"display"`)) && !bytes.Contains(body, []byte(`"output_config"`)) {
 		return body

@@ -16,6 +16,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -47,6 +48,7 @@ function serve(lang, saved, { stateDelay = 0 } = {}, posts) {
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
     if (url.pathname === "/api/groups") return json(groups);
     if (url.pathname === "/api/providers") return json({ providers: [provider], presets: [], excluded: [], gateway: { running: true, window: true, url: "http://127.0.0.1:3999" } });
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
@@ -96,6 +98,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const posts = [];
         const { page, errors, tr } = await launch(t, engine, lang, width, OFF, {}, posts);
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "groups");
         await page.locator(".rt-group", { hasText: "Fast" }).waitFor();
         const set = page.locator(".rt-gnames");
         await set.locator(".segs").waitFor();
@@ -110,6 +113,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator("#plainNamesSegs .opt.on").waitFor();
         await picked(page.locator("#plainNamesSegs .opt.on"), await tr("Off"));
         await page.locator('#nav button[data-view="routing"]').click();
+        await openPane(page, "groups");
         await picked(page.locator(".rt-gnames .opt.on"), await tr("Off"));
         assert.deepEqual(posts, [], "nothing is written");
         assert.deepEqual(errors, []);
@@ -119,6 +123,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const posts = [];
         const { page, errors, tr } = await launch(t, engine, lang, width, OWN, { stateDelay: 600 }, posts);
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "groups");
         const set = page.locator(".rt-gnames");
         await set.locator(".segs").waitFor();
         await picked(set.locator(".opt.on"), await tr("Not on names I set"));

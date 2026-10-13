@@ -17,6 +17,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -203,6 +204,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     test(`${engine} ${lang}: Accounts and keys sums a provider's keys up in one row, opened to each`, async (t) => {
       const { page, errors, say } = await open(t, engine, lang);
+      await openPane(page, "requests"); // the accounts list is on Requests; the Live waits in open() already passed
       const acts = page.locator(".rt-acts");
       const sum = acts.locator(".rt-act.rt-keys");
       await sum.waitFor();

@@ -49,10 +49,12 @@ const scenes = {
       { id: "relay#a", provider: "relay", name: "Relay", who: "relay-a", kind: "key", model: "gpt-6-astra", routing: "usage", tokens: 100, ...week(95, 30) },
     ],
   },
-  // #1016: Kimi Code (China) with one key on, its 5 hours 49% used
+  // #1016: Kimi Code (China) with one key on, its 5 hours 49% used; its
+  // week, the biggest window, renews later (#1778: the share and the reset
+  // a row says are of one window, as Factory's week and not its month)
   lone: {
     order: [
-      { id: "kimi-code-cn", provider: "kimi-code-cn", name: "Kimi Code (China)", kind: "provider", model: "kimi-for-coding", known: true, used: 49, renews: [ahead(26), ahead(2)] },
+      { id: "kimi-code-cn", provider: "kimi-code-cn", name: "Kimi Code (China)", kind: "provider", model: "kimi-for-coding", known: true, used: 49, renews: [ahead(26), ahead(2)], usedRenews: ahead(2) },
     ],
   },
   // keys whose windows aren't read: as before
@@ -108,8 +110,25 @@ async function open(t, engine, lang, scene, width = 1100) {
   if (await req.getAttribute("aria-pressed") !== "true") await req.click();
   await openPane(page, "live");
   await page.locator(".rt-steps li.why").first().waitFor();
-  // each row's state is filled on the next frame, after the story
-  await page.waitForFunction(() => [...document.querySelectorAll("li")].filter((li) => li.querySelector(".who")).every((li) => li.querySelector("em")?.textContent.trim()));
+  // each row's state is filled on the next frame, after the story; and the page
+  // redraws its stage afresh (rows replaced, empty until the frame after) when
+  // the pane comes into sight and as the poll lands, so wait for rows that are
+  // filled and the very same elements for 30 frames running
+  await page.waitForFunction(() => {
+    const w = (window.__settle ||= { rows: [], n: 0, on: false });
+    if (!w.on) {
+      w.on = true;
+      const tick = () => {
+        const rows = [...document.querySelectorAll("li")].filter((li) => li.querySelector(".who"));
+        const ok = rows.length > 0 && rows.every((li) => li.querySelector("em")?.textContent.trim());
+        w.n = ok && rows.length === w.rows.length && rows.every((li, i) => li === w.rows[i]) ? w.n + 1 : 0;
+        w.rows = rows;
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+    return w.n >= 30;
+  }, null, { polling: 50 });
   // what a string says in lang, its {names} filled in
   const say = (key, vars = {}) => page.evaluate(([lang, key, vars]) => {
     const s = (lang !== "en" && I18N[lang]?.[key]) || key;
@@ -157,7 +176,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       test(`${engine} ${lang} ${width}px: one key on still says what it has left`, async (t) => {
         const { page, errors, say, row, why } = await open(t, engine, lang, "lone", width);
         assert.equal((await why()).trim(), await say("{name} has one key on — nothing to choose between.", { name: "Kimi Code (China)" }));
-        const used = (await say("{n} used · renews in {d}", { n: "49%" })).split("{d}")[0];
+        // the 5 hours' share renews with the 5 hours, in 2 h, not the week's 26
+        const used = await say("{n} used · renews in {d}", { n: "49%", d: await say("{n} h", { n: "2" }) });
         // its row in the story has a bar; it answered, so it says that
         const key = row("Kimi Code (China)");
         assert.equal(await key.locator(".bar i").evaluate((i) => i.style.width), "49%");

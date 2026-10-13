@@ -23,7 +23,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -126,14 +125,16 @@ const BundleVersion = 2
 // collect's or an older magpie's.
 func Flag(keys bool) *bool { return &keys }
 
-// scopedKeys is whether a part's credentials are in the bundle: the part's
+// ScopedKeys is whether a part's credentials are in the bundle: the part's
 // own marker when the bundle carries one — a sync writes it for every part
 // it merges — and the whole-bundle bit for a whole collect or an older
 // file, which have no per-part ones. An older writer can also drop the markers
 // from a v2 file, so a version number alone never implies a credential scope.
-func (b Bundle) scopedKeys(part string) bool {
+func (b Bundle) ScopedKeys(part string) bool {
 	var own *bool
 	switch part {
+	case "providers":
+		own = b.ProvidersKeys
 	case "settings":
 		own = b.SettingsKeys
 	case "library":
@@ -237,11 +238,9 @@ func Collect(keys bool, app string) (Bundle, error) {
 	return b, nil
 }
 
-var secretHeader = regexp.MustCompile(`(?i)auth|key|token|secret|cookie|session|password`)
-
 // Secret reports whether a header or an environment variable by that name
 // looks like it holds a key: what a backup without keys leaves empty.
-func Secret(name string) bool { return secretHeader.MatchString(name) }
+func Secret(name string) bool { return provider.SecretHeader(name) }
 
 func withoutKeys(p provider.Provider) provider.Provider {
 	p.Key, p.KeyID = "", ""
@@ -273,8 +272,7 @@ func Seal(b Bundle, pass string) ([]byte, error) {
 		return nil, err
 	}
 	e := envelope{Format: format, Version: 1, KDF: "pbkdf2-sha256", Iterations: iterations,
-		Salt: make([]byte, 16), Nonce: make([]byte, 12)}
-	rand.Read(e.Salt)
+		Salt: saltFor(pass), Nonce: make([]byte, 12)}
 	rand.Read(e.Nonce)
 	gcm, err := aead(pass, e)
 	if err != nil {
@@ -284,8 +282,12 @@ func Seal(b Bundle, pass string) ([]byte, error) {
 	return json.MarshalIndent(e, "", "  ")
 }
 
-// Open decrypts a backup.
+// Open decrypts a backup. A byte order mark in front of the JSON is read
+// through: the file is written back through edit.WriteAtomic, which keeps
+// the mark a Windows tool saved the file with (#1534), and a backup moved
+// through an editor that writes one opens as it is.
 func Open(data []byte, pass string) (Bundle, error) {
+	data = edit.TrimBOM(data)
 	var e envelope
 	if json.Unmarshal(data, &e) != nil {
 		// The JSON doesn't read whole. A backup a relay cut short ends in
@@ -330,7 +332,7 @@ func header(e envelope) []byte {
 }
 
 func aead(pass string, e envelope) (cipher.AEAD, error) {
-	key, err := deriveKey(pass, e)
+	key, err := derived(pass, e)
 	if err != nil {
 		return nil, err
 	}
@@ -384,7 +386,7 @@ func Restore(b Bundle, parts Parts) (Result, error) {
 			}
 		}
 		var err error
-		if r.Added, r.Replaced, err = provider.RestoreConfiguration(b.Providers, b.Groups, b.Sources, b.QuotaPools); err != nil {
+		if r.Added, r.Replaced, err = provider.RestoreConfiguration(b.Providers, b.Groups, b.Sources, b.QuotaPools, b.ScopedKeys("providers")); err != nil {
 			return r, err
 		}
 		if err := provider.MirrorOrder(b.Order); err != nil {
@@ -414,7 +416,7 @@ func Restore(b Bundle, parts Parts) (Result, error) {
 		}
 	}
 	if parts.Settings && (b.Settings != nil || b.GatewayKeys != nil) {
-		keys := b.scopedKeys("settings")
+		keys := b.ScopedKeys("settings")
 		// the window's size, the proxy, the menu bar's usage are this machine's own
 		cur := settings.Load()
 		s := cur

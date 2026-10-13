@@ -16,6 +16,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -32,10 +33,12 @@ const AGENTS = Array.from({ length: 14 }, (_, i) => ({
   id: "a" + i, name: "Agent " + i, path: "/t/a" + i + ".json", icon: "generic", wired: true,
   fields: [{ key: "model", label: "model", value: "m", options: [{ value: "m", label: "M", ref: "a/m" }] }],
 }));
-// Two shapes of page: a list of rows, and the Routing page, which redraws itself
-// around a live trace and keeps its own place across a redraw. Narrow, because
-// the Routing page at a wide window lays its stage beside the list and has only
-// ~35px left to scroll — not enough for a drag to be told from a nudge.
+// Two shapes of page: a list of rows, and the Routing page's Requests pane,
+// which redraws itself around a live trace and keeps its own place across a
+// redraw. Routing shows one pane at a time: the Requests pane (a day picked,
+// its twelve rows listed) is what overflows the view by more than a drag;
+// Live alone has only ~30px to scroll, not enough for a drag to be told from a
+// nudge. Narrow, so the pane's list stands under the header and not beside it.
 // The drag's last scroll arriving after the lift is checked on the list page
 // only. It was left off Routing while #1249 was open — WebKit clamped Routing's
 // last stretch, so a scroll sent there after the lift measured that bug rather
@@ -43,12 +46,18 @@ const AGENTS = Array.from({ length: 14 }, (_, i) => ({
 // be widened to Routing; it is not, because that clamp was only ever checked on
 // Windows headless WebKit here, not on the macOS WKWebView the maintainer runs,
 // and widening a check is beyond what review asked for.
-// `click` waits for the page to be drawn; `hold` is what the click in it lands
-// on, and must leave the page as it is — the Routing page's own header opens
-// the group editor in English, growing the page and scrolling it on its own.
+// `open` brings the page to the state drawn; `click` waits for the page to be
+// drawn; `hold` is what the click in it lands on, and must leave the page as it
+// is — a day chip or a request row would redraw the list. `wheel` is where the
+// wheel sits: on the Requests pane the list scrolls inside itself, so the wheel
+// is held over the header, which is the view's own.
 const PAGES = [
-  { view: "agents", click: "#view-agents .ag-lead", hold: "#view-agents .ag-lead", after: true },
-  { view: "routing", click: "#view-routing .row-head", hold: "#view-routing .rt-mode", after: false },
+  { view: "agents", click: "#view-agents .ag-lead", hold: "#view-agents .ag-lead", after: true, wheelY: (r) => r.y + r.height / 2 },
+  {
+    view: "routing", click: "#view-routing .rt-req", hold: "#view-routing .rt-req-head .label", after: false,
+    open: async (p) => { await openPane(p, "requests"); await p.locator(".rt-days .rt-day").nth(1).click(); },
+    wheelY: (r) => r.y + 20,
+  },
 ];
 const VIEWPORT = { width: 440, height: 620 };
 
@@ -159,6 +168,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const top = () => view.evaluate((v) => v.scrollTop);
 
           await p.goto(`http://magpie.test/?view=${page.view}`);
+          if (page.open) await page.open(p);
           await p.locator(page.click).first().waitFor();
           let shape = await settled(p, view);
           assert(shape.over > 40, `${page.view} must overflow by more than a drag: ${JSON.stringify(shape)}`);
@@ -193,7 +203,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           // own rule answers. The target is one that leaves the page as it is:
           // the Routing page's own header opens the group editor in English, and
           // a page that grows under the click is scrolled by the app itself
-          await p.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+          await p.mouse.move(r.x + r.width / 2, page.wheelY(r));
           await p.mouse.wheel(0, -600);
           await p.waitForTimeout(300);
           const name = await p.locator(page.hold).first().boundingBox();
@@ -220,7 +230,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const room = Math.max(at0, shape.over - at0);
           if (room > 40) {
             const down = at0 < shape.over - at0;
-            await p.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+            await p.mouse.move(r.x + r.width / 2, page.wheelY(r));
             await p.mouse.wheel(0, down ? 240 : -240);
             const after = await rested(p, view);
             assert.ok(down ? after > at0 : after < at0, "the wheel still scrolls the page");

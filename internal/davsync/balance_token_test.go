@@ -194,3 +194,52 @@ func TestSyncBalanceToken(t *testing.T) {
 		})
 	}
 }
+
+// What a download does with the provider-wide secrets follows the bundle's
+// providers scope: a keyed bundle whose provider holds no credential is the
+// uploader's explicit clear, so bring clears this computer's too (and a later
+// upload of it is not republished with them); a keyless bundle retains them.
+// A spare key both computers hold does not carry the old primary's secrets.
+func TestBringHonorsProvidersKeyScope(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		keys     *bool
+		wholeKey bool
+		keyed    []provider.KeyAccount
+		clear    bool // the bundle's provider is cleared of its secrets
+		keepKeys bool
+	}{
+		{"whole-bundle keyed clear", nil, true, nil, true, false},
+		{"providers-scoped keyed clear", backup.Flag(true), false, nil, true, false},
+		{"scope false overrides whole bit", backup.Flag(false), true, nil, false, true},
+		{"keyless retains", nil, false, nil, false, true},
+		{"keyed, new primary, shared spare", nil, true, []provider.KeyAccount{{ID: "new", Key: "sk-new"}, {ID: "spare", Key: "sk-spare"}}, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			newComputer(t).use(t)
+			here := provider.Provider{ID: "relay", Name: "Old", Chat: "https://old.example.com/v1",
+				Keys:         []provider.KeyAccount{{ID: "main", Key: "sk-here"}, {ID: "spare", Key: "sk-spare"}},
+				BalanceToken: "balance-here", AccessKeyID: "AK-here", SecretAccessKey: "SK-here"}
+			if err := provider.Save(here); err != nil {
+				t.Fatal(err)
+			}
+			in := provider.Provider{ID: "relay", Name: "New", Chat: "https://new.example.com/v1", Keys: c.keyed}
+			b := backup.Bundle{Version: backup.BundleVersion, Keys: c.wholeKey, ProvidersKeys: c.keys, Providers: []provider.Provider{in}}
+			if err := bring(b, "providers"); err != nil {
+				t.Fatal(err)
+			}
+			ps, err := provider.Stored()
+			if err != nil || len(ps) != 1 {
+				t.Fatalf("providers: %+v %v", ps, err)
+			}
+			got := ps[0]
+			secrets := got.BalanceToken != "" || got.AccessKeyID != "" || got.SecretAccessKey != ""
+			if secrets == c.clear {
+				t.Fatalf("provider-wide secrets %q %q %q after bring, cleared want %v", got.BalanceToken, got.AccessKeyID, got.SecretAccessKey, c.clear)
+			}
+			if kept := slices.ContainsFunc(got.Keys, func(k provider.KeyAccount) bool { return k.Key == "sk-here" }); kept != c.keepKeys {
+				t.Fatalf("keys after bring: %+v, old primary kept want %v", got.Keys, c.keepKeys)
+			}
+		})
+	}
+}

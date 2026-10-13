@@ -123,6 +123,7 @@ func (p Provider) KeyList() []KeyInfo {
 	return out
 }
 
+// KeysOn is the keys in use, first to last, each secret once.
 func (p Provider) KeysOn() []KeyAccount {
 	if p.Account != nil {
 		return nil
@@ -132,7 +133,7 @@ func (p Provider) KeysOn() []KeyAccount {
 		out = append(out, KeyAccount{Key: p.Key}) // unsaved constructor only
 	}
 	for _, k := range p.Keys {
-		if !k.Off && k.Key != "" {
+		if !k.Off && k.Key != "" && !slices.ContainsFunc(out, func(o KeyAccount) bool { return o.Key == k.Key }) {
 			out = append(out, k)
 		}
 	}
@@ -152,9 +153,6 @@ func AddKey(id, name, key string, proto Protocol) error {
 		return err
 	}
 	key = strings.TrimSpace(key)
-	if key == "" {
-		return errors.New("paste the key to add")
-	}
 	p, err := Find(id)
 	if err != nil {
 		return err
@@ -162,14 +160,42 @@ func AddKey(id, name, key string, proto Protocol) error {
 	if p.Account != nil {
 		return errors.New("a signed-in account has no keys")
 	}
-	if slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key == key }) {
+	// Nothing pasted: use the vendor's public key when it offers one.
+	anon := false
+	if key == "" {
+		if key = p.AnonymousKey(); key == "" {
+			return errors.New("paste the key to add")
+		}
+		anon = true
+	}
+	if p.HasKey(key) {
+		if anon {
+			return fmt.Errorf("%s already has %s, the key its free models answer with none of yours", p.Name, key)
+		}
 		return fmt.Errorf("%s already has this key", p.Name)
 	}
 	p.Keys = append(p.Keys, KeyAccount{ID: newKeyID(), Name: strings.TrimSpace(name), Key: key, Protocol: proto})
 	return Save(*p)
 }
 
-// SplitKeys accepts keys separated by whitespace, commas or semicolons.
+// AnonymousKey is the key the provider is asked with when the user has
+// none of their own, "" when it has no such key: OpenCode Zen's public,
+// which its free models answer (normalize gives it to a Zen provider
+// saved with no key).
+func (p Provider) AnonymousKey() string {
+	if p.Preset == "opencode-zen" {
+		return OpenCodeAnonymousKey
+	}
+	return ""
+}
+
+// HasKey reports whether key is one of the provider's, on or off.
+func (p Provider) HasKey(key string) bool {
+	return p.Key == key && key != "" || slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key == key })
+}
+
+// SplitKeys is the keys in text pasted at once: one a line, or separated
+// by commas, semicolons or spaces, trimmed of quotes, each once.
 func SplitKeys(text string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -298,6 +324,20 @@ func (p Provider) WithKey(k KeyAccount) Provider {
 	return p
 }
 
+// KeyOf returns a key's secret by its stable identity for its editor row.
+func KeyOf(id, ref string) (string, error) {
+	p, err := Find(id)
+	if err != nil {
+		return "", err
+	}
+	i, ok := findKey(p, ref)
+	if !ok {
+		return "", fmt.Errorf("%s has no such key", p.ID)
+	}
+	return p.Keys[i].Key, nil
+}
+
+// UseKey makes a key first and turns it on, keeping the others in order.
 func UseKey(id, ref string) error {
 	return editKey(id, ref, func(p *Provider, i int) error {
 		k := p.Keys[i]
@@ -330,23 +370,6 @@ func RemoveKey(id, ref string) error {
 
 func RenameKey(id, ref, name string) error {
 	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].Name = strings.TrimSpace(name); return nil })
-}
-
-// ReplaceKey rotates a secret without changing bindings, identity or order.
-func ReplaceKey(id, ref, key string) error {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return errors.New("paste the replacement key")
-	}
-	return editKey(id, ref, func(p *Provider, i int) error {
-		for j, k := range p.Keys {
-			if j != i && k.Key == key {
-				return fmt.Errorf("%s already has this key", p.Name)
-			}
-		}
-		p.Keys[i].Key = key
-		return nil
-	})
 }
 
 // AllowsModel applies only explicit key restrictions, to the outbound model.
@@ -449,4 +472,39 @@ func ApplyKeyBindings(p *Provider, bindings map[string]KeyBinding) error {
 	}
 	p.Keys = keys
 	return nil
+}
+
+// ReplaceKey rotates a secret, preserving its stable identity, order and
+// bindings. Both returned identities are the same, so callers retaining
+// account references keep pointing at this key. A repeated secret is a no-op.
+func ReplaceKey(id, keyRef, key string) (was, now string, err error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", "", errors.New("paste the key's new value")
+	}
+	p, err := Find(id)
+	if err != nil {
+		return "", "", err
+	}
+	i, ok := findKey(p, keyRef)
+	if !ok {
+		return "", "", fmt.Errorf("%s has no such key", p.Name)
+	}
+	now = keyRef
+	if p.Keys[i].Key == key {
+		return keyRef, now, nil
+	}
+	if p.HasKey(key) {
+		return "", "", fmt.Errorf("%s already has this key", p.Name)
+	}
+	p.Keys[i].Key = key
+	return keyRef, now, Save(*p)
+}
+
+// moveKeyed moves m's entry for the key was, if it has one, to now.
+func moveKeyed[V any](m map[string]V, was, now string) {
+	if v, ok := m[was]; ok {
+		delete(m, was)
+		m[now] = v
+	}
 }

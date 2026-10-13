@@ -3,6 +3,7 @@ package provider
 // A backup carries providers.json's entries as stored, including quota bindings.
 import (
 	"fmt"
+	"maps"
 	"slices"
 )
 
@@ -13,6 +14,11 @@ import (
 func Stored() ([]Provider, error) {
 	f, err := read()
 	return f.Providers, err
+}
+
+// Restore merges providers while retaining this computer's usage configuration.
+func Restore(ps []Provider) (added, replaced int, err error) {
+	return RestoreConfiguration(ps, nil, nil, nil, false)
 }
 
 // StoredGroups is the groups as saved: the user's own, and the found ones
@@ -29,8 +35,10 @@ func StoredUsageSources() []UsageSource { return load().Sources }
 func StoredQuotaPools() []QuotaPool { return load().QuotaPools }
 
 // RestoreConfiguration merges a complete configuration before validating any
-// references. A backup without credentials retains those already stored here.
-func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools []QuotaPool) (added, replaced int, err error) {
+// references. keyed says the configuration carries credentials: a provider in
+// it with none of its own then clears the ones stored here. Without keys
+// (keyed false) such a provider retains those already stored here.
+func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools []QuotaPool, keyed bool) (added, replaced int, err error) {
 	f, err := usageConfig()
 	if err != nil {
 		return 0, 0, err
@@ -49,7 +57,7 @@ func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pool
 			added++
 			continue
 		}
-		preserveBackupKeys(&p, f.Providers[i])
+		preserveBackupKeys(&p, f.Providers[i], keyed)
 		f.Providers[i] = p
 		replaced++
 	}
@@ -70,8 +78,18 @@ func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pool
 	return added, replaced, store(f)
 }
 
+// Mirror replaces providers and groups, retaining the usage configuration.
+func Mirror(ps []Provider, gs []Group) error {
+	f, err := usageConfig()
+	if err != nil {
+		return err
+	}
+	return MirrorConfiguration(ps, gs, f.Sources, f.QuotaPools, false)
+}
+
 // MirrorConfiguration replaces the complete linked configuration in one write.
-func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools []QuotaPool) error {
+// keyed is RestoreConfiguration's: credentials came with the configuration.
+func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools []QuotaPool, keyed bool) error {
 	f, err := usageConfig()
 	if err != nil {
 		return err
@@ -87,7 +105,7 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 			continue
 		}
 		if i := slices.IndexFunc(here, func(x Provider) bool { return x.ID == p.ID }); i >= 0 {
-			preserveBackupKeys(&p, here[i])
+			preserveBackupKeys(&p, here[i], keyed)
 		}
 		f.Providers = append(f.Providers, p)
 	}
@@ -98,12 +116,36 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 	return store(f)
 }
 
-func preserveBackupKeys(p *Provider, h Provider) {
+// PreserveBackupKeys retains omitted credentials without changing key identities.
+// keyed says p came with credentials, so one holding none of its own is an
+// explicit clear and keeps nothing of h.
+func PreserveBackupKeys(p *Provider, h Provider, keyed bool) { preserveBackupKeys(p, h, keyed) }
+
+func preserveBackupKeys(p *Provider, h Provider, keyed bool) {
 	keyless := p.Key == "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key != "" })
-	if keyless && p.BalanceToken == "" {
+	if keyless && keyed {
+		return
+	}
+	// The provider-wide secrets (balance token, access key pair) belong to the
+	// account its selected primary credential signs in to; a spare key shared
+	// with this machine's does not make them the same account (KeepSecrets).
+	pk := primaryKey(*p)
+	sameAccount := keyless || pk != "" && pk == primaryKey(h)
+	if keyless {
+		p.Headers = maps.Clone(p.Headers)
+		for name, value := range h.Headers {
+			if _, set := p.Headers[name]; !set && SecretHeader(name) {
+				if p.Headers == nil {
+					p.Headers = map[string]string{}
+				}
+				p.Headers[name] = value
+			}
+		}
+	}
+	if sameAccount && p.BalanceToken == "" {
 		p.BalanceToken = h.BalanceToken
 	}
-	if keyless && p.AccessKeyID == "" && p.SecretAccessKey == "" {
+	if sameAccount && p.AccessKeyID == "" && p.SecretAccessKey == "" {
 		p.AccessKeyID, p.SecretAccessKey = h.AccessKeyID, h.SecretAccessKey
 	}
 	if p.Key == "" && len(p.Keys) == 0 {

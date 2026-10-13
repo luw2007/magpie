@@ -87,6 +87,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the story says what it was
       const row = page.locator(".rt-req").nth(0);
       await row.click();
+      await page.waitForFunction(() => document.querySelector("#rtPages .opt")?.getAttribute("aria-pressed") === "true");
       await page.waitForTimeout(600);
       const story = page.locator(".rt-steps li.kind");
       assert.equal(await story.locator(".kind").textContent(), want[lang][0]);

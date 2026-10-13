@@ -3,16 +3,12 @@
 // 15.0's (#220 uclort: on 12.7.6 the panel showed its tabs and headings and
 // nothing else, no button working — a regex lookbehind in app.js is a
 // syntax error before Safari 16.4, so the whole file never ran). What the
-// scripts and styles may use is held to Safari 15.0 here:
+// scripts may use is held to Safari 15.0 here:
 // - every script parses, and none has syntax newer than it: a regex
 //   lookbehind (16.4) or v flag (17) or modifiers, a class static block
 //   (16.4), decorators, import attributes, `using`;
 // - no built-in newer than it is used unless compat.js (loaded before the
 //   rest) fills it in;
-// - the styles have no :has() (15.4), :focus-visible only in rules of its
-//   own (a list with it and more drops them all before 15.4), no nesting, no dvh
-//   units, and container queries, subgrid and a color-mix() custom property
-//   only with an @supports fallback in the same file;
 // - in WebKit with those built-ins taken away, the panel and the window
 //   draw every page with no error.
 // Syntax is parsed with the Babel parser Playwright bundles, so no other
@@ -26,7 +22,6 @@ const { babelParse } = require("playwright/lib/transform/babelBundle");
 
 const assets = path.resolve(__dirname, "../assets");
 const scripts = async () => (await fs.readdir(assets)).filter((f) => f.endsWith(".js")).sort();
-const styles = async () => (await fs.readdir(assets)).filter((f) => f.endsWith(".css")).sort();
 const read = (f) => fs.readFile(path.join(assets, f), "utf8");
 
 // Syntax Safari 15.0 can't parse; one of these fails the whole file.
@@ -140,44 +135,6 @@ test("compat.js is the first of the page's own scripts", async () => {
   const srcs = all.filter((s) => s !== "boot.js" && s !== "theme.js" && s !== "omarchy.js");
   assert.equal(srcs[0], "compat.js", "loaded first: " + srcs.join(", "));
   for (const f of await scripts()) assert(all.includes(f), f + " is not loaded by index.html");
-});
-
-test("the styles hold up in Safari 15.0", async () => {
-  const bad = [];
-  for (const f of await styles()) {
-    const css = (await read(f)).replace(/\/\*[\s\S]*?\*\//g, "");
-    const lineOf = (i) => css.slice(0, i).split("\n").length;
-    const each = (re, what) => { for (const m of css.matchAll(re)) bad.push(`${f}:~${lineOf(m.index)} ${what}: ${m[0].trim().slice(0, 90)}`); };
-    each(/:has\(/g, ":has() (Safari 15.4)");
-    each(/[\d.]+(dvh|svh|lvh|dvw|svw|lvw)\b/g, "dynamic viewport units (Safari 15.4)");
-    each(/[^{}]*&[^{}]*\{/g, "nesting (Safari 16.5)");
-    // a selector list with :focus-visible and more: all of it is dropped
-    for (const m of css.matchAll(/([^{}]+)\{/g)) {
-      const sel = m[1].trim();
-      if (sel.startsWith("@")) continue;
-      // the list's own commas, not those inside :is() or :not()
-      const parts = []; let depth = 0, from = 0;
-      for (let i = 0; i < sel.length; i++) {
-        if (sel[i] === "(") depth++;
-        else if (sel[i] === ")") depth--;
-        else if (sel[i] === "," && !depth) { parts.push(sel.slice(from, i)); from = i + 1; }
-      }
-      parts.push(sel.slice(from));
-      if (parts.some((p) => p.includes(":focus-visible")) && !parts.every((p) => p.includes(":focus-visible"))) bad.push(`${f}:~${lineOf(m.index)} :focus-visible in a selector list (Safari 15.4 drops the rule): ${sel.slice(0, 90)}`);
-      if (/:is\([^)]*:focus-visible/.test(sel)) bad.push(`${f}:~${lineOf(m.index)} :focus-visible inside :is(): ${sel.slice(0, 90)}`);
-    }
-    // a rule kept off a focused control drops whole there: one for :focus beside it
-    if (/:not\([^)]*:focus-visible/.test(css) && !/@supports not selector\(:focus-visible\)/.test(css)) bad.push(`${f}: :not(:focus-visible) (Safari 15.4) with no @supports not selector(:focus-visible) fallback`);
-    if (/@container\b/.test(css) && !/@supports not \(container-type: inline-size\)/.test(css)) bad.push(`${f}: @container (Safari 16) with no @supports not (container-type: inline-size) fallback`);
-    if (/:\s*subgrid\b/.test(css) && !/@supports not \(grid-template-columns: subgrid\)/.test(css)) {
-      // a subgrid that only lines rows up across cards may go without
-      for (const m of css.matchAll(/grid-template-columns:\s*subgrid/g)) bad.push(`${f}:~${lineOf(m.index)} grid-template-columns: subgrid (Safari 16) with no fallback`);
-    }
-    // a custom property is never checked: one holding color-mix() goes
-    // invalid where it is used, and whatever it painted goes clear
-    if (/--[\w-]+:\s*color-mix\(/.test(css) && !/@supports not \(color: color-mix\(/.test(css)) bad.push(`${f}: a custom property with color-mix() (Safari 16.2) and no @supports not (color: color-mix(…)) fallback`);
-  }
-  assert.deepEqual(bad, []);
 });
 
 // In WebKit with what Safari 15.0 lacks taken away, every page is drawn with

@@ -251,7 +251,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 	}
 	// the sessions, the latest first
 	slices.SortFunc(order, func(a, b string) int { return sess[b].Last.Compare(sess[a].Last) })
-	var codexIDs []string
+	var codexIDs, desktopIDs []string
 	for _, sk := range order {
 		s := sess[sk]
 		if acc := agents[s.Agent]; acc != nil && s.Requests > 1 {
@@ -262,8 +262,11 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 				s.Points = s.Points[len(s.Points)-ctxPoints:]
 			}
 			out.Sessions = append(out.Sessions, *s)
-			if s.Agent == "codex" {
+			switch s.Agent {
+			case "codex":
 				codexIDs = append(codexIDs, s.Key)
+			case "claude-desktop":
+				desktopIDs = append(desktopIDs, s.Key)
 			}
 		}
 	}
@@ -271,6 +274,16 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		titles := sessions.CodexTitles(codexIDs)
 		for i := range out.Sessions {
 			if out.Sessions[i].Agent == "codex" {
+				out.Sessions[i].Title = titles[out.Sessions[i].Key]
+			}
+		}
+	}
+	// Claude Desktop's go by the name Desktop saved, which a session with
+	// no transcript on this computer has too (#1675)
+	if len(desktopIDs) > 0 {
+		titles := sessions.DesktopTitles(desktopIDs)
+		for i := range out.Sessions {
+			if out.Sessions[i].Agent == "claude-desktop" {
 				out.Sessions[i].Title = titles[out.Sessions[i].Key]
 			}
 		}
@@ -438,5 +451,51 @@ func contextRoutesAPI(mux *http.ServeMux) {
 			days = 7
 		}
 		writeJSON(rw, contextOf(contextRoutes(r, days), days))
+	})
+	// the text of a part of a request's prompt (masaka on Discord): the
+	// part's items, and one item's text when item is given. From the
+	// gateway this GUI runs, which keeps the last requests' masked bodies
+	// in memory only; 404 when the request's is no longer kept.
+	mux.HandleFunc("GET /api/context/text", func(rw http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		id, err := strconv.ParseInt(q.Get("id"), 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(rw, "invalid route id", http.StatusBadRequest)
+			return
+		}
+		item := -1
+		if v := q.Get("item"); v != "" {
+			if item, err = strconv.Atoi(v); err != nil || item < 0 {
+				http.Error(rw, "invalid item", http.StatusBadRequest)
+				return
+			}
+		}
+		gw := served.Load()
+		if gw == nil {
+			http.Error(rw, "not kept", http.StatusNotFound)
+			return
+		}
+		pt, ok := gw.PromptText(id, q.Get("kind"), item >= 0)
+		if !ok {
+			http.Error(rw, "not kept", http.StatusNotFound)
+			return
+		}
+		if item >= 0 {
+			// the one item's text; the rest by name and size only
+			if item >= len(pt.Items) {
+				http.Error(rw, "invalid item", http.StatusBadRequest)
+				return
+			}
+			for i := range pt.Items {
+				if i != item {
+					pt.Items[i].Pieces = nil
+				}
+			}
+			if pt.Items[item].Pieces == nil {
+				pt.Items[item].Pieces = []gateway.PromptPiece{}
+			}
+		}
+		rw.Header().Set("Cache-Control", "no-store")
+		writeJSON(rw, pt)
 	})
 }

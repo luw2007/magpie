@@ -45,6 +45,9 @@ func fresh(t *testing.T) {
 	sticks.Lock()
 	sticks.m = map[string]stick{}
 	sticks.Unlock()
+	refusedSeals.Lock()
+	refusedSeals.m = map[string]sealsRefused{}
+	refusedSeals.Unlock()
 	turnRules.Lock()
 	turnRules.m = map[string]turnRule{}
 	turnRules.Unlock()
@@ -60,6 +63,7 @@ func fresh(t *testing.T) {
 	remoteRefreshes.Lock()
 	remoteRefreshes.at = map[string]time.Time{}
 	remoteRefreshes.Unlock()
+	resetAuthThrottle()
 	forgetRouting()
 }
 

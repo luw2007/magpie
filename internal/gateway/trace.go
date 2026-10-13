@@ -27,6 +27,12 @@ type Route struct {
 	imageTurn     string
 	imageCaller   string
 	imageProvider string
+	// turn: a request of an agent's turn, for the notification that it is
+	// done (turns); dirOf, the folder its body says, read once as a turn
+	// starts; tools, whether its reply called a tool
+	turn          bool
+	dirOf         func() string
+	tools         *toolScan
 	Seq           int64        `json:"seq"` // the trace's count when it last changed
 	ID            int64        `json:"id"`
 	Time          time.Time    `json:"time"`
@@ -70,6 +76,9 @@ type Route struct {
 	// counts: streamed replies only (#196)
 	TTFT      int64 `json:"ttft,omitempty"`
 	FirstText int64 `json:"firstText,omitempty"`
+	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
+	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
+	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`
 	// Flow: the ms its content took to come (Call.Flow)
 	Flow int64 `json:"flow,omitempty"`
 	// Served: the model the reply says answered, as the last try has it;
@@ -122,6 +131,9 @@ type GroupRef struct {
 	Via []string `json:"via,omitempty"`
 	// Fast: those of Members sent in their vendor's fast mode
 	Fast []string `json:"fast,omitempty"`
+	// Paused: the models a pause rule left out of the request, so not in
+	// Members (provider.PausedOut)
+	Paused []provider.Paused `json:"paused,omitempty"`
 }
 
 // SubGroup is a routing group in the group a request asked for.
@@ -237,9 +249,16 @@ type Weighed struct {
 	// Aside: a key made for another protocol than the keys routed over,
 	// tried only after them
 	Aside bool `json:"aside,omitempty"`
+	// NoURL: its keys are all set to this protocol, which its provider has
+	// no URL for, so it was tried on the URLs it has (#1702)
+	NoURL provider.Protocol `json:"noURL,omitempty"`
 	// Via: the groups in the group it is of, outermost first, when it is
 	// of a group in the group asked for
 	Via []string `json:"via,omitempty"`
+	// UsedRenews: when the window Used is the share of renews, apart
+	// from Renews' biggest first: a row says the two together, so of one
+	// window, a Factory account's week and not its month (#1778)
+	UsedRenews *time.Time `json:"usedRenews,omitempty"`
 	// Sunk: when it was rate limited with quota left, sending it to the
 	// back of an order that sinks (sink.go); nil when it didn't, or the
 	// order doesn't sink
@@ -264,6 +283,9 @@ type Try struct {
 	// first text, when it streamed any (#196)
 	TTFT      int64 `json:"ttft,omitempty"`
 	FirstText int64 `json:"firstText,omitempty"`
+	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
+	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
+	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`
 	// Flow: the ms its content took to come (Call.Flow)
 	Flow int64 `json:"flow,omitempty"`
 	// Served: the model its reply said answered, when it named one;
@@ -280,6 +302,16 @@ type Try struct {
 	Error    string `json:"error,omitempty"`
 	Rest     *Rest  `json:"rest,omitempty"`  // how long it now sits out; none when it was the last to try
 	Again    int64  `json:"again,omitempty"` // ms waited before it was tried again, the last one left
+	// Replan: every member had failed in a way that passes, so after
+	// Again the Replan of them that may answer by then were asked again,
+	// in turn, within the group's Patience (seconds) for the request
+	// (#1418)
+	Replan   int `json:"replan,omitempty"`
+	Patience int `json:"patience,omitempty"`
+	// Gone: the agent canceled the request in the pause Again was to be
+	// waited, so nobody was asked again (#1894: the Routing page's story
+	// otherwise ended on "tried again in 1s", a retry that never came)
+	Gone bool `json:"gone,omitempty"`
 	// Queued: ms it waited for one of its key's or account's slots, the
 	// provider's MaxConcurrency out already (concurrency.go)
 	Queued int64 `json:"queued,omitempty"`
@@ -304,11 +336,15 @@ type planned struct {
 	// held: the accounts left out (in left) as they won't spend their
 	// credits, for one that spends its resets by itself to spend one
 	held []candidate
+	// capped: the accounts left out (in left) as they are past the usage
+	// cap set on them, for a conversation that stays strictly on one to
+	// go on there (provider.AffinityStrict, #1797)
+	capped []candidate
 }
 
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
 	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast,
-		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank}
+		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL}
 	switch {
 	case c.p.Account != nil:
 		w.Kind, w.Who, w.Agent, w.Plan = "account", c.p.Account.User, c.p.Account.Agent, c.p.Account.Plan
@@ -328,6 +364,10 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 	}
 	if l, ok := wg.lefts[c.allowanceKey()]; ok {
 		w.Known, w.Used, w.Renews, w.Pace = true, l.used, l.renews, l.pace
+		if !l.fullest.IsZero() {
+			ur := l.fullest
+			w.UsedRenews = &ur
+		}
 		if l.of > 0 {
 			w.Amount, w.Limit, w.Unit = l.amount, l.of, l.unit
 		}
@@ -361,6 +401,11 @@ type trace struct {
 	routes []*Route
 	wake   chan struct{}
 	totals Totals
+	// bodies are the last requests' masked bodies, for their prompts'
+	// text (PromptText): in memory only, never in the history
+	bodies []keptBody
+	// turns follows agents' turns, to say when one is done (TurnDone)
+	turns turns
 }
 
 // Totals count the requests routed since the gateway started.
@@ -399,6 +444,7 @@ func (t *trace) begin(r Route) *Route {
 		r.Tries = []Try{}
 	}
 	rp := &r
+	t.turns.begin(rp, time.Now())
 	t.routes = append(t.routes, rp)
 	t.trim()
 	t.changed()
@@ -442,7 +488,8 @@ func (t *trace) update(r *Route, f func(r *Route)) {
 		if r.Status >= 400 || r.Error != "" {
 			t.totals.Errors++
 		}
-		if keepRoutes {
+		t.turns.end(r, r.Status < 400 && r.Error == "" && !r.tools.called(), time.Now())
+		if keepsRoutes() {
 			c := *r
 			c.Order = append([]Weighed{}, r.Order...) // [] for none: the GUI reads it as a list
 			c.Left = append([]Weighed(nil), r.Left...)

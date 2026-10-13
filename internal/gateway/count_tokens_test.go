@@ -176,7 +176,10 @@ func TestCountTokensKeyFailover(t *testing.T) {
 			if err := provider.Save(p); err != nil {
 				t.Fatal(err)
 			}
-			if err := catalog.SaveLive(p.ID, up.URL, []catalog.Model{{ID: "m1", Keys: []string{"first", "chat", "next"}}}); err != nil {
+			// k-unlisted's own list answered, without m1 (a key no list
+			// marks is unknown and serves, #1598).
+			if err := catalog.SaveLive(p.ID, up.URL, []catalog.Model{{ID: "m1", Keys: []string{"first", "chat", "next"}},
+				{ID: "m2", Keys: []string{"unlisted"}}}); err != nil {
 				t.Fatal(err)
 			}
 			if err := settings.Save(settings.Settings{RedactPersonal: true}); err != nil {

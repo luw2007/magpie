@@ -34,9 +34,9 @@ func TestProviderWritesKeepInvalidFile(t *testing.T) {
 		{"save", func() error { return Save(p) }},
 		{"add", func() error { _, err := Add(p); return err }},
 		{"save-group", func() error { return SaveGroup(g) }},
-		{"restore", func() error { _, _, err := RestoreConfiguration([]Provider{p}, nil, nil, nil); return err }},
-		{"restore-groups", func() error { _, _, err := RestoreConfiguration(nil, []Group{g}, nil, nil); return err }},
-		{"mirror", func() error { return MirrorConfiguration([]Provider{p}, []Group{g}, nil, nil) }},
+		{"restore", func() error { _, _, err := RestoreConfiguration([]Provider{p}, nil, nil, nil, false); return err }},
+		{"restore-groups", func() error { _, _, err := RestoreConfiguration(nil, []Group{g}, nil, nil, false); return err }},
+		{"mirror", func() error { return MirrorConfiguration([]Provider{p}, []Group{g}, nil, nil, false) }},
 		{"quiet-account", func() error { return QuietAccount("codex") }},
 		{"show-account", func() error { return ShowAccount("codex") }},
 		{"delete", func() error { return Delete("original") }},
@@ -131,7 +131,7 @@ func TestProviderWritesKeepValidFile(t *testing.T) {
 		t.Fatalf("first use: %v", err)
 	}
 	g := Group{ID: "kept", Members: []string{"first/model"}}
-	if _, _, err := RestoreConfiguration(nil, []Group{g}, nil, nil); err != nil {
+	if _, _, err := RestoreConfiguration(nil, []Group{g}, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	second := Provider{ID: "second", Chat: "https://second.example.invalid/v1", Key: "synthetic-second"}
@@ -144,7 +144,7 @@ func TestProviderWritesKeepValidFile(t *testing.T) {
 	}
 	// A keyless restore still keeps the existing key and unrelated entries.
 	second.Key = ""
-	if added, replaced, err := RestoreConfiguration([]Provider{second}, nil, nil, nil); err != nil || added != 0 || replaced != 1 {
+	if added, replaced, err := RestoreConfiguration([]Provider{second}, nil, nil, nil, false); err != nil || added != 0 || replaced != 1 {
 		t.Fatalf("restore into valid file: %d %d %v", added, replaced, err)
 	}
 	b, err := os.ReadFile(Path())

@@ -56,6 +56,7 @@ function fixture() {
       }
       return json(providers);
     }
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
@@ -67,19 +68,28 @@ function fixture() {
 const rows = page => page.locator(".accts [data-account-id]");
 const ids = page => rows(page).evaluateAll(rs => rs.map(r => r.dataset.accountId));
 const settled = page => page.waitForFunction(() => !accountArranging && !accountSaving);
+// The editor opens with a transform/opacity entrance; geometry read during it
+// is stale by the time the mouse acts on it.
+const still = page => page.waitForFunction(() => document.getAnimations().every(a => a.effect.getComputedTiming().iterations === Infinity || a.playState !== "running"));
 async function open(page, id) {
   await page.goto(`http://magpie.test/?view=providers&edit=${id}`);
   await rows(page).first().waitFor();
+  await still(page);
 }
-async function point(row) {
-  await row.scrollIntoViewIfNeeded();
-  return row.evaluate(r => {
+async function points(page) {
+  await still(page);
+  // Bringing the second row into view scrolls the editor and moves the first,
+  // so make both visible before reading either position.
+  await rows(page).nth(1).scrollIntoViewIfNeeded();
+  await rows(page).nth(0).scrollIntoViewIfNeeded();
+  return page.evaluate(() => [0, 1].map(i => {
+    const r = document.querySelectorAll(".accts [data-account-id]")[i];
     const b = r.getBoundingClientRect(), gap = r.querySelector(".grow").getBoundingClientRect();
     return { x: gap.width > 8 ? gap.left + gap.width / 2 : b.right - 5, y: b.top + b.height / 2, bottom: b.bottom };
-  });
+  }));
 }
 async function drag(page, cancel = false) {
-  const a = await point(rows(page).nth(0)), b = await point(rows(page).nth(1));
+  const [a, b] = await points(page);
   await page.mouse.move(a.x, a.y);
   await page.mouse.down();
   await page.mouse.move(a.x, b.bottom - 2, { steps: 12 });
@@ -172,7 +182,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.deepEqual(await ids(page), prior); assert.equal(f.posted.length, count);
     // Background quota refresh cannot replace a captured row; edge scroll
     // reaches rows below the fold without rebuilding during the drag.
-    const a = await point(rows(page).first());
+    const [a] = await points(page);
     const bounds = await page.locator(".ebody").boundingBox();
     await page.mouse.move(a.x, a.y); await page.mouse.down();
     await page.mouse.move(a.x, bounds.y + bounds.height - 5, { steps: 20 });

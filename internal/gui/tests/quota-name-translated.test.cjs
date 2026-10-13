@@ -8,10 +8,11 @@
 // leaves the count and the plan's own name to the display, which are data.
 //
 // The name is a sentence, so it has to fit the card at the widths the window
-// is really used at: .quota-labels > span is nowrap with no ellipsis and no
-// tooltip, so a name wider than its .quota is cut off mid-word with nothing
-// saying so (#1001 review). Every language is checked at 440 and 560px, not
-// only at 1000 where nothing can be too wide.
+// is really used at: a name wider than its .quota wraps inside it rather
+// than run past it and be cut off by the card (#1001 review). With a
+// scrollbar taking 10px the card is narrower and English no longer fits one
+// line. Every language is checked at 440 and 560px, not only at 1000 where
+// nothing can be too wide.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -85,8 +86,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the plugin's own display: the count and the plan's name, untranslated
         const count = (await card.locator(".quota-n").last().innerText()).replace(/\s+/g, " ").trim();
         assert.equal(count, "1 · ZCode Trust Build", `the display at ${width}px`);
-        // and the name is whole: .quota-labels > span is nowrap with no
-        // ellipsis, so anything wider than its .quota is cut off in silence
+        // and the name is whole: its box stays within its .quota, wrapping
+        // when it must
         const fit = await page.evaluate(() => {
           const card = [...document.querySelectorAll(".subscription-card")].find((c) => c.textContent.includes("ZCode"));
           const spans = [...card.querySelectorAll(".quota-labels > span")];

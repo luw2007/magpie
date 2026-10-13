@@ -41,6 +41,7 @@ function serve(lang, posts) {
       p.keyList = p.keyList.map((k) => k.id === body.ref ? { ...k, weight: body.weight } : k);
       return json(providers);
     }
+    if (url.pathname === "/api/usage/sources" || url.pathname === "/api/usage/pools") return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const contentType = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
@@ -90,11 +91,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await chip("cccccccccc").count(), 0, "a key that's off has no share");
 
       // a click edits it in place, Enter saves it
+      // Playwright scrolls a target into view before it clicks; do that first so only the app's own scroll is measured
+      await chip("bbbbbbbbbb").scrollIntoViewIfNeeded();
+      const sc2 = await scrolled();
       await chip("bbbbbbbbbb").click();
       const box = page.locator('.acc[data-account-id="bbbbbbbbbb"] .key-weight-in');
       await box.waitFor();
       assert.equal(await box.getAttribute("aria-label"), lang === "zh" ? "密钥权重" : "Key weight");
-      assert.equal(await scrolled(), sc, "a click scrolled");
+      assert.equal(await scrolled(), sc2, "a click scrolled");
       await box.fill("2");
       await box.press("Enter");
       for (let i = 0; i < 60 && !posts.length; i++) await new Promise((r) => setTimeout(r, 50));

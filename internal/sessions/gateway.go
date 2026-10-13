@@ -130,8 +130,13 @@ func saveGatewayTurn(turn GatewayTurn, generation uint64) error {
 	}
 	// Append one bounded line; the cost is independent of other sessions and
 	// of this session's earlier turns. Cleanup runs outside the request path.
+	// Not O_APPEND: on Windows that opens the file for appending only, and
+	// the truncate below, which drops a cut-off last line, is refused
+	// ("Access is denied"), so every later turn of the session failed.
+	// The line is written at the end found instead; gatewayMu keeps
+	// another save from writing between.
 	path := filepath.Join(dir, "turns.jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -153,7 +158,7 @@ func saveGatewayTurn(turn GatewayTurn, generation uint64) error {
 			return err
 		}
 	}
-	_, err = f.Write(append(b, '\n'))
+	_, err = f.WriteAt(append(b, '\n'), end)
 	return errors.Join(err, f.Close())
 }
 

@@ -84,7 +84,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const feed = { next: null };
         await page.route("**/*", serve(feed));
         await page.goto("http://magpie.test/?view=routing");
-        await page.locator(".rt-req").nth(first.length - 1).waitFor();
+        await page.locator(".rt-req").nth(first.length - 1).waitFor({ state: "attached" }); // listed on the Requests pane, patched in place while Live is the one showing
         await page.locator(".rt-ctx .ctx-waffle").waitFor();
         await page.waitForTimeout(1500); // the cells come in, the first play ends
 
@@ -171,12 +171,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const feed = { next: null };
         await page.route("**/*", serve(feed));
         await page.goto("http://magpie.test/?view=routing");
-        await page.locator(".rt-req").nth(first.length - 1).waitFor();
+        await page.locator(".rt-req").nth(first.length - 1).waitFor({ state: "attached" });
         await page.locator(".rt-ctx .ctx-card.shut").waitFor();
         await page.waitForTimeout(600);
         await page.evaluate(() => {
           const box = document.querySelector(".rt-ctx");
-          window.__was = { rows: [...document.querySelectorAll(".rt-req")], line: box.querySelector(".ctx-card"), head: box.querySelector(".ctx-head"), bar: box.querySelector(".ctx-stack"), h: box.offsetHeight, list: document.querySelector(".rt-reqs").getBoundingClientRect().top };
+          window.__was = { rows: [...document.querySelectorAll(".rt-req")], line: box.querySelector(".ctx-card"), head: box.querySelector(".ctx-head"), bar: box.querySelector(".ctx-stack"), h: box.offsetHeight };
           window.__sizes = [];
           window.__ro = new ResizeObserver(() => window.__sizes.push(box.offsetHeight));
           window.__ro.observe(box);
@@ -212,14 +212,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           return {
             kept: w.rows.every((r) => rows.includes(r)), line: box.querySelector(".ctx-card") === w.line && box.querySelector(".ctx-head") === w.head, bar: box.querySelector(".ctx-stack") === w.bar,
             card: !box.querySelector(".ctx-card").classList.contains("shut") || box.querySelector(".ctx-waffle").getClientRects().length > 0, h: box.offsetHeight, h0: w.h, sizes: window.__sizes, scroll: window.__scroll,
-            list: document.querySelector(".rt-reqs").getBoundingClientRect().top, list0: w.list,
           };
         });
         assert(got.kept, "the requests listed before are the same nodes");
         assert(got.line && got.bar, "the folded card, its head and bar are the ones that were there");
         assert(!got.card, "it stays folded, its grid out of sight");
         for (const h of [got.h, ...got.sizes]) assert.equal(h, got.h0, `the folded card keeps its height: ${JSON.stringify([got.h0, got.sizes])}`);
-        assert.equal(got.list, got.list0, "the request list stays where it was");
+        // (the request list sits on the Requests pane, out of the Live page's flow, so its place is not this page's to hold)
         assert.deepEqual(got.scroll, [], "the page doesn't scroll by itself");
         assert.deepEqual(errors, []);
         feed.next?.(req(999, "done"));

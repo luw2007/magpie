@@ -81,10 +81,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         }
         await browser.close();
       });
+      // Routing's groups, drawn above the list, can land after the day's
+      // list does and push it down (#1640): what is measured below is the
+      // page with them in
+      const grouped = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/groups");
       await page.goto("http://magpie.test/?view=routing");
       await openPane(page, "requests");
       await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").nth(routes.length - 1).waitFor();
+      await grouped;
 
       const tags = await page.locator(".rt-req").evaluateAll((rows) => rows.map((r) => r.querySelector(".asked .kind")?.textContent || ""));
       assert.deepEqual(tags, want[lang].tags);
@@ -93,6 +98,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await openPane(page, "requests");
         const row = page.locator(".rt-req").nth(i);
         await row.click();
+        await page.waitForFunction(() => document.querySelector("#rtPages .opt")?.getAttribute("aria-pressed") === "true");
         await page.waitForTimeout(400);
         return page.locator(".rt-steps li.kind");
       };

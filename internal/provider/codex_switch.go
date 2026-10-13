@@ -240,6 +240,11 @@ func SwitchWhenSpent(ctx context.Context, agent string) (string, error) {
 		share, _ := loginSwitching(agent)
 		log.Printf("%s: %s has used %g%% or more of its allowance; signed it in to %s", agent, from, share, to)
 	}
+	if agent == "codex" {
+		if was := CodexAppStale(); was != "" {
+			log.Printf("codex: the Codex app is still signed in to %s, and shows its limits, until it is quit and opened again", was)
+		}
+	}
 	// the models the agent is offered are the new account's plan's
 	catalog.Touched()
 	return to, nil
@@ -318,7 +323,8 @@ func noteCodexUsedUp(now bool) {
 
 // KeepOnAnAccountWithRoom runs SwitchWhenSpent for Codex and Claude Code a
 // minute after it starts and every loginSwitchEvery after that, until ctx
-// ends.
+// ends, and keeps Claude Code's proxy that of its account
+// (SyncClaudeProxyEnv).
 func KeepOnAnAccountWithRoom(ctx context.Context) {
 	t := time.NewTimer(time.Minute)
 	defer t.Stop()
@@ -335,6 +341,9 @@ func KeepOnAnAccountWithRoom(ctx context.Context) {
 			}
 			cancel()
 		}
+		// a sign-in made in Claude Code itself, or a proxy picked since,
+		// takes its account's proxy too (#1807)
+		syncClaudeProxyEnvNow()
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		noteCodexUsedUp(CodexUsedUp(c))
 		cancel()

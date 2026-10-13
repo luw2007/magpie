@@ -96,6 +96,8 @@ func TestBunDefaultSums(t *testing.T) {
 		"bun-darwin-x64",
 		"bun-linux-aarch64",
 		"bun-linux-x64-baseline",
+		"bun-linux-aarch64-musl",
+		"bun-linux-x64-musl-baseline",
 		"bun-windows-x64-baseline",
 		"bun-linux-aarch64-android",
 		"bun-linux-x64-android-baseline",
@@ -110,6 +112,15 @@ func TestBunDefaultSums(t *testing.T) {
 	}
 	if got := bunChecksum("9.9.9", "bun-linux-x64-baseline"); got != "" {
 		t.Fatalf("a newer Bun used the built-in checksum: %q", got)
+	}
+}
+
+// The tests' oldest Bun (testenv.Bun skips an older one on PATH) is the
+// oldest magpie runs plugins on. testenv can't import this package, whose
+// own tests use it, so it keeps a copy (#1600).
+func TestMinBunIsBunVersion(t *testing.T) {
+	if testenv.MinBun != BunVersion {
+		t.Fatalf("testenv.MinBun is %s, BunVersion %s: change both", testenv.MinBun, BunVersion)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/library"
@@ -81,6 +82,13 @@ type host struct {
 	glides      atomic.Int64 // the newest panel glide; older ones stop
 	barTray     atomic.Int64 // the newest setTrayInBar; older ones stop
 	query       string       // what the windows' URLs carry (a forced theme)
+
+	// niri places the panel as it opens (#1670): niriWatch starts its
+	// watch once, and iconX is where the tray icon was just clicked
+	// across its bar
+	niri      omarchy.NiriPanel
+	niriWatch sync.Once
+	iconX     atomic.Pointer[int]
 
 	// closing is set while a full-screen main window, closed, leaves full
 	// screen; it is hidden once it has
@@ -149,7 +157,7 @@ func inDock(s settings.Settings, shown, fullscreen bool) bool {
 func (h *host) Quit()                        { h.app.Quit() }
 func (h *host) OpenURL(url string)           { _ = h.app.Browser.OpenURL(url) }
 func (h *host) OpenFolder(path string) error { return openFolder(h.app, path) }
-func (h *host) Copy(text string) bool        { return h.app.Clipboard.SetText(text) }
+func (h *host) Copy(text string) bool        { return copyText(h.app, text) }
 func (h *host) ChooseFolder(title string) (string, error) {
 	d := h.app.Dialog.OpenFile().CanChooseDirectories(true).CanChooseFiles(false).CanCreateDirectories(true).SetTitle(title)
 	if w := application.InvokeSyncWithResult(func() *application.WebviewWindow { return h.main }); w != nil {
@@ -158,8 +166,8 @@ func (h *host) ChooseFolder(title string) (string, error) {
 	return d.PromptForSingleSelection()
 }
 
-// panelTitle names the panel for Hyprland's rule, which places it (the
-// main window is "magpie")
+// panelTitle names the panel for Hyprland's rule, which places it, and
+// for niri, which finds it by it (the main window is "magpie")
 const panelTitle = "magpie panel"
 
 // FitPanel grows or shrinks the panel to its content and keeps it anchored
@@ -180,12 +188,12 @@ func (h *host) fitPanel(height int, g Glide) {
 	if h.panel == nil { // let go: made again at this height
 		return
 	}
-	if h.panel.IsVisible() && h.glidePanel(height, g) {
+	if windowOpen(h.panel) && h.glidePanel(height, g) {
 		return
 	}
 	h.glides.Add(1)
 	h.panel.SetSize(h.panelW(), height)
-	if h.panel.IsVisible() {
+	if windowOpen(h.panel) {
 		_ = h.tray.PositionWindow(h.panel, 6)
 	}
 }
@@ -254,7 +262,7 @@ func (h *host) zoomWindows() {
 	}
 	setPageZoom(h.panel, z)
 	h.panel.SetSize(w, ht)
-	if h.panel.IsVisible() {
+	if windowOpen(h.panel) {
 		_ = h.tray.PositionWindow(h.panel, 6)
 	}
 }
@@ -337,13 +345,28 @@ func Run(version string, showMain bool, link string) error {
 		// way out, so the next launch is the new one.
 		// Quitting doesn't come back to main on a Mac (NSApp terminate:
 		// exits), so the CLIs still being asked something end here.
+		// Account failover magpie wrote into Codex goes with the gateway
+		// this process serves: Codex left pointed at it would retry till
+		// magpie is open again (Leon920717 on X). The next start writes it
+		// again (Sync).
 		OnShutdown: func() {
 			proc.EndProbes()
+			if served.Load() != nil {
+				if err := agent.EndCodexFailover(); err != nil {
+					log.Println("codex failover:", err)
+				}
+			}
 			updates.install(false)
 		},
 		// Wails exits on some webview errors; say why before it does.
 		ErrorHandler: func(err error) { log.Println("magpie:", err) },
 	})
+	// Windows without the WebView2 runtime can make no window: Wails would
+	// exit on the first, with nothing on screen to say why (#1806). The
+	// reader is told in a box of Windows' own instead, and the launch ends.
+	if !webView2Check(h.app) {
+		return nil
+	}
 	// Wails' default Learn More replaces the current window with wails.io.
 	// Keep the native menus, but open magpie's help in the system browser.
 	// macOS only: it is the one that shows a menu bar unasked; on Linux a
@@ -458,10 +481,13 @@ func Run(version string, showMain bool, link string) error {
 	go h.lighten()
 	h.watchAlerts()
 	// the quick panel by the icon, or the main window if the user would
-	// rather (Settings → Tray icon)
+	// rather (Settings → Click the tray icon to)
 	h.tray.OnClick(func() {
 		if cmdClick() {
 			return // Command-drag moves the icon; the system handles it
+		}
+		if runtime.GOOS == "linux" && menuOpening() {
+			return // a right-click opening the menu, not a click (#1430)
 		}
 		if runtime.GOOS == "darwin" {
 			go h.flap()
@@ -469,6 +495,9 @@ func Run(version string, showMain bool, link string) error {
 		if settings.Load().Tray == "window" {
 			h.ShowMain("")
 			return
+		}
+		if x, ok := trayClick(h.tray); ok {
+			h.iconX.Store(&x)
 		}
 		h.togglePanel()
 	})
@@ -481,7 +510,7 @@ func Run(version string, showMain bool, link string) error {
 		h.main.OnWindowEvent(events.Windows.WebViewNavigationCompleted, func(*application.WindowEvent) { markReady() })
 	} else {
 		h.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-			plainTitlebar(h.main) // Linux: the page's header is the title bar
+			plainTitlebar(h.main) // Linux: the page's header is the title bar; the Mac: a plain one's corners
 			nameWindow(h.panel, panelTitle)
 			ownFrame(h.panel) // KDE: no title bar of KWin's on it (#1283)
 			markReady()
@@ -579,7 +608,8 @@ func (h *host) setBird(b []byte) {
 	}
 }
 
-// panelOptions: the tray panel's window, frameless and see-through. On
+// panelOptions: the tray panel's window, frameless and (but on Linux)
+// see-through. On
 // Windows, Wails creates a frameless window as WS_OVERLAPPEDWINDOW with
 // DWM's frame extended into the whole client area (for the shadow and the
 // round corners), and with the close button left enabled (WS_SYSMENU) DWM
@@ -587,7 +617,15 @@ func (h *host) setBird(b []byte) {
 // where it shows through the panel's translucent page over the Settings
 // gear (#238). Hiding the caption buttons there takes WS_SYSMENU and the
 // minimise and maximise boxes off, so DWM has nothing to draw; the shadow
-// and corners stay. The Mac and Linux keep what they had.
+// and corners stay. The Mac keeps what it had.
+//
+// On Linux the panel is a solid window, as the main window is (#1803). A
+// see-through one is an RGBA, app-paintable GTK window under a transparent
+// webview, and scrolling it left a fainter copy of the old position's
+// paint behind (KDE Plasma 6, on Wayland and on XWayland, with WebKit's
+// compositing mode on or off), while the same page in the main window
+// never did. The page paints itself opaque there too (body.linux.panel in
+// app.css).
 func panelOptions(goos, theme string) application.WebviewWindowOptions {
 	o := application.WebviewWindowOptions{
 		Name:            "panel",
@@ -607,6 +645,9 @@ func panelOptions(goos, theme string) application.WebviewWindowOptions {
 			CornerRadius: 12,
 		},
 		Windows: application.WindowsWindow{HiddenOnTaskbar: true},
+	}
+	if goos == "linux" {
+		o.BackgroundType = application.BackgroundTypeSolid
 	}
 	if goos == "windows" {
 		o.MinimiseButtonState = application.ButtonHidden
@@ -666,6 +707,26 @@ func (h *host) togglePanelNow() {
 		}
 		h.placePanel()
 	}
+	// niri places it as it opens (see omarchy.NiriPanel), by the click
+	// that opened it, if a click did
+	if x := h.iconX.Swap(nil); omarchy.Niri() && !h.panel.IsVisible() {
+		h.niriWatch.Do(func() { go h.niri.Watch(panelTitle) })
+		h.niri.Opening(x)
+	}
+	if runtime.GOOS == "darwin" {
+		// Wails' ToggleWindow goes by IsVisible, which on the Mac is the
+		// window's occlusion: under a window over the whole screen (a
+		// remote-desktop server's, above every app's) the open panel read
+		// as closed, and the icon showed it again instead of closing it
+		// (#1661). Open is windowOpen: shown, covered or not.
+		if windowOpen(h.panel) {
+			h.panel.Hide()
+			return
+		}
+		_ = h.tray.PositionWindow(h.panel, 6)
+		h.panel.Show().Focus()
+		return
+	}
 	h.tray.ToggleWindow()
 }
 
@@ -673,11 +734,11 @@ func (h *host) togglePanelNow() {
 // click, the way Omarchy's own drop-downs sit: a Wayland window can't place
 // itself, so Hyprland is given a rule for it (see omarchy.PlacePanel).
 func (h *host) placePanel() {
-	x, y, room, ok := omarchy.PanelAt(h.panelW())
+	mon, x, y, room, ok := omarchy.PanelAt(h.panelW())
 	if !ok {
 		return
 	}
-	if err := omarchy.PlacePanel(panelTitle, x, y); err != nil {
+	if err := omarchy.PlacePanel(panelTitle, mon, x, y); err != nil {
 		log.Println("hyprland:", err)
 		return
 	}

@@ -93,6 +93,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.waitForTimeout(200);
         }
         await row.click();
+        await page.waitForFunction(() => document.querySelector("#rtPages .opt")?.getAttribute("aria-pressed") === "true");
         await page.waitForTimeout(300);
         return page.locator(".rt-steps").textContent();
       };

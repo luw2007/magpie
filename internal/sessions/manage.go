@@ -225,6 +225,9 @@ func Delete(agent, id string) (Trashed, error) {
 	if len(fs) == 0 {
 		return Trashed{}, errors.New("no such session")
 	}
+	if s.ReadOnly {
+		return Trashed{}, errors.New("this session is read only")
+	}
 	paths := sessionPaths(agent, id, fs)
 	if len(paths) == 0 {
 		// a stopped distro's listing, of files since gone

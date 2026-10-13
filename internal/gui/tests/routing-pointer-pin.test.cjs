@@ -12,6 +12,7 @@ const { test } = require("node:test");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = Date.now(), iso = (ms) => new Date(ms).toISOString();
@@ -46,6 +47,7 @@ function serve(feed) {
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
     if (url.pathname === "/api/groups") return json(groups);
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true, url: "http://127.0.0.1:3999" } });
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
     const ct = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" }[path.extname(file)];
@@ -66,11 +68,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const feed = {};
         await page.route("**/*", serve(feed));
         await page.goto("http://magpie.test/?view=routing");
+        await openPane(page, "groups");
         await page.locator(".rt-group").first().waitFor();
         await page.waitForTimeout(1500);
-        // the reader wheels down to the groups, then puts the pointer on the
-        // manual group's card
-        await page.mouse.move(8, h / 2);
+        // The reader opens Groups and puts the pointer on the manual card.
+        // over the view, not the sidebar beside it
+        const v = await page.locator("#view-routing").boundingBox();
+        await page.mouse.move(v.x + 8, h / 2);
         for (let i = 0; i < 80; i++) {
           const top = await page.evaluate(() => document.querySelector(".rt-group").getBoundingClientRect().top);
           if (top < 300) break;
@@ -81,7 +85,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const b = await page.locator(".rt-group").first().boundingBox();
         await page.mouse.move(b.x + 40, b.y + 10);
         await page.waitForTimeout(100);
-        const at = () => page.evaluate(() => [document.querySelector(".rt-group").getBoundingClientRect().top, document.querySelector(".rt-reqs").offsetHeight, document.querySelector("#rt").offsetHeight]);
+        const at = () => page.locator(".rt-group").first().evaluate((g) => g.getBoundingClientRect().top);
         const was = await at(), seen = [];
         for (let id = 104; id < 112; id++) for (const s of ["start", "read", "done"]) {
           for (let i = 0; i < 60 && !feed.next; i++) await page.waitForTimeout(50);
@@ -92,9 +96,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.waitForTimeout(250);
           seen.push(await at());
         }
-        const last = seen[seen.length - 1];
-        assert(last[1] + last[2] - was[1] - was[2] > 50 || w < 760, `what is above the groups really changed: ${JSON.stringify([was, last])}`);
-        for (const s of seen) assert(Math.abs(s[0] - was[0]) <= 1.5, `the card stayed under the pointer: ${was[0]} → ${seen.map((x) => Math.round(x[0])).join(" ")}`);
+        for (const top of seen) assert(Math.abs(top - was) <= 1.5, `the card stayed under the pointer: ${was} → ${seen.map(Math.round).join(" ")}`);
         assert.deepEqual(errors, []);
         feed.next?.(req(999, "done"));
         await context.close();

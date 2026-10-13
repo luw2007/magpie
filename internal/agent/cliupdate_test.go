@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,12 @@ func TestHowInstalled(t *testing.T) {
 	if u := howInstalled(cliSpecs["opencode"], oc); u == nil || u.shown() != "opencode upgrade" {
 		t.Errorf("opencode's installer: %+v", u)
 	}
+	// DevEco Code's install: ~/.local/bin/deveco → its versions folder
+	file(t, filepath.Join(home, ".local/share/deveco/versions/0.2.3/deveco"), "")
+	deveco := link(t, filepath.Join(home, ".local/share/deveco/versions/0.2.3/deveco"), filepath.Join(home, ".local/bin/deveco"))
+	if u := howInstalled(cliSpecs["deveco"], deveco); u == nil || u.via != "self" || u.pkg != "@deveco/deveco-code" || !reflect.DeepEqual(u.cmd, []string{deveco, "upgrade"}) {
+		t.Errorf("deveco's installer: %+v", u)
+	}
 
 	// a binary that says nothing of how it got there: the version only
 	if u := howInstalled(cliSpecs["claude"], file(t, filepath.Join(tmp, "opt/bin/claude"), "\x7fELF")); u != nil {
@@ -331,13 +338,16 @@ func TestUpdateCLI(t *testing.T) {
 func TestUpdateWithBunBridgesSOCKS(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	const socks = "socks5://127.0.0.1:4401"
-	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+	names := []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"}
+	for _, k := range names {
 		t.Setenv(k, socks)
 	}
+	// the proxy URLs only: NO_PROXY's hosts or Node's NODE_USE_ENV_PROXY=1,
+	// set on the machine running the test, name no proxy
 	proxies := func(env []string) []string {
 		var out []string
 		for _, kv := range env {
-			if k, v, _ := strings.Cut(kv, "="); strings.HasSuffix(strings.ToUpper(k), "_PROXY") && v != "" {
+			if k, v, _ := strings.Cut(kv, "="); slices.Contains(names, k) && v != "" {
 				out = append(out, v)
 			}
 		}

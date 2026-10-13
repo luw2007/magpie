@@ -63,8 +63,12 @@ func TestKeyReplacementPreservesBindingAndIdentity(t *testing.T) {
 	if err := SetKeyBinding("relay", "team", []string{"shared-pool"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReplaceKey("relay", "personal", "new-secret"); err != nil {
+	was, now, err := ReplaceKey("relay", "personal", "new-secret")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if was != "personal" || now != "personal" {
+		t.Fatalf("replacement changed identity: %q to %q", was, now)
 	}
 	if err := UseKey("relay", "team"); err != nil {
 		t.Fatal(err)

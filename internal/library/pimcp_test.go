@@ -408,9 +408,14 @@ func TestPiDetectLoaded(t *testing.T) {
 		`{"packages": []}`:                       {},
 		`{"packages": ["npm:pi-mcp-adapter"]}`:   {adapter: true, major: 5},
 		`{"packages": ["npm:pi-mcp-extension"]}`: {ext: true},
-		`{"packages": [{"source": "npm:pi-mcp-adapter", "extensions": []}]}`:   {},
-		`{"packages": [{"source": "npm:pi-mcp-adapter", "skills": []}]}`:       {adapter: true, major: 5},
-		`{"packages": ["npm:pi-mcp-adapter"], "extensions": ["-builtin:mcp"]}`: {adapter: true, major: 5, noBuiltin: true},
+		`{"packages": [{"source": "npm:pi-mcp-adapter", "extensions": []}]}`:                              {},
+		`{"packages": [{"source": "npm:pi-mcp-adapter", "skills": []}]}`:                                  {adapter: true, major: 5},
+		`{"packages": [{"source": "npm:pi-mcp-adapter", "autoload": false}]}`:                             {},
+		`{"packages": [{"source": "npm:pi-mcp-adapter", "autoload": false, "extensions": []}]}`:           {},
+		`{"packages": [{"source": "npm:pi-mcp-adapter", "autoload": false, "extensions": ["index.ts"]}]}`: {adapter: true, major: 5},
+		`{"packages": [{"source": "npm:pi-mcp-adapter", "autoload": true}]}`:                              {adapter: true, major: 5},
+		`{"extensions": ["+npm/node_modules/pi-mcp-adapter"]}`:                                            {},
+		`{"packages": ["npm:pi-mcp-adapter"], "extensions": ["-builtin:mcp"]}`:                            {adapter: true, major: 5, noBuiltin: true},
 	} {
 		write(t, filepath.Join(d, "settings.json"), settings)
 		if got := piDetect(d); got != want {

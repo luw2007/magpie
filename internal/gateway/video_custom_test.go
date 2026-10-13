@@ -27,6 +27,7 @@ type openAIVideos struct {
 	bodies []string // bodies of POST /v1/videos
 	heads  []http.Header
 	polls  int
+	lacks  string // a key answered 404 that it serves no such model
 }
 
 func newOpenAIVideos(t *testing.T) *openAIVideos {
@@ -45,6 +46,9 @@ func newOpenAIVideos(t *testing.T) *openAIVideos {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/v1/models":
 			io.WriteString(w, `{"object":"list","data":[{"id":"gpt-5.5","object":"model"},{"id":"vid-1","object":"model","kind":"video"},{"id":"sora-like-2","object":"model"}]}`)
+		case r.Method == "POST" && r.URL.Path == "/v1/videos" && key == u.lacks:
+			w.WriteHeader(404)
+			io.WriteString(w, `{"error":{"message":"Model \"vid-1\" is not supported by any configured account in this group","type":"invalid_request_error"}}`)
 		case r.Method == "POST" && r.URL.Path == "/v1/videos":
 			u.bodies = append(u.bodies, string(b))
 			io.WriteString(w, `{"id":"`+vid+`","object":"video","created_at":1790000000,"status":"queued","progress":0,"model":"vid-1","seconds":"4","size":"1280x720"}`)

@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/settings"
@@ -44,13 +45,20 @@ func GroupIDOf(ref string) (string, bool) {
 // Affinities are how long a conversation stays with the key or account that
 // answered it: "" auto, as long as what the vendor cached of it is worth
 // keeping; for the whole session; within a turn only, free to move when
-// the user speaks again; or never.
-var Affinities = []string{"", AffinitySession, AffinityTurn, AffinityOff}
+// the user speaks again; never; or strictly: for the whole session, never
+// moved to another key or account however it answers (#1797).
+var Affinities = []string{"", AffinitySession, AffinityTurn, AffinityOff, AffinityStrict}
 
 const (
 	AffinitySession = "session"
 	AffinityTurn    = "turn"
 	AffinityOff     = "off"
+	// AffinityStrict keeps a conversation on the key or account that
+	// answered it whatever happens: resting, all but used up or past the
+	// usage cap set on it, it is still the one asked, and its error goes
+	// to the agent rather than the conversation to another. A usage cap
+	// still keeps new conversations off it.
+	AffinityStrict = "strict"
 )
 
 // EffortAuto is a group whose classifier picks each turn's reasoning
@@ -58,8 +66,11 @@ const (
 const EffortAuto = "auto"
 
 // Ruled reports whether the group decides anything as a user's turn
-// begins: a rule to put a member first, or the turn's effort.
-func (g Group) Ruled() bool { return len(g.Rules) > 0 || g.Effort == EffortAuto }
+// begins: a rule to put a member first, or the turn's effort. A pause
+// rule decides nothing then (PausedOut is looked at on every request).
+func (g Group) Ruled() bool {
+	return slices.ContainsFunc(g.Rules, func(r Rule) bool { return !r.Pause }) || g.Effort == EffortAuto
+}
 
 // Manual is a group's routing when the user picks which member it uses,
 // as CC Switch has one provider on at a time (#317): every request goes to
@@ -104,11 +115,32 @@ func (g Group) Live() Group {
 	return g
 }
 
-// Group is a routing group.
+// PatienceOff, PatienceDefault and PatienceLongest are a group's
+// Patience: none, the seconds a group waits that hasn't set it, and the
+// most it may.
+const (
+	PatienceOff     = -1
+	PatienceDefault = 60
+	PatienceLongest = 240
+)
+
+// Waits is how long a request to the group may be kept for its members to
+// come back (Patience), 0 for not at all.
+func (g Group) Waits() time.Duration {
+	switch {
+	case g.Patience < 0:
+		return 0
+	case g.Patience == 0:
+		return PatienceDefault * time.Second
+	}
+	return time.Duration(min(g.Patience, PatienceLongest)) * time.Second
+}
+
 // ContextSmallest is a group's Context when agents are told the window of
 // its smallest member.
 const ContextSmallest = -1
 
+// Group is a routing group.
 type Group struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
@@ -134,6 +166,14 @@ type Group struct {
 	// waits as long as it takes. The last one left is always waited for,
 	// and the slow one doesn't rest.
 	FirstToken int `json:"firstToken,omitempty"`
+	// Patience is how many seconds more a request may be kept, once every
+	// member has failed and nothing of a reply has been sent, for the
+	// members that failed in a way that passes —
+	// busy, overloaded, rate limited for a moment — to be asked again
+	// after a pause, in turn, until one answers (#1418). 0 is
+	// PatienceDefault; PatienceOff gives the agent the last one's error
+	// once each has been asked.
+	Patience int `json:"patience,omitempty"`
 	// Off are the members switched off: kept where they are in the
 	// order, with their rules, but sent nothing until switched on again,
 	// so trying a group without one doesn't mean taking it out.
@@ -177,6 +217,13 @@ type Group struct {
 	// Family is a tag the group goes by in which agents are shown it
 	// (settings' Visible), with its id.
 	Family string `json:"family,omitempty"`
+	// Unlists keeps the models the group names, or its patterns match,
+	// out of the lists agents and the gateway's model list show (#1783):
+	// they are offered through the group alone, as a provider kept for
+	// routing groups offers its own (Provider.Unlisted), and a request
+	// naming one is still served. A group in it keeps its own, as it
+	// says. Not while the group is switched off.
+	Unlists bool `json:"unlists,omitempty"`
 	// Auto is set on a group magpie found: one model served by several
 	// providers. It is derived, never stored.
 	Auto bool `json:"auto,omitempty"`
@@ -257,7 +304,7 @@ func groupsIn(entries []Entry) []Group {
 			}
 			g = withoutRemoved(g, have)
 		}
-		out = append(out, withMatches(entries, g))
+		out = append(out, withMatches(entries, g.own()))
 	}
 	if f.NoAutoGroups {
 		return orderedGroups(out, f.GroupOrder)
@@ -303,6 +350,32 @@ func withoutRemoved(g Group, have map[string]bool) Group {
 	g.Members = kept
 	g.Off = slices.DeleteFunc(slices.Clone(g.Off), gone)
 	g.Fast = slices.DeleteFunc(slices.Clone(g.Fast), gone)
+	return g
+}
+
+// own is the group with lists of its own. f.Groups is the providers.json
+// every look-up shares while a request holds the catalog (heldOf), so a
+// caller changing its group in place — the TUI deleting a rule, SaveGroup
+// cleaning one — would change it for every reader in that while, and keep
+// the change there when the save failed.
+func (g Group) own() Group {
+	g.Members = slices.Clone(g.Members)
+	g.Match = slices.Clone(g.Match)
+	g.Matched = slices.Clone(g.Matched)
+	g.Off = slices.Clone(g.Off)
+	g.Levels = slices.Clone(g.Levels)
+	g.Fast = slices.Clone(g.Fast)
+	g.Rules = slices.Clone(g.Rules)
+	for i, r := range g.Rules {
+		g.Rules[i].Agents = slices.Clone(r.Agents)
+		g.Rules[i].Folders = slices.Clone(r.Folders)
+		g.Rules[i].ExceptFolders = slices.Clone(r.ExceptFolders)
+		if r.Time != nil {
+			w := *r.Time
+			w.Days = slices.Clone(w.Days)
+			g.Rules[i].Time = &w
+		}
+	}
 	return g
 }
 
@@ -611,6 +684,11 @@ func groupOf(all []Group, id string) (Group, bool) {
 // member — and a group that would be in itself is cut there. A manual
 // group has only the member picked (see Manual), however deep.
 func membersIn(entries []Entry, all []Group, g Group) []Member {
+	return membersOff(entries, all, g, disabledNow())
+}
+
+// membersOff is membersIn less the models off reports.
+func membersOff(entries []Entry, all []Group, g Group, off func(pid, model string) bool) []Member {
 	var out []Member
 	seen := map[string]bool{}
 	var walk func(g Group, path []string, via []Group, in []string)
@@ -630,6 +708,9 @@ func membersIn(entries []Entry, all []Group, g Group) []Member {
 			key := WithMemberEffort(p.ID+"/"+m, effort)
 			if !ok || seen[key] {
 				continue
+			}
+			if off(p.ID, m) {
+				continue // the user turned it off (#1867): a group never reaches it
 			}
 			seen[key] = true
 			out = append(out, Member{ID: at[0], Path: at, Via: via, Provider: p, Model: m, Effort: effort, Fast: g.IsFast(id)})
@@ -661,8 +742,8 @@ func groupEntries(entries []Entry) []Entry {
 			continue
 		}
 		ms := membersIn(entries, all, g)
-		if len(ms) == 0 {
-			continue
+		if len(ms) == 0 || DecisionGroup(ms) {
+			continue // a decision group answers System One, no agent's conversation
 		}
 		e := Entry{ID: GroupPrefix + g.ID, Model: ms[0].Model, Name: g.Name, Provider: ms[0].Provider, Group: g.ID, Named: !g.Auto}
 		var fixed []string // the efforts members are fixed at
@@ -786,7 +867,7 @@ func groupEntries(entries []Entry) []Entry {
 		}
 		ruledEntry(&e, g.Live(), ms, entries)
 		if g.Context > 0 {
-			e.Context = g.Context
+			e.Context, e.WindowSet = g.Context, true
 		} else if g.Context == ContextSmallest && smallest > 0 {
 			e.Context = smallest
 		}
@@ -830,6 +911,7 @@ func (e Entry) Quiet() bool {
 // SaveGroup adds or replaces a group of the user's. Changing one magpie
 // found makes it the user's.
 func SaveGroup(g Group) error {
+	g = g.own() // cleaned below in place: the caller's lists stay as they were
 	g.ID = strings.ToLower(strings.TrimSpace(g.ID))
 	g.Name = strings.TrimSpace(g.Name)
 	if g.ID == "" {
@@ -842,6 +924,10 @@ func SaveGroup(g Group) error {
 		g.Name = g.ID
 	}
 	g.FirstToken = max(g.FirstToken, 0)
+	if g.Patience < 0 {
+		g.Patience = PatienceOff
+	}
+	g.Patience = min(g.Patience, PatienceLongest)
 	if g.Context < 0 {
 		g.Context = ContextSmallest
 	}
@@ -893,10 +979,10 @@ func SaveGroup(g Group) error {
 	if err := groupsInGroup(g, groupsIn(entries)); err != nil {
 		return err
 	}
-	for _, m := range g.Members {
-		if IsDecider(m) {
-			return fmt.Errorf("%s decides a group's model and effort; it holds no conversation, so it can only be the group's classifier", m)
-		}
+	// decision models make a group of their own, asked at /v1/systemone,
+	// never one with models that hold conversations (decide_group.go)
+	if err := cleanDecisionGroup(&g, groupsIn(entries)); err != nil {
+		return err
 	}
 	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Pace && g.Routing != Manual && g.Routing != Benchmark {
 		g.Routing = ""

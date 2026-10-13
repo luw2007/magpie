@@ -66,7 +66,7 @@ func wslFinds(k wslKind) (probe string, has map[string]bool, versions map[string
 func moveHostDirs(t *testing.T) string {
 	t.Helper()
 	moved := t.TempDir()
-	for _, v := range []string{"OPENCODE_CONFIG_DIR", "MIMOCODE_HOME", "KIMI_CODE_HOME", "KIMI_SHARE_DIR", "PI_CODING_AGENT_DIR",
+	for _, v := range []string{"OPENCODE_CONFIG_DIR", "MIMOCODE_HOME", "DEVECO_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_SHARE_DIR", "PI_CODING_AGENT_DIR",
 		"HERMES_HOME", "GROK_HOME", "FACTORY_HOME_OVERRIDE", "MINIMAX_DATA_DIR", "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "DSH_HOME", "MISTER_MORPH_CONFIG",
 		"CODEBUDDY_CONFIG_DIR", "CLINE_DIR", "CLINE_DATA_DIR", "ATOMCODE_HOME", "REASONIX_HOME", "SNOW_CONFIG_DIR", "APPDATA"} {
 		t.Setenv(v, filepath.Join(moved, v))

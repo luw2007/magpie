@@ -31,8 +31,8 @@ func TestCodexCustomProviderModelHasEfforts(t *testing.T) {
 	if err := cx.Fields[0].Set("volc/glm-5.3-flash"); err != nil {
 		t.Fatal(err)
 	}
-	if cfg := read(); !strings.Contains(cfg, `model_reasoning_effort = "high"`) {
-		t.Fatalf("effort not settled on the model's default:\n%s", cfg)
+	if cfg := read(); !strings.Contains(cfg, `model_reasoning_effort = "low"`) {
+		t.Fatalf("effort not settled on the nearest level:\n%s", cfg)
 	}
 	b, _ := os.ReadFile(filepath.Join(home, ".codex", "magpie-models.json"))
 	var cat struct {
@@ -59,7 +59,7 @@ func TestCodexCustomProviderModelHasEfforts(t *testing.T) {
 		}
 		got[m.Slug] = strings.Join(ls, ",") + " / " + d
 	}
-	if got["volc/glm-5.3-flash"] != "low,high,max / high" {
+	if got["volc/glm-5.3-flash"] != "low,high,max / low" {
 		t.Errorf("glm-5.3-flash: %q", got["volc/glm-5.3-flash"])
 	}
 	// a model no one says reasons keeps none
@@ -96,7 +96,7 @@ func TestCodexCustomProviderModelHasEfforts(t *testing.T) {
 	if err := cx.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg := read(); !strings.Contains(cfg, `model_reasoning_effort = "high"`) {
+	if cfg := read(); !strings.Contains(cfg, `model_reasoning_effort = "low"`) {
 		t.Errorf("sync left the effort:\n%s", cfg)
 	}
 }

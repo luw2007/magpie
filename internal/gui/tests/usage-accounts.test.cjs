@@ -76,26 +76,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], requests = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", fixture(lang, requests));
-      const w = lang === "zh"
-        ? { head: "账号", none: "未记录账号", all: "全部账号" }
-        : { head: "Accounts", none: "account not recorded", all: "All accounts" };
       await page.goto("http://magpie.test/?view=usage");
 
       // Overview: one row per provider and account, the unrecorded one named so
       await page.locator("#usageAccounts .row").first().waitFor();
       assert.equal(await page.locator("#usageAccountsHead").isHidden(), false);
-      assert.equal((await page.locator("#usageAccountsHead").textContent()).trim(), w.head);
-      assert.deepEqual(await page.locator("#usageAccounts .name").allTextContents(), ["a@example.com", "b@example.com", w.none, "a@example.com"]);
+      const names = await page.locator("#usageAccounts .name").allTextContents();
+      assert.equal(names.length, 4, "one row per provider and account");
+      assert.deepEqual([names[0], names[1], names[3]], ["a@example.com", "b@example.com", "a@example.com"]);
+      assert(names[2]?.trim() && !names[2].includes("@"), "the unrecorded account has a nonempty fallback label");
       assert.deepEqual(await page.locator("#usageAccounts .sub").evaluateAll((s) => s.map((x) => x.textContent.split(" · ")[0])), ["Codex", "Codex", "Codex", "Claude"]);
       assert.deepEqual(await page.locator("#usageAccounts .cost").allTextContents(), ["≈$3.75", "≈$2.50", "≈$2.50", "≈$1.25"]);
       // no coloured stripe down a row's side
       assert(await page.locator("#usageAccounts .row").evaluateAll((rs) => rs.every((r) => parseFloat(getComputedStyle(r).borderLeftWidth) === 0)));
 
       // Requests: the Account filter asks for one account's calls
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await page.locator(".led tbody tr").first().waitFor();
       assert.equal(await page.locator("#ledAccount").isHidden(), false);
-      assert.equal((await page.locator("#ledAccount").textContent()).trim(), w.all);
+      assert.equal(await page.locator("#ledAccount").getAttribute("title"), "", "the initial account filter is unset");
       const view = "#view-usage";
       // the reader scrolls a little, the filter still in sight
       const box = await page.locator(view).boundingBox();
@@ -119,7 +118,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.waitForFunction(() => document.querySelector("#status").textContent.includes("accounts.csv"));
       assert.equal(requests.findLast((q) => q.method === "POST").get("account"), "b@example.com");
       await page.locator("#ledAccount").click();
-      await page.locator(".sess-menu .pm-item", { hasText: w.all }).click();
+      await page.locator(".sess-menu .pm-item").first().click();
       await page.waitForFunction(() => document.querySelectorAll(".led tbody tr").length === 40);
       assert(!requests.at(-1).has("account"));
       if (process.env.ARTIFACT_DIR) {

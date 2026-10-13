@@ -49,6 +49,7 @@ function serve(lang, posts) {
     if (url.pathname === "/api/providers") return json(providers);
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/") && route.request().method() === "POST") {
       const body = route.request().postDataJSON();
       posts.push({ path: url.pathname, body });
@@ -96,6 +97,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       return { page, errors, posts };
     };
     const rows = (page) => page.locator(".editor .accts .acc[data-account-id]");
+    const settled = (page) => page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {}))).then(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))));
     const scrolled = (page) => page.evaluate(() => [window.scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop > 0).map((e) => `${e.className}:${e.scrollTop}`)].join(" "));
     const plain = (page) => page.evaluate(() => ({
       selects: document.querySelectorAll("select").length,
@@ -115,13 +117,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await rows(page).first().getAttribute("data-account-id"), idOf(0));
       assert.equal((await page.locator(".keys-more .n").textContent()).trim(), w.all);
       assert.deepEqual(await plain(page), { selects: 0, leftBorders: [] });
+      await page.locator(".keys-more").scrollIntoViewIfNeeded();
+      await settled(page);
       const sc = await scrolled(page);
       await page.locator(".keys-more").click();
       const filter = page.locator(".keys-tools .keys-filter");
       await filter.waitFor();
       assert.equal(await filter.getAttribute("aria-label"), await filter.getAttribute("placeholder"));
+      await page.waitForFunction(() => document.activeElement?.classList.contains("keys-filter"), null, { timeout: 2000 });
+      await settled(page);
       assert.equal(await scrolled(page), sc, "opening scrolled");
-      assert.ok(await filter.evaluate((i) => document.activeElement === i), "the filter has the focus");
       assert.equal(await rows(page).count(), 50, "opened, a page of 50 rows");
       assert.equal((await page.locator(".accts .keys-rest").textContent()).trim(), w.more);
       assert.deepEqual(await plain(page), { selects: 0, leftBorders: [] });
@@ -135,10 +140,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".keys-filter").dispatchEvent("input");
       await page.waitForFunction(() => document.querySelectorAll(".editor .accts .acc[data-account-id]").length === 1);
       assert.equal(await rows(page).first().getAttribute("data-account-id"), idOf(7));
-      await page.getByRole("button", { name: w.fewer }).click();
+      // the narrowed editor is short and has clamped its place by itself; the click on Show fewer is measured from where that left the button
+      const fewer = page.getByRole("button", { name: w.fewer });
+      await fewer.scrollIntoViewIfNeeded();
+      await settled(page);
+      const before = await scrolled(page);
+      await fewer.click();
       await page.locator(".keys-more").waitFor();
       assert.equal(await rows(page).count(), 5);
-      assert.equal(await scrolled(page), sc, "a click scrolled");
+      await settled(page);
+      assert.equal(await scrolled(page), before, "a click scrolled");
       assert.deepEqual(errors, []);
     });
 
@@ -149,6 +160,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.getByRole("button", { name: w.off }).count(), 1);
       // nothing typed, nothing to remove by the filter
       assert.equal(await page.locator(".keys-tools .keys-remove").filter({ hasText: w.matching }).count(), 0);
+      await page.getByRole("button", { name: w.failing }).scrollIntoViewIfNeeded();
       const sc = await scrolled(page);
       const failing = page.getByRole("button", { name: w.failing });
       const ask = page.locator("dialog.action-confirm[open]");

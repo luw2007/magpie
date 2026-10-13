@@ -105,8 +105,10 @@ function renderKeyBinding(p, k) {
   for (const pool of choices) {
     const label = el("label", "kbind-chip" + (pool.unavailable ? " unavailable" : ""));
     const tick = input("", "", "checkbox");
+    const mark = () => label.classList.toggle("on", tick.checked); // a class, not :has(), which Safari before 15.4 lacks
     tick.checked = selected.has(pool.id);
-    tick.onchange = () => { tick.checked ? selected.add(pool.id) : selected.delete(pool.id); stage(); };
+    mark();
+    tick.onchange = () => { mark(); tick.checked ? selected.add(pool.id) : selected.delete(pool.id); stage(); };
     const meta = el("span", "kbind-meta");
     meta.textContent = (pool.name || pool.id) + (available.has(pool.id) ? "" : " · " + t("unavailable"));
     label.append(tick, meta);

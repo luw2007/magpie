@@ -138,16 +138,6 @@ func findCodexDaemon(ps []proc.Process, home string) int {
 	return ids[0]
 }
 
-// codexDaemon is the process id of Codex's managed app-server, 0 when none
-// runs; known is false when the processes couldn't be listed.
-func codexDaemon(ctx context.Context) (pid int, known bool) {
-	ps, err := listProcesses(ctx)
-	if err != nil {
-		return 0, false
-	}
-	return findCodexDaemon(ps, codexHome()), true
-}
-
 // codexDaemonLeft is the app-server that was running when Codex's account
 // last changed, and the account it was started on: it stays on that one
 // until it restarts.
@@ -160,6 +150,13 @@ var (
 	codexDaemonMu      sync.Mutex
 	codexDaemonLeft    leftDaemon
 	codexDaemonChecked time.Time
+	// codexAppLeft is the Codex desktop app's own app-server (ChatGPT.app's
+	// CodexCLI.app) that was running when Codex's account changed: it
+	// keeps the account it started on until the app is quit and opened
+	// again (codex-rs AuthManager reloads auth.json only for the same
+	// account), so the app goes on reading that account's limits, and
+	// stops sending in every thread once those are spent.
+	codexAppLeft leftDaemon
 )
 
 // codexDaemonRecheck is how long CodexDaemonStale trusts what it last saw.
@@ -170,21 +167,31 @@ const codexDaemonRecheck = 5 * time.Second
 func noteCodexSwitch(from, to string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pid, known := codexDaemon(ctx)
+	ps, err := listProcesses(ctx)
+	known := err == nil
 	codexDaemonMu.Lock()
 	defer codexDaemonMu.Unlock()
 	codexDaemonChecked = time.Now()
+	if !known {
+		return
+	}
+	noteLeft(&codexDaemonLeft, findCodexDaemon(ps, codexHome()), from, to)
+	noteLeft(&codexAppLeft, findCodexApp(ps), from, to)
+}
+
+// noteLeft updates what is known of the app-server pid, running as Codex's
+// account changes from one to another.
+func noteLeft(left *leftDaemon, pid int, from, to string) {
 	switch {
-	case !known:
 	case pid == 0:
-		codexDaemonLeft = leftDaemon{}
-	case pid == codexDaemonLeft.pid:
-		// the daemon is on the account it started with, whatever came between
-		if strings.EqualFold(to, codexDaemonLeft.user) {
-			codexDaemonLeft = leftDaemon{}
+		*left = leftDaemon{}
+	case pid == left.pid:
+		// it is on the account it started with, whatever came between
+		if strings.EqualFold(to, left.user) {
+			*left = leftDaemon{}
 		}
 	default:
-		codexDaemonLeft = leftDaemon{pid, from}
+		*left = leftDaemon{pid, from}
 	}
 }
 
@@ -194,20 +201,43 @@ func noteCodexSwitch(from, to string) {
 func CodexDaemonStale() string {
 	codexDaemonMu.Lock()
 	defer codexDaemonMu.Unlock()
-	if codexDaemonLeft.pid == 0 {
-		return ""
-	}
-	if time.Since(codexDaemonChecked) > codexDaemonRecheck {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		pid, known := codexDaemon(ctx)
-		cancel()
-		codexDaemonChecked = time.Now()
-		if known && pid != codexDaemonLeft.pid {
-			// restarted, or stopped, since: it reads the sign-in afresh
-			codexDaemonLeft = leftDaemon{}
-		}
-	}
+	recheckLeft()
 	return codexDaemonLeft.user
+}
+
+// CodexAppStale answers the account the Codex desktop app is still signed
+// in to when Codex has been switched to another since the app opened, ""
+// when it isn't open or is on the account Codex is. The app shows that
+// account's limits, and once they are spent won't send in any thread,
+// until it is quit and opened again.
+func CodexAppStale() string {
+	codexDaemonMu.Lock()
+	defer codexDaemonMu.Unlock()
+	recheckLeft()
+	return codexAppLeft.user
+}
+
+// recheckLeft forgets an app-server left on an account before that has
+// restarted, or stopped, since: a new one reads the sign-in afresh. What
+// was known stays when the processes can't be listed. codexDaemonMu is
+// held.
+func recheckLeft() {
+	if codexDaemonLeft.pid == 0 && codexAppLeft.pid == 0 || time.Since(codexDaemonChecked) <= codexDaemonRecheck {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ps, err := listProcesses(ctx)
+	cancel()
+	codexDaemonChecked = time.Now()
+	if err != nil {
+		return
+	}
+	if findCodexDaemon(ps, codexHome()) != codexDaemonLeft.pid {
+		codexDaemonLeft = leftDaemon{}
+	}
+	if findCodexApp(ps) != codexAppLeft.pid {
+		codexAppLeft = leftDaemon{}
+	}
 }
 
 // DismissCodexDaemon stops saying the app-server is on another account.
@@ -215,6 +245,44 @@ func DismissCodexDaemon() {
 	codexDaemonMu.Lock()
 	defer codexDaemonMu.Unlock()
 	codexDaemonLeft = leftDaemon{}
+}
+
+// DismissCodexApp stops saying the Codex app is on another account.
+func DismissCodexApp() {
+	codexDaemonMu.Lock()
+	defer codexDaemonMu.Unlock()
+	codexAppLeft = leftDaemon{}
+}
+
+// findCodexApp picks, among the running processes, the app-server the
+// Codex desktop app runs for itself: 0 when it isn't open. On macOS that
+// is ChatGPT.app's (or Codex.app's) bundled codex, `…/CodexCLI.app/
+// Contents/MacOS/codex [-c k=v…] app-server --analytics-default-enabled …`;
+// on Windows the Store app's `…\WindowsApps\OpenAI.Codex_…\codex.exe
+// app-server`. Not the managed daemon, nor an app-server's helpers or
+// proxy, nor an editor's codex.
+func findCodexApp(ps []proc.Process) int {
+	for _, p := range ps {
+		if isManagedDaemon(p.Args) {
+			continue
+		}
+		// the program's own path: ps leaves a path's spaces unquoted, so
+		// "…/Codex Computer Use.app/Contents/MacOS/…" reads as one named Codex
+		exe, rest := splitExe(p.Args)
+		if !strings.Contains(exe, ".app/Contents/") && !strings.Contains(exe, `\WindowsApps\OpenAI.`) {
+			continue
+		}
+		if base := strings.ToLower(exe[strings.LastIndexAny(exe, `/\`)+1:]); base != "codex" && base != "codex.exe" {
+			continue
+		}
+		f := strings.Fields(rest)
+		i := slices.Index(f, "app-server")
+		if i < 0 || i+1 < len(f) && !strings.HasPrefix(f[i+1], "-") {
+			continue
+		}
+		return p.PID
+	}
+	return 0
 }
 
 // RestartCodexDaemon has Codex restart its app-server, which reads the

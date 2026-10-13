@@ -1,0 +1,84 @@
+//go:build linux && cgo && gtk3 && !nogui
+
+package gui
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestClipboardReadBack builds testdata/clipboard_probe.c with the copy and
+// the read back the app runs (clipboard_gtk3.h) and copies in a real GTK 3
+// window on the Wayland compositor the test runs under. magpie's copy is
+// read back whole. Wails' copy (CLIPBOARD, then PRIMARY) is read back empty
+// where the compositor has no primary selection, as on #1881's KDE Plasma
+// with middle-click paste off, and the read back then says no copy was
+// made. It needs a Wayland session that gives a new window the focus
+// (KWin, with kwinrc [Wayland] EnablePrimarySelection=false for the
+// second case).
+func TestClipboardReadBack(t *testing.T) {
+	if os.Getenv("WAYLAND_DISPLAY") == "" {
+		t.Skip("needs a Wayland session")
+	}
+	flags, err := exec.Command("pkg-config", "--cflags", "--libs", "gtk+-3.0", "wayland-client").Output()
+	if err != nil {
+		t.Skip("no GTK 3 / wayland-client headers:", err)
+	}
+	here, _ := filepath.Abs(".")
+	bin := filepath.Join(t.TempDir(), "probe")
+	args := append([]string{"testdata/clipboard_probe.c", "-I" + here, "-o", bin}, strings.Fields(string(flags))...)
+	if out, err := exec.Command("cc", args...).CombinedOutput(); err != nil {
+		t.Fatalf("build probe: %v\n%s", err, out)
+	}
+	run := func(t *testing.T, mode, text string) (primary, read int, held string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, mode, text)
+		cmd.Env = append(os.Environ(), "GDK_BACKEND=wayland")
+		out, err := cmd.Output()
+		t.Logf("%s: %s", mode, out)
+		if err != nil {
+			t.Fatalf("probe: %v", err)
+		}
+		primary, read = -2, -2
+		for _, l := range strings.Split(string(out), "\n") {
+			fmt.Sscanf(l, "primary=%d", &primary)
+			if strings.HasPrefix(l, "read=") {
+				var n int
+				fmt.Sscanf(l, "read=%d len=%d", &read, &n)
+				if i := strings.Index(l, " text="); i >= 0 {
+					held = l[i+len(" text="):]
+				}
+			}
+		}
+		if read == -1 {
+			t.Skip("the compositor sent the probe no selection (no focus?)")
+		}
+		return primary, read, held
+	}
+	text := "claude --resume 1881 «剪贴板»"
+	t.Run("magpie", func(t *testing.T) {
+		_, read, held := run(t, "magpie", text)
+		if !copyHeld(read, held, text) {
+			t.Errorf("read back %d %q, want %q", read, held, text)
+		}
+	})
+	t.Run("wails", func(t *testing.T) {
+		primary, read, held := run(t, "wails", text)
+		if primary != 0 {
+			t.Skip("the compositor has a primary selection: Wails' copy works there")
+		}
+		if read != 1 || held != "" {
+			t.Errorf("read back %d %q, want 1 and an empty text (GTK closing the pipe)", read, held)
+		}
+		if copyHeld(read, held, text) {
+			t.Error("an empty read back counts as a copy made")
+		}
+	})
+}

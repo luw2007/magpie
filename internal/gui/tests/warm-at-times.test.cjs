@@ -13,6 +13,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -106,7 +107,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [], posts = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, posts));
+        await watchSettingsReads(page);
         await page.goto("http://magpie.test/?view=settings&tab=usage");
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         const box = page.locator("#warmAtSegs"), fields = box.locator("input.at");
         await fields.first().waitFor();
         const times = () => fields.evaluateAll((is) => is.map((i) => i.value));
@@ -128,15 +131,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // a reader's click, on what is in sight (Playwright's own would
         // scroll it there first): what was clicked, or what is drawn in its
         // place (after, by default the same), stays where it was on the
-        // screen while the row redraws around it
+        // screen while the row redraws around it. When the times wrap onto a
+        // second line (a longer language at 900px) the row grows around the
+        // control, which is centred in it, and the control's top edge settles
+        // a few px off its old place; the reader's pointer must then still be
+        // over the control drawn there.
         const press = async (loc, what, after = loc) => {
           const b = await loc.boundingBox(), vh = page.viewportSize().height, was = await after.boundingBox();
           assert(b && b.y >= 0 && b.y + b.height <= vh, `${what} in sight: ${JSON.stringify(b)}`);
-          await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+          const py = b.y + b.height / 2;
+          await page.mouse.click(b.x + b.width / 2, py);
           return async () => {
             await page.waitForTimeout(200);
             const a = await after.boundingBox();
-            assert(a && Math.abs(a.y - was.y) <= 1, `${what} moved on the screen: ${was.y} → ${a?.y}`);
+            assert(a && (Math.abs(a.y - was.y) <= 1 || (py >= a.y && py <= a.y + a.height)), `${what} moved on the screen: ${was.y} → ${a?.y}`);
           };
         };
         const set = (i, v) => fields.nth(i).evaluate((e, v) => { e.value = v; e.dispatchEvent(new Event("change", { bubbles: true })); }, v);

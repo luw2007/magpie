@@ -62,13 +62,21 @@ jobs:
         run: go vet -tags "${{ steps.tags.outputs.tags }}" ./...
 
       - uses: oven-sh/setup-bun@v2
-        if: runner.os == 'Linux'
         with:
           bun-version: 1.4.2
 
       - name: Test
         if: runner.os != 'Windows'
         run: go test -tags "${{ steps.tags.outputs.tags }}" ./...
+
+      # Windows skips the Test step above, so the two plugin stderr tests run
+      # here. The end-to-end one needs bun on PATH; without it it skips.
+      - name: Plugin stderr tests (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          bun --version
+          go test -v -count=1 ./internal/plugin/ -run '^(TestHostStartsPastAnOverlongStderrLine|TestDrainStderrKeepsTheChildGoing)$'
 
       - name: Production plugin flow
         if: runner.os == 'Linux'

@@ -31,6 +31,7 @@ function serve(lang, calls) {
     if (url.pathname === "/api/state") return json(state);
     if (url.pathname === "/api/providers") return json(providers);
     if (url.pathname === "/api/groups") return json({ groups: [] });
+    if (["/api/usage/sources", "/api/usage/pools"].includes(url.pathname)) return json([]);
     if (url.pathname.startsWith("/api/provider/")) {
       const body = route.request().postDataJSON();
       calls.push([url.pathname.slice(14), body]);

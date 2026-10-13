@@ -134,6 +134,12 @@ docker logs magpie</pre>
       <pre id="ex-signin">docker exec -it magpie magpie accounts add codex</pre>
     </div>
     <p>打开它打印的链接并登录，再把浏览器最后停在的地址粘贴回去。Web 界面也能从文件导入登录。</p>
+    <p>Claude 订阅的登录和请求都经过 Claude Code，而镜像里没有它。先让 magpie 下载 Anthropic 官方的构建：它会说明版本、下载来源和保存位置，问过你再下载，并用 Anthropic 清单里的 SHA-256 校验。它保存在 <code>/config/cache</code> 里；再运行一次可以更新到新版本。缺少 Claude Code 时，<code>magpie accounts add claude</code> 也会提出下载。</p>
+    <div class="code">
+      <span class="lang">Shell</span>
+      <button class="copy" data-copy="ex-claude-code">复制</button>
+      <pre id="ex-claude-code">docker exec -it magpie magpie claude-code install</pre>
+    </div>
 
     <h2 id="volume"><a class="anchor" href="#volume">保存了什么</a></h2>
     <p>magpie 写的所有东西都在 <code>/config</code> 下，所以重启、或者在同一个数据卷上新建容器，供应商、密钥、登录和插件都还在。</p>
@@ -141,7 +147,7 @@ docker logs magpie</pre>
       <tr><th>路径</th><th>内容</th></tr>
       <tr><td><code>/config/magpie</code></td><td>magpie 自己的文件：<code>settings.json</code>、供应商、网关密钥、路由组</td></tr>
       <tr><td><code>/config/home</code></td><td>容器的 <code>HOME</code>：登录保存在对应 Agent 保存的位置（<code>~/.codex</code>、<code>~/.claude</code>……）</td></tr>
-      <tr><td><code>/config/cache</code></td><td>模型目录，以及插件运行用的 Bun（第一次用插件时下载）</td></tr>
+      <tr><td><code>/config/cache</code></td><td>模型目录、插件运行用的 Bun（第一次用插件时下载），以及 <code>magpie claude-code install</code> 下载的 Claude Code</td></tr>
       <tr><td><code>/config/data</code>、<code>/config/state</code></td><td>magpie 保存的其他内容</td></tr>
     </table></div>
     <p>旧镜像创建的数据卷照样能用：magpie 启动时会补上缺的目录。只有用旧镜像做的登录（当时存在数据卷之外）需要重新登录。</p>
@@ -152,17 +158,19 @@ docker logs magpie</pre>
       <tr><td><code>MAGPIE_ADDR</code></td><td>网关监听的地址。镜像里设为 <code>0.0.0.0:3425</code>，发布的端口才能访问到它。</td></tr>
       <tr><td><code>MAGPIE_PUBLIC_URL</code></td><td>其他机器访问网关用的地址，例如 <code>http://192.168.1.20:3425</code>（宿主机或 NAS 的地址，加发布的端口），或反向代理的 base URL。容器里 magpie 只看得到 Docker 自己的 <code>172.17.x</code> 地址；设置后，它显示和打印的就是该用的地址。</td></tr>
       <tr><td><code>MAGPIE_WEB_KEY</code></td><td>Web 界面的 key，重启后不变（16 个字符以上）</td></tr>
+      <tr><td><code>MAGPIE_ALLOW_IPS</code></td><td>其他机器只能从这些地址访问网关和 Web 界面，写 IP 或 CIDR 网段：<code>203.0.113.7,10.0.0.0/8,2001:db8::/32</code>。其他地址即使带着网关密钥也会得到 403。不设置则所有地址都可访问，各自仍需密钥。见<a href="#allow">允许的地址</a>。</td></tr>
       <tr><td><code>HOME</code>、<code>XDG_CONFIG_HOME</code>、<code>XDG_CACHE_HOME</code>、<code>XDG_DATA_HOME</code>、<code>XDG_STATE_HOME</code></td><td>镜像已设为上面 <code>/config</code> 下的目录，不要改</td></tr>
     </table></div>
 
     <h2 id="share"><a class="anchor" href="#share">网关密钥与其他机器</a></h2>
     <ol class="steps">
-      <li><b>给每个客户端生成一个密钥</b><span class="ui">网关</span> → <span class="ui">网关密钥</span>，或在终端里 <code>docker exec magpie magpie gateway-key add "Laptop"</code>，它会打印新的 <code>sk-magpie-key-…</code>。容器外的每个请求（包括宿主机自己的）都必须带一个启用的网关密钥，不带的返回 401。每个密钥可以有自己的每日、每周或每月上限和可用模型（<code>magpie gateway-key limit</code>、<code>magpie gateway-key models</code>）。</li>
+      <li><b>给每个客户端生成一个密钥</b><span class="ui">网关</span> → <span class="ui">网关密钥</span>，或在终端里 <code>docker exec magpie magpie gateway-key add "Laptop"</code>，它会打印新的 <code>sk-magpie-key-…</code>。容器外的每个请求（包括宿主机自己的）都必须带一个启用的网关密钥，不带的返回 401。每个密钥可以有自己的每日、每周、每月或每 N 天的上限和可用模型（<code>magpie gateway-key limit</code>、<code>magpie gateway-key models</code>）。</li>
       <li><b>发布端口</b>用 <code>-p 3425:3425</code>（或绑定到 NAS 的局域网或 VPN 地址，<code>-p 192.168.1.20:3425:3425</code>）并加上 <code>-e MAGPIE_PUBLIC_URL=http://192.168.1.20:3425</code> 重新创建容器。</li>
     </ol>
     <p>在其他电脑上，把 Agent 指向这个网关，用其中一个密钥作为 API key：OpenAI 客户端用 <code>http://192.168.1.20:3425/v1</code>，Anthropic 或 Gemini 客户端用 <code>http://192.168.1.20:3425</code>。模型 id 是 <code>provider/model</code> 或路由组的名字，<code>GET /v1/models</code> 会列出它们。如果那台电脑自己也运行 magpie，就把容器添加为<a href="/docs/zh/remote">远程 magpie</a>，由 magpie 替你配置 Agent。</p>
     <p>容器里不需要打开 <span class="ui">设置</span> → <span class="ui">局域网共享</span>：打开它会另外生成一个名为 <span class="ui">Magpie</span> 的网关密钥，而不论开关如何，网关都会向容器外的请求要密钥。</p>
     <p><b>从旧镜像升级。</b>容器外发送 <code>magpie</code> 或其他非启用网关密钥的 Agent，现在会收到 401（“the API key sent is not an enabled magpie gateway key”）。按上面的步骤给它生成一个密钥，填进 Agent 的设置。已经发送网关密钥的 Agent，以及用网关密钥添加的远程 magpie，照常工作。</p>
+    <p id="allow"><b>允许的地址。</b>在公网主机上，用 <code>-e MAGPIE_ALLOW_IPS=203.0.113.7,10.0.0.0/8</code> 写上你的客户端所在的地址。来自其他地址的请求在看密钥之前就被拒绝（403），所以泄露的密钥从别处也用不了；拒绝信息和容器日志都会写出请求来自的地址。magpie 判断的是连接本身的地址，从不采信 <code>X-Forwarded-For</code> 头；写错的条目不会放行任何地址，而不是放行所有地址。Docker 默认的 bridge 网络会把客户端自己的地址传进容器，但宿主机自己发出的请求来自 bridge 的网关（<code>172.17.0.1</code>），Docker Desktop 和 rootless Docker 则把所有客户端显示成它们自己的一个地址：把它加上，或看 403 里写的是哪个。在反向代理或隧道后面时，所有请求都来自代理的地址，请在代理那里限制谁能访问。桌面版里同一个列表在 <span class="ui">设置</span> → <span class="ui">网络与共享</span> → <span class="ui">允许的地址</span>。</p>
     <div class="callout"><b>跨互联网访问时，优先用 VPN</b>（如 Tailscale 或 WireGuard），不要直接开放 3425。容器前面的反向代理或隧道也算网络：它的客户端和其他机器一样需要网关密钥。</div>
 
     <h2 id="compose"><a class="anchor" href="#compose">在 NAS 上用 Docker Compose</a></h2>
