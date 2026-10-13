@@ -927,6 +927,7 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 		var res struct {
 			Models map[string]struct {
 				DisplayName     string `json:"displayName"`
+				TagDescription  string `json:"tagDescription"`
 				Disabled        bool   `json:"disabled"`
 				MaxTokens       int    `json:"maxTokens"`
 				MaxOutputTokens int    `json:"maxOutputTokens"`
@@ -998,6 +999,27 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 				mi.resets, _ = time.Parse(time.RFC3339, q.ResetTime)
 			}
 			out = append(out, mi)
+		}
+		// Antigravity lists a model it moved its users off under the name
+		// of the one it moved them to, and tags it with that one's id:
+		// gemini-2.5-flash and gemini-2.5-flash-lite came as "Gemini 3.5
+		// Flash Lite", tagged gemini-3.5-flash-lite, beside
+		// gemini-3.5-flash-lite itself, while each id is still answered by
+		// its own model (modelVersion gemini-2.5-flash), so the editor
+		// had three chips of one name and the first two weren't it
+		// (#1918, kchen0x). Such a model is named for its own id; a
+		// level of the model its tag names (gemini-3.7-flash-low) keeps
+		// the name it was given.
+		owners := map[string]int{}
+		for _, mi := range out {
+			owners[mi.Name]++
+		}
+		for i, mi := range out {
+			tag := res.Models[mi.ID].TagDescription
+			if mi.Name == "" || owners[mi.Name] < 2 || tag == "" || EffortFamily(tag) == EffortFamily(mi.ID) {
+				continue
+			}
+			out[i].Name = catalog.NameOf(mi.ID) // "" is named later, by its id at the least
 		}
 		rank := map[string]int{}
 		for _, s := range res.AgentModelSorts {

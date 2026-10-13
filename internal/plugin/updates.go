@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 	"github.com/yetone/magpie/internal/update"
@@ -268,10 +269,21 @@ type VersionCheck struct {
 	// (it has no such package)
 	Why   string `json:"why,omitempty"`
 	Error string `json:"error,omitempty"`
+	// Limited is set when a git one's repository couldn't be asked
+	// because GitHub's rate limit was used up, for the page to say so in
+	// its own words, as the library's skills do (#1942)
+	Limited *GitHubLimit `json:"limited,omitempty"`
 	// Auto is whether magpie updates it by itself (the community's,
 	// unpinned, switched on), so an update found would come anyway
 	Auto bool `json:"auto"`
 	Off  bool `json:"off"`
+}
+
+// GitHubLimit is GitHub's rate limit used up: until when (RFC 3339, ""
+// when GitHub didn't say), and whether the request carried a GitHub token.
+type GitHubLimit struct {
+	Until string `json:"until,omitempty"`
+	Token bool   `json:"token,omitempty"`
 }
 
 // VersionChecks is what a check asked now found.
@@ -321,6 +333,13 @@ func CheckNow(ctx context.Context) VersionChecks {
 				cancel()
 				if err != nil {
 					c.Status, c.Why, c.Error = "unknown", whyNot(err), err.Error()
+					var l ghtoken.Limited
+					if errors.As(err, &l) {
+						c.Limited = &GitHubLimit{Token: l.Token}
+						if !l.Until.IsZero() {
+							c.Limited.Until = l.Until.UTC().Format(time.RFC3339)
+						}
+					}
 					return
 				}
 				c.Head, c.Status = short(head), "current"
@@ -403,7 +422,7 @@ func whyNot(err error) string {
 	switch {
 	case errors.Is(err, errNotFound):
 		return "missing"
-	case errors.As(err, &se) && se.Code == http.StatusTooManyRequests:
+	case errors.As(err, &se) && se.Code == http.StatusTooManyRequests, errors.As(err, new(ghtoken.Limited)):
 		return "limited"
 	case errors.As(err, &se):
 		return "registry"

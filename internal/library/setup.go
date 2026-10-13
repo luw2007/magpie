@@ -221,7 +221,7 @@ func Restore(s *Setup) (*Result, error) {
 			if err := b.keep("library", p); err != nil {
 				return err
 			}
-			if err := writeText(p, text); err != nil {
+			if err := l.putText(p, text); err != nil {
 				return err
 			}
 		}
@@ -247,4 +247,22 @@ func Restore(s *Setup) (*Result, error) {
 		res.Missing = missing
 	}
 	return res, err
+}
+
+// InUse counts what the library gives agents: each server, skill, hook
+// and project folder it keeps, and the shared instructions while an agent
+// gets them. The library built-in plugin stays on while it is
+// more than 0. A library.json that can't be read is an error, never 0.
+func InUse() (int, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	l, err := load()
+	if err != nil {
+		return 0, err
+	}
+	n := len(l.MCP) + len(l.Skills) + len(l.Hooks) + len(l.Projects)
+	if len(l.Instructions.Agents) > 0 {
+		n++
+	}
+	return n, nil
 }

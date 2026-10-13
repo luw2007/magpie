@@ -258,6 +258,15 @@ func (u *updater) run() {
 	defer u.mu.Unlock()
 	if u.staged != "" && u.latest != nil && (err != nil || !update.Newer(rel.Version, u.latest.Version)) {
 		u.state = "ready" // what was downloaded is still the latest
+		// the feed found it before it had its notes (the site, kept from
+		// GitHub's API, reads them from the releases feed, which can lag
+		// a new release by minutes): the notes it has now are taken (#649,
+		// Sun1090: v0.1.1224's dialog said it had none)
+		if err == nil && rel.Version == u.latest.Version && strings.TrimSpace(u.latest.Notes) == "" && strings.TrimSpace(rel.Notes) != "" {
+			c := *u.latest // the install may still be reading the one held
+			c.Notes = rel.Notes
+			u.latest, u.notesIn = &c, lang
+		}
 		return
 	}
 	if err != nil {

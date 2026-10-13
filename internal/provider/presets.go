@@ -544,16 +544,19 @@ var presets = []PresetDef{
 		Note: "your local models", Website: "https://ollama.com"},
 	{ID: "lmstudio", Name: "LM Studio", Icon: "lmstudio", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:1234/v1",
-		Note: "local server on :1234", Website: "https://lmstudio.ai"},
+		Note: "local server, port 1234 by default", Website: "https://lmstudio.ai"},
 	// its decision models (Clef, OpenJev), served at /v1/systemone since
 	// 0.7.1, are the ones its /v1/models/status says are (omlx_decide.go)
 	{ID: OMLXPreset, Name: "oMLX", Icon: "omlx", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:8000/v1", Responses: "http://localhost:8000/v1", Anthropic: "http://localhost:8000",
 		Decide: "http://localhost:8000/v1",
-		Note:   "local server on :8000", Website: "https://omlx.ai"},
-	{ID: "mlx-serve", Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
+		Note:   "local server, port 8000 by default", Website: "https://omlx.ai"},
+	// its decision models (Clef, Clef-Flash, Kev, Laya, D1), served at
+	// /v1/systemone, are marked by capabilities in /v1/models (mlxserve_decide.go)
+	{ID: MLXServePreset, Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:11234/v1", Responses: "http://localhost:11234/v1", Anthropic: "http://localhost:11234",
-		Note: "local server on :11234", Website: "https://github.com/ddalcu/mlx-serve"},
+		Decide: "http://localhost:11234/v1",
+		Note:   "local server, port 11234 by default", Website: "https://github.com/ddalcu/mlx-serve"},
 
 	// another computer's magpie, shared on its network (remote_magpie.go):
 	// its providers, routing groups and usage stay there, each request

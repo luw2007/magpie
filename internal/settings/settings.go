@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
@@ -183,6 +184,11 @@ type Settings struct {
 	// on or off, by the plugin's provider id; one not set follows its
 	// vendor's switch above, which the plugin took over, else is off.
 	PluginCheckins map[string]bool `json:"pluginCheckins,omitempty"`
+	// CheckinOff are the accounts left out of their vendor's daily
+	// check-in while it is on (#1902), each by its entry in the vendor's
+	// check-in file: "<site or provider>|<account id>" ("workbuddy|<uid>",
+	// "trae-cn|<uid>", a plugin's "<provider>|<account>").
+	CheckinOff []string `json:"checkinOff,omitempty"`
 	// MemberModel has a reply's model name the routing group's member
 	// that answered, as magpie's provider/model id (workbuddy/glm-5.3-flash),
 	// rather than the vendor's own name for it, for agents that count
@@ -193,6 +199,13 @@ type Settings struct {
 	// is stuck in a loop of the same few lines (#1359). Off, as by
 	// default, the gateway ends such a reply with an error.
 	NoLoopGuard bool `json:"noLoopGuard,omitempty"`
+	// RefusalRetries is how many more times a request the vendor's safety
+	// filter refused, with nothing said, is asked of another account or
+	// routing group member (#248), unset for every one left. 0 hands the
+	// refusal straight back: to an agent on Anthropic's Messages API as
+	// the vendor's own reply, stop_reason "refusal", which Claude Code
+	// answers by switching to its fallback model itself (DD on Discord).
+	RefusalRetries *int `json:"refusalRetries,omitempty"`
 	// NoAccountDiscovery leaves every agent's sign-in unread (#1535,
 	// MaxHaiCom): no credential file, Keychain item or agent CLI is asked
 	// who is signed in, and no subscription is offered; API-key providers
@@ -229,6 +242,11 @@ type Settings struct {
 	// it: a model's id (provider/model, group/<id>), "off" to turn such an
 	// image away, or empty for one magpie picks (see gateway.seer).
 	Vision string `json:"vision,omitempty"`
+	// VisionEffort is how hard the Image recognition model thinks as it
+	// reads an image (MOMO on Discord): a level of catalog.EffortRank,
+	// fitted to the model's own levels when it is asked, or empty for
+	// magpie's choice, the least the model has (gateway.visionEffort).
+	VisionEffort string `json:"visionEffort,omitempty"`
 	// ImageGen is the model magpie's generate_image tool draws with (the
 	// gateway's /v1/images/generations when a request names no model): a
 	// model's id, "off", or empty for one magpie picks (gateway.drawer).
@@ -241,6 +259,11 @@ type Settings struct {
 	// (gateway.searcher). "off" allows only configured search APIs.
 	// One that is gone, off or can't search gives way to magpie's pick.
 	Searcher string `json:"searcher,omitempty"`
+	// SearcherEffort is how hard the searcher's model thinks as it searches
+	// (MOMO on Discord): a level of catalog.EffortRank, fitted to the
+	// model's own levels when it is asked, or empty to send none, the
+	// model's own default (gateway.searchEffort).
+	SearcherEffort string `json:"searcherEffort,omitempty"`
 	// SearchFirst is what a model that can't search the web is searched
 	// for with first, when both a provider and a search API can (#928):
 	// SearchFirstAPI for the search APIs, the provider's search after them
@@ -329,6 +352,11 @@ type Settings struct {
 	// it (#92: "Opus 5.5", not "Opus 5.5 · Claude Code"), the vendor's names
 	// keeping their provider's after them (see provider.Labels).
 	PlainOwnNames bool `json:"plainOwnNames,omitempty"`
+	// BareModelIDs has the gateway's /v1/models list each model by its id
+	// without the provider as well ("gpt-5.6-sol" beside
+	// "codex/gpt-5.6-sol"), for clients moved from another proxy that ask
+	// for bare ids (love1sbug on X; provider.BareEntries). Off by default.
+	BareModelIDs bool `json:"bareModelIDs,omitempty"`
 	// CodexAgentsV1 has the OpenAI models magpie hands Codex — the ChatGPT
 	// account's own, their codex/ ids and the groups one is in — say
 	// multi_agent_version "v1" (#141): their subagents are then handed
@@ -352,6 +380,13 @@ type Settings struct {
 	// model's id (provider/model, group/<id>) that writes it. It is not
 	// CodexTitles: a description asks for {"description"} alone.
 	CodexDescriptions string `json:"codexDescriptions,omitempty"`
+	// CodexPredictions is where the request Codex's app makes to predict
+	// the user's next message for its composer (composer_predictions: a
+	// hidden turn on a fork of the whole conversation, on the thread's own
+	// model through its ChatGPT sign-in) goes (#1970, pluo): "" as Codex
+	// sends it, "off" answered by magpie with no prediction and sent
+	// nowhere, or a model's id (provider/model, group/<id>) that writes it.
+	CodexPredictions string `json:"codexPredictions,omitempty"`
 	// CodexAutoReview is the model Codex's auto-review (approvals_reviewer
 	// = "auto_review": the guardian that decides an approval in the user's
 	// place) runs on (#938): a model's id (provider/model, group/<id>) put
@@ -426,6 +461,15 @@ type Settings struct {
 	// Agents list leaves out (ikunbots on X). It is that list's only: the
 	// ledger keeps their calls, and the totals and the chart count them.
 	UsageAgentsHidden []string `json:"usageAgentsHidden,omitempty"`
+	// ClientAgents counts a client magpie doesn't know as one of the agents
+	// it does, on the Usage and Sessions pages (#1958, NorethSea): a bridge
+	// that starts Codex's app-server under a name of its own
+	// ("hermes-codex-thread-bridge") is counted as Codex. Keyed by the
+	// client's name as the ledger records it, lower-cased, to the agent's
+	// id. Only what the pages report: the ledger keeps the client's own
+	// name, and routing, keys, caps and budgets go on by it. A pair taken
+	// out counts the client on its own again, the history with it.
+	ClientAgents map[string]string `json:"clientAgents,omitempty"`
 	// Visible narrows the models an agent is shown, by agent id: the
 	// families (the tag a provider or group is given), provider ids and
 	// group ids its lists hold. An agent it doesn't name is shown them all.
@@ -530,6 +574,12 @@ type Settings struct {
 	// than by its own id, for an id no rule of magpie's matches up
 	// (kyzhouxu, #583). Absent leaves it to its id.
 	ModelSameAs map[string]string `json:"modelSameAs,omitempty"`
+	// ModelKinds is what the user said a model makes, by "<provider
+	// id>/<model id>": "image" or "video", for a provider set up with a
+	// base URL whose own model list doesn't say so (shen-joe, #1399).
+	// Absent leaves it to the vendor's list and the model's name (see
+	// provider.SetModelKind).
+	ModelKinds map[string]string `json:"modelKinds,omitempty"`
 	// The main window's size as it last settled, width and height, so it
 	// opens at it again after a restart: the size it is restored to, kept as
 	// it was while it is maximised, and a side fitted to a smaller screen
@@ -917,7 +967,9 @@ func loadChecked() (Settings, error) {
 		}
 		return s.normal(), fmt.Errorf("could not read settings at %s: %w", Path(), err)
 	}
-	// parsed once: this runs for every model of every agent
+	// parsed on every call: a caller that asks many times in one look holds
+	// what it read (provider.Hold's heldSettings) rather than asking again
+	parses.Add(1)
 	if perr := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &s); perr != nil {
 		// one left all zero by a crash (#1505) is its last good generation
 		bak, ferr := lastgood.Fallback(Path(), b, validSettings)
@@ -930,6 +982,14 @@ func loadChecked() (Settings, error) {
 	}
 	return s.normal(), err
 }
+
+// parses counts settings.json's parses (Parses).
+var parses atomic.Int64
+
+// Parses is how many times settings.json has been parsed in this process,
+// for a test that a look holding the settings doesn't read them again for
+// each thing it looks at.
+func Parses() int64 { return parses.Load() }
 
 // validSettings is settings.json's contents read as Settings.
 func validSettings(b []byte) bool {
@@ -1101,6 +1161,10 @@ func save(s Settings, recording bool) error {
 	if s.CodexDescriptions != "" && !strings.Contains(s.CodexDescriptions, "/") {
 		return fmt.Errorf("the model for Codex's descriptions must be a model's id such as openai/gpt-5-mini, not %q", s.CodexDescriptions)
 	}
+	s.CodexPredictions = strings.TrimSpace(s.CodexPredictions)
+	if s.CodexPredictions != "" && s.CodexPredictions != "off" && !strings.Contains(s.CodexPredictions, "/") {
+		return fmt.Errorf("the model for Codex's composer predictions must be a model's id such as openai/gpt-5-mini, or off, not %q", s.CodexPredictions)
+	}
 	s.CodexAutoReview = strings.TrimSpace(s.CodexAutoReview)
 	if s.CodexAutoReview != "" && !strings.Contains(s.CodexAutoReview, "/") {
 		return fmt.Errorf("the model for Codex's auto-review must be a model's id such as openai/gpt-5-mini, not %q", s.CodexAutoReview)
@@ -1110,6 +1174,11 @@ func save(s Settings, recording bool) error {
 		return fmt.Errorf("the model for Codex's subagents must be a model's id such as codex/gpt-5.5, not %q", s.CodexSubagentModel)
 	}
 	s.Searcher = strings.TrimSpace(s.Searcher)
+	for _, e := range []*string{&s.VisionEffort, &s.SearcherEffort} {
+		if *e = strings.ToLower(strings.TrimSpace(*e)); *e != "" && !slices.Contains(catalog.EffortRank, *e) {
+			return fmt.Errorf("a model's reasoning must be one of %s, or empty for the default, not %q", strings.Join(catalog.EffortRank, ", "), *e)
+		}
+	}
 	if s.SearchFirst = strings.TrimSpace(s.SearchFirst); s.SearchFirst == SearchFirstModel {
 		s.SearchFirst = ""
 	}
@@ -1129,6 +1198,7 @@ func save(s Settings, recording bool) error {
 	s.UsageOrder = ids(s.UsageOrder)
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
 	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
+	s.ClientAgents = clientAgents(s.ClientAgents)
 	s.TrayUsages = ids(s.TrayUsages)
 	for i, u := range s.CodexAutoReset {
 		s.CodexAutoReset[i] = strings.ToLower(u)
@@ -1316,4 +1386,52 @@ func ids(in []string) []string {
 		}
 	}
 	return out
+}
+
+// clientAgents is ClientAgents as kept: the clients' names lower-cased and
+// trimmed, an empty name or agent left out.
+func clientAgents(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
+		if k != "" && v != "" {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ClientAgentsNow is Load().ClientAgents, parsed again only once the file
+// changed: the usage pages ask for it on every read of the ledger, which
+// the gateway does too, and the whole settings file is more to parse.
+func ClientAgentsNow() map[string]string {
+	fileMu.RLock()
+	defer fileMu.RUnlock()
+	m, err := filememo.Read("settings.clientAgents", Path(), func(b []byte) (map[string]string, error) {
+		if len(bytes.TrimSpace(b)) == 0 {
+			return nil, nil
+		}
+		var s struct {
+			ClientAgents map[string]string `json:"clientAgents"`
+		}
+		if err := json.Unmarshal(b, &s); err != nil {
+			return nil, err
+		}
+		return clientAgents(s.ClientAgents), nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		// what load makes of a file that doesn't parse (its last good
+		// generation), not none
+		return clientAgents(load().ClientAgents)
+	}
+	return m
 }

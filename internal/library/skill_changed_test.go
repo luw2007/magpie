@@ -224,3 +224,34 @@ func TestCheckSkillsMarksItDone(t *testing.T) {
 		t.Fatal("due right after a check")
 	}
 }
+
+// A copy with a folder that can't be read can't be told unchanged (#1102):
+// an edit may be in it. The skill's edit state is then unknown, so an
+// update keeps the library's version aside, and the sync keeps the copy.
+func TestEditStateUnknownForAnUnreadableCopy(t *testing.T) {
+	h := sandbox(t)
+	version := "one"
+	fakeSkillTarball(t, &version)
+	ok(t)(InstallSkills("owner/repo", []string{"skills/pdf"}, []string{"claude"}))
+	ok(t)(SetSkillHow("", HowCopy))
+	p := filepath.Join(h, ".claude/skills/pdf")
+	if linked(p) {
+		t.Fatal("claude's pdf is still a link")
+	}
+	edit := filepath.Join(p, "scripts/run.sh")
+	write(t, edit, "echo mine\n")
+	later := time.Now().Add(2 * time.Second)
+	os.Chtimes(edit, later, later)
+	blockSkillSubtree(t, h, filepath.Join(p, "scripts"))
+	l, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := l.skill("pdf")
+	if s == nil {
+		t.Fatal("no pdf in the library")
+	}
+	if edited, known := l.editState(s, Targets()); edited || known {
+		t.Fatalf("an unreadable copy's state: edited %v, known %v; want unknown", edited, known)
+	}
+}

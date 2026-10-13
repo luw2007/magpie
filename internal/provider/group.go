@@ -23,6 +23,7 @@ package provider
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -214,6 +215,12 @@ type Group struct {
 	// beside Members, not in their ids, so a version before it still
 	// routes to them, only not fast.
 	Fast []string `json:"fast,omitempty"`
+	// Weights are the members' shares (as Members spells them) when the
+	// group routes by weight (Weighted, #1910): one weighing 3 takes three
+	// requests for every one a member weighing 1 takes. One not in it
+	// weighs 1. Kept while the group routes otherwise, for when it is by
+	// weight again.
+	Weights map[string]int `json:"weights,omitempty"`
 	// Family is a tag the group goes by in which agents are shown it
 	// (settings' Visible), with its id.
 	Family string `json:"family,omitempty"`
@@ -350,6 +357,12 @@ func withoutRemoved(g Group, have map[string]bool) Group {
 	g.Members = kept
 	g.Off = slices.DeleteFunc(slices.Clone(g.Off), gone)
 	g.Fast = slices.DeleteFunc(slices.Clone(g.Fast), gone)
+	g.Weights = renamedWeights(g.Weights, func(m string) string {
+		if gone(m) {
+			return ""
+		}
+		return m
+	})
 	return g
 }
 
@@ -365,6 +378,7 @@ func (g Group) own() Group {
 	g.Off = slices.Clone(g.Off)
 	g.Levels = slices.Clone(g.Levels)
 	g.Fast = slices.Clone(g.Fast)
+	g.Weights = maps.Clone(g.Weights)
 	g.Rules = slices.Clone(g.Rules)
 	for i, r := range g.Rules {
 		g.Rules[i].Agents = slices.Clone(r.Agents)
@@ -597,7 +611,11 @@ func GroupFor(id string) (string, bool) {
 	if id == "" || strings.Contains(id, "/") {
 		return "", false
 	}
-	all := Groups()
+	return groupForIn(Groups(), id)
+}
+
+// groupForIn is GroupFor over the groups all, read once for many ids.
+func groupForIn(all []Group, id string) (string, bool) {
 	k := Slug(sameModel(id))
 	for _, gid := range []string{strings.ToLower(id), k, "auto-" + k} {
 		if g, ok := groupOf(all, gid); ok {
@@ -970,6 +988,9 @@ func SaveGroup(g Group) error {
 		}
 	}
 	g.Off = off
+	if err := cleanWeights(entries, &g); err != nil {
+		return err
+	}
 	if g.Routing != Manual && len(g.Members) > 0 && len(g.Off) == len(g.Members) {
 		return fmt.Errorf("every model in %s is switched off: switch one on, or it has nothing to send to", g.Name)
 	}
@@ -984,7 +1005,7 @@ func SaveGroup(g Group) error {
 	if err := cleanDecisionGroup(&g, groupsIn(entries)); err != nil {
 		return err
 	}
-	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Pace && g.Routing != Manual && g.Routing != Benchmark {
+	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Pace && g.Routing != Weighted && g.Routing != Manual && g.Routing != Benchmark {
 		g.Routing = ""
 	}
 	if !slices.Contains(Affinities, g.Affinity) {
@@ -1360,6 +1381,12 @@ func RenameGroup(from, to string) error {
 				f.Groups[i].Off[j] = now
 			}
 		}
+		f.Groups[i].Weights = renamedWeights(f.Groups[i].Weights, func(m string) string {
+			if m == old {
+				return now
+			}
+			return m
+		})
 		if f.Groups[i].Classifier == old {
 			f.Groups[i].Classifier = now
 		}

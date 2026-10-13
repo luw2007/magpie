@@ -210,6 +210,39 @@ func TestHowInstalled(t *testing.T) {
 	if u := howInstalled(cliSpecs["atomcode"], atomcode); u == nil || !u.cask || !reflect.DeepEqual(u.cmd, []string{brew, "upgrade", "--cask", "atomcode"}) {
 		t.Errorf("AtomCode brew cask: %+v", u)
 	}
+	// Node formulae keep the npm package in their keg, as brew's gemini-cli
+	// 0.35.3 does on this Mac: bin/gemini → ../Cellar/gemini-cli/0.35.3/
+	// bin/gemini → ../libexec/bin/gemini → ../lib/node_modules/
+	// @google/gemini-cli/bundle/gemini.js. That is brew's, not npm's: npm
+	// install -g --prefix …/libexec would change the keg behind brew's back.
+	for _, k := range []struct{ id, formula, pkg, js, name string }{
+		{"gemini", "gemini-cli", "@google/gemini-cli", "bundle/gemini.js", "gemini"},
+		{"pi", "pi-coding-agent", "@earendil-works/pi-coding-agent", "dist/cli.js", "pi"},
+		{"cline", "cline", "cline", "bin/cline.js", "cline"},
+	} {
+		keg := filepath.Join(brewDir, "Cellar", k.formula, "1.0.0")
+		file(t, filepath.Join(keg, "libexec/lib/node_modules", k.pkg, k.js), "")
+		link(t, "../lib/node_modules/"+k.pkg+"/"+k.js, filepath.Join(keg, "libexec/bin", k.name))
+		link(t, "../libexec/bin/"+k.name, filepath.Join(keg, "bin", k.name))
+		bin := link(t, "../Cellar/"+k.formula+"/1.0.0/bin/"+k.name, filepath.Join(brewDir, "bin", k.name))
+		if u := howInstalled(cliSpecs[k.id], bin); u == nil || u.via != "brew" || u.cask || !reflect.DeepEqual(u.cmd, []string{brew, "upgrade", k.formula}) {
+			t.Errorf("%s's Node formula %s: %+v", k.id, k.formula, u)
+		}
+	}
+	// npm under a keg-only node's Cellar (node@20) is still npm's
+	nodeKeg := filepath.Join(brewDir, "Cellar/node@20/20.19.0")
+	file(t, filepath.Join(nodeKeg, "lib/node_modules/@github/copilot/npm-loader.js"), "")
+	file(t, filepath.Join(nodeKeg, "bin/npm"), "#!/bin/sh\n")
+	if u := howInstalled(cliSpecs["copilot"], link(t, "../lib/node_modules/@github/copilot/npm-loader.js", filepath.Join(nodeKeg, "bin/copilot"))); u == nil || u.via != "npm" {
+		t.Errorf("npm under node@20's keg: %+v", u)
+	}
+	// Grok Build's cask: bin/grok → Caskroom/grok-build/1.0.52/grok-1.0.52-macos-aarch64
+	file(t, filepath.Join(brewDir, "Caskroom/grok-build/1.0.52/grok-1.0.52-macos-aarch64"), "")
+	grokBin := link(t, "../Caskroom/grok-build/1.0.52/grok-1.0.52-macos-aarch64", filepath.Join(brewDir, "bin/grok"))
+	if u := howInstalled(cliSpecs["grok"], grokBin); u == nil || !u.cask || !reflect.DeepEqual(u.cmd, []string{brew, "upgrade", "--cask", "grok-build"}) {
+		t.Errorf("Grok Build's cask: %+v", u)
+	}
+	os.Remove(filepath.Join(brewDir, "bin/gemini"))
 	file(t, filepath.Join(brewDir, "Cellar/something/1.0/bin/gemini"), "")
 	if u := howInstalled(cliSpecs["gemini"], link(t, "../Cellar/something/1.0/bin/gemini", filepath.Join(brewDir, "bin/gemini"))); u != nil {
 		t.Errorf("another formula: %+v", u)
@@ -472,5 +505,68 @@ func TestGrokInstalled(t *testing.T) {
 	file(t, filepath.Join(home, ".grok", "config.toml"), "[cli]\ninstaller = \"internal\"\nchannel = \"alpha\"\n")
 	if c, _ := a.CLI(); c.Latest != "1.0.51-alpha.2" {
 		t.Errorf("alpha: %+v", c)
+	}
+}
+
+// Grok Build from Homebrew's grok-build cask (Will on Discord): grok on PATH
+// leads into Caskroom/grok-build, with no ~/.grok/bin/grok. It is found,
+// detected before grok first runs, and updated with brew; Homebrew's grok
+// formula, a regular-expression tool, never is.
+func TestGrokBrewCask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Homebrew's links")
+	}
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", "")
+	brewDir := filepath.Join(home, "homebrew")
+	t.Setenv("PATH", filepath.Join(brewDir, "bin"))
+	file(t, filepath.Join(brewDir, "bin/brew"), "#!/bin/sh\n")
+
+	oldVer, oldLatest := runVersion, brewLatest
+	says := "grok 1.0.46 (2765805b9442)"
+	runVersion = func(string) string { return says }
+	brewLatest = func(u *updater) (string, error) { return "1.0.52", nil }
+	versions, latests = memo{}, memo{}
+	t.Cleanup(func() {
+		runVersion, brewLatest = oldVer, oldLatest
+		versions, latests = memo{}, memo{}
+	})
+
+	// the regular-expression tool's grok, the formula of that name
+	file(t, filepath.Join(brewDir, "Cellar/grok/0.9.2/bin/grok"), "")
+	link(t, "../Cellar/grok/0.9.2/bin/grok", filepath.Join(brewDir, "bin/grok"))
+	a := grok(home)
+	if a.Detected() {
+		t.Error("Homebrew's grok formula detected as Grok Build")
+	}
+	if c, ok := a.CLI(); ok {
+		t.Errorf("Homebrew's grok formula taken for Grok Build: %+v", c)
+	}
+
+	// the cask, as formulae.brew.sh/api/cask/grok-build.json has it: binary
+	// grok-1.0.46-macos-aarch64, target grok
+	os.Remove(filepath.Join(brewDir, "bin/grok"))
+	file(t, filepath.Join(brewDir, "Caskroom/grok-build/1.0.46/grok-1.0.46-macos-aarch64"), "")
+	bin := link(t, "../Caskroom/grok-build/1.0.46/grok-1.0.46-macos-aarch64", filepath.Join(brewDir, "bin/grok"))
+	if !a.Detected() {
+		t.Error("the grok-build cask, before grok has run, not detected")
+	}
+	c, ok := a.CLI()
+	if !ok || c.Path != bin || c.Version != "1.0.46" || c.Via != "brew" || c.Command != "brew upgrade --cask grok-build" || c.Latest != "1.0.52" || !c.Update {
+		t.Fatalf("the grok-build cask: %+v %v", c, ok)
+	}
+
+	// with an old ~/.grok/bin/grok from x.ai's installer beside it, the
+	// cask PATH runs is the one shown and updated
+	file(t, filepath.Join(home, ".grok/downloads/grok-macos-aarch64"), "")
+	link(t, "../downloads/grok-macos-aarch64", filepath.Join(home, ".grok/bin/grok"))
+	if c, _ := a.CLI(); c.Path != bin || c.Via != "brew" {
+		t.Errorf("cask and installer: %+v", c)
+	}
+	// PATH running the installer's instead: that one, updated by grok update
+	os.Remove(bin)
+	if c, _ := a.CLI(); c.Path != filepath.Join(home, ".grok/bin/grok") || c.Via != "self" {
+		t.Errorf("installer only: %+v", c)
 	}
 }

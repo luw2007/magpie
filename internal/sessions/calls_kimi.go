@@ -69,19 +69,7 @@ const kimiGateway = "magpie/"
 // kimiCallFiles are every agent's wire.jsonl of every session. A session
 // migrated from the Python kimi-cli (a ses_* folder) is read too: one Kimi
 // Code opened again writes its own records there.
-func kimiCallFiles() []file {
-	paths, _ := SessionGlob(filepath.Join(kimiSessions(), "*", "*", "agents", "*", "wire.jsonl"))
-	var out []file
-	for _, p := range paths {
-		agentDir := filepath.Dir(p)
-		session := filepath.Base(filepath.Dir(filepath.Dir(agentDir)))
-		f := file{agent: "kimi", key: "kimi:" + session, path: p, main: filepath.Base(agentDir) == "main"}
-		if stat(&f) {
-			out = append(out, f)
-		}
-	}
-	return out
-}
+func kimiCallFiles() []file { return kimiFilesIn(kimiSessions()) }
 
 type kimiUsage struct {
 	InputOther         int `json:"inputOther"`

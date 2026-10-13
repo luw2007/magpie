@@ -456,6 +456,9 @@ func Run(version string, showMain bool, link string) error {
 				log.Println("library sync:", p.Agent, p.What, p.Error)
 			}
 		}
+		// a set kept in a file of the user's (~/.agents/AGENTS.md) is
+		// edited outside magpie: the agents get each change
+		library.KeepLinked(30 * time.Second)
 	}()
 
 	h.tray = h.app.SystemTray.New()

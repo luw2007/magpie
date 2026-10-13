@@ -86,6 +86,57 @@ func TestReasoningSpeedThroughGateway(t *testing.T) {
 	}
 }
 
+// A reply's speed is over the time it took to come, not what magpie
+// writes down of it once it has: a busy disk held saving sticks after the
+// answer for seconds, and the reply's ms with it, so a reply that streamed
+// at its pace read as one held back and let go in a burst, and told no
+// speed (#1939, bytecode-x: Millis 3772 for 450 ms of stream). The disk is
+// stood in for by holding the sticks' save.
+func TestSpeedEndsWithTheReply(t *testing.T) {
+	events := []string{
+		`data: {"choices":[{"delta":{"reasoning_content":"first thought"}}]}`,
+		`~data: {"choices":[{"delta":{"reasoning_content":"second thought"}}]}`,
+		`~data: {"choices":[{"delta":{"reasoning_content":"third thought"}}]}`,
+		`~data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"check","arguments":"{}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":100}}}`,
+		`data: [DONE]`,
+	}
+	const held = 2 * time.Second
+	fresh(t)
+	up := httptest.NewServer(&paced{events: events, gap: 150 * time.Millisecond})
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Chat: up.URL + "/v1", Key: "k", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	rec := httptest.NewRecorder()
+	sticksSaving.Lock()
+	let := time.AfterFunc(held, sticksSaving.Unlock)
+	t.Cleanup(func() {
+		if let.Stop() {
+			sticksSaving.Unlock()
+		}
+	})
+	began := time.Now()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"fake/m1","stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+	if took := time.Since(began); took < held {
+		t.Fatalf("the request took %v, before the sticks were let go: nothing waited on saving them", took)
+	}
+	u := lastUsage(t)
+	if rec.Code != 200 || u.Reasoning != 100 {
+		t.Fatalf("%d %+v %s", rec.Code, u, rec.Body)
+	}
+	if u.Millis >= held.Milliseconds() {
+		t.Fatalf("the reply's ms %d count the %v magpie took saving after it", u.Millis, held)
+	}
+	if n, w := u.Decode(); n != 120 || w < usage.MinDecodeMs || w > u.Millis {
+		t.Fatalf("a reply that came at its pace tells no speed: %d/%d %+v", n, w, u)
+	}
+	if r := lastRoute(s); len(r.Tries) != 1 || r.Tries[0].Millis > u.Millis {
+		t.Fatalf("trace: %+v", r.Tries)
+	}
+}
+
 func TestHiddenReasoningThroughTranslation(t *testing.T) {
 	events := []string{
 		`data: {"type":"response.created","response":{"id":"r1","status":"in_progress","output":[]}}`,

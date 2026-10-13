@@ -202,7 +202,10 @@ func (a *Agent) Drift() *Drift {
 	if a.Reached != nil && onMagpie {
 		if at, to, refused := a.Reached(rec.At); !at.IsZero() {
 			switch {
-			case !sameHost(to, gateway.URL()):
+			// a request the gateway saw since, or one to where the config
+			// keeps magpie (Codex's kept address, a reverse proxy, #1985),
+			// came through
+			case !sameHost(to, gateway.URL()) && !sameHost(to, a.pointedAt()) && lastSeen(a.ID).Before(at.Add(-2*time.Second)):
 				return &Drift{Kind: "bypassed", Field: on.Key, Now: vals[on.Key], Want: vals[on.Key],
 					Detail: a.Name + "'s last request (" + at.Format("15:04") + ") went to " + hostOf(to) + ", not magpie — it was started before magpie set it up and still runs on its old config: quit and reopen it"}
 			case refused:
@@ -839,12 +842,14 @@ func sameHost(a, b string) bool { return hostOf(a) == hostOf(b) }
 
 // wiringOff checks what magpie wrote into an agent's config to reach the
 // gateway — pairs of key and value, read with get — and says which no longer
-// holds, "" when all do. A URL is quoted; a key's value never is.
+// holds, "" when all do. A URL is quoted; a key's value never is. A URL
+// that reaches magpie another way (reachesMagpie: a reverse proxy, #1985)
+// holds.
 func wiringOff(name, file string, get func(string) (string, bool), kvs ...string) string {
 	for i := 0; i+1 < len(kvs); i += 2 {
 		k, want := kvs[i], kvs[i+1]
 		v, _ := get(k)
-		if v == want {
+		if v == want || v != "" && reachesMagpie(v, want) {
 			continue
 		}
 		where := name + "'s " + k + " (" + filepath.Base(file) + ")"

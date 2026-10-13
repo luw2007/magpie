@@ -771,6 +771,16 @@ type cUsage struct {
 	CachedTokens             int `json:"cached_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	// what a plugin's step collected of its conversation's earlier steps,
+	// which their own replies couldn't count (the Cursor plugin's usage
+	// events that showed late, yetone/magpie#1053): billed with the step,
+	// never its prompt, which a client reads as how full its context is
+	MagpieDeferred *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"magpie_deferred,omitempty"`
 }
 
 func (u cUsage) usage() Usage {
@@ -796,6 +806,10 @@ func (u cUsage) usage() Usage {
 	}
 	if u.CompletionTokensDetails != nil {
 		out.Reasoning = u.CompletionTokensDetails.ReasoningTokens
+	}
+	if d := u.MagpieDeferred; d != nil && d.PromptTokens+d.CompletionTokens > 0 {
+		out.Deferred = &Usage{Input: max(d.PromptTokens-d.CachedTokens-d.CacheWriteTokens, 0), Output: d.CompletionTokens,
+			CacheRead: d.CachedTokens, CacheWrite: d.CacheWriteTokens}
 	}
 	return out
 }
@@ -929,10 +943,15 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 		} `json:"error"`
 	}
 	if err := decodeJSON([]byte(data), &ch); err != nil {
+		// an error in a shape of its own, {"error":"…"}, is still the
+		// reply's end, not a chunk to pass over (#1933)
+		if e, ok := carriedError(data); ok {
+			emit(e)
+		}
 		return nil
 	}
 	if ch.Error != nil {
-		emit(Event{Kind: KError, Text: ch.Error.Message, Code: refusedCode(data)})
+		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data)), Code: refusedCode(data)})
 		return nil
 	}
 	if !d.started {
@@ -1010,7 +1029,7 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 			emit(Event{Kind: KStop, Stop: stopFromChat(c.FinishReason)})
 		}
 	}
-	if ch.Usage != nil && (ch.Usage.PromptTokens > 0 || ch.Usage.CompletionTokens > 0) {
+	if ch.Usage != nil && (ch.Usage.PromptTokens > 0 || ch.Usage.CompletionTokens > 0 || ch.Usage.MagpieDeferred != nil) {
 		emit(Event{Kind: KUsage, Usage: ch.Usage.usage()})
 	}
 	return nil

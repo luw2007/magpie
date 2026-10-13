@@ -215,11 +215,14 @@ func TestClaudeRefusalMovesToNextKey(t *testing.T) {
 	}
 }
 
-// A Claude subscription with two accounts, served through the claude CLI:
-// the first's run ends in stop_reason "refusal" with nothing said (then
-// Claude Code's own "unable to respond" result), and the spare answers —
-// streamed to Codex and to an Anthropic client, and not streamed.
-func TestClaudeSubscriptionRefusalMovesToNextAccount(t *testing.T) {
+// claudeSubscriptionRefusing signs in two Claude subscription accounts,
+// served through a claude CLI whose run on the first (its own sign-in)
+// ends in stop_reason "refusal" with nothing said, category cyber in its
+// stop_details (then Claude Code's own "unable to respond" result), and
+// whose run on the spare answers "pong". It returns the file each run
+// writes its token to: "own" for the first, tok-spare for the spare.
+func claudeSubscriptionRefusing(t *testing.T) string {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script stands in for Claude Code")
 	}
@@ -272,6 +275,15 @@ done
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	provider.ForgetAccounts()
 	t.Cleanup(provider.ForgetAccounts)
+	return log
+}
+
+// A Claude subscription with two accounts, served through the claude CLI:
+// the first's run ends in stop_reason "refusal" with nothing said (then
+// Claude Code's own "unable to respond" result), and the spare answers —
+// streamed to Codex and to an Anthropic client, and not streamed.
+func TestClaudeSubscriptionRefusalMovesToNextAccount(t *testing.T) {
+	log := claudeSubscriptionRefusing(t)
 	s := New()
 	for _, ask := range []struct{ path, body string }{
 		{"/v1/responses", `{"model":"claude/claude-sonnet-5","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`},

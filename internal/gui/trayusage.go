@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/fx"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // Settings → Allowances in the menu bar: the windows of the subscriptions and
@@ -66,6 +68,9 @@ func trayWindows(q provider.SubscriptionQuota) []provider.QuotaWindow {
 // spells it out: each window's use, or what is left of it (left), and when
 // it starts again.
 func trayUsageText(q provider.SubscriptionQuota, now time.Time, left bool) (label, tip string) {
+	if strings.HasPrefix(q.Provider, trayTotal) {
+		return q.Balance, q.Name // trayTotalCard's: its rows, and its tooltip
+	}
 	q.Name = trayName(q)
 	if q.Error != "" {
 		return "", q.Name + ": " + q.Error
@@ -141,12 +146,101 @@ func until(d time.Duration) string {
 }
 
 // trayUsageCards are the cards settings.TrayUsages names, in its order,
-// among the Usage page's (cached as there); one gone is left out.
+// among the Usage page's (cached as there), and magpie's own totals it
+// names (trayTotal); one gone is left out. The vendors aren't asked when
+// only totals are named.
 func trayUsageCards(ctx context.Context, ids []string) []provider.SubscriptionQuota {
 	if len(ids) == 0 {
 		return nil
 	}
-	return trayPick(provider.Quotas(ctx), ids, time.Now())
+	var cards []provider.SubscriptionQuota
+	if slices.ContainsFunc(ids, func(id string) bool { return !strings.HasPrefix(id, trayTotal) }) {
+		cards = slices.Clip(provider.Quotas(ctx)) // appended to below: never into the cache's array
+	}
+	var currency string
+	var rate float64
+	for _, id := range ids {
+		p, ok := trayTotalPeriod(id)
+		if !ok {
+			continue
+		}
+		if currency == "" {
+			currency = settings.Load().Currency
+			if currency == "cny" {
+				rate = fx.Soon().CNYPerUSD // never waited for, as the Settings page's
+			}
+		}
+		cards = append(cards, trayTotalCard(id, trayTotalSum(p), currency, rate))
+	}
+	return trayPick(cards, ids, time.Now())
+}
+
+// trayTotal starts the id of a card of magpie's own count instead of a
+// subscription's (#1984): "usage:today", "usage:7d", the tokens every
+// agent's requests came to over the Usage page's period, over what they
+// cost. A provider's id has no ":", so no subscription's card is taken for
+// one.
+const trayTotal = "usage:"
+
+// trayTotalPeriod is the period a total's id names: today or the last 7
+// days, the Usage page's first two, the ones worth watching from the menu
+// bar (the page has no 3-day window to agree with).
+func trayTotalPeriod(id string) (usage.Period, bool) {
+	p, ok := strings.CutPrefix(id, trayTotal)
+	if !ok || usage.Period(p) != usage.Today && usage.Period(p) != usage.Week {
+		return "", false
+	}
+	return usage.Period(p), true
+}
+
+// trayTotalSum is a period's sum as the Usage page's Overview has it (its
+// cached summary, without the sessions); a var for tests.
+var trayTotalSum = func(p usage.Period) usage.Totals { return usage.SummarizeTop(p, 0).Totals }
+
+// trayTotalCard is a total as a card: its rows are the tokens in and out
+// (cache aside, as the Usage page counts them) over the cost, in the
+// currency Settings says, "+" when some calls had no known price; nothing
+// beneath the tokens when none had one. Its name is the tooltip, which
+// spells them out.
+func trayTotalCard(id string, t usage.Totals, currency string, rate float64) provider.SubscriptionQuota {
+	when := "Today"
+	if p, _ := trayTotalPeriod(id); p == usage.Week {
+		when = "Last 7 days"
+	}
+	rows := []string{trayCount(t.Tokens())}
+	tip := when + " in magpie\n" + trayCount(t.Tokens()) + " tokens (" + trayCount(t.Input) + " in · " + trayCount(t.Output) + " out)"
+	if t.Cost > 0 {
+		c := usage.FormatCost(t.Cost, currency, rate)
+		if t.Unpriced > 0 {
+			c += "+"
+		}
+		rows = append(rows, c)
+		tip += "\n≈" + c
+	}
+	tip += fmt.Sprintf("\n%d requests", t.Calls)
+	if t.Unpriced > 0 {
+		tip += fmt.Sprintf(", %d with no known price", t.Unpriced)
+	}
+	return provider.SubscriptionQuota{Provider: id, Name: tip, Balance: strings.Join(rows, " · ")}
+}
+
+// trayCount is a count as the Usage page says it in English: 133M, 1.2M,
+// 456K, 8.2K, 950.
+func trayCount(n int) string {
+	f := float64(n)
+	switch {
+	case n >= 1e9:
+		return fmt.Sprintf("%.2fB", f/1e9)
+	case n >= 1e7:
+		return fmt.Sprintf("%.0fM", math.Round(f/1e6))
+	case n >= 1e6:
+		return fmt.Sprintf("%.1fM", f/1e6)
+	case n >= 1e5:
+		return fmt.Sprintf("%.0fK", math.Round(f/1e3))
+	case n >= 1e3:
+		return fmt.Sprintf("%.1fK", f/1e3)
+	}
+	return fmt.Sprint(n)
 }
 
 func trayPick(cards []provider.SubscriptionQuota, ids []string, now time.Time) []provider.SubscriptionQuota {
@@ -275,6 +369,12 @@ func trayUsageView(cards []provider.SubscriptionQuota, now time.Time, left bool)
 		c := trayCell{ID: trayCardID(q), Rows: strings.Split(l, " · ")}
 		for i, r := range c.Rows {
 			c.Rows[i] = trayRow(r)
+		}
+		if strings.HasPrefix(q.Provider, trayTotal) {
+			// magpie's own: the bird beside it says whose, no logo of a vendor's
+			c.Plain = true
+			cells = append(cells, c)
+			continue
 		}
 		c.Icon, c.Mono = trayIconFile(q.Icon)
 		if r := []rune(strings.TrimSpace(q.Name)); len(r) > 0 {
@@ -409,6 +509,9 @@ var onTrayCellClick func(id string)
 
 // panelQuotaJS safely quotes the card ID for the panel's focus handler.
 func panelQuotaJS(card string) string {
+	if p, ok := trayTotalPeriod(card); ok {
+		return `panelUseFocus("` + string(p) + `")` // the Usage tab, at the total's period
+	}
 	id, _ := json.Marshal(card) // quoted and escaped: a JSON string is a JS one
 	return "panelQuotaFocus(" + string(id) + ")"
 }

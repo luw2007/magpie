@@ -48,6 +48,7 @@
     <a href="/docs/plugins">Plugins</a>
     <a class="toc-only" href="/docs/remote">Remote magpie</a>
     <a class="toc-only" href="/docs/docker">Docker</a>
+    <a class="toc-only" href="/docs/privacy">Privacy</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie-releases/releases">Releases</a>
@@ -407,6 +408,7 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     validate: (v) =&gt; (/^t-/.test(v) ? undefined : <span class="s">"Starts with t-"</span>) },
 ]</pre>
     </div>
+    <p>A <code>type: "password"</code> question is a <code>text</code> one typed unseen: a masked field in the app, and no echo in <code>magpie plugin login</code> on a terminal. Use it for a token or a personal access token. It is magpie’s own type: OpenCode’s are <code>text</code> and <code>select</code>.</p>
     <h3>Accounts</h3>
     <ul>
       <li><b>Where they are kept.</b> A provider can be signed in to more than once. The first account is kept under the provider’s id, as OpenCode keeps it. Others are kept under <code>id#xxxxxx</code>.</li>
@@ -774,6 +776,7 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
     <a href="/docs/plugins">Plugins</a>
     <a href="/docs/remote">Remote magpie</a>
     <a href="/docs/docker">Docker</a>
+    <a href="/docs/privacy">Privacy</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie">GitHub</a>

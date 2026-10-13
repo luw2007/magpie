@@ -594,7 +594,7 @@ func (s *Server) modelSearch(ctx context.Context, query string) (string, []Hit, 
 		err = nil
 	}
 	if err == nil {
-		said, hits, err = s.searchBy(ctx, p, model, query)
+		said, hits, err = s.searchBy(ctx, p, model, query, searchEffort(p, model))
 	}
 	if named {
 		// a search the agent stopped waiting for is no failure of its
@@ -631,7 +631,7 @@ func (s *Server) modelSearch(ctx context.Context, query string) (string, []Hit, 
 		tried = append(tried, pick{c.Provider.ID, c.Small})
 		next := searcherSpent(c.Provider, c.Small)
 		if next == nil {
-			said, hits, next = s.searchWith(ctx, c.Provider, c.Small, query)
+			said, hits, next = s.searchWith(ctx, c.Provider, c.Small, query, searchEffort(c.Provider, c.Small))
 		}
 		if next != nil {
 			err = errors.Join(err, next)
@@ -756,12 +756,12 @@ var errNotSearched = fmt.Errorf("answered without searching the web: %w", errFou
 // what it says found nothing: the model answered without searching (#669:
 // DeepSeek on its Chat API, which has no search tool, said it couldn't, or
 // wrote its own tool-call markup as text).
-func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, query string) (string, []Hit, error) {
-	body, _ := json.Marshal(map[string]any{
-		"model": p.ID + "/" + model, "max_tokens": 4096, "stream": false, "system": searchSystem,
-		"messages": []map[string]any{{"role": "user", "content": "Search the web for: " + query}},
-		"tools":    []map[string]any{{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}},
-	})
+//
+// effort is the level its model is asked to think at, "" for none sent:
+// the searcher's is picked in Settings (searchEffort), and a provider
+// searching for its own models is sent none.
+func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, query, effort string) (string, []Hit, error) {
+	body, _ := json.Marshal(searchBody(p, model, query, effort))
 	r, err := http.NewRequestWithContext(magpieChose(ctx), http.MethodPost, "http://magpie/v1/messages", nil)
 	if err != nil {
 		return "", nil, err
@@ -833,6 +833,41 @@ func (s *Server) searchWith(ctx context.Context, p provider.Provider, model, que
 		said += "\n\nSources:\n" + strings.Join(sources, "\n")
 	}
 	return said, found, nil
+}
+
+// searchBody is the Anthropic Messages request the searcher's model is
+// asked to search with. A level of reasoning is asked as Claude Code asks
+// it, a thinking budget with output_config.effort beside it, which the
+// gateway fits to the vendor the model is on: adaptive thinking for a
+// Claude that takes only that (adaptiveThinking), reasoning_effort, a
+// Gemini thinking level. A Claude before adaptive thinking is sent the
+// budget alone, as output_config.effort isn't its; "none" turns thinking
+// off.
+func searchBody(p provider.Provider, model, query, effort string) map[string]any {
+	q := map[string]any{
+		"model": p.ID + "/" + model, "max_tokens": replyRoom(4096, effort), "stream": false, "system": searchSystem,
+		"messages": []map[string]any{{"role": "user", "content": "Search the web for: " + query}},
+		"tools":    []map[string]any{{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}},
+	}
+	switch effort {
+	case "":
+	case "none":
+		q["thinking"] = map[string]any{"type": "disabled"}
+	default:
+		budget := 1024 // Anthropic's least
+		if effort != "minimal" {
+			budget = budgetOf(effortOf(effort))
+		}
+		q["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
+		vendor := model
+		if _, m, ok := provider.Resolve(p.ID + "/" + model); ok {
+			vendor = m
+		}
+		if _, _, claude := claudeVersionOf(vendor); !claude || adaptiveOnly(vendor) {
+			q["output_config"] = map[string]any{"effort": effort}
+		}
+	}
+	return q
 }
 
 // SearchAgent is the User-Agent of the searches magpie makes for a model.

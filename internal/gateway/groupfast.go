@@ -15,10 +15,17 @@ const claudeFastBeta = "fast-mode-2026-02-01"
 // in OpenAI's words, speed "fast" in Anthropic's. A request carried on in
 // another protocol keeps it (Request.Fast), and goes out with it only
 // where the vendor and model have one (buildResponses, buildChat, build,
-// cursorModelID).
+// cursorModelID). A client's own ask for Ultrafast, faster than priority,
+// is kept: sent fast, it isn't sent slower than it asked (#1784,
+// zhenghaowen0967: OMP with fastPicks asked Ultrafast and went as
+// priority). An account that doesn't offer it is asked for priority in
+// its place, as any is (tierMate).
 func withFast(proto provider.Protocol, body []byte) []byte {
 	switch proto {
 	case provider.Chat, provider.Responses:
+		if askedTier(body) == "ultrafast" {
+			return body
+		}
 		return withFields(body, map[string]any{"service_tier": "priority"})
 	case provider.Anthropic:
 		return withFields(body, map[string]any{"speed": "fast"})

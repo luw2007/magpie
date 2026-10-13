@@ -101,11 +101,26 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             const aq = row.locator(".aq .aq-none");
             await aq.waitFor();
             assert.equal(await aq.innerText(), w.reason);
-            const box = await row.boundingBox(), line = await aq.boundingBox();
+            // read once the row has stopped being drawn again: what comes in
+            // after the editor opens draws the accounts again, and a row
+            // looked at across that is gone (null boxes, "not attached")
+            for (let i = 0; i < 20; i++) {
+              await row.evaluate((e) => { e.dataset.seen = "1"; });
+              await page.waitForTimeout(250);
+              if (await row.evaluate((e) => e.dataset.seen === "1").catch(() => false)) break;
+            }
+            const boxes = async (b) => {
+              for (let i = 0; i < 40; i++) {
+                const got = [await row.boundingBox(), await aq.boundingBox(), await b.boundingBox()];
+                if (got.every(Boolean)) return got;
+                await page.waitForTimeout(50);
+              }
+              assert.fail(`${await b.innerText()}, its row or the reason never laid out`);
+            };
             for (const b of [again, rm]) {
               await b.scrollIntoViewIfNeeded();
               assert.ok(await b.isVisible());
-              const r = await b.boundingBox();
+              const [box, line, r] = await boxes(b);
               assert.ok(!overlap(r, line), `${await b.innerText()} is under the reason`);
               assert.ok(r.x >= box.x - 1 && r.x + r.width <= box.x + box.width + 1, `${await b.innerText()} runs out of the row`);
             }

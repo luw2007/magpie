@@ -326,6 +326,7 @@ func quotaAutoResetCmd(args []string) error {
 		} else {
 			fmt.Println(user, "uses its resets only when told to")
 		}
+		printResetsUsed(user)
 		return nil
 	}
 	if err := provider.SetCodexAutoReset(user, on); err != nil {
@@ -337,6 +338,31 @@ func quotaAutoResetCmd(args []string) error {
 		fmt.Println(green.Render("✓"), user+":", "no longer uses a reset by itself")
 	}
 	return nil
+}
+
+// printResetsUsed lists the resets of user's magpie spent, newest first,
+// and why: so a reset gone from the account can be told apart from one it
+// ran out of or the user spent elsewhere.
+func printResetsUsed(user string) {
+	used := provider.ResetsUsed(user)
+	if len(used) == 0 {
+		fmt.Println(muted.Render("magpie hasn't used any of its resets in the last 90 days"))
+		return
+	}
+	for _, u := range used {
+		fmt.Println(muted.Render("↺"), u.At.Local().Format("2006-01-02 15:04"), muted.Render(resetUsedWhy(u.Why)))
+	}
+}
+
+// resetUsedWhy says why magpie used a reset, as ResetUse.Why has it.
+func resetUsedWhy(why string) string {
+	switch why {
+	case provider.ResetUsedWeek:
+		return "used by itself: its week was used up and no other account could answer"
+	case provider.ResetUsedExpiring:
+		return "used by itself: it was about to run out unused"
+	}
+	return "used by hand"
 }
 
 // quotaCreditsCmd: magpie quota credits [<codex account>] [on|off] —

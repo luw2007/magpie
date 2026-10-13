@@ -2,6 +2,7 @@ package agent
 
 import (
 	"cmp"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
@@ -41,6 +42,97 @@ func realReachProbe(base string) bool {
 	}
 	res.Body.Close()
 	return true
+}
+
+// magpieProbe says whether base answers as a magpie gateway: GET base/ is
+// 200 with {"name":"magpie"} (the gateway's info), as it is through a
+// reverse proxy that forwards base to it. A var for tests.
+var magpieProbe = realMagpieProbe
+
+func realMagpieProbe(base string) bool {
+	c := &http.Client{Timeout: 3 * time.Second}
+	res, err := c.Get(strings.TrimSuffix(base, "/") + "/")
+	if err != nil {
+		return false
+	}
+	return answersAsMagpie(res)
+}
+
+// answersAsMagpie: res, closed here, is the gateway's info (GET /).
+func answersAsMagpie(res *http.Response) bool {
+	defer res.Body.Close()
+	var info struct {
+		Name string `json:"name"`
+	}
+	return res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&info) == nil && info.Name == "magpie"
+}
+
+// magpieAt is whether base answers as magpie (magpieProbe), and whether
+// that is known yet: the last probe's answer, a new one started in the
+// background as reachable does, never waited for. A var for tests, which
+// are told no without a probe.
+var magpieAt = func(base string) (ok, known bool) {
+	return probed("magpie "+base, func() bool { return magpieProbe(base) })
+}
+
+// proxyBase is v, the address an agent's config names where magpie wrote
+// want, with want's path (/v1 where want has it) cut off its end, when
+// that can be another way to magpie: a URL on another machine or a name,
+// such as a company's reverse proxy in front of the gateway (davisjiahao,
+// #1985: https://ai.corp.example/magpie forwarding to 127.0.0.1:3425), or
+// one on this machine's loopback with a path of its own before magpie's (a
+// compliance proxy's http://127.0.0.1:8788/claude-code-anthropic/<route>).
+// One on loopback with none is magpie's own on an older port, never
+// another way to it.
+func proxyBase(v, want string) (string, bool) {
+	w, err := url.Parse(want)
+	if err != nil || (w.Scheme != "http" && w.Scheme != "https") || w.Host == "" {
+		return "", false
+	}
+	base, ok := strings.CutSuffix(strings.TrimSuffix(strings.TrimSpace(v), "/"), strings.TrimSuffix(w.Path, "/"))
+	if !ok || !onAnotherMachine(base) && !loopbackWithPath(base) {
+		return "", false
+	}
+	if u, err := url.Parse(base); err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	return base, true
+}
+
+// loopbackWithPath says base is an http(s) address on this machine's
+// loopback with a path: a local proxy's route, never the gateway's own
+// address, which has none.
+func loopbackWithPath(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || onAnotherMachine(base) {
+		return false
+	}
+	return strings.Trim(u.Path, "/") != ""
+}
+
+// reachesMagpie says v reaches magpie another way (proxyBase) whose root
+// answers as magpie. Until it has been tried it is taken as reaching
+// magpie, as an address not yet tried isn't unreachable either: telling
+// drift first would offer Reconnect, which writes the proxy away.
+func reachesMagpie(v, want string) bool {
+	base, ok := proxyBase(v, want)
+	if !ok {
+		return false
+	}
+	ok, known := magpieAt(base)
+	return ok || !known
+}
+
+// surelyMagpie is reachesMagpie once magpie has answered there: what a
+// write that keeps the address waits for, so a relay not yet tried never
+// gets magpie's model or key.
+func surelyMagpie(v, want string) bool {
+	base, ok := proxyBase(v, want)
+	if !ok {
+		return false
+	}
+	ok, known := magpieAt(base)
+	return ok && known
 }
 
 var reach struct {
@@ -103,11 +195,11 @@ func probedNow(key string, probe func() bool) bool {
 	return ok
 }
 
-// offLoopback: base is an http address on a host other than this
+// offLoopback: base is an http(s) address on a host other than this
 // machine's loopback and the gateway's own.
 func offLoopback(base string) bool {
 	u, err := url.Parse(base)
-	if err != nil || u.Scheme != "http" || u.Hostname() == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return false
 	}
 	h := u.Hostname()
@@ -147,7 +239,7 @@ func (a *Agent) unreachable(on Field, now string) *Drift {
 		return nil
 	}
 	d := &Drift{Kind: "unreachable", Field: on.Key, Now: now, Want: now, Addr: addr}
-	host := strings.TrimPrefix(addr, "http://")
+	host := strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
 	d.Detail = a.Name + " is pointed at magpie at " + addr + ", where nothing answers from this computer, though magpie answers at " + gateway.URL() + ". "
 	if a.WSL != "" || runtime.GOOS == "windows" {
 		d.Detail += "Under WSL's NAT networking, Windows as WSL sees it reaches magpie only while something listens on " + host +

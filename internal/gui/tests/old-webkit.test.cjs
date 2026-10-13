@@ -21,7 +21,9 @@ const { webkit } = require("playwright");
 const { babelParse } = require("playwright/lib/transform/babelBundle");
 
 const assets = path.resolve(__dirname, "../assets");
-const scripts = async () => (await fs.readdir(assets)).filter((f) => f.endsWith(".js")).sort();
+// the page's scripts, the built-in plugins' under plugins/ among them, as
+// index.html names them
+const scripts = async () => (await fs.readdir(assets, { recursive: true })).map((f) => f.split(path.sep).join("/")).filter((f) => f.endsWith(".js")).sort();
 const read = (f) => fs.readFile(path.join(assets, f), "utf8");
 
 // Syntax Safari 15.0 can't parse; one of these fails the whole file.

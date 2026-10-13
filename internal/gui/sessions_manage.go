@@ -81,6 +81,22 @@ func trashJSON(looks map[string]*agent.Agent) []trashedJSON {
 }
 
 func sessionManageRoutes(mux *http.ServeMux, w Windows) {
+	mux.HandleFunc("POST /api/sessions/relocate-claude", func(rw http.ResponseWriter, r *http.Request) {
+		var in sessions.ClaudeRelocation
+		if err := json.NewDecoder(http.MaxBytesReader(rw, r.Body, 16384)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		out, err := sessions.RelocateClaudeProject(in)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		if out.Backup != "" {
+			forgetStats()
+		}
+		writeJSON(rw, out)
+	})
 	mux.HandleFunc("POST /api/sessions/recording", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			On    bool `json:"on"`

@@ -170,3 +170,33 @@ func perModelValue(typ reflect.Type, table string) reflect.Value {
 	}
 	return reflect.Zero(typ)
 }
+
+// How often a refused request is asked again (DD on Discord) is set by the
+// Settings page, null for every one left, and kept by a save from a page
+// that doesn't send it.
+func TestSettingsRefusalRetries(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	handler := Handler(nil, nil)
+	for _, x := range []struct {
+		body string
+		want int // -1 for unset
+	}{
+		{`{"theme":"dark","refusalRetries":0}`, 0},
+		{`{"theme":"light"}`, 0},
+		{`{"theme":"light","refusalRetries":2}`, 2},
+		{`{"theme":"light","refusalRetries":null}`, -1},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(x.body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", x.body, rec.Code, rec.Body)
+		}
+		got := settings.Load().RefusalRetries
+		if x.want < 0 && got != nil || x.want >= 0 && (got == nil || *got != x.want) {
+			t.Fatalf("%s: refusalRetries %v", x.body, got)
+		}
+	}
+}

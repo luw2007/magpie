@@ -490,7 +490,7 @@ func (s *Server) serveSystemOne(w http.ResponseWriter, r *http.Request) {
 	seat := decideSeat(p, model)
 	var used Usage
 	who := callerOf(r)
-	tr := s.trace.begin(Route{Time: start, Agent: who.agent, Session: sessionOf(r.Header), Model: asked, Provider: p.ID,
+	tr := s.trace.beginFor(r, Route{Time: start, Agent: who.agent, Session: sessionOf(r.Header), Model: asked, Provider: p.ID,
 		Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Start: start}}})
 	end := func(status int, msg string, tokens int) {
 		ms := time.Since(start).Milliseconds()

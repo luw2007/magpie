@@ -324,6 +324,28 @@ type Usage struct {
 	// (stop_reason, finish_reason, a Responses status): "" when it said
 	// none, as a stream that just stops does (upstreamStop)
 	Stop string `json:"stop,omitempty"`
+	// Tier is the service tier the reply says it ran at (upstreamTier),
+	// "" when it says none
+	Tier string `json:"tier,omitempty"`
+	// Deferred is what the reply counted of earlier requests of its
+	// conversation, which their own replies couldn't (cUsage's
+	// MagpieDeferred): billed with this one, never told as its prompt
+	Deferred *Usage `json:"deferred,omitempty"`
+}
+
+// billed is what the request is billed for: its own count, and what it
+// counted of earlier ones (Deferred).
+func (u Usage) billed() Usage {
+	if d := u.Deferred; d != nil {
+		u.Input += d.Input
+		u.Output += d.Output
+		u.CacheRead += d.CacheRead
+		u.CacheWrite += d.CacheWrite
+		u.CacheWrite1h += d.CacheWrite1h
+		u.Reasoning += d.Reasoning
+		u.Deferred = nil
+	}
+	return u
 }
 
 // prompt is every token the prompt came to, as OpenAI's and Gemini's
@@ -358,6 +380,9 @@ func (u *Usage) add(v Usage) {
 	if v.Upstream != "" {
 		u.Upstream = v.Upstream
 	}
+	if v.Tier != "" {
+		u.Tier = v.Tier
+	}
 	if v.RequestID != "" {
 		u.RequestID = v.RequestID
 	}
@@ -369,6 +394,9 @@ func (u *Usage) add(v Usage) {
 	}
 	if v.Stop != "" {
 		u.Stop = v.Stop
+	}
+	if v.Deferred != nil {
+		u.Deferred = v.Deferred
 	}
 }
 

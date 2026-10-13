@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 
@@ -47,6 +48,26 @@ func viaMagpie(agent, prefix string) []Option {
 			own[e.Provider.ID] = a.User == provider.AgentUser(agent)
 		}
 	}
+	// firstUser: the account a request for a subscription's model goes to
+	// first, which the note names. A Codex or Claude Code subscription is
+	// the account the agent is signed in to (Account.User), but its
+	// requests go to the first in magpie's order: another one when that
+	// one is paused, or when the agent is kept signed in to an account
+	// that isn't first (#1957, parkavenue9639: every codex/gpt-* read
+	// "A · via magpie" while each went to B). Asked once a provider.
+	firsts := map[string]string{}
+	firstUser := func(p provider.Provider) string {
+		a := p.Account
+		if a.Agent != p.ID || a.StandIn() {
+			return a.User
+		}
+		u, ok := firsts[p.ID]
+		if !ok {
+			u = cmp.Or(provider.FirstLogin(a.Agent), a.User)
+			firsts[p.ID] = u
+		}
+		return u
+	}
 	fast := provider.FastPicks(agent)
 	for _, e := range shown {
 		if e.Group != "" {
@@ -56,7 +77,7 @@ func viaMagpie(agent, prefix string) []Option {
 		}
 		note := e.Provider.Name + " · via magpie"
 		if a := e.Provider.Account; a != nil {
-			note = a.User + " · via magpie"
+			note = firstUser(e.Provider) + " · via magpie"
 		}
 		o := Option{Value: prefix + e.ID, Label: e.Name, Note: note,
 			Icon: e.Provider.Icon, Group: e.Provider.Name, Ref: e.ID, Free: e.Free, Rate: e.Rate, RateWas: e.RateWas, Context: e.Context, own: own[e.Provider.ID],
@@ -69,6 +90,19 @@ func viaMagpie(agent, prefix string) []Option {
 		out = append(out, o)
 	}
 	return append(groups, out...)
+}
+
+// listLabels are the names the agent's own list calls the catalog's models
+// by, by id: provider.Labels, which follows the Provider in model names
+// setting, where an Option's Label is the name alone for magpie's picker.
+func listLabels(agent string) map[string]string {
+	shown, _ := provider.CatalogFor(agent)
+	labels := provider.Labels(shown)
+	out := make(map[string]string, len(shown))
+	for i, e := range shown {
+		out[e.ID] = labels[i]
+	}
+	return out
 }
 
 // viaMagpieFor is viaMagpie without the agent's own account: Codex CLI going

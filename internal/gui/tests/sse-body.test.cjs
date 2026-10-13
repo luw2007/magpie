@@ -159,10 +159,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(!(await shown(0)).includes("data: {"), "no raw data lines in the events view");
 
       // its reply put together: thinking, text and the tool's input as an object
-      await reach(res.locator(".segs"));
+      // the option is wheeled to first, so the page is measured after the
+      // reader's own wheel and before the click
+      const replyOpt = res.locator(".segs .opt", { hasText: w.reply });
+      const ob = await reach(replyOpt);
       let at = await page.locator(view).evaluate((v) => v.scrollTop);
       const pickTop = await res.locator(".segs").evaluate((e) => e.getBoundingClientRect().top);
-      await pick(res.locator(".segs .opt", { hasText: w.reply }));
+      await page.mouse.click(ob.x + ob.width / 2, ob.y + ob.height / 2);
       await page.waitForTimeout(300);
       assert.equal(await page.locator(view).evaluate((v) => v.scrollTop), at, "the switch leaves the page where it was");
       assert.equal(await res.locator(".segs").evaluate((e) => e.getBoundingClientRect().top), pickTop);

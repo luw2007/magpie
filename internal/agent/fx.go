@@ -57,7 +57,7 @@ func fxIn(at place) *Agent {
 		return edit.DelJSON(path, keys...)
 	}
 	return &Agent{
-		ID: "fx", Name: "fx", Icon: "fx", Spelled: prefixed,
+		ID: "fx", Name: "fx", Icon: "fx", Spelled: prefixed, NoNames: true,
 		Dir: dir, Path: path,
 		// ~/.fx is where its settings are. No command: `fx` is a common name
 		// (the JSON viewer has it too), as in WSL (wsl.go).

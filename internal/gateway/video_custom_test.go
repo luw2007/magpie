@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -332,5 +333,72 @@ func TestGrokVideoPollHeldByKeyModels(t *testing.T) {
 	}
 	if code, _, raw = asKey(t, h, secrets[1], "GET", "/v1/videos/"+id+"/content", ""); code != 200 || string(raw) != "fake-mp4-bytes" {
 		t.Fatalf("content: %d %s", code, raw)
+	}
+}
+
+// A model the provider's list doesn't mark, the user says makes videos
+// (shen-joe, #1399: a relay's agnes-video-2.5-flash turned away "can't make
+// videos" with no way to say it does): it is started, polled and fetched at
+// the provider's videos API as a listed one is, one typed in by hand too.
+// One the user says draws leaves the video models for the image ones, and
+// a chat model said to draw is drawn with. Said of nothing, it goes back.
+func TestCustomProviderVideoTheUserMarks(t *testing.T) {
+	fresh(t)
+	up := newOpenAIVideos(t)
+	p := saveFetched(t, provider.Provider{ID: "studio", Name: "Studio", Chat: up.URL + "/v1", Key: "sk-studio", Models: []string{"gpt-5.5", "sora-like-2", "typed-video-1"}})
+	for ref, kind := range map[string]string{"studio/sora-like-2": "video", "studio/typed-video-1": "video", "studio/vid-1": "image", "studio/gpt-5.5": "image"} {
+		if err := provider.SetModelKind(ref, kind); err != nil {
+			t.Fatalf("%s: %v", ref, err)
+		}
+	}
+	ids := func(ms []catalog.Model) []string {
+		var out []string
+		for _, m := range ms {
+			if m.Provider != "studio" {
+				t.Fatalf("%v: not studio's", m)
+			}
+			out = append(out, m.ID)
+		}
+		slices.Sort(out)
+		return out
+	}
+	if got := ids(Videomakers(p)); !slices.Equal(got, []string{"sora-like-2", "typed-video-1"}) {
+		t.Fatalf("videomakers %v", got)
+	}
+	if got := ids(Drawers(p)); !slices.Equal(got, []string{"gpt-5.5", "vid-1"}) {
+		t.Fatalf("drawers %v", got)
+	}
+	h := New().Handler()
+	for i, model := range []string{"sora-like-2", "typed-video-1"} {
+		code, obj, raw := asKey(t, h, "", "POST", "/v1/videos", `{"model":"studio/`+model+`","prompt":"waves on a rock"}`)
+		if id, _ := obj["id"].(string); code != 200 || !strings.HasPrefix(id, "video_studio.") {
+			t.Fatalf("%s: %d %s", model, code, raw)
+		}
+		var sent map[string]any
+		json.Unmarshal([]byte(up.bodies[i]), &sent)
+		if sent["model"] != model || sent["prompt"] != "waves on a rock" {
+			t.Fatalf("%s: sent %v", model, sent)
+		}
+	}
+	if code, obj, raw := asKey(t, h, "", "POST", "/v1/videos", `{"model":"studio/vid-1","prompt":"x"}`); code != 400 || !strings.Contains(errorOf(obj), "can't make videos") {
+		t.Fatalf("vid-1, said to draw: %d %s", code, raw)
+	}
+	// a model the provider doesn't have can't be said to make anything
+	if err := provider.SetModelKind("studio/nope-9", "video"); err == nil {
+		t.Fatal("a model studio doesn't have was marked")
+	}
+	if err := provider.SetModelKind("studio/sora-like-2", "audio"); err == nil {
+		t.Fatal("a kind magpie doesn't know was taken")
+	}
+	for _, ref := range []string{"studio/sora-like-2", "studio/typed-video-1", "studio/vid-1", "studio/gpt-5.5"} {
+		if err := provider.SetModelKind(ref, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := ids(Videomakers(p)); !slices.Equal(got, []string{"vid-1"}) {
+		t.Fatalf("videomakers after unmarking %v", got)
+	}
+	if got := ids(Drawers(p)); len(got) != 0 {
+		t.Fatalf("drawers after unmarking %v", got)
 	}
 }

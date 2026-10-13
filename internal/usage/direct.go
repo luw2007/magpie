@@ -85,7 +85,7 @@ func direct(p Period, now time.Time, rows []Row) Summary {
 			continue
 		}
 		s.Totals.addRow(r)
-		id := AgentOf(r.Agent)
+		id := ReportedAs(r.Agent)
 		put(agents, id, Group{ID: id}, r)
 		put(models, r.Provider+"/"+r.Model, Group{ID: r.Provider + "/" + r.Model, Provider: r.Provider, Model: r.Model}, r)
 		if who := r.Account(); who != "" {

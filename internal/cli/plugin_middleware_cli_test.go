@@ -9,13 +9,18 @@ import (
 
 	"github.com/yetone/magpie/internal/middleware"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // magpie plugin says which plugins are gateway middleware and their hooks,
 // or why one didn't load; a middleware plugin has no provider to sign in
 // to, so the list had nothing under it.
 func TestPluginListSaysMiddleware(t *testing.T) {
+	bun := testenv.Bun(t)
 	groupsHome(t)
+	// the Bun the other plugin tests run on, not one downloaded from
+	// GitHub (#1922)
+	t.Setenv("MAGPIE_BUN", bun)
 	t.Cleanup(plugin.Settle) // what adding the plugins told ends with the test
 	dir := t.TempDir()
 	good := filepath.Join(dir, "alias.middleware.js")

@@ -652,16 +652,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	} else if hasReply(req.Messages) {
 		// no run had the conversation: this one is told it whole, in one
 		// message, its earlier turns marked as such (renderClaudePrompt)
-		images := 0
-		for _, m := range req.Messages {
-			for _, p := range m.Parts {
-				if p.Kind == Image {
-					images++
-				}
-				images += len(p.Images)
-			}
-		}
-		log.Printf("claude: a new Claude Code is told the whole conversation: %d messages, %d images, the last turn marked as the one to answer", len(req.Messages), images)
+		log.Printf("claude: a new Claude Code is told the whole conversation: %d messages, %d images, the last turn marked as the one to answer", len(req.Messages), countImages(req.Messages))
 	}
 	cmd := binary.command(context.Background(), args...)
 	cmd.Dir = work
@@ -2527,7 +2518,7 @@ func renderClaudePrompt(req *Request) ([]map[string]any, error) {
 			text.WriteString(historyOpen)
 		}
 		if split > 0 && i == split {
-			text.WriteString(historyClose)
+			text.WriteString(currentTurnOpen(req.Messages, split))
 		}
 		label := "Human"
 		if m.Role == "assistant" {
@@ -2582,6 +2573,40 @@ const (
 		"Images and files in it were sent with those earlier messages: none of them is new, and none needs answering again.\n\n"
 	historyClose = "</conversation_history>\n\n<current_turn>\nThe turn to answer now:\n\n"
 )
+
+// currentTurnOpen is historyClose for the turn of msgs from split on. Claude
+// Code notes each image of the message it is given ("[Image: source:
+// …/images/1.png]", where it keeps them, or the size it showed one at) in a
+// note of its own after the message, so after the turn to answer: told
+// nothing of them, the model took the history's images for ones sent with
+// that turn, said they were attached and opened them again (#1751). Where
+// the history has images, the turn says whose the notes are.
+func currentTurnOpen(msgs []Message, split int) string {
+	earlier, now := countImages(msgs[:split]), countImages(msgs[split:])
+	switch {
+	case earlier == 0:
+		return historyClose
+	case now == 0:
+		return "</conversation_history>\n\n<current_turn>\nThe turn to answer now. Any \"[Image: …]\" notes after it are about " +
+			"the images in the conversation history above, not images sent with this turn.\n\n"
+	}
+	return "</conversation_history>\n\n<current_turn>\nThe turn to answer now. Any \"[Image: …]\" notes after it are about " +
+		"the images above in their order: the conversation history's first, then this turn's.\n\n"
+}
+
+// countImages is how many images msgs carry, their tool results' among them.
+func countImages(msgs []Message) int {
+	n := 0
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if p.Kind == Image {
+				n++
+			}
+			n += len(p.Images)
+		}
+	}
+	return n
+}
 
 // historyEnd is where the turn to answer begins in msgs: the message after
 // the last reply that calls no tool. 0 when there is no such reply, or
@@ -3859,7 +3884,7 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 				// the status Claude Code got, else a guess from the words
 				if head[n-1].Status >= 400 {
 					code = head[n-1].Status
-				} else if quotaWords.MatchString(msg) {
+				} else if quotaSaid(msg) {
 					code = 429
 				}
 			}
@@ -3920,7 +3945,7 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 		usage.add(Usage{ErrType: col.errCode})
 		if col.errStatus >= 400 {
 			code = col.errStatus
-		} else if quotaWords.MatchString(col.err) {
+		} else if quotaSaid(col.err) {
 			code = 429
 		}
 		return writeError(w, from, code, name+": "+col.err), col.err

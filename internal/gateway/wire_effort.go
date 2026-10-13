@@ -23,6 +23,9 @@ func thinkingBackOn(p provider.Provider, model string, req *Request) *Request {
 type wireAt struct {
 	effort string
 	set    bool
+	// tier: the service tier the try's request went out at, whichever
+	// path sent it (noteWireTier)
+	tier string
 }
 
 type wireAtKey struct{}

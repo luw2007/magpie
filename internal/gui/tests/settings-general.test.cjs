@@ -103,6 +103,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the page drawn in another language grows above it (the view scrolls
       // to hold it, as every click on Settings does)
       const where = () => pick.evaluate((b) => { const v = document.querySelector("#view-settings"); return { top: b.getBoundingClientRect().top, inPage: b.getBoundingClientRect().top - b.closest(".set-page, section, [id^=setPage-]").getBoundingClientRect().top, scrolled: v.scrollTop }; });
+      // the page comes in animated: a place read mid-way isn't where it rests
+      const rest = () => page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {}))));
+      await rest();
       // the baseline is read once the page has stopped moving: just drawn, the
       // header and rows still ease into place (top 148 → 152 between reads)
       let before = await where();
@@ -133,6 +136,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       for (let i = 0; i < 50 && (await head.innerText()) !== appearance[to]; i++) await page.waitForTimeout(50);
       assert.equal(await head.innerText(), appearance[to]);
       assert.equal(await page.locator(".proto-menu").count(), 0, "the menu stays open");
+      await rest();
       const after = await where();
       assert.ok(Math.abs(after.inPage - before.inPage) <= 1, `the rows above the language moved: ${JSON.stringify([before, after])}`);
       // a view at its top can't scroll up to hold it as the header above shrinks

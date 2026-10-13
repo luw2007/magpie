@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 
 	"github.com/yetone/magpie/internal/netproxy"
+	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -51,7 +53,7 @@ func askClaude(ctx context.Context, configDir, model string) error {
 	cmd.Env = binary.env(netproxy.EnvWith(claudeProxy(ctx), cleanClaudeEnv(os.Environ())), configDir)
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
-	runErr := cmd.Run()
+	runErr := runClaudeTree(cmd)
 	if res, ok := claudeResult(out.Bytes()); ok && res.IsError {
 		return errors.New("Claude Code: " + clip(res.Result))
 	}
@@ -102,7 +104,7 @@ func claudeUsage(ctx context.Context, configDir string) (string, error) {
 	cmd.Env = binary.env(netproxy.EnvWith(claudeProxy(ctx), env), configDir)
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
-	runErr := cmd.Run()
+	runErr := runClaudeTree(cmd)
 	if res, ok := claudeResult(out.Bytes()); ok {
 		if res.IsError {
 			return "", errors.New("Claude Code: " + clip(res.Result))
@@ -117,6 +119,21 @@ func claudeUsage(ctx context.Context, configDir string) (string, error) {
 		return "", runErr
 	}
 	return "", errors.New("Claude Code: " + clip(msg))
+}
+
+// runClaudeTree runs a one-off Claude Code (a test, a /usage) and ends,
+// with it, whatever it started: its context ending kills only the
+// process magpie started, and on Windows that is cmd.exe running npm's
+// claude.cmd, whose node went on running with nobody waiting for it
+// (#1894). In a tree, a job on Windows and a session elsewhere, what is
+// left once the head is gone is ended with it, and on Windows when magpie
+// exits mid-run.
+func runClaudeTree(cmd *exec.Cmd) error {
+	t, err := proc.StartTree(cmd)
+	if err != nil {
+		return err
+	}
+	return t.Wait()
 }
 
 // claudeRun is the result Claude Code prints for a -p run with

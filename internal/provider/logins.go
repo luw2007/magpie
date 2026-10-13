@@ -677,7 +677,7 @@ func liveLogin(agent string) (savedLogin, bool) {
 		if l.User == "" {
 			return savedLogin{}, false
 		}
-		return l, true
+		return claudeSignInOwner(readLogins(), l), true
 	}
 	return savedLogin{}, false
 }
@@ -898,6 +898,24 @@ func Logins(agent string) []Login {
 // Kept signed in to one of the user's choosing, it is the first in the
 // order that is in use.
 func InUseLogin(agent string) string {
+	return inUseLogin(agent, loginRoom(agent))
+}
+
+// FirstLogin is the account of an agent's first in the gateway's order,
+// as InUseLogin, by the order alone: the one the agent is signed in to
+// unless it is paused, else the first other one on; kept signed in to one
+// of the user's choosing, the first on in the order (#1957). An account
+// spent is still named, so a list that names it isn't rewritten each time
+// an allowance is read. "" when the agent has none, or is none whose
+// own sign-in is paused for its others (Claude Code's and Codex's).
+func FirstLogin(agent string) string {
+	if !slices.Contains(loginAgents, agent) {
+		return ""
+	}
+	return inUseLogin(agent, nil)
+}
+
+func inUseLogin(agent string, room func(user string) (known, spent bool)) string {
 	ls := Logins(agent)
 	if keptAs(agent) != "" {
 		for _, l := range ls {
@@ -906,7 +924,7 @@ func InUseLogin(agent string) string {
 			}
 		}
 	}
-	return inUseOf(ls, loginRoom(agent))
+	return inUseOf(ls, room)
 }
 
 func inUseOf(ls []Login, room func(user string) (known, spent bool)) string {
@@ -1356,27 +1374,47 @@ func forgetAccountCaches() {
 // runs and Usage card then were the first's (netfishx on X). The account
 // the profile names holding the sign-in already, it is that one's.
 func claudeSignInOfAnother(ls []savedLogin, l savedLogin) bool {
+	same, others := claudeHolders(ls, l)
+	return !same && len(others) > 0
+}
+
+// claudeHolders are the saved Claude accounts holding the sign-in l
+// carries: same when l's own record (sameLogin) is one of them, others the
+// rest.
+func claudeHolders(ls []savedLogin, l savedLogin) (same bool, others []savedLogin) {
 	if l.Agent != "claude" {
-		return false
+		return false, nil
 	}
 	c, ok := parseClaudeCredentials(l.Auth)
 	if !ok {
-		return false
+		return false, nil
 	}
 	holds := func(x savedLogin) bool {
 		o, ok := parseClaudeCredentials(x.Auth)
 		return ok && (c.OAuth.AccessToken != "" && o.OAuth.AccessToken == c.OAuth.AccessToken ||
 			c.OAuth.RefreshToken != "" && o.OAuth.RefreshToken == c.OAuth.RefreshToken)
 	}
-	another := false
 	for _, x := range ls {
 		if x.Agent != "claude" || !holds(x) {
 			continue
 		}
 		if sameLogin(x, l) {
-			return false
+			return true, nil
 		}
-		another = true
+		others = append(others, x)
 	}
-	return another
+	return false, others
+}
+
+// claudeSignInOwner is the account Claude Code is signed in to by its
+// sign-in, l named by its profile: when the profile is another's
+// (claudeSignInOfAnother) and one saved account alone holds the sign-in,
+// that one. Named by the profile, the account switched to was taken for
+// the one before: its /usage went through the other's proxy and was shown
+// on the other's card (#1938).
+func claudeSignInOwner(ls []savedLogin, l savedLogin) savedLogin {
+	if same, others := claudeHolders(ls, l); !same && len(others) == 1 {
+		l.User, l.Profile = others[0].User, others[0].Profile
+	}
+	return l
 }

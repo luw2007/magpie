@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -59,12 +60,17 @@ type verdict struct {
 
 var classified = struct {
 	sync.Mutex
-	m        map[string]classifiedAs
-	failed   map[string]classifyFailure // classifier model → its last failure
+	m      map[string]classifiedAs
+	failed map[string]classifyFailure // classifier model → its last failure
+	// last: classifier model → why it couldn't say when last asked, an
+	// answer that wasn't one among them; gone once it answers
+	// (ClassifierFailure, #1929)
+	last     map[string]classifyFailure
 	inflight map[string]*classifyCall
 }{
 	m:        map[string]classifiedAs{},
 	failed:   map[string]classifyFailure{},
+	last:     map[string]classifyFailure{},
 	inflight: map[string]*classifyCall{},
 }
 
@@ -127,13 +133,20 @@ func classify(ask classifier, model string, intents []string, prev before, effor
 	defer classified.Unlock()
 	c.err = err
 	if err != nil {
+		f := classifyFailure{err: err.Error(), at: time.Now()}
 		if !errors.As(err, new(answerError)) {
-			classified.failed[model] = classifyFailure{err: err.Error(), at: time.Now()}
+			classified.failed[model] = f
 		}
+		if was, ok := classified.last[model]; !ok || was.err != f.err {
+			// said once in the log, not at every turn it fails the same way
+			log.Printf("routing: the classifier %s couldn't say: %s", model, f.err)
+		}
+		classified.last[model] = f
 		return verdict{}, false, err
 	}
 	c.v = v
 	delete(classified.failed, model)
+	delete(classified.last, model)
 	classified.m[key] = classifiedAs{v: v, at: time.Now()}
 	if len(classified.m) > 4096 {
 		for k, c := range classified.m {
@@ -143,6 +156,19 @@ func classify(ask classifier, model string, intents []string, prev before, effor
 		}
 	}
 	return v, false, nil
+}
+
+// ClassifierFailure is why model, a routing group's classifier, couldn't
+// say which intent or effort a turn is the last time it was asked, and
+// when; ok is false once it answers, and before it is asked. The Routing
+// page says it on the group's card (#1929, versun): a classifier that fails
+// at every turn otherwise only showed in each request's own details, while
+// its group's rules with an intent quietly never matched.
+func ClassifierFailure(model string) (why string, at time.Time, ok bool) {
+	classified.Lock()
+	defer classified.Unlock()
+	f, ok := classified.last[model]
+	return f.err, f.at, ok
 }
 
 // userText is what the user said to begin the turn: the words (userSaid)

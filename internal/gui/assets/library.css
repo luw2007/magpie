@@ -155,6 +155,9 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; --bleed
 .lib-setadd { padding: 8px 10px 10px; }
 input.lib-setname { height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); font-size: 12.5px; outline: none; max-width: 280px; transition: border-color .12s, box-shadow .12s; }
 input.lib-setname.grow { flex: 1 1 auto; max-width: none; }
+.lib-setnew { flex-wrap: wrap; row-gap: 8px; }
+input.lib-setname.lib-setfile-in { flex: 2 1 220px; font-size: 12px; }
+.lib-setfile { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
 input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 
 /* an agent's instructions, opened */
@@ -175,6 +178,7 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-problems-sep { color: var(--muted); }
 .lib-problems-err { display: block; color: var(--fg-2); font: var(--code-style, normal) var(--code-weight, 400) 11px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); margin-top: 1px; }
 .lib-problems-fix { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.lib-problems-away { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 15px; }
 
 /* agents a server or skill is given to: an icon each, lit when it has it */
 .lib-agents { display: flex; flex-wrap: wrap; gap: 3px; flex: none; justify-content: flex-end; max-width: 50%; }

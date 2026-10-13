@@ -47,6 +47,11 @@ func init() {
 var others = []*Agent{
 	{ID: "magpie", Name: "magpie", Icon: "magpie", UA: []string{"magpie"}},
 	{ID: "curl", Name: "curl", Icon: "curl", UA: []string{"curl"}},
+	// PI-Desktop (vastsa/PI-Desktop) runs Pi's own library, which says
+	// "pi (…)"; given a User-Agent of its own in its provider's settings
+	// ("pi-desktop/0.1.0"), it is told apart from Pi by that name, which
+	// Pi's "pi-" would take otherwise (#1966, dgmico)
+	{ID: "pi-desktop", Name: "PI-Desktop", Icon: "pi", UA: []string{"pi-desktop"}},
 }
 
 // Clients is everyone whose requests the gateway knows by name: every
@@ -1002,6 +1007,16 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 		Sync: func() error {
 			return syncJSON(modelsPath, "providers."+magpieID, block)
 		},
+		// a provider renamed takes its magpie/<id>/ entries in enabledModels
+		// with it: an entry left on the old id names nothing, and Pi would
+		// leave that model out of Ctrl+P (#1919, #1828)
+		RenameRefs: func(from, to string) (bool, error) {
+			next, ok := renameRefList(piScope(path), from, to)
+			if !ok {
+				return false, nil
+			}
+			return true, edit.SetJSON(path, edit.KV{Path: "enabledModels", Value: next})
+		},
 		Fields: []Field{
 			{
 				Key: "model", Label: "model",
@@ -1102,7 +1117,7 @@ func gooseIn(at place, cfg string) *Agent {
 		keyEnv = func(string) string { return "" }
 	}
 	return &Agent{
-		ID: "goose", Name: "Goose", Icon: "goose", Bin: "goose", Dir: filepath.Dir(path), Path: path, Spelled: prefixed,
+		ID: "goose", Name: "Goose", Icon: "goose", Bin: "goose", Dir: filepath.Dir(path), Path: path, Spelled: prefixed, NoNames: true,
 		UA: []string{"goose"},
 		Check: func() string {
 			if p, _ := gooseActive(path); p != gooseProviderID {

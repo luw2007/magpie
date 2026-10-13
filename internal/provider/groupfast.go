@@ -192,7 +192,8 @@ func (g *Group) SetMemberFast(id string, fast bool) {
 }
 
 // RenameMember has the group's member from go by to (its effort changed):
-// its rules, its pick, its fast mode and its being off follow it.
+// its rules, its pick, its fast mode, its being off and its weight
+// follow it.
 func (g *Group) RenameMember(from, to string) {
 	for i, m := range g.Members {
 		if m == from {
@@ -217,4 +218,10 @@ func (g *Group) RenameMember(from, to string) {
 			g.Off[i] = to
 		}
 	}
+	g.Weights = renamedWeights(g.Weights, func(m string) string {
+		if m == from {
+			return to
+		}
+		return m
+	})
 }

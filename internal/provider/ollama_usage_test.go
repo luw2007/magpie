@@ -113,6 +113,8 @@ func TestOllamaCloudCards(t *testing.T) {
 		switch r.Header.Get("Authorization") {
 		case "Bearer ok-pro":
 			w.Write([]byte(ollamaProReply))
+		case "Bearer ok-legacy":
+			w.Write([]byte(ollamaLegacyReply))
 		case "Bearer ok-plain":
 			w.Write([]byte(`{"included":{"balance_usd":19,"allowance_usd":20,"period":{"from":"2026-10-01T00:00:00Z","until":"2026-11-01T00:00:00Z"}}}`))
 		default:
@@ -125,7 +127,7 @@ func TestOllamaCloudCards(t *testing.T) {
 	ollamaBalanceURL = srv.URL + "/api/balance"
 	t.Cleanup(func() { ollamaBalanceURL = old })
 	if err := Save(Provider{ID: "ollama-cloud", Name: "Ollama Cloud", Icon: "ollama", Chat: "https://ollama.com/v1", Anthropic: "https://ollama.com",
-		Keys: []KeyAccount{{ID: "pro", Key: "ok-pro", Name: "pro"}, {ID: "plain", Name: "plain", Key: "ok-plain"}, {ID: "bad", Name: "bad", Key: "ok-bad"}}}); err != nil {
+		Keys: []KeyAccount{{ID: "pro", Key: "ok-pro", Name: "pro"}, {ID: "plain", Name: "plain", Key: "ok-plain"}, {ID: "legacy", Name: "legacy", Key: "ok-legacy"}, {ID: "bad", Name: "bad", Key: "ok-bad"}}}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -141,7 +143,10 @@ func TestOllamaCloudCards(t *testing.T) {
 	if q := plans["plain"]; len(q.Windows) != 1 || q.Windows[0].Amount != 1 || q.Windows[0].Aside {
 		t.Errorf("plain's plan: %+v", q)
 	}
-	if _, ok := plans["bad"]; ok || len(plans) != 2 {
+	if q := plans["legacy"]; len(q.Windows) != 2 || q.Windows[0].Name != "Session limit" || q.Windows[0].Used != 25 || q.Windows[1].Used != 60 || q.Error != "" {
+		t.Errorf("legacy's plan: %+v", q)
+	}
+	if _, ok := plans["bad"]; ok || len(plans) != 3 {
 		t.Errorf("plan cards: %+v", plans)
 	}
 	var lines []string
@@ -150,8 +155,53 @@ func TestOllamaCloudCards(t *testing.T) {
 			lines = append(lines, q.User+"|"+q.Balance+"|"+q.Error)
 		}
 	}
-	want := `pro|$25.00|,bad||401 Unauthorized: {"error":"invalid credentials"}`
+	want := `pro|$25.00|,legacy|$25.00|,bad||401 Unauthorized: {"error":"invalid credentials"}`
 	if strings.Join(lines, ",") != want {
 		t.Errorf("balance cards:\n%s\nwant\n%s", strings.Join(lines, ","), want)
+	}
+}
+
+// ollamaLegacyReply is /api/balance for a legacy (early) plan, as
+// yangmingyuan380 posted it on #1888, byte for byte.
+const ollamaLegacyReply = `{
+  "included": {
+    "session": {
+      "remaining_percent": 75,
+      "resets_at": "2026-10-01T07:00:00Z"
+    },
+    "weekly": {
+      "remaining_percent": 40,
+      "resets_at": "2026-10-05T00:00:00Z"
+    }
+  },
+  "purchased": {
+    "balance_usd": 25.0
+  }
+}`
+
+// A legacy plan's session and weekly limits are its plan card's windows,
+// used = 100 - remaining_percent, each resetting at its resets_at; the
+// bought credits are still the balance card.
+func TestReadOllamaLegacyPlan(t *testing.T) {
+	_, ws, err := readOllamaPlan([]byte(ollamaLegacyReply))
+	if err != nil || len(ws) != 2 {
+		t.Fatalf("%v %+v", err, ws)
+	}
+	session := time.Date(2026, 10, 1, 7, 0, 0, 0, time.UTC)
+	week := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	if w := ws[0]; w.Name != "Session limit" || w.Used != 25 || w.Span != 0 || w.Unit != "" || w.ResetsAt == nil || !w.ResetsAt.Equal(session) || !w.Aside {
+		t.Errorf("session: %+v", w)
+	}
+	if w := ws[1]; w.Name != "Weekly" || w.Used != 60 || w.Span != 7*24*time.Hour || w.ResetsAt == nil || !w.ResetsAt.Equal(week) || !w.Aside {
+		t.Errorf("weekly: %+v", w)
+	}
+	if got, err := readOllamaCredits([]byte(ollamaLegacyReply)); err != nil || got != "$25.00" {
+		t.Errorf("credits: %q %v", got, err)
+	}
+	// without credits the limits stop the key; one that doesn't say what
+	// is left is no window, not used up
+	_, ws, err = readOllamaPlan([]byte(`{"included":{"session":{"remaining_percent":0,"resets_at":"x"},"weekly":{"resets_at":"2026-10-05T00:00:00Z"}}}`))
+	if err != nil || len(ws) != 1 || ws[0].Used != 100 || ws[0].Aside || ws[0].ResetsAt != nil {
+		t.Errorf("no credits: %v %+v", err, ws)
 	}
 }

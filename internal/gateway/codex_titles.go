@@ -59,6 +59,27 @@ func codexDescriptionsTo(h http.Header, body []byte, ours bool) string {
 	return ""
 }
 
+// codexPredictionsTo is where the Codex app's request to predict the
+// user's next message goes (#1970, pluo): a hidden turn on a fork of the
+// whole conversation (composer_predictions), which the app sends on the
+// thread's own model, so a long thread on an expensive model pays for
+// every prediction. "" leaves the request as Codex sent it; "off", or a
+// model's id that writes it: settings.CodexPredictions, else the model
+// Codex asked for when it is one of magpie's, whose plain answer is
+// wrapped as titles' and descriptions' are.
+func codexPredictionsTo(h http.Header, body []byte, ours bool) string {
+	if !isPredictionKind(requestCallKind(h, requestSessionMetadata(h, body))) {
+		return ""
+	}
+	if to := settings.Load().CodexPredictions; to != "" {
+		return to
+	}
+	if m := modelOf(body); m != "" && (ours || strings.Contains(m, "/")) {
+		return m
+	}
+	return ""
+}
+
 // titleCheckKey holds, in a request's context, what serve asks of the
 // reply it relayed before it records the call: the reason it fails its
 // caller although the vendor answered, or "".
@@ -179,6 +200,115 @@ func (s *Server) codexDescription(w http.ResponseWriter, r *http.Request, body [
 	writeTitleReply(w, id, out, res.Usage)
 }
 
+// codexPrediction answers a composer_predictions request as
+// codexPredictionsTo says: "off" here, with no prediction and sent
+// nowhere; a model's id by that model. Codex reads the reply only as the
+// {"suggestion": string|null} its prompt and schema ask for, and takes a
+// reply without one as a failed request, so an answer with no
+// suggestion in it goes back as {"suggestion": null}, no prediction, and
+// is in the Usage and Routing views as the failure it is.
+func (s *Server) codexPrediction(w http.ResponseWriter, r *http.Request, body []byte, to string) {
+	if to == "off" {
+		s.sentNowhere(w, r, body, "Predictions off",
+			"Codex composer predictions are off in magpie's Settings: answered with no prediction, sent nowhere", []any{predictionItem(fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano()), noSuggestion)})
+		return
+	}
+	body, _ = codexInput(body, true)
+	rec := &recorder{header: http.Header{}, status: 200}
+	check := func(reply string) string {
+		if res, err := compactReply([]byte(reply)); err == nil {
+			if _, ok := predictionJSON(messageText(res)); !ok {
+				return noPrediction(messageText(res))
+			}
+		}
+		return ""
+	}
+	ctx := context.WithValue(r.Context(), titleCheckKey{}, check)
+	if to == settings.Load().CodexPredictions {
+		ctx = magpieChose(ctx)
+	}
+	s.serve(rec, r.WithContext(ctx), provider.Responses, withModel(body, to))
+	if rec.status >= 400 {
+		for k, vs := range rec.header {
+			w.Header()[k] = vs
+		}
+		w.WriteHeader(rec.status)
+		w.Write(rec.body.Bytes())
+		return
+	}
+	res, err := compactReply(rec.body.Bytes())
+	if err != nil {
+		writeError(w, provider.Responses, 502, "prediction: "+err.Error())
+		return
+	}
+	id := res.ID
+	if id == "" {
+		id = fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano())
+	}
+	p, _ := predictionJSON(messageText(res))
+	writeTitleReply(w, id, []any{predictionItem(id, p)}, res.Usage)
+}
+
+// noSuggestion is the reply that predicts nothing, which Codex shows as
+// no prediction.
+const noSuggestion = `{"suggestion":null}`
+
+func predictionItem(id, text string) map[string]any {
+	return map[string]any{"type": "message", "id": "msg_" + strings.TrimPrefix(id, "resp_"), "role": "assistant", "status": "completed",
+		"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}}}
+}
+
+func noPrediction(said string) string {
+	said = strings.Join(strings.Fields(said), " ")
+	if said == "" {
+		return "prediction: the model answered with no text, so Codex got no prediction"
+	}
+	if r := []rune(said); len(r) > 80 {
+		said = string(r[:80]) + "…"
+	}
+	return "prediction: no {\"suggestion\"} in the model's answer, so Codex got none: " + said
+}
+
+// predictionJSON is the model's answer as the {"suggestion": …} Codex
+// asks for, and whether the answer was one: a JSON object with a
+// suggestion, a string or null, its reasoning or a code fence around it
+// left out. Plain text isn't taken as the suggestion, as it is for a
+// description: a model that talks instead of answering would have its
+// words put in the user's composer as their own next message. An empty
+// or unusable answer is no prediction.
+func predictionJSON(said string) (string, bool) {
+	t := strings.TrimSpace(said)
+	if rest, ok := strings.CutPrefix(t, "<think>"); ok {
+		if _, after, ok := strings.Cut(rest, "</think>"); ok {
+			t = strings.TrimSpace(after)
+		}
+	}
+	if strings.HasPrefix(t, "```") {
+		t = strings.TrimPrefix(t, "```")
+		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {
+			t = t[i+1:]
+		}
+		t = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(t), "```"))
+	}
+	var fields map[string]json.RawMessage
+	if !strings.HasPrefix(t, "{") || json.NewDecoder(strings.NewReader(t)).Decode(&fields) != nil {
+		return noSuggestion, false
+	}
+	raw, ok := fields["suggestion"]
+	if !ok {
+		return noSuggestion, false
+	}
+	var v *string
+	if json.Unmarshal(raw, &v) != nil {
+		return noSuggestion, false
+	}
+	if v == nil || strings.TrimSpace(*v) == "" {
+		return noSuggestion, true
+	}
+	b, _ := json.Marshal(map[string]string{"suggestion": strings.TrimSpace(*v)})
+	return string(b), true
+}
+
 func noDescription(said string) string {
 	said = strings.Join(strings.Fields(said), " ")
 	if said == "" {
@@ -256,16 +386,23 @@ func noTitle(said string) string {
 // no {"title": …} in it, sets none). The Routing and Usage views have it
 // as the title request it was, answered by magpie and sent to no one.
 func (s *Server) codexTitleOff(w http.ResponseWriter, r *http.Request, body []byte) {
+	s.sentNowhere(w, r, body, "Titles off", "Codex titles are off in magpie's Settings: answered with no title, sent nowhere", nil)
+}
+
+// sentNowhere answers a hidden turn of Codex's that a setting turned off
+// with these output items, sending it nowhere: who and why are what the
+// Routing and Usage views say of it, the request kept there as what it
+// was, answered by magpie.
+func (s *Server) sentNowhere(w http.ResponseWriter, r *http.Request, body []byte, who, why string, out []any) {
 	start := time.Now()
 	usage.Saw(agentOf(r))
 	metadata := requestSessionMetadata(r.Header, body)
 	kind := requestCallKind(r.Header, metadata)
 	model := modelOf(body)
-	const why = "Codex titles are off in magpie's Settings: answered with no title, sent nowhere"
-	seat := Weighed{ID: "magpie", Provider: "magpie", Name: "magpie", Who: "Titles off", Kind: "provider", Model: model}
-	tr := s.trace.begin(Route{Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), ParentSession: titleParentSession(r.Header, metadata, kind),
+	seat := Weighed{ID: "magpie", Provider: "magpie", Name: "magpie", Who: who, Kind: "provider", Model: model}
+	tr := s.trace.beginFor(r, Route{Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), ParentSession: titleParentSession(r.Header, metadata, kind),
 		Kind: kind, Model: model, Provider: "magpie", Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Start: start}}})
-	writeTitleReply(w, fmt.Sprintf("resp_magpie_%d", start.UnixNano()), nil, nil)
+	writeTitleReply(w, fmt.Sprintf("resp_magpie_%d", start.UnixNano()), out, nil)
 	ms := time.Since(start).Milliseconds()
 	s.trace.update(tr, func(t *Route) {
 		t.Tries[0].Done, t.Tries[0].Status, t.Tries[0].Millis, t.Tries[0].Error = true, 200, ms, why

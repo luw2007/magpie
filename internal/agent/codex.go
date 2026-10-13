@@ -2,11 +2,10 @@ package agent
 
 import (
 	"cmp"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -262,7 +261,10 @@ func codexIn(at place) *Agent {
 		}
 	}
 	asProvider := func() bool { return get("model_provider") == magpieID }
-	viaBase := func() bool { return isCodexGatewayOn(get("openai_base_url"), at.host()) }
+	viaBase := func() bool {
+		u := get("openai_base_url")
+		return isCodexGatewayOn(u, at.host()) || strings.TrimSuffix(u, "/") == at.codexURL()
+	}
 	routed := func() bool { return asProvider() || viaBase() }
 	// joined: connected by Join, on a model of Codex's own (its last pick)
 	// with magpie's beside it, by the base URL
@@ -1589,20 +1591,20 @@ func codexGatewayURL() string { return gateway.URL() + gateway.CodexPath }
 // address its config names when that is magpie's gateway on a host other
 // than this one's loopback (openai_base_url at the Codex path, or
 // [model_providers.magpie]'s base_url with magpie's key, that one first
-// while magpie is Codex's provider), else gateway.URL().
+// while magpie is Codex's provider), else gateway.URL(). It is http or
+// https, on any port or the scheme's own, and may have a path before
+// magpie's: a company's reverse proxy at https://ai.corp.example/magpie,
+// or one on this machine at http://127.0.0.1:8788/<route> (#1985).
 func codexKeptGateway(path string) string {
 	kept := func(u, suffix string) string {
-		u = strings.TrimSuffix(strings.TrimSpace(u), "/")
-		rest, ok := strings.CutPrefix(u, "http://")
-		if !ok || !strings.HasSuffix(rest, suffix) {
+		base, ok := strings.CutSuffix(strings.TrimSuffix(strings.TrimSpace(u), "/"), suffix)
+		if !ok || !onAnotherMachine(base) && !loopbackWithPath(base) {
 			return ""
 		}
-		hp := strings.TrimSuffix(rest, suffix)
-		h, _, err := net.SplitHostPort(hp)
-		if err != nil || h == "" || h == "127.0.0.1" || h == "localhost" || h == "::1" {
+		if p, err := url.Parse(base); err != nil || p.User != nil || p.RawQuery != "" || p.Fragment != "" {
 			return ""
 		}
-		return "http://" + hp
+		return base
 	}
 	base, _ := edit.GetTOMLTop(path, "openai_base_url")
 	var table string
@@ -1671,16 +1673,25 @@ func codexStaleCache(path, tag string) error {
 
 // codexUsedUp reports whether the ChatGPT account Codex is signed in to
 // is held by the Codex app, out of its allowance with no credits to go on
-// with (provider.CodexUsedUp). A var so tests can say.
+// with (provider.CodexUsedUpKnown). A var so tests can say.
+//
+// What is known is used, never a reading asked for here: this runs from
+// SyncCatalog, which a write's own request runs before it answers (a
+// routing group's Save), and asking waits on the vendor — 1.1s of a
+// user's Save. KeepOnAnAccountWithRoom asks on its own loop with the time
+// for it, and tells the catalog when the answer changes.
 var codexUsedUp = func() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return provider.CodexUsedUp(ctx)
+	return provider.CodexUsedUpKnown()
 }
 
 // codexFailover reports whether Codex is signed in to a ChatGPT account
-// with more of its accounts on in magpie, behind it.
+// with more of its accounts on in magpie, behind it, and the user hasn't
+// asked magpie to only switch its sign-in (provider.SwitchOnly).
 func codexFailover() bool {
+	// the user had magpie only switch Codex's own sign-in (#1907)
+	if provider.SwitchOnly("codex") {
+		return false
+	}
 	for _, p := range provider.Accounts() {
 		if p.Account != nil && p.Account.Agent == "codex" {
 			return len(p.AlsoOn()) > 0

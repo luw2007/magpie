@@ -108,16 +108,28 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the agents that can't follow them are named; those that can aren't
         assert.equal(await list.locator(".lib-toolcant").textContent(), w.cant);
 
-        // scrolled a little, as the reader would, before the clicks: the list
-        // sits just under the fixed bar, none of its switches behind it
+        // scrolled a little, as the reader would, before the clicks, with
+        // every switch in sight below the library's stuck head. Clicking the
+        // pill can scroll it into view first (WebKit, now and then), which
+        // left read_text_file under the head and the click on the head
         await page.mouse.move(Math.min(490, width / 2), 250);
         await page.mouse.wheel(0, 40);
         await page.waitForFunction(() => document.querySelector("#view-library").scrollTop > 0);
-        await page.evaluate(() => {
-          const v = document.querySelector("#view-library"), bar = v.querySelector(".lib-head").getBoundingClientRect();
-          const first = document.querySelector('.lib-tools[data-server="filesystem"] .lib-switch').getBoundingClientRect();
-          v.scrollTop = Math.max(1, v.scrollTop + first.top - bar.bottom - 8);
+        const placed = () => page.evaluate(() => {
+          const v = document.querySelector("#view-library").getBoundingClientRect();
+          const head = document.querySelector("#view-library .lib-head").getBoundingClientRect();
+          const sws = [...document.querySelectorAll('#view-library .lib-tools[data-server="filesystem"] .lib-switch')].map((b) => b.getBoundingClientRect());
+          if (sws.some((r) => r.top < head.bottom)) return -1;
+          if (sws.some((r) => r.bottom > v.bottom)) return 1;
+          return 0;
         });
+        for (let i = 0; i < 30; i++) {
+          await page.waitForTimeout(150);
+          const p = await placed();
+          if (!p) break;
+          await page.mouse.wheel(0, 40 * p);
+        }
+        assert.equal(await placed(), 0, "the switches in sight");
         await page.waitForTimeout(400);
         const scrollTop = () => page.evaluate(() => document.querySelector("#view-library").scrollTop);
         const where = () => sw(tools[2].name).evaluate((b) => b.getBoundingClientRect().top);

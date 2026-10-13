@@ -297,7 +297,7 @@ func reasonixIn(at place) *Agent {
 	}
 
 	a := &Agent{
-		ID: "reasonix", Name: "Reasonix Studio", Icon: "reasonix-color", Aliases: []string{"reasonix-studio"},
+		ID: "reasonix", Name: "Reasonix Studio", Icon: "reasonix-color", Aliases: []string{"reasonix-studio"}, NoNames: true,
 		Bin: "reasonix", Dir: dir, Path: path, UA: []string{"reasonix"},
 		detect: func() bool { return reasonixDetected(at.home) },
 		Notice: func() string {
@@ -328,7 +328,7 @@ func reasonixIn(at place) *Agent {
 			if err := checkOwner(cfg, state); err != nil {
 				return err.Error()
 			}
-			if p.Kind != "openai" || p.BaseURL != at.v1() {
+			if p.Kind != "openai" || p.BaseURL != at.v1() && !reachesMagpie(p.BaseURL, at.v1()) {
 				return "Reasonix's magpie base_url or kind changed"
 			}
 			if token, _ := edit.GetEnvFile(env, reasonixKey); token != gwKey() {

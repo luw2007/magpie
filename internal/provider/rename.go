@@ -91,6 +91,7 @@ func Rename(from, to string) error {
 		for k, m := range g.Off {
 			g.Off[k] = renamedRef(m, from, to)
 		}
+		g.Weights = renamedWeights(g.Weights, func(m string) string { return renamedRef(m, from, to) })
 		g.Classifier = renamedRef(g.Classifier, from, to)
 		g.Pick = renamedRef(g.Pick, from, to)
 	}

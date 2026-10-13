@@ -2,6 +2,7 @@ package library
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,6 +43,37 @@ func desktopEntries(t *testing.T, root string) map[string]desktopEntry {
 		out[e.SkillID] = e
 	}
 	return out
+}
+
+func TestDesktopSkillScanErrorPreservesCopy(t *testing.T) {
+	h := sandbox(t)
+	p, _ := desktopFiles(t, h)
+	write(t, p, `{}`)
+	root := desktopAccount(t, filepath.Dir(p), "org", "acct", `{"skills":[]}`)
+	src := filepath.Join(h, "src/skills")
+	skill(t, filepath.Join(src, "pdf"), "pdf", "Read PDFs")
+	ok(t)(InstallSkills(src, []string{"pdf"}, []string{"claude-desktop"}))
+	cp := filepath.Join(root, "skills/pdf")
+	write(t, filepath.Join(cp, "scripts/run.sh"), "echo mine\n")
+	manifest := read(t, filepath.Join(root, desktopManifest))
+	blocked := filepath.Join(cp, "scripts")
+	blockSkillSubtree(t, h, blocked)
+	r, err := Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Problems) != 1 || r.Problems[0].Agent != "claude-desktop" || !strings.Contains(r.Problems[0].Error, blocked) {
+		t.Fatalf("unreadable Desktop copy wasn't reported: %+v", r.Problems)
+	}
+	if got := read(t, filepath.Join(root, desktopManifest)); got != manifest {
+		t.Fatalf("unreadable Desktop copy's manifest changed: %s", got)
+	}
+	if err := os.Chmod(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(cp, "scripts/run.sh")); got != "echo mine\n" {
+		t.Fatalf("unreadable Desktop copy's edit was replaced: %q", got)
+	}
 }
 
 // #638: the library gives Claude Desktop's Cowork skills: a copy in every
@@ -290,5 +322,77 @@ func TestClaudeDesktopMSIXBoth3p(t *testing.T) {
 		if fs := desktopServers(t, f)["fs"]; fs["command"] != "npx" {
 			t.Errorf("%s: fs is %v", f, fs)
 		}
+	}
+}
+
+// SivanCola (#1896): Claude Desktop's own docx, pdf… (Anthropic's, built
+// in) in the library's way are its own skills, which the page settles by
+// keeping Desktop's, all of them in one go; not writes that failed, and
+// not ones set aside for the library's.
+func TestClaudeDesktopOwnSkillsKept(t *testing.T) {
+	h := sandbox(t)
+	p, _ := desktopFiles(t, h)
+	write(t, p, `{}`)
+	builtIn := []string{"docx", "pdf", "xlsx"}
+	var entries []string
+	for _, n := range builtIn {
+		entries = append(entries, fmt.Sprintf(`{"skillId": %q, "name": %q, "description": "Anthropic's", "creatorType": "anthropic", "syncManaged": true, "updatedAt": "2026-10-01T00:00:00.000Z", "enabled": true}`, n, n))
+	}
+	a := desktopAccount(t, filepath.Dir(p), "org1", "acct1", `{"lastUpdated": "2026-10-01T00:00:00.000Z", "skills": [`+strings.Join(entries, ",")+`]}`)
+	for _, n := range builtIn {
+		write(t, filepath.Join(a, "skills", n, "SKILL.md"), "---\nname: "+n+"\ndescription: Anthropic's\n---\n")
+	}
+	src := filepath.Join(h, "src", "skills")
+	for _, n := range builtIn {
+		skill(t, filepath.Join(src, n), n, "the library's "+n)
+	}
+	r, err := InstallSkills(src, builtIn, []string{"claude", "claude-desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var own []string
+	for _, pr := range r.Problems {
+		if pr.Agent == "claude-desktop" {
+			if !pr.Own {
+				t.Errorf("Desktop's own %s isn't its own: %+v", pr.What, pr)
+			}
+			own = append(own, pr.What)
+		}
+	}
+	if len(own) != len(builtIn) {
+		t.Fatalf("problems: %+v", r.Problems)
+	}
+	if _, err := UseLibrarySkills(builtIn, "claude-desktop"); err == nil {
+		t.Error("Desktop's built-in skills were set aside for the library's")
+	}
+	if _, err := os.Stat(filepath.Join(a, "skills", "docx", "SKILL.md")); err != nil {
+		t.Errorf("Desktop's own docx is gone: %v", err)
+	}
+	r, err = KeepAgentSkills(builtIn, "claude-desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pr := range r.Problems {
+		t.Errorf("still a problem: %+v", pr)
+	}
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range v.Skills {
+		if slices.Contains(builtIn, s.Name) && (slices.Contains(s.Agents, "claude-desktop") || !slices.Contains(s.Agents, "claude")) {
+			t.Errorf("%s: %v", s.Name, s.Agents)
+		}
+	}
+	// and the next sync doesn't bring them back
+	r, err = Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pr := range r.Problems {
+		t.Errorf("after a sync: %+v", pr)
+	}
+	if s := read(t, filepath.Join(a, "skills", "pdf", "SKILL.md")); !strings.Contains(s, "Anthropic's") {
+		t.Errorf("Desktop's own pdf changed:\n%s", s)
 	}
 }

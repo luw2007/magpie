@@ -111,7 +111,7 @@ func (t *otelRequest) attempt(call Call, attempt Try, providerID, effort string,
 		return
 	}
 	span := &usage.OTelSpan{TraceID: t.root.TraceID, SpanID: otelID(8), ParentID: t.root.SpanID, End: time.Now()}
-	u := call.Usage
+	u := call.Usage.billed()
 	rec := usage.Record{OTel: span, RouteID: t.routeID, Time: attempt.Start, Agent: call.Agent,
 		Provider: providerID, Model: attempt.Model, Requested: call.Model, Served: u.Served, Effort: effort,
 		Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Reasoning: u.Reasoning,

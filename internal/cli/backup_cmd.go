@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"golang.org/x/term"
@@ -115,6 +117,15 @@ func restoreCmd(args []string) error {
 	fmt.Println()
 	if len(r.NeedKey) > 0 {
 		fmt.Println(muted.Render("Needs a key (magpie provider key <id>): " + strings.Join(r.NeedKey, ", ")))
+	}
+	if len(r.SignIn) > 0 {
+		fmt.Println(muted.Render("Not signed in on this computer (a backup carries no sign-in; magpie accounts add <id>): " + strings.Join(r.SignIn, ", ")))
+	}
+	if len(r.Plugins) > 0 {
+		fmt.Println(muted.Render("Plugins added: " + strings.Join(r.Plugins, ", ")))
+	}
+	for _, spec := range slices.Sorted(maps.Keys(r.PluginErrors)) {
+		fmt.Println(muted.Render(fmt.Sprintf("Couldn't add the plugin %s: %s", spec, r.PluginErrors[spec])))
 	}
 	for _, p := range r.LibraryProblems {
 		fmt.Println(muted.Render(fmt.Sprintf("Library: %s couldn't get %s: %s", p.Agent, p.What, p.Error)))

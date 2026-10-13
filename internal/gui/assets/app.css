@@ -1727,6 +1727,7 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .pq-resets + .pq-autoreset, .pq-autoreset + .pq-credits { margin-top: 5px; padding-top: 0; border-top: 0; }
 .ar-say { flex: 1; min-width: 0; line-height: 1.35; }
 .ar-say b { font-weight: 500; color: var(--fg-2); }
+.ar-used { display: block; margin-top: 2px; color: var(--faint); }
 .lib-switch.auto-reset, .lib-switch.use-credits { width: 28px; height: 16px; padding: 0; border: 0; cursor: pointer; }
 .lib-switch.auto-reset i, .lib-switch.use-credits i { width: 12px; height: 12px; }
 .lib-switch.auto-reset.on i, .lib-switch.use-credits.on i { transform: translateX(12px); }
@@ -2273,7 +2274,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .accts { display: grid; grid-template-columns: minmax(0, 1fr); border: 1px solid var(--line); border-radius: 10px; background: var(--card); overflow: hidden; }
 .acc { display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 5px 8px 5px 11px; font-size: 12.5px; text-align: left; }
 .acc + .acc, .accts .signing { border-top: 1px solid var(--line-2); }
-.editor .accts .keep-login { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 34px; padding: 6px 11px; font-size: 12px; border-top: 1px solid var(--line-2); }
+.editor .accts .keep-login, .editor .accts .switch-only { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 34px; padding: 6px 11px; font-size: 12px; border-top: 1px solid var(--line-2); }
 .editor .accts .keep-login .keep-as { max-width: 240px; }
 .acc .n { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc .plan { color: var(--muted); font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--pill); white-space: nowrap; }
@@ -2925,6 +2926,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* how the agents' lists will call them, and the setting that says so (#868) */
 .msuffix { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 2px 8px 4px; font-size: 12px; }
 .msuffix .hint { font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
+.msuffix .no-names { flex-basis: 100%; font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
 .mname { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
 .mname .mwho { display: flex; align-items: center; gap: 8px; flex: 1 1 220px; min-width: 0; }
 .mname .mwho input { flex: 1; min-width: 0; max-width: 220px; height: 25px; }
@@ -2982,6 +2984,20 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .set-searching .set-page::before { content: attr(data-part); display: block; margin: 4px 2px 6px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
 .set-none { margin: 18px 2px; font-size: 13px; color: var(--muted); text-align: center; }
 .set-page > .list:not(:last-child) { margin-bottom: 8px; }
+/* Plugins › Built-in: what the list is over its rows, and a row in use
+   saying what uses it under its switch, which can't be turned off */
+.feat-say { margin: 2px 4px 10px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.set-searching .feat-say { display: none; }
+.row.pref .sub.feat-why { color: var(--muted); font-size: 11px; }
+/* a plugin's settings, under its row (kernel.js ui.form) */
+.row.pref.feat-set { min-height: 44px; padding-left: 30px; }
+.row.pref.feat-set .name { font-size: 12.5px; }
+.row.pref .set-field { flex: none; width: 120px; height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); }
+.row.pref .set-field[type=number] { width: 72px; text-align: right; }
+.row.pref .set-field[aria-invalid=true] { border-color: var(--red); }
+/* a plugin's page that broke (kernel.js): what broke, and Try again */
+.slot-error .row { gap: 14px; padding: 12px 14px; }
+.slot-error .sub { margin-top: 2px; color: var(--fg-2); overflow-wrap: anywhere; }
 .row.pref { min-height: 50px; padding: 8px 12px 8px 14px; gap: 14px; }
 .row.pref .who { flex: 1 1 auto; }
 .row.pref .sub { margin-top: 2px; color: var(--fg-2); }
@@ -3080,6 +3096,13 @@ input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; m
 .prefs .val { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; min-width: 0; max-width: 60%; flex: none; }
 .prefs .val code { font-size: 12px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; -webkit-user-select: text; padding: 0 6px; }
 .prefs .val .text { padding: 3px 6px; }
+/* how hard a side model thinks, beside it: the model's chip gives way first
+   (MOMO on Discord); with-effort is a class sideEffortChip sets, not :has(),
+   which Safari before 15.4 can't parse */
+.prefs .val.with-effort { gap: 6px; }
+.prefs .val.with-effort > .rt-cond:not(.side-effort) { min-width: 0; flex: 0 1 auto; }
+.prefs .val > .side-effort { flex: none; }
+.side-effort .effort-ic svg { width: 100%; height: 100%; }
 .row.pref.lan-address-row { position: relative; height: 50px; transition: height .28s var(--ease); }
 .row.pref.lan-address-row .who { position: absolute; top: 16px; left: 14px; }
 .prefs .lan-address-row .val { max-width: 64%; }

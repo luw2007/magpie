@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -56,7 +58,19 @@ type groupJSON struct {
 	// Decides: it is a group of decision models, asked at /v1/systemone
 	// and by a group's classifier, never by an agent
 	Decides bool `json:"decides,omitempty"`
+	// ClassifierFailed: its classifier couldn't say the last time it was
+	// asked, and why (gateway.ClassifierFailure), which its card says
+	// (#1929): otherwise only each request's details did
+	ClassifierFailed *classifierFailedJSON `json:"classifierFailed,omitempty"`
 }
+
+type classifierFailedJSON struct {
+	Error string    `json:"error"`
+	At    time.Time `json:"at"`
+}
+
+// classifierFailure is gateway.ClassifierFailure, which a test stands in for
+var classifierFailure = gateway.ClassifierFailure
 
 type memberJSON struct {
 	ID       string `json:"id"`
@@ -232,6 +246,11 @@ func groupsState() groupsJSON {
 		}
 		gj.Patterns = append(gj.Patterns, provider.PatternHits(g)...)
 		gj.Decides = g.Decides()
+		if g.Classifier != "" {
+			if why, at, ok := classifierFailure(g.Classifier); ok {
+				gj.ClassifierFailed = &classifierFailedJSON{Error: why, At: at}
+			}
+		}
 		for _, e := range served {
 			if e.ID == provider.GroupPrefix+g.ID {
 				gj.Offers, gj.Shared = append(gj.Offers, e.Efforts...), append(gj.Shared, e.Shared...)

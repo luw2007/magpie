@@ -433,8 +433,9 @@ func modelAPI(proto Protocol) bool {
 // the model its own name back, Efforts [] all its levels, OwnImages the
 // vendor's answer for whether it sees images, API "" every API the
 // provider has for it, Same "" its own id to merge it with other
-// vendors' by (see setModelSame), and OwnPrice its list price again in
-// place of Price, what the user said it costs (SetModelPrice, #819).
+// vendors' by (see setModelSame), OwnPrice its list price again in
+// place of Price, what the user said it costs (SetModelPrice, #819), and
+// Kind "" what its vendor's list says it makes (SetModelKind, #1399).
 type ModelPref struct {
 	Name      *string        `json:"name,omitempty"`
 	Efforts   *[]string      `json:"efforts,omitempty"`
@@ -444,6 +445,9 @@ type ModelPref struct {
 	Same      *string        `json:"same,omitempty"`
 	Price     *catalog.Price `json:"price,omitempty"`
 	OwnPrice  bool           `json:"ownPrice,omitempty"`
+	// Kind is what the model makes, as SetModelKind takes it: "image",
+	// "video", or "" for what its vendor's list and name say (#1399)
+	Kind *string `json:"kind,omitempty"`
 }
 
 // SetModelPrefs makes the changes to a provider's models, by model id, as
@@ -486,6 +490,13 @@ func SetModelPrefs(pid string, prefs map[string]ModelPref) error {
 			}
 			if m.Same != nil {
 				if err := set(setModelSame(ref, *m.Same)); err != nil {
+					return err
+				}
+			}
+			// nor is what a model makes: its chat list stays as it was,
+			// and the gateway reads it for each request (#1399)
+			if m.Kind != nil {
+				if _, err := setModelKind(ref, *m.Kind); err != nil {
 					return err
 				}
 			}

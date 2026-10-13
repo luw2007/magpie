@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 const fallbackCooldown = time.Minute
@@ -53,6 +54,10 @@ type candidate struct {
 	// provider has no URL for (#1702): the provider is tried whole, on the
 	// URLs it has, and the routing trace says why
 	noURL provider.Protocol
+	// seats are its places in the rounds of the groups routed by weight
+	// it is in (weightedUnits), for affinity to charge the member that
+	// keeps a conversation (weightedKept)
+	seats []wrrSeat
 }
 
 // capHold is how an account is held at its usage cap: the cap of the
@@ -428,10 +433,14 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 		// and each group in it as one — planned by its own routing, put
 		// where the one it would try first is, the rest of it after
 		type unit struct {
-			m     provider.Member // the model, for one of its keys
-			cs    []candidate     // a group in g, or a provider routed its own way: its own order
-			order []Weighed
+			m      provider.Member // the model, for one of its keys
+			cs     []candidate     // a group in g, or a provider routed its own way: its own order
+			order  []Weighed
+			member string // as g spells it, for a unit of a group routed by weight
 		}
+		// a group routed by weight weighs its members, each whole: a
+		// model's keys in its provider's order, a group in it in its own
+		byWeight := g.Routing == provider.Weighted
 		var units []unit
 		var heads []candidate
 		at := map[string][]int{} // a head's seat → its units, in turn
@@ -451,12 +460,12 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				pl.left = append(pl.left, sub.left...)
 				pl.capped = append(pl.capped, sub.capped...)
 				if len(cs) > 0 {
-					add(unit{cs: cs, order: sub.order}, firstAwake(cs))
+					add(unit{cs: cs, order: sub.order, member: m.Path[depth]}, firstAwake(cs))
 				}
 				i = j
 				continue
 			}
-			if ownRouting(m.Provider, g) {
+			if ownRouting(m.Provider, g) || byWeight {
 				// a provider routed its own way keeps it, as a group
 				// in the group does: weighed as one by the first it
 				// would try, and tried whole in its own order (kchen0x
@@ -470,7 +479,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 					order = append(order, w)
 				}
 				if len(cs) > 0 {
-					add(unit{cs: cs, order: order}, firstAwake(cs))
+					add(unit{cs: cs, order: order, member: m.Path[depth]}, firstAwake(cs))
 				}
 				i++
 				continue
@@ -479,6 +488,27 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				add(unit{m: m}, c)
 			}
 			i++
+		}
+		if byWeight {
+			members := make([]string, len(units))
+			for i, u := range units {
+				members[i] = u.member
+			}
+			var out []candidate
+			for i, k := range weightedUnits(g, members, heads) {
+				u := units[k]
+				seat := wrrSeat{round: provider.GroupPrefix + g.ID, member: u.member}
+				for _, c := range u.cs {
+					c.seats = append(slices.Clip(c.seats), seat)
+					out = append(out, c)
+				}
+				order := slices.Clone(u.order)
+				if i == 0 && len(units) > 1 && len(order) > 0 {
+					order[0].Turn = true
+				}
+				pl.order = append(pl.order, order...)
+			}
+			return out
 		}
 		weighedHeads, wg := heads, weighing{}
 		if g.Routing == provider.Benchmark {
@@ -918,6 +948,14 @@ func restOf(id string) (Rest, bool) {
 // quotaWords are how vendors say "out of quota" or "slow down" when their
 // status code doesn't: some answer 400 or 403 with it.
 var quotaWords = regexp.MustCompile(`(?i)quota|insufficient|balance|credit|billing|out of budget|budget (exceeded|exhausted)|exceeded|rate.?limit|usage.?limit|limit.?reached|hit your .*limit|limit.{0,24}resets|too many requests|overloaded|余额|额度|欠费|限流|频率|套餐|用量|上限`)
+
+// quotaSaid is whether an error's words, with no status to go by, say
+// out of quota or slow down: quotaWords, unless they say the conversation
+// is too long for the model, whose "context_length_exceeded" or "exceeds
+// the maximum" holds quotaWords' "exceeded" (#1944).
+func quotaSaid(msg string) bool {
+	return quotaWords.MatchString(msg) && !tooLong(http.StatusBadRequest, msg)
+}
 
 // unservedWords are how a vendor says the model isn't one it serves this
 // key, or this way — words another provider, or key, may not answer with.
@@ -1550,12 +1588,18 @@ func sseStart(head []byte) (sse, sure bool) {
 	return false, true
 }
 
-// streamEnds are how each protocol's stream says it is over, as they can
-// only appear outside a quoted string: text that says so is escaped.
+// streamEnds are how each protocol's stream says it is over, in every
+// spelling a relay sends: SSE makes the space after "data:" and "event:"
+// optional, and JSON the one after a colon (data:[DONE] from a relay was
+// logged 499 when the agent hung up on it, #1978). A JSON marker can only
+// appear outside a quoted string, as text that says so is escaped; an SSE
+// one starts a line, which text inside the JSON can't.
 var streamEnds = [][]byte{
-	[]byte(`"type":"response.completed"`), []byte(`"type":"response.incomplete"`), // Responses
-	[]byte(`"type":"message_stop"`), []byte("event: message_stop"), // Anthropic
-	[]byte("data: [DONE]"), // Chat Completions
+	[]byte(`"type":"response.completed"`), []byte(`"type": "response.completed"`), // Responses
+	[]byte(`"type":"response.incomplete"`), []byte(`"type": "response.incomplete"`),
+	[]byte(`"type":"message_stop"`), []byte(`"type": "message_stop"`), // Anthropic
+	[]byte("\nevent: message_stop"), []byte("\nevent:message_stop"),
+	[]byte("\ndata: [DONE]"), []byte("\ndata:[DONE]"), // Chat Completions
 }
 
 // see notes a stream's last event going by. An agent may hang up as soon as
@@ -1565,6 +1609,9 @@ func (h *holdWriter) see(b []byte) {
 		return
 	}
 	buf := append(h.tail, b...)
+	if len(h.tail) == 0 {
+		buf = append([]byte{'\n'}, b...) // the stream starts a line
+	}
 	for _, m := range streamEnds {
 		if bytes.Contains(buf, m) {
 			h.ended = true
@@ -1921,6 +1968,27 @@ func (h *holdWriter) mayAskAgain() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.hold && !h.passing
+}
+
+// handBack sends a refusal held with nothing said as the vendor's own
+// reply, a 200 that ends with its stop reason, and says whether it could:
+// not a refusal said as an error status or event, which is no reply.
+func (h *holdWriter) handBack() bool {
+	if !h.refused || h.passing || h.status == 0 || h.status >= 400 || h.held.Len() == 0 {
+		return false
+	}
+	h.failure, h.failMsg = 0, ""
+	h.release()
+	return true
+}
+
+// refusalAsksAgain says whether a request refused n times by the vendor's
+// safety filter is asked of the next account or member left: as many
+// times as Settings' RefusalRetries says, every one left when it is unset
+// (#248).
+func refusalAsksAgain(n int) bool {
+	retries := settings.Load().RefusalRetries
+	return retries == nil || *retries < 0 || n <= *retries
 }
 
 // release sends a held reply after all: nobody else is left to try.
@@ -2709,11 +2777,17 @@ func refusedReply(b []byte) (string, bool) {
 func streamStatus(msg string) int {
 	l := strings.ToLower(msg)
 	switch {
+	case tooLong(http.StatusBadRequest, msg):
+		// before the quota words: the ChatGPT backend's response.failed
+		// for a Codex conversation past the model's window says
+		// "context_length_exceeded", whose "exceeded" read as a rate
+		// limit, and the same request was sent again and again (#1944)
+		return 400
 	case strings.Contains(l, "overloaded"):
 		return 529
 	case creditWords.MatchString(msg) && !strings.Contains(l, "rate"):
 		return 402
-	case strings.Contains(l, "rate_limit"), strings.Contains(l, "rate limit"), strings.Contains(l, "too many"), quotaWords.MatchString(msg):
+	case strings.Contains(l, "rate_limit"), strings.Contains(l, "rate limit"), strings.Contains(l, "too many"), quotaSaid(msg):
 		return 429
 	case unservedWords.MatchString(msg):
 		return 400

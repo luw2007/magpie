@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,6 +58,17 @@ const errRemoteNotShared = "remote magpie isn't shared; turn on Share on local n
 
 // errRemoteKey is a remote magpie that didn't take this provider's key (401).
 const errRemoteKey = "remote magpie didn't take this key; use one of its enabled gateway keys"
+
+// KeyHeldCode is the error code a gateway answers a key held to a budget,
+// models or accounts with, where its own accounts would be told (#1981):
+// the key is someone else's to use, and is told its own limit alone.
+const KeyHeldCode = "gateway_key_held"
+
+// errKeyHeld is a remote magpie that holds this provider's key to a
+// budget, models or accounts: it tells the key's own card (remoteKeyCards)
+// and none of its accounts', so none is shown, not even one kept from
+// before the key was held.
+var errKeyHeld = errors.New("remote magpie holds this key to a budget, models or accounts")
 
 // errRemoteUnreachable starts the error of a remote magpie that couldn't
 // be reached at all.
@@ -148,6 +162,17 @@ type remoteCardsRead struct {
 	at    time.Time
 	cards []SubscriptionQuota // as the remote has them, not yet named
 	err   string
+	held  bool // the remote holds the key: no card of its accounts is shown
+}
+
+// remoteCardsID is what a remote's cards are kept here by: the provider,
+// its key's stable identity and a digest of the key's secret, so cards
+// read with one key are never shown under another, nor after the same key
+// identity is given a new secret (ReplaceKey). The digest only keeps this
+// process's cache apart; it is never published.
+func remoteCardsID(p Provider) string {
+	sum := sha256.Sum256([]byte(p.Key))
+	return p.ID + "\x00" + p.KeyID + "\x00" + hex.EncodeToString(sum[:])
 }
 
 // ForgetRemoteCardsForTest drops the remote magpies' cards kept here, for
@@ -216,26 +241,20 @@ func RemoteCards(ctx context.Context) []SubscriptionQuota {
 // fresh isn't asked. A remote that can't be asked keeps showing its last
 // cards, as old as they are; with none, one card says why.
 func remoteCards(ctx context.Context, p Provider, fresh bool) []SubscriptionQuota {
+	id := remoteCardsID(p)
 	c := &remoteCardCache
 	c.Lock()
-	r, ok := c.m[p.ID]
+	r, ok := c.m[id]
 	c.Unlock()
 	if !ok || fresh || time.Since(r.at) >= remoteCardsFor {
+		asked := time.Now()
 		cards, err := askRemote(ctx, p, http.MethodGet, RemoteCardsPath)
-		r.at = time.Now()
-		if err != nil {
-			r.err = err.Error()
-		} else {
-			r.cards, r.err = cards, ""
-		}
-		c.Lock()
-		if c.m == nil {
-			c.m = map[string]remoteCardsRead{}
-		}
-		c.m[p.ID] = r
-		c.Unlock()
+		r = keepRemoteCards(id, asked, cards, err)
 	}
 	name := remoteName(p)
+	if r.held {
+		return nil
+	}
 	if len(r.cards) == 0 {
 		msg := r.err
 		if msg == "" {
@@ -257,7 +276,7 @@ func remoteCards(ctx context.Context, p Provider, fresh bool) []SubscriptionQuot
 		q.From = name
 		// what is pressed on a card acts on this computer's accounts:
 		// a Codex reset or a check-in is the other magpie's to do
-		q.Resets, q.Checkins, q.CheckinBy, q.Checkin = nil, false, "", nil
+		q.Resets, q.Checkins, q.CheckinBy, q.Checkin, q.CheckinOff = nil, false, "", nil, false
 		if q.Windows == nil {
 			q.Windows = []QuotaWindow{}
 		}
@@ -311,16 +330,40 @@ func refreshRemote(ctx context.Context, p Provider, card, user string) {
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
+	asked := time.Now()
 	if _, err := askRemote(ctx, p, http.MethodPost, path); err != nil {
-		c := &remoteCardCache
-		c.Lock()
-		if r, ok := c.m[p.ID]; ok {
-			r.err = err.Error()
-			c.m[p.ID] = r
-		}
-		c.Unlock()
+		keepRemoteCards(remoteCardsID(p), asked, nil, err)
 	}
 	remoteCards(ctx, p, true)
+}
+
+// keepRemoteCards keeps what a read of a remote's cards asked at asked
+// got, and gives back what is now kept. A failed read keeps the cards
+// read before, with its error; a key the remote holds drops them. A read
+// that comes back after one asked later is not kept over it, so a slow
+// answer from before the key was held can't bring its cards back.
+func keepRemoteCards(id string, asked time.Time, cards []SubscriptionQuota, err error) remoteCardsRead {
+	c := &remoteCardCache
+	c.Lock()
+	defer c.Unlock()
+	r := c.m[id]
+	if asked.Before(r.at) {
+		return r
+	}
+	r.at = asked
+	switch {
+	case errors.Is(err, errKeyHeld):
+		r.cards, r.err, r.held = nil, "", true
+	case err != nil:
+		r.err = err.Error()
+	default:
+		r.cards, r.err, r.held = cards, "", false
+	}
+	if c.m == nil {
+		c.m = map[string]remoteCardsRead{}
+	}
+	c.m[id] = r
+	return r
 }
 
 // RemoteQuotaHistories is every remote magpie's quota history since days
@@ -376,6 +419,14 @@ func remoteJSON(ctx context.Context, p Provider, method, path string, dst any) e
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed:
 		return fmt.Errorf("%s", errRemoteNoShare)
 	case res.StatusCode == http.StatusForbidden:
+		var e struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(b, &e) == nil && e.Error.Code == KeyHeldCode {
+			return errKeyHeld
+		}
 		return fmt.Errorf("%s", errRemoteNotShared)
 	case res.StatusCode == http.StatusUnauthorized:
 		return fmt.Errorf("%s", errRemoteKey)

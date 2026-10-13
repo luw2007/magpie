@@ -206,6 +206,7 @@
       loadMine().then(() => { draw(); window.renderPluginDot?.(); }),
       loadListings().then(draw),
       loadTagged().then(drawBody),
+      loadBuiltins(),
       providers ? null : loadProviders().then(drawBody, () => {}),
     ];
     await Promise.all(parts);
@@ -281,7 +282,10 @@
       if (asked.length && unknown.length === asked.length) {
         status(t("Couldn't check for updates: {error}", { error: whyText(unknown[0]) }), "err", 8000);
       } else {
-        let msg = ups ? (ups === 1 ? t("1 plugin has an update") : t("{n} plugins have updates", { n: ups })) : t("Every plugin is up to date");
+        // with some not checked, "every plugin" isn't known to be up to
+        // date: only the ones checked are (#1942)
+        let msg = ups ? (ups === 1 ? t("1 plugin has an update") : t("{n} plugins have updates", { n: ups }))
+          : unknown.length ? t("No updates for the plugins checked") : t("Every plugin is up to date");
         if (unknown.length) {
           msg += " · " + t("{n} couldn't be checked: {error}", { n: unknown.length, error: whyText(unknown[0]) });
           status(msg, "warn", 8000);
@@ -297,13 +301,23 @@
   // why npm said nothing of a plugin, in the page's words; a git one's
   // repository, in its own
   function whyText(c) {
-    if (isGit(c.spec || "")) return t("Couldn't ask {repo} for its newest commit: {error}", { repo: c.spec, error: c.error || "" });
+    if (isGit(c.spec || "")) return t("Couldn't ask {repo} for its newest commit: {error}", { repo: c.spec, error: c.limited ? limitedText(c.limited) : c.error || "" });
     switch (c.why) {
       case "offline": return t("npm couldn't be reached — check your connection or proxy");
       case "limited": return t("npm is turning requests away for now (too many); try again in a few minutes");
       case "missing": return t("npm doesn't have it");
       default: return t("npm answered with an error: {error}", { error: c.error || "" });
     }
+  }
+  // GitHub's rate limit used up, in the page's words as the library's
+  // skill check says it: when it lifts, and how a token raises it (#1942)
+  function limitedText(l) {
+    const d = l.until ? new Date(l.until) : null;
+    const time = d && !isNaN(d) ? d.toLocaleTimeString(intlLang(), { hour: "2-digit", minute: "2-digit" }) : "";
+    if (l.token) return time ? t("GitHub's rate limit for your GitHub token is used up until {time}", { time })
+      : t("GitHub's rate limit for your GitHub token is used up for now");
+    return time ? t("GitHub allows 60 requests an hour without a token, used up until {time}. Add a GitHub token in Settings → Network and sharing to raise it to 5,000.", { time })
+      : t("GitHub allows 60 requests an hour without a token, used up for now. Add a GitHub token in Settings → Network and sharing to raise it to 5,000.");
   }
   const checkedAt = () => checked ? new Date(checked.at).toLocaleTimeString(intlLang(), { hour: "2-digit", minute: "2-digit" }) : "";
 
@@ -642,16 +656,19 @@
 
   function head() {
     const n = mine?.plugins?.length || 0;
-    const tabs = segs([["discover", t("Discover")], ["installed", t("Installed") + (n ? " · " + n : "")]], tab, (id) => {
+    const tabs = segs([["builtin", t("Built-in")], ["discover", t("Discover")], ["installed", t("Installed") + (n ? " · " + n : "")]], tab, (id) => {
       tab = id;
       try { localStorage.setItem("magpie.pluginTab", id); } catch {}
+      searchShown();
       drawBody();
     });
     tabs.classList.add("lib-tabs");
     q.placeholder = t("Search plugins and npm…");
     if (q.value !== query) q.value = query;
     q.setAttribute("aria-label", t("Search plugins"));
-    replaceKeeping(headBox, [tabs, el("span", "grow"), mirrorSwitch(), find]);
+    mirror = mirrorSwitch();
+    replaceKeeping(headBox, [tabs, el("span", "grow"), mirror, find]);
+    searchShown();
     headBox.classList.toggle("stuck", page.scrollTop > 0);
     return headBox;
   }
@@ -660,6 +677,13 @@
   // mirrors in China first (npmmirror, jsDelivr); none before what's
   // installed has come, which says how it is set
   let mirrorSaving = false;
+  // the built-in plugins are a short list of switches: nothing to search
+  // or fetch through a mirror
+  let mirror = null;
+  function searchShown() {
+    find.hidden = tab === "builtin";
+    if (mirror) mirror.hidden = !mine || tab === "builtin";
+  }
   function mirrorSwitch() {
     const on = !!mine?.mirror;
     const b = el("button", "pm-mirror" + (on ? " on" : ""));
@@ -721,8 +745,9 @@
     shown = key;
     // the search field keeps its focus: only the body is redrawn while
     // typing, and the GitHub section's field is kept in it
-    if (tab === "installed" || !listings) body.replaceChildren();
+    if (tab === "installed" || tab === "builtin" || !listings) body.replaceChildren();
     if (tab === "installed") return drawInstalled();
+    if (tab === "builtin") return drawBuiltin();
     if (failedList && !listings) {
       body.append(el("p", "pm-empty", t("Couldn't load the plugins: {error}", { error: failedList })));
       return;
@@ -849,6 +874,28 @@
       }
     };
     return b;
+  }
+
+  // Built-in: magpie's own plugins (Sessions, Library, routing groups…),
+  // each with a switch (renderBuiltins in app.js), read afresh each time
+  // the tab is drawn
+  let builtins = null, builtinsFailed = "";
+  async function loadBuiltins() {
+    try {
+      builtins = await api("plugins/builtin");
+      builtinsFailed = "";
+    } catch (e) {
+      builtinsFailed = e.message;
+    }
+    if (tab === "builtin") drawBody();
+  }
+  function drawBuiltin() {
+    const say = el("p", "feat-say", t("Parts of magpie not everyone needs. Switched off, a part leaves the sidebar, its pages and Settings; magpie works the same either way."));
+    const list = el("div", "list prefs");
+    list.id = "builtinList";
+    body.append(say, list);
+    if (builtinsFailed && !builtins) list.append(el("p", "pm-empty", t(builtinsFailed)));
+    else if (builtins) window.renderBuiltins(list, builtins, (next) => { builtins = next; drawBody(); });
   }
 
   function drawInstalled() {
@@ -999,7 +1046,12 @@
       // only middleware or an agent: its own line says what it does
     } else if (clashes.length && !e.providers.length) {
       // its own line below says whose it is
-    } else sub.textContent = e.providers.length ? t("Signs in to {names}", { names: e.providers.join(t(", ")) }) : t("Signs in to nothing magpie can use");
+    } else if (e.providers.length) sub.textContent = t("Signs in to {names}", { names: e.providers.join(t(", ")) });
+    // an empty list only means "nothing" once the plugins have answered: a
+    // plugin installed a moment ago has no names yet, and the page says
+    // nothing rather than claiming here that it signs in to nothing magpie
+    // can use, which isn't known until the answer comes (#1112)
+    else if (e.named) sub.textContent = t("Signs in to nothing magpie can use");
     if (sub.textContent) who.append(sub);
     if (!ask) for (const c of clashes) who.append(clashLine(e, c, nameOfSpec));
     if (mw && !e.off && !ask) who.append(mwLine(mw));

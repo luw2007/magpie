@@ -110,6 +110,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await confirmKeyAction(page, lanRow, w.remove);
       await page.waitForFunction(() => document.querySelectorAll("#gatewayKeys .acc[data-key]").length === 4);
       await page.locator("#prefs").click();
+      // Settings comes back where the reader left it, its tabs under the
+      // header: a reader wheels up to them. A scroll that isn't the
+      // reader's, as Playwright's before a click, is put back (#1554), so
+      // WebKit's click waited on a tab the header covered.
+      await page.mouse.move(500, 400);
+      await page.mouse.wheel(0, -2000);
+      await page.waitForFunction(() => document.querySelector("#view-settings").scrollTop === 0);
       await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
       await page.locator("#lanList .lan-address-row").waitFor();
       await page.locator("#lanList").getByRole("button", { name: lang === "zh" ? "关闭" : "Off", exact: true }).click();

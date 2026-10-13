@@ -48,6 +48,7 @@
     <a href="/docs/zh/plugins">插件开发</a>
     <a class="toc-only" href="/docs/zh/remote">远程 magpie</a>
     <a class="toc-only" href="/docs/zh/docker">Docker</a>
+    <a class="toc-only" href="/docs/zh/privacy">隐私</a>
     <a href="/docs/zh/import">Add to magpie</a>
     <a href="/docs/zh/integrate">接入应用</a>
     <a href="https://github.com/yetone/magpie-releases/releases">版本发布</a>
@@ -407,6 +408,7 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     validate: (v) =&gt; (/^t-/.test(v) ? undefined : <span class="s">"Starts with t-"</span>) },
 ]</pre>
     </div>
+    <p><code>type: "password"</code> 的问题和 <code>text</code> 一样，只是输入时不显示：应用里是掩码输入框，终端里的 <code>magpie plugin login</code> 不回显。适合 token、个人访问令牌（PAT）。这是 magpie 自己的类型，OpenCode 只有 <code>text</code> 和 <code>select</code>。</p>
     <h3>账号</h3>
     <ul>
       <li><b>保存位置。</b>一个供应商可以登录多次。第一个账号保存在供应商 id 下，和 OpenCode 一样；其他账号保存在 <code>id#xxxxxx</code> 下。</li>
@@ -774,6 +776,7 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
     <a href="/docs/zh/plugins">插件开发</a>
     <a href="/docs/zh/remote">远程 magpie</a>
     <a href="/docs/zh/docker">Docker</a>
+    <a href="/docs/zh/privacy">隐私</a>
     <a href="/docs/zh/import">Add to magpie</a>
     <a href="/docs/zh/integrate">接入应用</a>
     <a href="https://github.com/yetone/magpie">GitHub</a>

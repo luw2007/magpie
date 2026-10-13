@@ -39,8 +39,9 @@ var (
 	dsmlParam  = regexp.MustCompile(`(?s)<\s*[|｜][\s|｜]*DSML[\s|｜]*parameter\s+name\s*=\s*"([^"]+)"((?:\s+\w+\s*=\s*"[^"]*")*)\s*>(.*?)` + dsmlTag + `parameter\s*>`)
 	dsmlClose  = regexp.MustCompile(`<\s*/\s*[|｜][\s|｜]*DSML[\s|｜]*invoke\s*>`)
 	dsmlString = regexp.MustCompile(`string\s*=\s*"true"`)
-	// what is left of the tags once the calls are read out
-	textCallJunk = regexp.MustCompile(dsmlTag + `[^<>]*>?|</?tool_calls?>`)
+	// what is left of the tags once the calls are read out, and the
+	// braces, quotes or > GLM leaves before a close (#1945)
+	textCallJunk = regexp.MustCompile(dsmlTag + `[^<>]*>?|[}\]"'>]*\s*</tool_calls?>|<tool_calls?>`)
 )
 
 // textCallNames are the tools a request offers, by name.
@@ -206,8 +207,21 @@ func hermesCall(s string, names map[string]bool) (writtenCall, int, bool) {
 		return writtenCall{}, 0, false
 	}
 	n := lead + back(int(dec.InputOffset()))
-	if t := strings.TrimLeft(s[n:], " \t\r\n"); strings.HasPrefix(t, "</tool_call>") {
-		n = len(s) - len(t) + len("</tool_call>")
+	// what follows the object up to its close: GLM leaves braces,
+	// brackets, quotes or a > of its own there (}}</tool_call>,
+	// "></tool_call>, #1945), taken with the close. Other text right
+	// after the object, before a close, means the object ended early, at
+	// a quote a string's content left unescaped (a heredoc's command cut
+	// short, #1945): no call, rather than one cut wrong
+	junk := len(s[n:]) - len(strings.TrimLeft(s[n:], " \t\r\n}]\"'>"))
+	next := s[n+junk:]
+	if strings.HasPrefix(next, "</tool_call>") {
+		return writtenCall{Name: v.Name, Args: args}, n + junk + len("</tool_call>"), true
+	}
+	if strings.TrimLeft(s[n:n+junk], " \t\r\n") != "" || (junk == 0 && next != "" && next[0] != '<') {
+		if strings.Contains(next, "</tool_call>") {
+			return writtenCall{}, 0, false
+		}
 	}
 	return writtenCall{Name: v.Name, Args: args}, n, true
 }

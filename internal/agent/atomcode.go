@@ -112,7 +112,7 @@ func atomcodeIn(at place) *Agent {
 		return edit.SetTOMLTablesMatching(path, atomcodeAccountNames, atomcodeTablePrefixes, nil)
 	}
 	return atomic(&Agent{
-		ID: "atomcode", Name: "AtomCode", Icon: "atomcode", Spelled: prefixed,
+		ID: "atomcode", Name: "AtomCode", Icon: "atomcode", Spelled: prefixed, NoNames: true,
 		UA:  []string{"atomcode"},
 		Bin: "atomcode", Dir: dir, Path: path,
 		Sync: func() error {

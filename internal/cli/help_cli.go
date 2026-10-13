@@ -59,6 +59,8 @@ func helpFor(args []string) string {
 		return webdavUsage
 	case "s3":
 		return s3Usage
+	case "github":
+		return githubUsage
 	case "claude-code":
 		return claudeCodeUsage
 	case "list":

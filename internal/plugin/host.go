@@ -554,8 +554,8 @@ var (
 	onChangeMu sync.Mutex
 )
 
-// telling counts the hooks told of a change that are still running, for
-// Told. It is a count, not a WaitGroup: a host can tell a change while
+// telling counts the hooks told of a change or of a sign-in (OnChange,
+// OnSignIn) that are still running, for Told. It is a count, not a WaitGroup: a host can tell a change while
 // Told waits.
 var telling struct {
 	sync.Mutex
@@ -592,21 +592,26 @@ func changed() {
 	onChangeMu.Lock()
 	fs := append([]func(){}, onChange...)
 	onChangeMu.Unlock()
-	telling.Lock()
-	telling.n += len(fs)
-	telling.Unlock()
 	for _, f := range fs {
-		go func() {
-			defer func() {
-				telling.Lock()
-				if telling.n--; telling.n == 0 {
-					telling.Broadcast()
-				}
-				telling.Unlock()
-			}()
-			f()
-		}()
+		tell(f)
 	}
+}
+
+// tell runs a hook in the background, counted in telling until it ends.
+func tell(f func()) {
+	telling.Lock()
+	telling.n++
+	telling.Unlock()
+	go func() {
+		defer func() {
+			telling.Lock()
+			if telling.n--; telling.n == 0 {
+				telling.Broadcast()
+			}
+			telling.Unlock()
+		}()
+		f()
+	}()
 }
 
 // Restart stops the host, so the next call starts one with the plugins
@@ -976,7 +981,9 @@ func (h *host) dispatch(m message) {
 			f := onSignIn
 			onSignInMu.Unlock()
 			if f != nil {
-				go f(m.Provider, m.Account, m.Said)
+				// counted, so Told waits for it: it writes the
+				// account's lapse into logins.json (#1935)
+				tell(func() { f(m.Provider, m.Account, m.Said) })
 			}
 		case "toast":
 			log.Printf("plugin: %s %s", m.Title, m.Message)

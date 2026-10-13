@@ -285,7 +285,7 @@ func jcodeAt(at place) *Agent {
 		return edit.SetTOMLTablesMatching(path, []string{jcodeProfile}, []string{jcodeProfile + "."}, nil)
 	}
 	return atomic(&Agent{
-		ID: "jcode", Name: "jcode", Icon: "jcode", Spelled: prefixed,
+		ID: "jcode", Name: "jcode", Icon: "jcode", Spelled: prefixed, NoNames: true,
 		Bin: "jcode", Dir: dir, Path: path,
 		Notice: func() string {
 			if Running(`(^|/)jcode( |$)`) {

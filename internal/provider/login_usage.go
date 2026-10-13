@@ -153,6 +153,18 @@ var noteHistoryWrite = noteQuotaHistory
 // allows, rather than asked for again — the vendors' endpoints are
 // rate limited, and two readings a moment apart told an account two ways.
 func loginReading(ctx context.Context, l Login) loginUsageEntry {
+	e := cachedLoginReading(ctx, l)
+	if l.Agent == "codex" {
+		// what magpie spent of its resets, as of now: a reading kept from
+		// before one was spent still says it was
+		used := ResetsUsed(l.User)
+		e.q.ResetsUsed, e.read.ResetsUsed = used, used
+	}
+	return e
+}
+
+// cachedLoginReading is loginReading as read or kept.
+func cachedLoginReading(ctx context.Context, l Login) loginUsageEntry {
 	key := l.Agent + "/" + strings.ToLower(l.User)
 	c := &loginUsageCache
 	// with allowances read only when asked, one nobody asked for is what
@@ -415,13 +427,64 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 func CodexUsedUp(ctx context.Context) bool {
 	// read as LoginUsage has it, fetched at most once a minute: the agent
 	// package asks on every catalog sync
-	u := LoginUsage(ctx, "codex")
+	return codexReadingHeld(LoginUsage(ctx, "codex"))
+}
+
+// CodexUsedUpKnown is CodexUsedUp over what was read already, asking no
+// one and waiting for no one. False when nothing was read yet, which is
+// CodexUsedUp's own answer for an account it can't tell about.
+//
+// For a caller on a path that must not do I/O: agent.SyncCatalog runs
+// inside a write's own request (a routing group's Save), and the reading
+// there is one the vendor is asked for over the network — a save waited
+// 1.1s of the miss of its minute's cache. Nothing is lost by not asking:
+// KeepOnAnAccountWithRoom reads it every loginSwitchEvery and
+// noteCodexUsedUp tells the catalog when the answer changes, which is what
+// the sync is reacting to, and the Usage page and routing read it as the
+// user looks at them.
+func CodexUsedUpKnown() bool {
+	return codexReadingHeld(knownLoginUsage("codex"))
+}
+
+// codexReadingHeld is whether the reading u has the ChatGPT account Codex
+// is signed in to held by the Codex app. The held of one account's
+// reading, not codexHeld, which is what one vendor reply says.
+func codexReadingHeld(u map[string]SubscriptionQuota) bool {
 	for _, l := range Logins("codex") {
 		if q, ok := u[l.User]; l.Active && ok && q.Error == "" && q.Held {
 			return true
 		}
 	}
 	return false
+}
+
+// knownLoginUsage is LoginUsage over the readings already in hand, with
+// no reading asked for: an account not read yet is left out, which its
+// callers read as "not known".
+func knownLoginUsage(agent string) map[string]SubscriptionQuota {
+	logins, ok := usageLogins(agent)
+	if !ok {
+		return map[string]SubscriptionQuota{}
+	}
+	out := map[string]SubscriptionQuota{}
+	for _, l := range logins {
+		if e, ok := loginReadingKnown(l); ok {
+			out[l.User] = e.q
+		}
+	}
+	return out
+}
+
+// loginReadingKnown is what is known of l's allowance without asking:
+// loginReading's cache alone, and none of its reading. False when the
+// cache has nothing at all for the account.
+func loginReadingKnown(l Login) (loginUsageEntry, bool) {
+	key := l.Agent + "/" + strings.ToLower(l.User)
+	c := &loginUsageCache
+	c.Lock()
+	defer c.Unlock()
+	e, ok := c.m[key]
+	return e, ok
 }
 
 // codexLoginAuth is the auth.json of a ChatGPT account magpie knows: the

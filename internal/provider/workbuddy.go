@@ -691,8 +691,54 @@ func wbQuota(ctx context.Context, a wbAccount) SubscriptionQuota {
 		w := QuotaWindow{Name: "Credits", Used: 100 * used / total, Display: fmt.Sprintf("%s / %s", compactNumber(used), compactNumber(total)),
 			Amount: used, Limit: total, Unit: "credits"}
 		q.Windows = append(q.Windows, w)
+		return q
+	}
+	// an enterprise (team) account's summary has no packages: its credits
+	// are the enterprise meter's, which WorkBuddy's own usage page reads
+	// (#1904, CnsMaple). A personal account's refusal of it (10001 "uid or
+	// enterpriseID is empty") leaves the card as the summary said.
+	var ent wbEnterpriseUsage
+	if wbCall(ctx, http.MethodPost, a.site.api()+"/billing/meter/get-enterprise-user-usage", wbAuthHeaders(a.site, c), map[string]any{}, &ent) == nil {
+		if w, ok := ent.window(); ok {
+			q.Plan = firstNonEmpty(a.Plan, "Enterprise")
+			q.Windows = append(q.Windows, w)
+		}
 	}
 	return q
+}
+
+// wbEnterpriseUsage is an enterprise account's credits for the cycle, flat:
+// Credit used of LimitNum, its times in Beijing time ("2026-11-09 00:00:00").
+type wbEnterpriseUsage struct {
+	Credit         wbNum  `json:"credit"`
+	LimitNum       wbNum  `json:"limitNum"`
+	CycleStartTime string `json:"cycleStartTime"`
+	CycleResetTime string `json:"cycleResetTime"`
+}
+
+// window is u as a Credits window, resetting at the cycle's reset; false
+// when it grants none.
+func (u wbEnterpriseUsage) window() (QuotaWindow, bool) {
+	limit, used := float64(u.LimitNum), float64(u.Credit)
+	if limit <= 0 {
+		return QuotaWindow{}, false
+	}
+	w := QuotaWindow{Name: "Credits", Used: 100 * used / limit, Display: fmt.Sprintf("%s / %s", compactNumber(used), compactNumber(limit)),
+		Amount: used, Limit: limit, Unit: "credits"}
+	at := func(v string) time.Time {
+		t, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(v), beijing)
+		if err != nil {
+			return time.Time{}
+		}
+		return t
+	}
+	if reset := at(u.CycleResetTime); !reset.IsZero() {
+		w.ResetsAt = &reset
+		if start := at(u.CycleStartTime); !start.IsZero() && reset.After(start) {
+			w.Span = reset.Sub(start)
+		}
+	}
+	return w, true
 }
 
 type wbResourceSummary struct {

@@ -30,9 +30,9 @@ import (
 // The gateway draws: /v1/images/generations and /v1/images/edits take
 // OpenAI's images request and answer in its shape, whichever vendor draws.
 // A model on an images API (gpt-image, dall-e, imagen, flux, seedream,
-// qwen-image…) is asked there; one that answers in chat with pictures
-// (gemini-*-image, gpt-5-image, anything on OpenRouter) is asked on chat
-// completions with modalities; Gemini at Google is asked on its own
+// qwen-image…) is asked there. OpenRouter uses its /images endpoint for
+// those models; its chat image models (gemini-*-image, gpt-5-image) stay on
+// chat completions with modalities. Gemini at Google is asked on its own
 // generateContent. A request that names no model draws with the Settings'
 // image generation model, or one magpie picks (AutoDrawer).
 
@@ -181,8 +181,9 @@ func drawsCodex(p provider.Provider) bool {
 }
 
 // Drawers are the models a provider can draw with: its catalogs' models
-// that make images, those its own model list names that do, and those of
-// its own picks named for images; a ChatGPT account's GPT Image, a Grok
+// that make images, those its own model list names that do, those of its
+// own picks named for images, and those the user said draw (#1399), less
+// those they said make videos; a ChatGPT account's GPT Image, a Grok
 // subscription's Grok Imagine, a WorkBuddy plan's those its config lists.
 func Drawers(p provider.Provider) []catalog.Model {
 	if drawsWorkBuddy(p) {
@@ -243,7 +244,28 @@ func Drawers(p provider.Provider) []catalog.Model {
 			out = append(out, catalog.Model{ID: id, Provider: p.ID})
 		}
 	}
-	return out
+	// those the user said draw, whatever their list or name says, and
+	// none they said makes videos (#1399)
+	for _, id := range p.KindModels(provider.KindImage) {
+		if !have[id] {
+			have[id] = true
+			out = append(out, kindModel(p, id))
+		}
+	}
+	return slices.DeleteFunc(out, func(m catalog.Model) bool { return p.ModelKind(m.ID) == provider.KindVideo })
+}
+
+// kindModel is p's model id, one the user said makes images or videos
+// (provider.SetModelKind), as its list names it.
+func kindModel(p provider.Provider, id string) catalog.Model {
+	all, _ := catalog.LiveAll(p.ID)
+	for _, m := range append(p.Available(), all...) {
+		if m.ID == id {
+			m.Provider = p.ID
+			return m
+		}
+	}
+	return catalog.Model{ID: id, Provider: p.ID}
 }
 
 // AutoDrawer is the model magpie draws with when the Settings name none:
@@ -382,7 +404,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 		w, d.Prompt, unmask = redactedPrompt(w, d.Prompt)
 		defer unmask()
 		call.Provider, call.To = p.ID, provider.Chat
-		ctx, cancel := context.WithTimeout(r.Context(), drawTimeout)
+		ctx, cancel := context.WithTimeout(withPrivateFetch(r.Context(), r), drawTimeout)
 		defer cancel()
 		// the account that drew, or refused last, is the one recorded
 		drew, out, code, capBack, err := s.drawOnAccounts(ctx, r, p, model, d)
@@ -627,6 +649,10 @@ func isGoogle(p provider.Provider) bool {
 	return provider.HostOf(p.Base(provider.Chat)) == "generativelanguage.googleapis.com"
 }
 
+func isOpenRouter(p provider.Provider) bool {
+	return provider.HostOf(p.Base(provider.Chat)) == "openrouter.ai"
+}
+
 // viaFor is where model is best asked to draw at p.
 func viaFor(p provider.Provider, model string) drawVia {
 	switch {
@@ -636,7 +662,10 @@ func viaFor(p provider.Provider, model string) drawVia {
 		return viaImages
 	case isGoogle(p) && strings.Contains(strings.ToLower(model), "gemini"):
 		return viaGemini
-	case provider.HostOf(p.Base(provider.Chat)) == "openrouter.ai":
+	case isOpenRouter(p):
+		if catalog.ImagesAPI(model) {
+			return viaImages
+		}
 		return viaChat
 	case catalog.ImagesAPI(model):
 		return viaImages
@@ -745,7 +774,7 @@ func (s *Server) draw(ctx context.Context, p provider.Provider, model string, d 
 	}
 	via := viaFor(p, model)
 	out, code, err := s.drawOn(ctx, p, model, d, via)
-	if err != nil && via != viaGemini && (code == 404 || code == 405 || pointsAway(via, code, err)) {
+	if err != nil && via != viaGemini && (((code == 404 || code == 405) && !(isOpenRouter(p) && via == viaImages)) || pointsAway(via, code, err)) {
 		other := viaChat
 		if via == viaChat {
 			other = viaImages
@@ -939,6 +968,9 @@ func vendorMessage(b []byte) string {
 // drawImages asks an images API: generations, or edits with the images
 // sent along.
 func (s *Server) drawImages(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
+	if isOpenRouter(p) {
+		return s.drawOpenRouterImages(ctx, p, model, d)
+	}
 	if isModelScope(p) {
 		return s.drawModelScope(ctx, p, model, d)
 	}
@@ -1049,25 +1081,63 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	return readImagesAnswer(p, url, b, code)
 }
 
+// drawOpenRouterImages asks OpenRouter's dedicated Images API, which accepts
+// reference images as input_references rather than OpenAI's edits multipart.
+func (s *Server) drawOpenRouterImages(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
+	if d.Mask != nil {
+		return drawn{}, http.StatusBadRequest, errors.New("OpenRouter's images API does not support mask edits")
+	}
+	req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
+	for k, v := range map[string]string{"size": d.Size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {
+		if v != "" {
+			req[k] = v
+		}
+	}
+	if len(d.Images) > 0 {
+		refs := make([]map[string]any, 0, len(d.Images))
+		for _, pic := range d.Images {
+			refs = append(refs, map[string]any{"type": "image_url", "image_url": map[string]string{"url": pic.dataURL()}})
+		}
+		req["input_references"] = refs
+	}
+	body, _ := json.Marshal(req)
+	url := strings.TrimRight(p.Base(provider.Chat), "/") + "/images"
+	b, code, err := s.send(ctx, p, url, "application/json", body, true)
+	if err != nil {
+		return drawn{}, code, err
+	}
+	return readImagesAnswer(p, url, b, code)
+}
+
 // readImagesAnswer reads an images API's answer to url: its images, as bytes
 // or the URLs the vendor keeps them at, and what they cost.
 func readImagesAnswer(p provider.Provider, url string, b []byte, code int) (drawn, int, error) {
 	var res struct {
 		Data []struct {
-			B64     string `json:"b64_json"`
-			URL     string `json:"url"`
-			Revised string `json:"revised_prompt"`
+			B64       string `json:"b64_json"`
+			URL       string `json:"url"`
+			Revised   string `json:"revised_prompt"`
+			MediaType string `json:"media_type"`
 		} `json:"data"`
 		OutputFormat string `json:"output_format"`
 		Usage        struct {
-			Input  int `json:"input_tokens"`
-			Output int `json:"output_tokens"`
+			Input      int `json:"input_tokens"`
+			Output     int `json:"output_tokens"`
+			Prompt     int `json:"prompt_tokens"`
+			Completion int `json:"completion_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(b, &res); err != nil {
 		return drawn{}, 502, fmt.Errorf("%s's answer isn't an images API's: %v", p.Name, err)
 	}
-	out := drawn{Input: res.Usage.Input, Output: res.Usage.Output}
+	input, output := res.Usage.Input, res.Usage.Output
+	if input == 0 {
+		input = res.Usage.Prompt
+	}
+	if output == 0 {
+		output = res.Usage.Completion
+	}
+	out := drawn{Input: input, Output: output}
 	for _, e := range res.Data {
 		if e.Revised != "" {
 			out.Revised = e.Revised
@@ -1077,7 +1147,11 @@ func readImagesAnswer(p provider.Provider, url string, b []byte, code int) (draw
 			if err != nil {
 				return drawn{}, 502, fmt.Errorf("%s's image isn't base64: %v", p.Name, err)
 			}
-			out.Images = append(out.Images, picture{Mime: http.DetectContentType(data), Data: data})
+			mime := e.MediaType
+			if mime == "" {
+				mime = http.DetectContentType(data)
+			}
+			out.Images = append(out.Images, picture{Mime: mime, Data: data})
 		} else if e.URL != "" {
 			out.Images = append(out.Images, picture{URL: e.URL})
 		}
@@ -1090,13 +1164,23 @@ func readImagesAnswer(p provider.Provider, url string, b []byte, code int) (draw
 }
 
 // fetchPicture downloads an image an edit was given by URL, for an images
-// API that takes only files.
+// API that takes only files. The URL is the caller's: it is fetched from
+// public addresses only (publicClient), but for a request from this
+// computer (withPrivateFetch), and what comes must be an image.
 func (s *Server) fetchPicture(ctx context.Context, url string) ([]byte, string, error) {
-	b, _, err := FetchImage(ctx, s.client, url)
+	c := publicClient
+	if privateFetchAllowed(ctx) {
+		c = s.client
+	}
+	b, _, err := FetchImage(ctx, c, url)
 	if err != nil {
 		return nil, "", fmt.Errorf("couldn't fetch the image at %s: %v", url, err)
 	}
-	return b, http.DetectContentType(b), nil
+	mt := http.DetectContentType(b)
+	if !strings.HasPrefix(mt, "image/") {
+		return nil, "", fmt.Errorf("couldn't use the image at %s: it isn't an image (it reads as %s)", url, mt)
+	}
+	return b, mt, nil
 }
 
 // inline says a response_format asks for the image itself.

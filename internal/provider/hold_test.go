@@ -273,3 +273,50 @@ func TestHeldGroupsAreTheCallers(t *testing.T) {
 		t.Fatalf("SaveGroup changed the caller's rule: %q", in.Rules[0].Use)
 	}
 }
+
+// Pricing an agent's models (agent.magpieModels) asks All for each model,
+// under one Hold: settings.json is read with the providers, not once per
+// signed-in account per model. Asked for each account, a magpie at rest
+// parsed it hundreds of times on every drift look the GUI makes each 15s
+// and every dsh round each 30s, most of its idle CPU (xsw on Discord).
+func TestAllReadsNoSettingsPerLookWhileHeld(t *testing.T) {
+	signIn(t)
+	t.Setenv("MAGPIE_NO_ACCOUNTS", "")
+	if err := settings.Save(settings.Settings{Proxy: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	accounts := 0
+	for _, p := range All() {
+		if p.Account != nil {
+			accounts++
+		}
+	}
+	if accounts < 2 {
+		t.Fatalf("the fixture signs in %d accounts; the test needs at least two", accounts)
+	}
+	// The first look under the Hold builds the providers, which reads the
+	// settings a number of times of its own; what is counted is that the
+	// looks after it, each of every model's prices, don't add a read per
+	// account each. Looks is far above what the build reads, so a second
+	// build (the held catalog is kept 1s) stays under it.
+	const looks = 200
+	release := Hold()
+	defer release()
+	before := settings.Parses()
+	for range looks {
+		if len(All()) == 0 {
+			t.Fatal("no providers")
+		}
+		EffectivePriceIn(HeldSettings(), "codex", "gpt-5.5")
+	}
+	if n := settings.Parses() - before; n >= looks {
+		t.Fatalf("settings.json parsed %d times for %d looks at %d accounts under one Hold: once a look or more", n, looks, accounts)
+	}
+	// turned off, the accounts are still left out
+	t.Setenv("MAGPIE_NO_ACCOUNTS", "1")
+	for _, p := range All() {
+		if p.Account != nil {
+			t.Fatalf("%s's account listed with discovery off", p.ID)
+		}
+	}
+}

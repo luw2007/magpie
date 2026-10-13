@@ -64,6 +64,9 @@ var logAppends struct {
 }
 
 func readLogSnapshot() *logSnapshot {
+	// the clients the user counts as agents, read once for the pass the
+	// snapshot is read for (#1958)
+	readClientAgents()
 	logIndex.Lock()
 	defer logIndex.Unlock()
 	path := Path()

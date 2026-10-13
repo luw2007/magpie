@@ -36,6 +36,15 @@ for (let i = 0; i < SPAN; i++) {
   const calls = i === SPAN - 11 ? 500 : (i % 13) + 1;
   DAYS.push({ date: iso(d), calls, tokens: i === SPAN - 1 ? 9e9 : calls * 1e5 * (1 + (i % 7)), cost: calls * 0.5 });
 }
+// #1921's four days, their tokens as the reporter's ledger had them: the
+// busiest two are 2% apart, the quietest two more than twice
+const ago = (n) => iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() - n));
+const FEW = [
+  { date: ago(3), calls: 1889, tokens: 145001026, cost: 1.21 },
+  { date: ago(2), calls: 400, tokens: 18162196, cost: 0.3 },
+  { date: ago(1), calls: 1322, tokens: 141812013, cost: 7.81 },
+  { date: ago(0), calls: 600, tokens: 40766476, cost: 0.9 },
+];
 const ROW = { t: new Date().toISOString(), agent: "claude", agentName: "Claude Code", icon: "claudecode-color", provider: "anthropic", providerName: "Claude", model: "claude-sonnet-5", req: "sonnet", in: 2, out: 600, cache_write: 900, cache_read: 390000, ms: 2380, status: 200, cost: 0.087, priced: true };
 const share = (id, name) => ({ id, name, icon: "generic", calls: 1, errors: 0, input: 2, output: 600, cache_write: 900, cache_read: 390000, cost: 0.087 });
 const PAGE = {
@@ -54,7 +63,7 @@ function server(lang, theme, variant, asked) {
     if (url.pathname === "/api/usage/requests") return json(PAGE);
     if (url.pathname === "/api/usage/heatmap") {
       asked.push(url.searchParams);
-      return json({ from: iso(from), to: iso(today), days: variant === "none" ? [] : DAYS });
+      return json({ from: iso(from), to: iso(today), days: variant === "none" ? [] : variant === "few" ? FEW : DAYS });
     }
     if (url.pathname === "/api/usage/quotas") return json([]);
     if (url.pathname === "/api/usage") return json({ calls: 1, errors: 0, input: 1, output: 1, cache_read: 0, cache_write: 0, reasoning: 0, unpriced: 0, cost: 1, bucket: "day", series: [], agents: [], models: [], path: "~/.config/magpie/usage.jsonl" });
@@ -193,6 +202,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await context.close();
       });
     }
+
+    // a few days are shaded by their share of the busiest, not by quartiles
+    // that each hold one day (#1921)
+    await t.test("a few days", async () => {
+      const { p, errors, context } = await open("en", { width: 1100, variant: "few" });
+      const cells = p.locator("#ledHeat .heat-grid i");
+      await cells.first().waitFor();
+      const shade = (n) => p.locator(`#ledHeat .heat-grid i[data-date="${ago(n)}"]`).getAttribute("class");
+      assert.deepEqual([await shade(3), await shade(1), await shade(0), await shade(2), await shade(4)], ["l4", "l4", "l2", "l1", "l0"]);
+      assert.deepEqual(errors, []);
+      await context.close();
+    });
 
     await t.test("dark, and none", async () => {
       const { p, errors, context } = await open("en", { width: 1100, theme: "dark" });

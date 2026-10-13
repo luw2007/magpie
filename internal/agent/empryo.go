@@ -102,7 +102,7 @@ func empryoAt(at place) *Agent {
 		return edit.SetJSON(path, edit.KV{Path: empryoModel, Value: v})
 	}
 	return atomic(&Agent{
-		ID: "empryo", Name: "Empryo", Icon: "empryo-color", Aliases: []string{"soulforge"}, Spelled: prefixed,
+		ID: "empryo", Name: "Empryo", Icon: "empryo-color", Aliases: []string{"soulforge"}, Spelled: prefixed, NoNames: true,
 		Bin: "empryo", Dir: dir, Path: path,
 		Notice: func() string {
 			if Running(`(^|/)empryo( |$)`) {

@@ -41,10 +41,11 @@ func ompScopeRead(t *testing.T, p string) (map[string]any, string) {
 
 // The reporter's case (#1769): omp's config.yml already has a non-empty
 // enabledModels, and the default role is set to one of magpie's models
-// outside it. omp would start new sessions on a model from the list, so the
-// model joins its end, without its level; the user's entries, their order
-// and comments stay. Only the default role is held to the list (omp
-// resolves its other roles against every model it has).
+// outside it. omp would start new sessions on a model from the list, and
+// its picker and Ctrl+P show only the list's models, so magpie/** joins its
+// end: every model magpie gives omp, the one picked among them. The user's
+// entries, their order and comments stay. Only the default role is held to
+// the list (omp resolves its other roles against every model it has).
 func TestOmpDefaultJoinsEnabledModels(t *testing.T) {
 	home, configPath, _ := ompScopeHome(t)
 	os.WriteFile(configPath, []byte("# mine\nenabledModels:\n  - provider-a/model-a # first\n  - provider-b/model-b\nmodelRoles:\n  default: provider-a/model-a\n"), 0o644)
@@ -52,9 +53,12 @@ func TestOmpDefaultJoinsEnabledModels(t *testing.T) {
 	if err := a.Field("model").Set("magpie/deepseek/pro:high"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"provider-a/model-a", "provider-b/model-b", "magpie/deepseek/pro"}
+	want := []string{"provider-a/model-a", "provider-b/model-b", "magpie/**"}
 	if got := edit.GetYAMLList(configPath, "enabledModels"); !slices.Equal(got, want) {
 		t.Fatalf("enabledModels: %q, want %q", got, want)
+	}
+	if d := a.Check(); d != "" {
+		t.Fatalf("check: %q", d)
 	}
 	if _, raw := ompScopeRead(t, configPath); !strings.Contains(raw, "# mine") || !strings.Contains(raw, "# first") {
 		t.Fatalf("comments lost:\n%s", raw)
@@ -202,5 +206,56 @@ func TestOmpEnabledModelsLeavingOutIsDrift(t *testing.T) {
 	}
 	if d := a.Check(); d != "" {
 		t.Fatalf("set again: %q", d)
+	}
+}
+
+// real-jacket on #1769, after v0.1.1214: the default role started, but
+// omp's picker and Ctrl+P listed only the old list and the one model magpie
+// had added, while magpie's Agents page offers its whole catalog. Their
+// config as v0.1.1214 left it: the model picked again puts magpie/** in
+// place of the one model, so omp's picker has all of magpie's; the other
+// roles' models with it, without a list entry each.
+func TestOmpEnabledModelsTakeEveryMagpieModel(t *testing.T) {
+	home, configPath, modelsPath := ompScopeHome(t)
+	os.WriteFile(configPath, []byte("enabledModels:\n  - provider-a/model-a\n  - provider-b/model-b\n  - magpie/deepseek/pro\nmodelRoles:\n  default: magpie/deepseek/pro:high\n"), 0o644)
+	a := omp(home)
+	if err := a.Field("model").Set("magpie/deepseek/flash:high"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"provider-a/model-a", "provider-b/model-b", "magpie/**"}
+	if got := edit.GetYAMLList(configPath, "enabledModels"); !slices.Equal(got, want) {
+		t.Fatalf("enabledModels: %q, want %q", got, want)
+	}
+	// every model magpie wrote for omp is one the list takes in
+	m, _ := ompScopeRead(t, modelsPath)
+	ms, _ := m["providers"].(map[string]any)["magpie"].(map[string]any)["models"].([]any)
+	if len(ms) < 2 {
+		t.Fatalf("models.yml: %v", m)
+	}
+	for _, x := range ms {
+		id := "magpie/" + x.(map[string]any)["id"].(string)
+		if !ompScopeTakes(want, id) {
+			t.Errorf("%s isn't in omp's list", id)
+		}
+	}
+	if !ompScopeTakes(want, "provider-a/model-a") || ompScopeTakes(want, "provider-c/model-c") {
+		t.Error("the user's own entries changed meaning")
+	}
+	if d := a.Check(); d != "" {
+		t.Fatalf("check: %q", d)
+	}
+	// picked again, it is there once
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	if got := edit.GetYAMLList(configPath, "enabledModels"); !slices.Equal(got, want) {
+		t.Fatalf("set again: %q", got)
+	}
+	// disconnected, it goes with magpie's provider
+	if err := a.Field("model").Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := edit.GetYAMLList(configPath, "enabledModels"); !slices.Equal(got, want[:2]) {
+		t.Fatalf("after reset: %q", got)
 	}
 }

@@ -182,7 +182,7 @@ func geminiIn(at place) *Agent {
 	}
 
 	return &Agent{
-		ID: "gemini", Name: "Gemini CLI", Icon: "geminicli-color", Aliases: []string{"gemini-cli"},
+		ID: "gemini", Name: "Gemini CLI", Icon: "geminicli-color", Aliases: []string{"gemini-cli"}, NoNames: true,
 		UA:  []string{"geminicli", "gemini-cli"},
 		Bin: "gemini", Dir: dir, Path: path,
 		// its model's default forgets what it had before magpie, its

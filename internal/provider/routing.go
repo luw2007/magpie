@@ -77,6 +77,39 @@ func SetKeepLogin(id string, keep bool) error {
 	return nil
 }
 
+// SetSwitchOnly has magpie only move Codex's own sign-in between its
+// accounts (Provider.SwitchOnly), its requests never sent through the
+// gateway for account failover, or lets failover go through it again.
+func SetSwitchOnly(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	if p.Account == nil || p.Account.Agent != p.ID || p.ID != "codex" {
+		return fmt.Errorf("magpie doesn't route %s's own requests for account failover", p.Name)
+	}
+	p.SwitchOnly = on
+	return Save(*p)
+}
+
+// SwitchOnly reports whether magpie only moves agent's own sign-in between
+// its accounts, sending none of its requests through the gateway for
+// account failover (Provider.SwitchOnly). While providers.json can't be
+// read the user's choice is unknown, and failover, magpie's own idea, is
+// not taken up on it.
+func SwitchOnly(agent string) bool {
+	f, err := read()
+	if err != nil {
+		return true
+	}
+	for _, p := range f.Providers {
+		if p.ID == agent {
+			return p.SwitchOnly
+		}
+	}
+	return false
+}
+
 // SetAffinity changes how long a provider's conversations stay with the key
 // or account that answered them.
 func SetAffinity(id, affinity string) error {

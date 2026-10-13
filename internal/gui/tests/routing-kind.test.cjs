@@ -16,7 +16,7 @@ const now = new Date();
 const day = [now.getFullYear(), now.getMonth() + 1, now.getDate()].map((n) => String(n).padStart(2, "0")).join("-");
 const at = (i) => new Date(now.getTime() - (i + 1) * 60e3).toISOString();
 const seat = { id: "codex", provider: "openai", name: "OpenAI", who: "Codex's own sign-in", kind: "account", agent: "codex", model: "gpt-6-luna" };
-const kinds = ["guardian", "thread_title", "thread_title_reconsideration", "memory_consolidation", "luna_reserve", "ambient_suggestions", "ambient_suggestion_safety", "something_new", ""];
+const kinds = ["guardian", "thread_title", "thread_title_reconsideration", "memory_consolidation", "luna_reserve", "ambient_suggestions", "ambient_suggestion_safety", "composer_predictions", "something_new", ""];
 const routes = kinds.map((kind, i) => ({
   id: 100 - i, seq: 100 - i, time: at(i), agent: "codex", model: "gpt-6-luna", provider: "openai", ...(kind ? { kind } : {}),
   order: [seat], tries: [{ id: seat.id, model: "gpt-6-luna", start: at(i), done: true, status: 200, ms: 900 }],
@@ -49,8 +49,8 @@ function serve(lang) {
 }
 
 const want = {
-  en: ["Approval check", "Title", "Title", "Memory", "Luna Reserve", "Suggestions", "Suggestions", "something_new"],
-  zh: ["审批判定", "标题", "标题", "记忆", "Luna 储备", "提示词建议", "提示词建议", "something_new"],
+  en: ["Approval check", "Title", "Title", "Memory", "Luna Reserve", "Suggestions", "Suggestions", "Prediction", "something_new"],
+  zh: ["审批判定", "标题", "标题", "记忆", "Luna 储备", "提示词建议", "提示词建议", "预测", "something_new"],
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -97,6 +97,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".rt-req").nth(kinds.indexOf("ambient_suggestions")).click();
       await page.waitForTimeout(300);
       assert.match(await story.textContent(), lang === "zh" ? /设置 › 配置 › 提示词建议/ : /Settings › Configuration › Suggested prompts/);
+      // and its composer predictions where Codex turns them off and where
+      // magpie picks their model (#1970)
+      await page.locator(".rt-req").nth(kinds.indexOf("composer_predictions")).click();
+      await page.waitForTimeout(300);
+      assert.match(await story.textContent(), lang === "zh" ? /设置 › 常规 › 显示预测内容/ : /Settings › General › Show predictions/);
+      assert.match(await story.textContent(), lang === "zh" ? /Codex 输入框预测/ : /Codex composer predictions/);
       // a turn has no tag in its story
       await openPane(page, "requests");
       await page.locator(".rt-req").nth(kinds.length - 1).click();

@@ -50,6 +50,10 @@
 .sm-ask-list { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 0; list-style: none; font-size: 12.5px; color: var(--fg); line-height: 1.6; }
 .sm-ask-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm-ask-list li.more { color: var(--muted); }
+/* a field in a session dialog (#1991): its label above it, both across the
+   dialog, never squeezed into the form's 72px label column */
+.editor label.sm-ask-field { grid-column: 1 / -1; min-width: 0; display: flex; flex-direction: column; gap: 6px; text-align: left; padding-top: 0; }
+.editor label.sm-ask-field input { width: 100%; min-width: 0; }
 .sm-ask-path { grid-column: 1 / -1; min-width: 0; margin: 0; font-family: var(--code-font, var(--code)); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 :where(html[data-fonts]) .sm-ask-path { font-style: var(--code-style, inherit); font-weight: var(--code-weight, inherit); font-stretch: var(--code-stretch, 100%); }
 @media (max-width: 560px) {

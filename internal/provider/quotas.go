@@ -77,6 +77,9 @@ type Quota struct {
 	Renew string     `json:"renew,omitempty"`
 	// Resets are a Codex account's rate-limit resets, when it holds any.
 	Resets *ResetCredits `json:"resets,omitempty"`
+	// ResetsUsed are the Codex account's resets magpie spent, newest
+	// first, by itself or by hand (codex_resets_used.go)
+	ResetsUsed []ResetUse `json:"resetsUsed,omitempty"`
 	// LastServedAt is when the account, plan or key last answered a
 	// request through the gateway, nil when it hasn't in the last 30 days
 	// (served.go); Last is on the latest of them (#570).
@@ -127,7 +130,7 @@ func quotaReport(subs, plans, balances []SubscriptionQuota, now time.Time) []Quo
 				kind = "balance"
 			}
 			r := Quota{Provider: q.Provider, Name: q.Name, Kind: kind, Plan: q.Plan, User: q.User, AsOf: q.AsOf, ReadAt: q.ReadAt,
-				Windows: []QuotaSpan{}, Balance: q.Balance, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets, From: q.From, Alias: q.Alias, Seat: q.Seat}
+				Windows: []QuotaSpan{}, Balance: q.Balance, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets, ResetsUsed: q.ResetsUsed, From: q.From, Alias: q.Alias, Seat: q.Seat}
 			r.PoolRef, r.SourceRef, r.AccountID = q.PoolRef, q.SourceRef, q.AccountID
 			r.KeyRefs, r.DisplayName, r.Status = q.KeyRefs, q.DisplayName, quotaStatus(q, now)
 			r.LoadPercent = q.LoadPercent

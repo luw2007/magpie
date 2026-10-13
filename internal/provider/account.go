@@ -731,7 +731,15 @@ func claudeAccount() (Provider, bool) {
 	// named as its saved login is (liveLogin): it is then the account Logins
 	// flags Active, not served a second time beside itself, and its
 	// allowances and limits are found under its name (#177)
-	user, _ = claudeSignedInUser(c.OAuth.SubscriptionType, statusPlan, user)
+	user, acct := claudeSignedInUser(c.OAuth.SubscriptionType, statusPlan, user)
+	if b, err := c.marshal(); err == nil && user != "" {
+		// by its sign-in when its profile is another's (claudeSignInOwner)
+		l := savedLogin{Agent: "claude", User: user, Auth: b}
+		if acct != nil {
+			l.Profile, _ = json.Marshal(acct)
+		}
+		user = claudeSignInOwner(readLogins(), l).User
+	}
 	if user == "" {
 		user = "Claude account"
 		if plan != "" {

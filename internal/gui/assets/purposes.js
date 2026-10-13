@@ -24,6 +24,10 @@ const REQUEST_KINDS = {
     "purpose": "kind:compact",
     "name": "Compaction"
   },
+  "composer_predictions": {
+    "purpose": "kind:composer_predictions",
+    "name": "Prediction"
+  },
   "guardian": {
     "purpose": "kind:guardian",
     "name": "Approval check"

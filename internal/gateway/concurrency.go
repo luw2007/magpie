@@ -239,6 +239,9 @@ func (s *Server) concurrency(w http.ResponseWriter, r *http.Request) {
 		writeError(w, provider.Chat, http.StatusForbidden, "magpie's concurrency is told to another machine only when magpie is shared on the local network and the request carries its API key")
 		return
 	}
+	if refuseHeld(w, r, heldRefused) {
+		return
+	}
 	writeJSON(w, 200, map[string]any{"object": "concurrency", "data": s.Lanes()})
 }
 

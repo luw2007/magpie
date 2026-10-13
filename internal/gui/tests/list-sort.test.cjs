@@ -134,7 +134,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const pluginNames = () => names("#view-plugins .pm-list .pm-row > .who > .name > span:first-child");
         const openPlugins = async () => {
           await page.goto("http://magpie.test/?view=plugins");
-          await page.locator(":is(#view-plugins .lib-tabs .opt, .nav-s):visible").nth(1).click();
+          await page.locator(":is(#view-plugins .lib-tabs .opt, .nav-s):visible").nth(2).click(); // Built-in, Discover, Installed
           await page.locator("#view-plugins .pm-row").first().waitFor();
         };
         await openPlugins();

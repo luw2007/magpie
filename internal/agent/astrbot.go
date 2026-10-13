@@ -243,7 +243,7 @@ func astrbotAt(at place) *Agent {
 		return setPick(v)
 	}
 	return atomic(&Agent{
-		ID: "astrbot", Name: "AstrBot", Icon: "astrbot", Spelled: prefixed,
+		ID: "astrbot", Name: "AstrBot", Icon: "astrbot", Spelled: prefixed, NoNames: true,
 		Bin: "astrbot", Dir: data, Path: path,
 		Notice: func() string {
 			return noticeAstrbot.String()

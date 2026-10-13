@@ -76,11 +76,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const r = (e) => { const b = e.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, text: e.textContent }; };
         return [[...document.querySelectorAll(".nav-sub:not(.leaving) .nav-s")].map(r), r(document.querySelector(".nav-sub:not(.leaving) .nav-hl"))];
       });
-      assert.equal(rows.length, 2);
-      assert.ok(rows[1].top >= rows[0].bottom, `the rows don't overlap: ${JSON.stringify(rows)}`);
-      assert.ok(Math.abs(hl.top - rows[1].top) < 1 && Math.abs(hl.bottom - rows[1].bottom) < 1,
-        `the selection is on Installed (${rows[1].top}–${rows[1].bottom}), not ${hl.top}–${hl.bottom}`);
-      assert.ok(hl.top >= rows[0].bottom, "and nothing of it over Discover");
+      // Built-in (P0 of the plugin runtime), Discover, Installed
+      assert.equal(rows.length, 3);
+      for (let i = 1; i < rows.length; i++) assert.ok(rows[i].top >= rows[i - 1].bottom, `the rows don't overlap: ${JSON.stringify(rows)}`);
+      const at = rows.findIndex((r) => r.text.startsWith(installedWord[lang]));
+      assert.ok(at > 0, `Installed is a row after another: ${JSON.stringify(rows)}`);
+      assert.ok(Math.abs(hl.top - rows[at].top) < 1 && Math.abs(hl.bottom - rows[at].bottom) < 1,
+        `the selection is on Installed (${rows[at].top}–${rows[at].bottom}), not ${hl.top}–${hl.bottom}`);
+      assert.ok(hl.top >= rows[at - 1].bottom, "and nothing of it over the row above");
       assert.deepEqual(errors, []);
       await context.close();
     });

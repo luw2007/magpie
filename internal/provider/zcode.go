@@ -53,6 +53,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 )
 
@@ -97,7 +98,8 @@ type zcodeKey struct {
 
 func zcodeCredentialsPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".zcode", "v2", "credentials.json")
+	// under the folder ZCode's data was moved to, when it was
+	return filepath.Join(appdir.ZCodeDataIn(home), ".zcode", "v2", "credentials.json")
 }
 
 // zcodeSecret is the key ZCode encrypts its credentials with.

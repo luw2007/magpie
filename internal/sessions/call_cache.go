@@ -31,10 +31,12 @@ import (
 // v10: the calls ZCode's and WorkBuddy's session files hold are read too, and
 // WorkBuddy's that went through the gateway are left out of them as a dsh
 // one is.
+// v12: a ZCode call's input leaves out the cache, and its output the
+// reasoning counted twice, as its session's summary does (#1947).
 // What each version names is what a cache of the one before it cannot serve:
 // the version is part of the directory's name, so a cache written by an older
 // one is never read (pruneCalls).
-const callCacheVersion = "calls-v11"
+const callCacheVersion = "calls-v12"
 const maxKeptCalls = 131072
 const maxKeptFiles = 64
 
@@ -179,6 +181,8 @@ var wholeCallReaders = map[string]func(file) (*callFile, bool){
 	// #1605
 	"minimax-code": readMiniMaxCalls,
 	"kimi":         readKimiCalls, // #1607
+	"pi":           readPiCalls,   // #1951
+	"omp":          readPiCalls,
 }
 
 func readCalls(f file) *callFile {

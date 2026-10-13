@@ -30,13 +30,30 @@ func heldKey(who access.Identity) bool {
 	return who.KeyID != "" && (who.Limit.Limited() || len(who.Models) > 0 || len(who.Accounts) > 0)
 }
 
+// heldRefused is what a held key is told where this magpie's own accounts
+// would be: the quotas, their cards and history, a card's refresh and the
+// accounts' lanes (321sssrt-bit, #1981: a friend given a key with a
+// budget saw every account's card, email and balance on their Remote
+// magpie's Usage page). The key's own limit stays at /v1/magpie/limit.
+const heldRefused = "this gateway key is held to a budget, models or accounts, so it is told nothing of this magpie's accounts: GET /v1/magpie/limit tells it its own limit"
+
+// refuseHeld answers a held key 403 with msg, marked with
+// provider.KeyHeldCode so another magpie shows the key's own card alone
+// rather than "isn't shared", and says whether it did.
+func refuseHeld(w http.ResponseWriter, r *http.Request, msg string) bool {
+	if !heldKey(access.Caller(r.Context())) {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]any{"message": msg, "type": "permission_error", "code": provider.KeyHeldCode}})
+	return true
+}
+
 func (s *Server) usageSummary(w http.ResponseWriter, r *http.Request) {
 	if !local(r) && !sharedWith(r) {
 		writeError(w, provider.Chat, http.StatusForbidden, usageRefused)
 		return
 	}
-	if heldKey(access.Caller(r.Context())) {
-		writeError(w, provider.Chat, http.StatusForbidden, "this gateway key is held to a budget, models or accounts, so it is told its own calls alone: GET /v1/magpie/usage/requests")
+	if refuseHeld(w, r, "this gateway key is held to a budget, models or accounts, so it is told its own calls alone: GET /v1/magpie/usage/requests") {
 		return
 	}
 	out := usageapi.State(usageapi.PeriodOf(r.URL.Query().Get("period")))

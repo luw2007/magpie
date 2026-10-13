@@ -78,8 +78,11 @@ func keyValues(b []byte) []keyValue {
 // to move, wslMovedFrom). Where the write brings the gateway's address in
 // place of one on another machine, that one stays; where it brings magpie's
 // own key in place of another, in a file that had none of magpie's keys,
-// the other stays. An address on this machine's loopback (another port,
-// localhost) is magpie's own and follows the gateway; with more than one
+// the other stays, with the path every URL there had before magpie's (a
+// reverse proxy's /magpie). An address on this machine's loopback
+// (another port, localhost) is magpie's own and follows the gateway, but
+// for a local proxy's route, one with a path of its own where nothing but
+// magpie has answered (#1985); with more than one
 // address or key gone, which went where can't be told, and the write is
 // left as it is. magpie's own files are never the user's pointing.
 func keptAway(path string, data []byte) []byte {
@@ -91,14 +94,17 @@ func keptAway(path string, data []byte) []byte {
 	if err != nil || len(was) == 0 || bytes.Contains(was, []byte(g)) {
 		return data
 	}
-	elsewhere := false
+	elsewhere, local := false, false
 	for _, o := range originRE.FindAll(was, -1) {
 		if wslHost(string(o)) {
 			return data
 		}
 		elsewhere = elsewhere || onAnotherMachine(string(o))
 	}
-	if !elsewhere {
+	for _, u := range urlRE.FindAll(was, -1) {
+		local = local || loopbackWithPath(string(u))
+	}
+	if !elsewhere && !local {
 		return data
 	}
 	out := data
@@ -112,10 +118,21 @@ func keptAway(path string, data []byte) []byte {
 				away = s
 			}
 		}
+		p := awayPath(was, data, g, away)
+		// on this machine, a local proxy's route (#1985): one with a path
+		// of its own before magpie's, where magpie answers or hasn't been
+		// asked yet; without one it is magpie's own on an older port
 		if !onAnotherMachine(away) {
-			return data
+			if !loopbackWithPath(away + p) {
+				return data
+			}
+			if ok, known := magpieAt(away + p); known && !ok {
+				return data
+			}
 		}
-		out = replaceOrigin(data, g, away)
+		out = replaceOrigin(data, g, away+p)
+	} else if !elsewhere {
+		return data
 	}
 
 	// the key: the one that went with the address, in place of magpie's
@@ -147,6 +164,46 @@ func keptAway(path string, data []byte) []byte {
 		out = append(out[:kv.start:kv.start], append([]byte(v), out[kv.end:]...)...)
 	}
 	return out
+}
+
+// urlRE is an http(s) URL with its path, as it is written in a file.
+var urlRE = regexp.MustCompile(`https?://[^\s"'<>,{}\[\]\\]+`)
+
+// awayPath is the path before magpie's own that the address away keeps in
+// was, the file before a sync wrote data with the gateway's address g: the
+// /magpie of https://ai.corp.example/magpie/v1, a reverse proxy's (#1985),
+// where data has g/v1. It is the shortest that every one of was's URLs at
+// away starts with; "" when one is at away itself, or none fits.
+func awayPath(was, data []byte, g, away string) string {
+	var tails []string
+	for _, d := range urlRE.FindAll(data, -1) {
+		if t, ok := strings.CutPrefix(strings.TrimSuffix(string(d), "/"), g); ok {
+			tails = append(tails, t)
+		}
+	}
+	var ws []string
+	for _, w := range urlRE.FindAll(was, -1) {
+		if s := strings.TrimSuffix(string(w), "/"); s == away || strings.HasPrefix(s, away+"/") {
+			ws = append(ws, s)
+		}
+	}
+	best, found := "", false
+	for _, w := range ws {
+		for _, t := range tails {
+			p, ok := strings.CutSuffix(strings.TrimPrefix(w, away), t)
+			if !ok || found && len(p) >= len(best) {
+				continue
+			}
+			all := true
+			for _, o := range ws {
+				all = all && (o == away+p || strings.HasPrefix(o, away+p+"/"))
+			}
+			if all {
+				best, found = p, true
+			}
+		}
+	}
+	return best
 }
 
 // keyCounts are the values of the keys keyName takes in b, "Bearer " left

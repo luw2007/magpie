@@ -281,7 +281,7 @@ func KeepCursorLocalEnv(context.Context) {
 
 func cursorLocal() *Agent {
 	return &Agent{
-		ID: CursorLocalID, Name: cursorLocalName, Icon: "cursor", Aliases: []string{"cursor-private-inference"},
+		ID: CursorLocalID, Name: cursorLocalName, Icon: "cursor", Aliases: []string{"cursor-private-inference"}, NoNames: true,
 		// its model picker lists the gateway's /models as its key is shown
 		// them, which the row's Models button picks
 		ListsModels: true,

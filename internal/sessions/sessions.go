@@ -97,7 +97,7 @@ type Session struct {
 	// Gateway: seen only through magpie's gateway, with no file of the
 	// agent's on this computer (external.go)
 	Gateway bool      `json:"gateway,omitempty"`
-	Agent   string    `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, droid, cursor, hermes, alma
+	Agent   string    `json:"agent"` // magpie agent id: claude, codex, opencode, pi, omp, zcode, dsh, cline, qoder, qoder-cn, grok, workbuddy, droid, cursor, hermes, alma, kimi
 	ID      string    `json:"id"`
 	Cwd     string    `json:"cwd"`
 	Title   string    `json:"title"` // the name it was given, else the agent's own title, else the first prompt
@@ -430,8 +430,8 @@ func ccFiles(agent, dir string) []file {
 func allFiles() []file {
 	var out []file
 	for _, fs := range [][]file{callFiles(), openCodeFiles(), piFiles(),
-		wslFiles("pi"), zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
-		grokFiles(), workbuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles()} {
+		wslFiles("pi", "omp", "kimi"), zcodeFiles(), dshFiles(), clineFiles(), ccFiles("qoder", QoderDir("qoder")), ccFiles("qoder-cn", QoderDir("qoder-cn")),
+		grokFiles(), workbuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles()} {
 		out = append(out, fs...)
 	}
 	return out
@@ -1056,7 +1056,7 @@ func assemble(fs []file, price func(string) *catalog.Price) (Session, bool) {
 		return s, false // nothing was said in it
 	}
 	if !s.ReadOnly {
-		s.Resume = resumeCommand(s.WSL, s.Agent, s.ID, s.Cwd)
+		s.Resume = resumeCommand(s.WSL, s.Agent, s.ID, s.Cwd, s.Path)
 	}
 	s.Carry, s.Transcript = carries(s), HasTranscript(s.Agent)
 	return s, true
@@ -1084,6 +1084,8 @@ func parserFor(agent string) sessionParser {
 		return sessionParser{whole: parseCline}
 	case "grok":
 		return sessionParser{whole: parseGrok}
+	case "kimi":
+		return sessionParser{whole: parseKimi}
 	case "droid":
 		return sessionParser{whole: parseDroid}
 	case "cursor":
@@ -1359,14 +1361,15 @@ func makers(id string) []string {
 // ---- resuming ---------------------------------------------------------------
 
 var safeID = regexp.MustCompile(`^[0-9A-Za-z_-]+$`)
+var safeOmpProfile = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // ResumeCommand is the shell line that picks a session up again in its
 // folder, or "" for an id that isn't plain.
-func ResumeCommand(agent, id, cwd string) string { return resumeCommand("", agent, id, cwd) }
+func ResumeCommand(agent, id, cwd string) string { return resumeCommand("", agent, id, cwd, "") }
 
 // resumeCommand is ResumeCommand for a session in a WSL distro too, when
 // distro is set: see wslResume.
-func resumeCommand(distro, agent, id, cwd string) string {
+func resumeCommand(distro, agent, id, cwd, path string) string {
 	if !safeID.MatchString(id) {
 		return ""
 	}
@@ -1390,8 +1393,16 @@ func resumeCommand(distro, agent, id, cwd string) string {
 		run = "grok --resume " + id
 	case "omp":
 		run = "omp --resume " + id
+		if profile := ompProfile(path); profile != "" {
+			if !safeOmpProfile.MatchString(profile) {
+				return ""
+			}
+			run = "omp --profile " + profile + " --resume " + id
+		}
 	case "droid":
 		run = "droid --resume " + id
+	case "kimi":
+		run = "kimi --session " + id
 	case "cursor":
 		// its chats are looked up by the folder it runs in
 		if cwd == "" {

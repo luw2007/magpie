@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
@@ -228,11 +227,7 @@ func realProxyProbe(base, proxy string) bool {
 	if err != nil {
 		return false
 	}
-	defer res.Body.Close()
-	var info struct {
-		Name string `json:"name"`
-	}
-	return res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&info) == nil && info.Name == "magpie"
+	return answersAsMagpie(res)
 }
 
 // codexThroughProxy says whether Codex, configured by cfg, gets to the

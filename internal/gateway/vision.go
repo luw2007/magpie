@@ -262,7 +262,8 @@ type sight struct {
 // image: a request that sends it again, or sends it while it is being
 // described, is given the same description.
 func (s *Server) describe(ctx context.Context, model, src string) (string, error) {
-	sum := sha256.Sum256([]byte(model + "\x00" + src))
+	// a level picked since is asked again, not given what was said at the last
+	sum := sha256.Sum256([]byte(model + "\x00" + visionEffort(model) + "\x00" + src))
 	key := hex.EncodeToString(sum[:])
 	s.sightMu.Lock()
 	if e, ok := s.sights[key]; ok {
@@ -324,8 +325,12 @@ func (s *Server) askVisionWith(ctx context.Context, model, src, system, text str
 		},
 		"max_tokens": 4096,
 	}
-	if effort := classifyEffort(model); effort != "" {
+	if effort := visionEffort(model); effort != "" {
 		req["reasoning_effort"] = effort
+		// a level picked in Settings is given room to think in
+		if picked := sideEffort(model, provider.HeldSettings().VisionEffort); picked != "" {
+			req["max_tokens"] = replyRoom(4096, picked)
+		}
 	}
 	body, _ := json.Marshal(req)
 	r, err := http.NewRequestWithContext(magpieChose(ctx), http.MethodPost, "http://magpie/v1/chat/completions", nil)

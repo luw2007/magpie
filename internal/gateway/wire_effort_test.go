@@ -25,6 +25,12 @@ var chatHi = sse(
 	`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
 	`data: [DONE]`)
 
+// responsesHi is the same reply from a Responses API, which reads its own
+// events only: a Chat stream from it is no reply (#1933).
+var responsesHi = sse(
+	`data: {"type":"response.output_text.delta","item_id":"m1","output_index":0,"content_index":0,"delta":"hi"}`,
+	`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[],"usage":{"input_tokens":7,"output_tokens":1}}}`)
+
 // A user-added provider whose model's levels no one lists (#1636,
 // jswysnemc): a client asking reasoning off or minimal on another API
 // than the provider's went at another level, while the request log and
@@ -50,8 +56,11 @@ func TestTranslatedEffortLoggedAsSent(t *testing.T) {
 		{provider.Chat, "/v1/chat/completions", `{"model":"m1","stream":true,"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`, "none", "none", "reasoning_effort=none"},
 	} {
 		f := &fake{t: t, reply: chatHi}
-		if c.up == provider.Anthropic {
+		switch c.up {
+		case provider.Anthropic:
 			f.reply = anthropicHi
+		case provider.Responses:
+			f.reply = responsesHi
 		}
 		setup(t, c.up, f)
 		s := New()

@@ -18,6 +18,7 @@ import (
 	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/library"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/profile"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
@@ -639,5 +640,75 @@ func TestConfigurePassword(t *testing.T) {
 		if c, _ := Load(); c.Password != tc.want || c.Passphrase != "correct horse" {
 			t.Errorf("%s as %q: password %q, passphrase %q", tc.url, tc.user, c.Password, c.Passphrase)
 		}
+	}
+}
+
+// Sync brings the plugins from npm to the other computer, which installs
+// them, and its status names the subscriptions it brought the settings of
+// with no account there (yapechan on Discord: after a WebDAV sync no
+// providers showed, and nothing said why). A plugin taken off one computer
+// stays on the others.
+func TestSyncPluginsAndSignIn(t *testing.T) {
+	fake := &fakeDAV{files: map[string][]byte{}, etags: map[string]string{}, dirs: map[string]bool{"/dav": true}}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	cfg := Config{URL: srv.URL + "/dav/", User: "me", Password: "pw", Passphrase: "correct horse"}
+	now := func(t *testing.T) {
+		t.Helper()
+		if err := Now(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := addPlugins
+	t.Cleanup(func() { addPlugins = old })
+	var asked []string
+	addPlugins = func(es []plugin.Entry) ([]string, map[string]string) {
+		for _, e := range es {
+			asked = append(asked, e.Spec)
+		}
+		return nil, nil
+	}
+	a, b := newComputer(t), newComputer(t)
+	a.use(t)
+	if err := os.MkdirAll(settings.Dir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pluginsJSON := filepath.Join(settings.Dir(), "plugins.json")
+	if err := os.WriteFile(pluginsJSON, []byte(`{"plugins":[
+		{"spec":"@magpie-community/opencode-cursor-auth"},{"spec":"/Users/me/mine"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provider.Path(), []byte(`{"providers":[
+		{"id":"claude","models":["claude-opus-4-8"]},
+		{"id":"acme","name":"Acme","chat":"https://acme.example.invalid/v1","key":"sk-acme"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	Configure(cfg)
+	now(t)
+	if len(asked) != 0 {
+		t.Fatalf("a, the first, asked to install %v", asked)
+	}
+
+	b.use(t)
+	Configure(cfg)
+	now(t)
+	if !slices.Equal(asked, []string{"@magpie-community/opencode-cursor-auth"}) {
+		t.Fatalf("b asked to install %v, want the npm plugin only", asked)
+	}
+	if got := Status().SignIn; !slices.Equal(got, []string{"claude"}) {
+		t.Fatalf("b's status names %v to sign in to, want claude", got)
+	}
+
+	// a takes the plugin away: b keeps its own
+	a.use(t)
+	if err := os.WriteFile(pluginsJSON, []byte(`{"plugins":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now(t)
+	b.use(t)
+	asked = nil
+	now(t)
+	if len(asked) != 0 {
+		t.Fatalf("b asked to install %v after a took its plugin away", asked)
 	}
 }

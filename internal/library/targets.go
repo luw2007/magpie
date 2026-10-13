@@ -7,10 +7,14 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/jsonc"
+
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/agentplug"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/desktopdir"
+	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/plugin"
 )
 
@@ -133,9 +137,16 @@ func targetOf(a *agent.Agent) *Target {
 		t.MCP = &mcpFile{Path: a.Path, Format: fmtOpenCode}
 		t.Skills = filepath.Join(d, "skills")
 	case "pi":
-		// PI_CODING_AGENT_DIR's, else ~/.pi/agent (agent.piDir)
+		// PI_CODING_AGENT_DIR's, else ~/.pi/agent (agent.piDir). Pi reads
+		// AGENTS.override.md there when it is there, else the first there
+		// is of AGENTS.md, AGENTS.MD, CLAUDE.md and CLAUDE.MD
+		// (loadContextFileFromDir in dist/core/resource-loader.js,
+		// @earendil-works/pi-coding-agent 1.2.0; the older
+		// @mariozechner/pi-coding-agent has the same order without the
+		// override), so a CLAUDE.md of the user's own is the one to edit
 		d := a.Dir
-		t.Instructions = filepath.Join(d, "AGENTS.md")
+		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
+		t.Override = filepath.Join(d, "AGENTS.override.md")
 		// Pi 0.99 reads MCP servers itself, from its mcp.json; before it,
 		// and while an MCP extension replaces its own (pi-mcp-adapter,
 		// pi-mcp-extension), each extension reads its own file (pimcp.go)
@@ -162,9 +173,13 @@ func targetOf(a *agent.Agent) *Target {
 		// OmO's engine (senpi, a fork of Pi) reads its agent folder's
 		// AGENTS.md, skills and mcp.json — mcpServers in the shape Pi 0.99's
 		// own has (command/args/env, url/headers), any other key refusing
-		// the whole file (docs/mcp.md, config-schema.js)
+		// the whole file (docs/mcp.md, config-schema.js). Its instructions
+		// are found as Pi's are: AGENTS.override.md, else the first there
+		// is of AGENTS.md, AGENTS.MD, CLAUDE.md and CLAUDE.MD
+		// (loadContextFileFromDir, @code-yeongyu/senpi 2026.10.12)
 		d := a.Dir
-		t.Instructions = filepath.Join(d, "AGENTS.md")
+		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
+		t.Override = filepath.Join(d, "AGENTS.override.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp.json"), Format: fmtPiNative}
 		t.Skills = filepath.Join(d, "skills")
 	case "goose":
@@ -216,6 +231,11 @@ func targetOf(a *agent.Agent) *Target {
 		// kimi-cli (fastmcp's MCPConfig) and the new Kimi Code read alike.
 		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtKimi}
 		if _, legacy := agent.KimiDir(h); !legacy {
+			// the new Kimi Code reads AGENTS.md in its folder ($KIMI_CODE_HOME,
+			// else ~/.kimi-code) before every conversation; kimi-cli reads no
+			// user-wide one (loadAgentsMdForRoots in packages/agent-core-v2/
+			// src/agent/profile/context.ts, MoonshotAI/kimi-code afd95f64)
+			t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
 			t.Skills = sharedSkillsDir()
 		} else if d := filepath.Join(h, ".config", "agents", "skills"); isDir(d) {
 			t.Skills = d
@@ -280,6 +300,10 @@ func targetOf(a *agent.Agent) *Target {
 		// (docs.qoder.com/cli/mcp-reference), beside magpie's provider
 		t.MCP = &mcpFile{Path: a.Path, Format: fmtOmp}
 		t.Skills = filepath.Join(a.Dir, "skills")
+		// and AGENTS.md in its folder before every conversation, which its
+		// settings' context.fileName renames as Qwen Code's does
+		// (discoverMemoryPaths, @qoder-ai/qodercli 1.1.69's bundle)
+		t.Instructions = filepath.Join(a.Dir, contextFile(a.Path, "AGENTS.md"))
 	case "cline":
 		// Cline's CLI reads its MCP servers from settings/
 		// cline_mcp_settings.json beside providers.json, or
@@ -294,6 +318,9 @@ func targetOf(a *agent.Agent) *Target {
 		// Command Code reads ~/.commandcode/mcp.json (getUserMcpConfigPath)
 		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtCommandCode}
 		t.Skills = filepath.Join(a.Dir, "skills")
+		// and ~/.commandcode/AGENTS.md before every conversation
+		// (getUserMemoryPath, command-code 1.81.0's dist/cli.mjs)
+		t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
 	case "workbuddy", "workbuddy-ai":
 		// WorkBuddy's own servers are mcp.json in its folder (WorkBuddy
 		// AI's, ~/.workbuddy-ai, for the international build)
@@ -318,6 +345,9 @@ func targetOf(a *agent.Agent) *Target {
 		// are in skills/ in its folder (getHomeSkillsDir) (#1266).
 		t.MCP = &mcpFile{Path: codebuddyMCP(a.Dir), Format: fmtClaude}
 		t.Skills = filepath.Join(a.Dir, "skills")
+		// Its user-wide instructions are CODEBUDDY.md in its folder, else
+		// CODEBUDDY.mdc there (MemoryLoader.loadUserMemories, 2.164.0)
+		t.Instructions = firstThere(a.Dir, "CODEBUDDY.md", "CODEBUDDY.mdc")
 	case "hanako", "fx":
 		// a skills folder in the agent's own: Hanako's $HANA_HOME, fx's
 		// ~/.fx — each said by its docs or source. No MCP servers:
@@ -325,6 +355,39 @@ func targetOf(a *agent.Agent) *Target {
 		// tool, and fx's mcp.json, which one entry it refuses makes it read
 		// none of, isn't one magpie could try.
 		t.Skills = filepath.Join(a.Dir, "skills")
+		if a.ID == "fx" {
+			// fx reads ~/.fx/AGENTS.md before a project's own
+			// (src/builtins/context.zig, vercel-labs/fx c3b4b926)
+			t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
+		}
+	case "prime-agent":
+		// Prime Agent reads the first there is of AGENTS.md, AGENTS.MD,
+		// CLAUDE.md and CLAUDE.MD in its agent folder
+		// ($PRIME_AGENT_CODING_AGENT_DIR, else ~/.prime/agent)
+		// (CONTEXT_FILE_CANDIDATES in crates/pa-core/src/resources/mod.rs,
+		// prime-agent d592d5e7)
+		t.Instructions = firstThere(a.Dir, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
+	case "stepcode":
+		// StepCode reads AGENTS.override.md in its agent folder
+		// ($STEP_CODING_AGENT_DIR, else agent/ in its config folder) when
+		// it is there, else the first there is of AGENTS.md, AGENTS.MD,
+		// CLAUDE.md and CLAUDE.MD (resolveStepAgentDir in step/
+		// environment.ts, loadContextFileFromDir in core/resource-loader.ts,
+		// stepfun-ai/Step-Code 3ba89e0c)
+		d := strings.TrimSpace(appdir.Getenv("STEP_CODING_AGENT_DIR"))
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(a.Dir, "agent")
+		}
+		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
+		t.Override = filepath.Join(d, "AGENTS.override.md")
+	case "jcode":
+		// jcode's own user-wide file is prompt-overlay.md in its folder
+		// ($JCODE_HOME, else ~/.jcode), added to every conversation's
+		// prompt; the AGENTS.md it also reads is the one in the home folder
+		// itself, which isn't jcode's (load_prompt_overlay_files_from_dir in
+		// crates/jcode-base/src/prompt.rs, jcode_dir in crates/jcode-storage,
+		// 1jehuang/jcode 0d240f1d)
+		t.Instructions = filepath.Join(a.Dir, "prompt-overlay.md")
 	case "atomcode":
 		// AtomCode reads ~/.atomcode/ATOMCODE.md before every conversation
 		// (its ATOMCODE.md, beside AGENTS.md and CLAUDE.md), its MCP servers
@@ -333,6 +396,22 @@ func targetOf(a *agent.Agent) *Target {
 		t.Instructions = filepath.Join(a.Dir, "ATOMCODE.md")
 		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtOmp}
 		t.Skills = filepath.Join(a.Dir, "skills")
+	case "qwen":
+		// Qwen Code reads QWEN.md (and AGENTS.md) in its global folder,
+		// $QWEN_HOME else ~/.qwen, before every conversation; its settings'
+		// context.fileName renames them, the first name being the one it
+		// writes itself (getGlobalQwenDir in packages/core/src/config/
+		// storage.ts, getMemoryFilePaths in memory/memoryDiscovery.ts,
+		// getCurrentMemoryFilename in utils/memory-constants.ts,
+		// QwenLM/qwen-code c5098a27)
+		t.Instructions = filepath.Join(a.Dir, contextFile(a.Path, "QWEN.md"))
+	case "reasonix":
+		// Reasonix reads every one there is of REASONIX.md, AGENTS.md and
+		// CLAUDE.md in its state folder; REASONIX.md is its own
+		// (DocumentNames in internal/state/instruction/resolver.go,
+		// MemoryUserDir in internal/contract/config/paths.go, esengine/
+		// DeepSeek-Reasonix d460758e)
+		t.Instructions = filepath.Join(reasonixState(a), "REASONIX.md")
 	case "zed":
 		// Zed reads its MCP servers from context_servers in the settings.json
 		// magpie sets its model in (~/.config/zed, $XDG_CONFIG_HOME/zed,
@@ -364,6 +443,59 @@ func targetOf(a *agent.Agent) *Target {
 		return nil
 	}
 	return t
+}
+
+// firstThere is the first of names in dir that is there, as an agent that
+// reads only the first of them finds it; the first name when none is.
+func firstThere(dir string, names ...string) string {
+	for _, n := range names {
+		if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
+			return filepath.Join(dir, n)
+		}
+	}
+	return filepath.Join(dir, names[0])
+}
+
+// contextFile is the name of the file Qwen Code, or Qoder, reads its
+// user-wide instructions from: the first of its settings' context.fileName,
+// a name or a list of them, else def (Qwen's packages/cli/src/config/
+// config.ts sets it with setMemoryFilename, which trims each name and skips
+// an empty one).
+func contextFile(settings, def string) string {
+	raw, _ := os.ReadFile(settings)
+	v := gjson.GetBytes(jsonc.ToJSON(raw), "context.fileName")
+	names := []gjson.Result{v}
+	if v.IsArray() {
+		names = v.Array()
+	}
+	for _, n := range names {
+		if name := strings.TrimSpace(n.String()); n.Type == gjson.String && name != "" {
+			return name
+		}
+	}
+	return def
+}
+
+// reasonixState is Reasonix's state folder: $REASONIX_STATE_HOME, else
+// [storage] state in its config.toml, else its home (Roots.Dir in
+// internal/contract/config/storage_roots.go, readStorageDirs in
+// storage_config.go).
+func reasonixState(a *agent.Agent) string {
+	d := appdir.Getenv("REASONIX_STATE_HOME")
+	if strings.TrimSpace(d) == "" {
+		st, _ := edit.GetTOMLTable(a.Path, "storage")
+		d = st["state"]
+	}
+	if d = strings.TrimSpace(os.ExpandEnv(d)); d == "" {
+		return a.Dir
+	}
+	if d == "~" || strings.HasPrefix(d, "~/") || strings.HasPrefix(d, `~\`) {
+		d = filepath.Join(home(), strings.TrimLeft(d[1:], `/\`))
+	}
+	if abs, err := filepath.Abs(d); err == nil {
+		d = abs
+	}
+	return d
 }
 
 // pluginMCP is each MCP format an agent plugin may name
@@ -439,11 +571,13 @@ func wslTargetOf(a *agent.Agent) *Target {
 		// its MCP servers go where the Pi installed there reads them,
 		// which its version decides (piMCP), and that isn't known here
 		d := filepath.Join(h, ".pi", "agent")
-		t.Instructions = filepath.Join(d, "AGENTS.md")
+		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
+		t.Override = filepath.Join(d, "AGENTS.override.md")
 		t.Skills = filepath.Join(d, "skills")
 	case "omo":
 		d := filepath.Join(h, ".omo", "agent")
-		t.Instructions = filepath.Join(d, "AGENTS.md")
+		t.Instructions = firstThere(d, "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
+		t.Override = filepath.Join(d, "AGENTS.override.md")
 		t.MCP = &mcpFile{Path: filepath.Join(d, "mcp.json"), Format: fmtPiNative, WSL: true, Distro: a.WSL, Home: linuxHome(h)}
 		t.Skills = filepath.Join(d, "skills")
 	default:
@@ -460,7 +594,7 @@ func wslTargetOf(a *agent.Agent) *Target {
 var ownFolder = map[string]bool{
 	"hermes": true, "omp": true, "opencode": true, "mimocode": true, "droid": true,
 	"grok": true, "commandcode": true, "atomcode": true, "qoder": true, "qoder-cn": true,
-	"minimax-code": true, "fx": true, "dsh": true,
+	"minimax-code": true, "fx": true, "dsh": true, "qwen": true,
 }
 
 // wslOwnFolder is the target of a, an agent in a running WSL distro that

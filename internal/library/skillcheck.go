@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/source"
 )
 
@@ -53,10 +54,10 @@ type Limited struct {
 	Token bool   `json:"token,omitempty"`
 }
 
-func (e errLimited) view() *Limited {
-	l := &Limited{Token: e.token}
-	if !e.until.IsZero() {
-		l.Until = e.until.UTC().Format(time.RFC3339)
+func limitedView(e errLimited) *Limited {
+	l := &Limited{Token: e.Token}
+	if !e.Until.IsZero() {
+		l.Until = e.Until.UTC().Format(time.RFC3339)
 	}
 	return l
 }
@@ -133,12 +134,7 @@ func lastCommit(src Source) (*commit, error) {
 	}
 	switch {
 	case code == 401 && token:
-		_, from := GitHubToken()
-		where := "the GitHub token in Settings → Network and sharing"
-		if from != "settings" {
-			where = from + " (no GitHub token is set in Settings → Network and sharing)"
-		}
-		return nil, fmt.Errorf("GitHub refused %s: it may have expired or been revoked", where)
+		return nil, ghtoken.Refused()
 	case code == 404, code == 422:
 		if src.Ref != "" {
 			return nil, fmt.Errorf("GitHub has no %s at %s any more", src.Repo, src.Ref)
@@ -372,7 +368,7 @@ func checkSkill(s *Skill, f *fetcher, asked map[string]*commit, limited *atomic.
 	last := asked[key]
 	if last == nil {
 		if e := limited.Load(); e != nil {
-			c.Error, c.Limited = e.Error(), e.view()
+			c.Error, c.Limited = e.Error(), limitedView(*e)
 			return c, "", ""
 		}
 		var err error
@@ -381,7 +377,7 @@ func checkSkill(s *Skill, f *fetcher, asked map[string]*commit, limited *atomic.
 			var e errLimited
 			if errors.As(err, &e) {
 				limited.Store(&e)
-				c.Limited = e.view()
+				c.Limited = limitedView(e)
 			}
 			c.Error = err.Error()
 			return c, "", ""

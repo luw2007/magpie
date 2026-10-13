@@ -63,15 +63,29 @@ func (l *Library) sync() *Result {
 	if b == nil {
 		b = newBackups()
 	}
-	all := Targets()
+	for _, step := range syncSteps(Targets(), b, res) {
+		step(l)
+	}
+	res.Backup = b.dir
+	if b.dir != "" {
+		pruneBackups()
+	}
+	return res
+}
+
+// syncSteps are what a sync does, one agent's part at a time, in order.
+func syncSteps(all []*Target, b *backups, res *Result) []func(*Library) {
+	var steps []func(*Library)
 	for _, t := range all {
-		l.syncInstructions(t, b, res)
-		l.syncMCP(t, b, res)
-		l.syncHooks(t, b, res)
+		steps = append(steps, func(l *Library) {
+			l.syncInstructions(t, b, res)
+			l.syncMCP(t, b, res)
+			l.syncHooks(t, b, res)
+		})
 	}
 	// an edit made in an agent's copy of a skill goes to the library first,
 	// for the others to get rather than be undone (takeEdits)
-	l.takeEdits(all, res)
+	steps = append(steps, func(l *Library) { l.takeEdits(all, res) })
 	// ~/.agents/skills first: an agent that reads it too gets no second
 	// link to what is there already
 	shared := realDir(sharedSkillsDir())
@@ -80,25 +94,63 @@ func (l *Library) sync() *Result {
 			switch {
 			case t.Desktop != nil:
 				if !first {
-					l.syncDesktopSkills(t, res)
+					steps = append(steps, func(l *Library) { l.syncDesktopSkills(t, res) })
 				}
 			case (t.Skills != "" && realDir(t.Skills) == shared) == first:
-				l.syncSkills(t, res, all)
+				steps = append(steps, func(l *Library) { l.syncSkills(t, res, all) })
 			}
 		}
 	}
-	l.syncProjects(res)
-	res.Backup = b.dir
-	if b.dir != "" {
-		pruneBackups()
-	}
-	return res
+	return append(steps, func(l *Library) { l.syncProjects(res) })
 }
 
 // Sync writes the library into the agents again: after an agent is
-// installed, or a profile brings another library in.
+// installed, or a profile brings another library in. magpie does one at
+// every start, and the Library page waits on the lock for each read and
+// change: held for the whole sync, through every agent's skills, the
+// first operations after opening magpie took seconds (#1624, Hipple).
+// It lets go after each agent's part, for whatever waits to go first.
 func Sync() (*Result, error) {
-	return change(func(*Library) error { return nil })
+	res := &Result{Changed: []string{}, Problems: []Problem{}}
+	b := newBackups()
+	var all []*Target
+	// what the step before learnt of the skills (hashes, copies found
+	// untouched), kept while nothing else held the lock between
+	var memo *Library
+	var heldAt uint64
+	step := func(f func(*Library)) error {
+		mu.Lock()
+		defer mu.Unlock()
+		l, err := load()
+		if err != nil {
+			return err
+		}
+		if memo != nil && mu.held == heldAt+1 {
+			l.hashes, l.untouched = memo.hashes, memo.untouched
+		}
+		f(l)
+		if err := l.save(); err != nil {
+			return err
+		}
+		memo, heldAt = l, mu.held
+		return nil
+	}
+	// the agents are found under the lock, as a change finds them
+	if err := step(func(*Library) { all = Targets() }); err != nil {
+		return nil, err
+	}
+	for _, f := range syncSteps(all, b, res) {
+		if err := step(f); err != nil {
+			return nil, err
+		}
+	}
+	res.Backup = b.dir
+	if b.dir != "" {
+		mu.Lock()
+		pruneBackups()
+		mu.Unlock()
+	}
+	return res, nil
 }
 
 func (l *Library) syncMCP(t *Target, b *backups, res *Result) {

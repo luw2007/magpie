@@ -55,19 +55,30 @@ func MergeExternal(native []Session, external []ExternalSession) []Session {
 	return out
 }
 
-// desktopExternalTitles are the names Desktop saved for the Claude Desktop
-// sessions among external (DesktopTitles), by Agent|ID. They come before
-// the gateway's recorded first prompt.
+// desktopExternalTitles are the names an app saved for its sessions among
+// external, by Agent|ID: Claude Desktop's (DesktopTitles), PI-Desktop's
+// (PIDesktopTitles, #1967). They come before the gateway's recorded first
+// prompt.
 func desktopExternalTitles(external []ExternalSession) map[string]string {
-	var ids []string
+	var ids, pi []string
 	for _, e := range external {
 		if e.Agent == "claude-desktop" {
 			ids = append(ids, e.ID)
+		} else if isPIDesktop(e.Agent) {
+			pi = append(pi, e.ID)
 		}
 	}
 	out := map[string]string{}
 	for id, name := range DesktopTitles(ids) {
 		out["claude-desktop|"+id] = name
+	}
+	if len(pi) > 0 {
+		names := PIDesktopTitles(pi)
+		for _, e := range external {
+			if name := names[e.ID]; name != "" && isPIDesktop(e.Agent) {
+				out[e.Agent+"|"+e.ID] = name
+			}
+		}
 	}
 	return out
 }

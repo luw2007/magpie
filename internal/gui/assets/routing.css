@@ -193,15 +193,21 @@
    few accounts'. Only where the requests' column still keeps each request
    on one line (wider than 760px, see below): narrower, one column of
    one-line requests reads better than two with each request on three
-   (#860, huoranxuanyuan). Where the page is 1150px wide or more */
-:where(.rt-more.min1150) .rt-cols { grid-template-columns: minmax(0, 1fr) clamp(280px, 32%, 400px); }
+   (#860, huoranxuanyuan). Where the page is 1150px wide or more. Kept to
+   28%, no more than 360px: in a page kept to 1200px the accounts had room
+   to spare while the requests' models were cut (#1926, hibaliqya-yonma) */
+:where(.rt-more.min1150) .rt-cols { grid-template-columns: minmax(0, 1fr) clamp(260px, 28%, 360px); }
 :where(.rt-more.min1150) .rt-cols:not(.solo) .rt-col:last-child { display: flex; flex-direction: column; }
 :where(.rt-more.min1150) .rt-cols:not(.solo) .rt-acts { flex: 1 1 auto; height: 0; min-height: 216px; overflow-y: auto; overscroll-behavior: contain; }
 /* each column sized by its own width: a request's row lays itself out by
    the list's width, not the page's (#273: in two columns of ~470px the
    rows kept to one line, and the reasoning was drawn over the numbers) */
 .rt-col { min-width: 0; }
-.rt-reqs { padding: 4px; overflow-y: auto; display: grid; align-content: start; grid-template-columns: auto fit-content(36%) minmax(0, 1fr) auto; }
+/* the model that answered keeps room of its own (at least 14em, or 30%
+   of a narrower list) and the metrics wrap in theirs, up to 40%: an auto
+   column took the widest row's metrics for every row, and the model went
+   to "· hi…" (#1926, hibaliqya-yonma) */
+.rt-reqs { padding: 4px; overflow-y: auto; display: grid; align-content: start; grid-template-columns: auto fit-content(32%) minmax(min(14em, 30%), 1fr) fit-content(40%); }
 .rt-req { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; column-gap: 12px; padding: 6px 8px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: none; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
 .rt-req:hover { background: var(--card-2); }
 .rt-req[aria-pressed="true"] { background: var(--card-2); border-color: var(--line); color: var(--fg); }
@@ -211,7 +217,16 @@
 .rt-req .asked .ic, .rt-req .asked .ic img, .rt-req .asked .ic svg { width: 14px; height: 14px; flex: none; }
 .rt-req .m, .rt-req .to span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rt-req .to { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--fg); }
-.rt-req .to .said { flex-shrink: 100000; }
+.rt-req .to .said { flex-shrink: 100000; min-width: min(9em, 60%); }
+.rt-req .to .said.split { display: flex; }
+.rt-req .to .said .who { flex: 0 1000 auto; min-width: 2.5em; }
+.rt-req .to .said .mdl { flex: none; max-width: calc(100% - 2.5em); white-space: pre; }
+/* on a phone the account keeps a few letters, not a sliver of one (40px,
+   where phone-rows.test.cjs calls a text cut to a sliver) */
+@media (max-width: 600px) {
+  .rt-req .to .said .who { min-width: 40px; }
+  .rt-req .to .said .mdl { max-width: calc(100% - 40px); }
+}
 .rt-req .to i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
 .rt-req.moved .to i { background: var(--accent); }
 .rt-req.bad .to { color: var(--red); }
@@ -395,6 +410,9 @@ button.rt-session { cursor: pointer; }
 /* a pattern the group finds models by, and how many it matches now */
 .rt-group .mem.pat code, .rt-pats code { font: var(--code-style, normal) 500 11px/1.5 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--fg-2); }
 .rt-group .mem.pat.none, .rt-pats .fbrow.none small { color: var(--amber); }
+/* a classifier that failed (#1929): a dot, never a stripe */
+.rt-group .mem.clsfail { color: var(--amber); }
+.rt-group .mem.clsfail .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
 .rt-patadd { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .rt-patadd input { flex: 1; min-width: 0; }
 .rt-group .tags { display: flex; gap: 4px; flex: none; }
@@ -503,6 +521,9 @@ button.rt-session { cursor: pointer; }
 .rt-gedit .fbrow.muted > :not(.rt-mon):not(.text) { opacity: .45; }
 /* a member's own reasoning, beside its Up and Remove */
 .rt-gedit .fbrow .rt-fixed { height: 24px; padding: 0 9px; font-size: 11.5px; flex: none; }
+/* a member's weight under By weight (#1910), edited in place */
+.rt-gedit .fbrow .rt-weight { font-variant-numeric: tabular-nums; }
+.rt-gedit .fbrow .rt-weight-in { width: 64px; flex: none; height: 24px; font-size: 12px; padding: 0 6px; }
 /* a group a member of a group is: it takes no reasoning of its own (its
    models reason as it says, provider.SaveGroup), so its chip names the group
    it follows and opens that group's card instead. It takes the room it needs
@@ -672,7 +693,7 @@ button.rt-session { cursor: pointer; }
 .pr-req .meta { justify-self: end; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 @media (prefers-reduced-motion: reduce) { .pr-req.wait .pr-to > i, .ps-dst.wait > i, .ps-hub.busy, .ps-dot.wait { animation: none; } }
 @supports not (grid-template-columns: subgrid) {
-  .rt-req { grid-template-columns: auto fit-content(36%) minmax(0, 1fr) auto; }
+  .rt-req { grid-template-columns: auto fit-content(32%) minmax(min(14em, 30%), 1fr) fit-content(40%); }
   @media (max-width: 700px) {
     .rt-reqs { grid-template-columns: auto minmax(0, 1fr); }
     .rt-req { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; }

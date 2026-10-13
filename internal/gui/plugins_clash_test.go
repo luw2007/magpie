@@ -71,8 +71,17 @@ func TestPluginsClashRows(t *testing.T) {
 		}
 		return out
 	}
+	// the rows' provider names are the plugins' as last asked (Cached),
+	// asked again in the background once the plugins change: the list as
+	// it stands once that answer is in
+	answered := func(path string, body any) map[string]row {
+		t.Helper()
+		do(path, body)
+		plugin.Refreshed()
+		return do("/api/plugins", nil)
+	}
 	do("/api/plugins/add", map[string]string{"spec": mine})
-	rows := do("/api/plugins/add", map[string]string{"spec": theirs})
+	rows := answered("/api/plugins/add", map[string]string{"spec": theirs})
 	check := func(rows map[string]row, by string) {
 		t.Helper()
 		for spec, other := range map[string]string{mine: theirs, theirs: mine} {
@@ -86,10 +95,10 @@ func TestPluginsClashRows(t *testing.T) {
 		}
 	}
 	check(rows, theirs)
-	check(do("/api/plugins/prefer", map[string]string{"spec": mine, "provider": "fakeco"}), mine)
+	check(answered("/api/plugins/prefer", map[string]string{"spec": mine, "provider": "fakeco"}), mine)
 	check(do("/api/plugins", nil), mine)
 	// removing theirs leaves mine alone, and no clash to say
-	rows = do("/api/plugins/remove", map[string]string{"spec": theirs})
+	rows = answered("/api/plugins/remove", map[string]string{"spec": theirs})
 	if r, ok := rows[mine]; !ok || len(r.Clashes) != 0 || len(r.Providers) != 1 || len(rows) != 1 {
 		t.Fatalf("after removing theirs, rows = %+v", rows)
 	}

@@ -64,6 +64,9 @@ async function scrolled(page, selector) {
 async function scrollMenu(page, selector, gesture) {
   const box = page.locator(selector);
   assert(await box.evaluate(e => e.scrollHeight > e.clientHeight), "the fixture must overflow");
+  // the menu's opening come to rest first: a click on its scrollbar's track
+  // while it still moved landed nowhere, now and then (both engines)
+  await page.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))));
   const r = await box.boundingBox();
   if (gesture === "wheel") {
     await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);

@@ -48,6 +48,7 @@
     <a href="/docs/zh/plugins">插件开发</a>
     <a class="toc-only" href="/docs/zh/remote">远程 magpie</a>
     <a class="toc-only" href="/docs/zh/docker">Docker</a>
+    <a class="toc-only" href="/docs/zh/privacy">隐私</a>
     <a href="/docs/zh/import">Add to magpie</a>
     <a href="/docs/zh/integrate">接入应用</a>
     <a href="https://github.com/yetone/magpie-releases/releases">版本发布</a>
@@ -175,6 +176,7 @@
       <tr><td>轮流 <code>rotate</code></td><td>会话的每一轮交给下一个成员的账号或 Key，均摊负载。</td></tr>
       <tr><td>最少使用 <code>usage</code></td><td>剩余额度最多的账号或 Key 排第一。</td></tr>
       <tr><td>重置前用完 <code>pace</code></td><td>每周剩余额度除以距重置的小时数，最高的账号排第一——重置时损失最多的那个——少让成员的周额度到重置时作废；只有 5 小时额度、没有周额度的账号（如 Claude Enterprise）按 5 小时窗口的剩余额度除以距它重置的小时数算，所以几乎总排第一。用到 90% 以上的等其他账号都答不了时才用。Key 按最近发给它的 token 数排。</td></tr>
+      <tr><td>按权重 <code>weight</code></td><td>每个模型按群组编辑器里它旁边设的权重（1 到 1000，不设为 1）分得请求：权重 3 的模型每拿三个，权重 1 的拿一个，均匀穿插而不是成批。每个模型按它自己提供方的路由用自己的账号或 Key，群组里的群组算一个成员。失败后歇着的那个退出这一轮；一个失败时，下一个模型接上。</td></tr>
     </table></div>
     <div class="table-wrap"><table>
       <tr><th>会话保持</th><th>会话在回答过它的账号或 Key 上留多久</th></tr>
@@ -217,6 +219,7 @@
       <pre id="ex-group">magpie groups                        <span class="c"># 先列你建的，再列 magpie 自动发现的</span>
 magpie group add <span class="s">"Opus anywhere"</span> models=claude/claude-opus-5-5,copilot/claude-opus-5.5 routing=order stays=session
 magpie group set opus-anywhere models+=openrouter/anthropic/claude-opus-5.5
+magpie group set opus-anywhere routing=weight weight=claude/claude-opus-5-5=3  <span class="c"># 每四个请求有三个给它</span>
 magpie group rule add opus-anywhere use=openrouter/anthropic/claude-opus-5.5 tokens=150k  <span class="c"># 长对话优先发给它</span>
 magpie group rule add opus-anywhere use=copilot/claude-opus-5.5 intent=<span class="s">"一个简单问题"</span> classifier=groq/llama-3.1-8b-instant
 magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash compact  <span class="c"># /compact 的总结交给便宜的模型</span>
@@ -264,7 +267,7 @@ magpie claude group/opus-anywhere    <span class="c"># 使用它</span></pre>
     <h3>需要自己 export <code>OPENAI_BASE_URL</code> 或 <code>ANTHROPIC_BASE_URL</code> 吗？</h3>
     <p>不需要。对 magpie 列出的 Agent，它会把网关地址和令牌直接写进 Agent 自己的配置文件。这些环境变量只用于 magpie 不管理的、带 base URL 设置的其他工具：<span class="ui">网关</span> 标签页的 <span class="ui">接入</span> 部分有一键复制和示例代码。</p>
     <h3>magpie 必须一直开着吗？</h3>
-    <p>通过 magpie 使用的模型需要：网关随应用一起运行。关掉窗口后它仍留在菜单栏或托盘里；<code>magpie tray</code> 只启动图标（可以放进登录项），<code>magpie serve</code> 只运行网关。Agent 用它自己的模型和自己的登录时，不经过 magpie。</p>
+    <p>通过 magpie 使用的模型需要：网关随应用一起运行。关掉窗口后它仍留在菜单栏或托盘里；<code>magpie tray</code> 只启动图标（可以放进登录项），<code>magpie serve</code> 只运行网关，<code>magpie daemon install</code> 把它装成服务（Linux 上是 systemd，Mac 上是 launchd），登录或开机就启动，不需要窗口。Agent 用它自己的模型和自己的登录时，不经过 magpie。</p>
     <h3>怎么把 Agent 恢复原样？</h3>
     <p>在选择列表里选 Agent 自带的模型，或运行 <code>magpie &lt;agent&gt; default</code>。magpie 会删掉它写入的内容，并恢复被它替换掉的值，比如你原来的 <code>ANTHROPIC_BASE_URL</code>。</p>
     <h3>换了模型，Agent 还在用旧的？</h3>
@@ -275,7 +278,7 @@ magpie claude group/opus-anywhere    <span class="c"># 使用它</span></pre>
     <p>给安装脚本和 <code>magpie update</code> 加代理：<code>curl -fsSL https://usemagpie.ai/install.sh | sh -s -- --proxy http://127.0.0.1:7890</code>，或 <code>magpie update --proxy socks5://127.0.0.1:1080</code>（支持 http、https、socks5、socks5h；环境变量 <code>HTTPS_PROXY</code>、<code>ALL_PROXY</code> 同样生效）。<code>--mirror &lt;前缀&gt;</code> 从你指定的 GitHub 下载镜像取发布文件，即 <code>&lt;前缀&gt;https://github.com/…</code>；<code>magpie update mirror &lt;前缀&gt;</code> 让之后每次更新（包括应用自己的更新）都用它，<code>magpie update mirror off</code> 取消。不指定就不用任何镜像；文件的 SHA-256 始终来自 usemagpie.ai，而不是镜像，镜像改过的文件会被拒绝安装。应用自己的更新走 <span class="ui">设置</span> → <span class="ui">代理</span>。</p>
 
     <h3 id="privacy">magpie 会发送我的哪些信息？</h3>
-    <p>你的提示词、回复、密钥和账号只发给你用的供应商，中间没有 magpie 自己的服务器。正式发布的 magpie 每天告诉我们一次它在用，好让我们知道有多少人在用、该先照顾哪些：本机随机生成的 ID、magpie 版本和系统，以及用了哪些 agent、供应商和模型，只用 magpie 自己的 ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）和各自的数量。你自己添加的供应商及其上的模型只记作 <code>custom</code>。添加供应商页里排在最前的合作伙伴，每天被展示、打开和添加的次数也一并发送，只有次数。不发送名称、Base URL、账号、密钥、提示词和用量。<span class="ui">设置</span> → <span class="ui">隐私</span> → <span class="ui">分享我用的 agent、provider 和模型</span> 可以去掉 agent、供应商、模型和合作伙伴次数这部分；<span class="ui">计入用户数</span>、<code>DO_NOT_TRACK=1</code> 或 <code>MAGPIE_NO_STATS=1</code> 全部关闭。从源码构建的版本从不发送。合作伙伴的官网和「获取 Key」链接经 <code>usemagpie.ai/go/…</code> 跳转，跳转前记一次点击（哪个合作伙伴、哪个链接、哪个国家），usemagpie.ai 也会统计合作伙伴列表被拉取的次数。这部分是服务器本身看到的，和任何网站统计访问一样，不受上面的设置影响；不记录 ID、IP 和账号。插件、导入链接和库里的图标经 <code>usemagpie.ai/api/icon</code> 获取，图标所在的服务器只看到 Cloudflare 的地址，看不到你的 IP；这台服务器只转发图片，不计数也不记录。详见<a href="https://github.com/yetone/magpie/blob/main/docs/reference.md#counting-users">参考文档</a>。</p>
+    <p>你的提示词、回复、密钥和账号只发给你用的供应商，中间没有 magpie 自己的服务器。正式发布的 magpie 每天告诉我们一次它在用，好让我们知道有多少人在用、该先照顾哪些：本机随机生成的 ID、magpie 版本和系统，以及用了哪些 agent、供应商和模型，只用 magpie 自己的 ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）和各自的数量。你自己添加的供应商及其上的模型只记作 <code>custom</code>。添加供应商页里排在最前的合作伙伴，每天被展示、打开和添加的次数也一并发送，只有次数。不发送名称、Base URL、账号、密钥、提示词和用量。<span class="ui">设置</span> → <span class="ui">隐私</span> → <span class="ui">分享我用的 agent、provider 和模型</span> 可以去掉 agent、供应商、模型和合作伙伴次数这部分；<span class="ui">计入用户数</span>、<code>DO_NOT_TRACK=1</code> 或 <code>MAGPIE_NO_STATS=1</code> 全部关闭。从源码构建的版本从不发送。合作伙伴的官网和「获取 Key」链接经 <code>usemagpie.ai/go/…</code> 跳转，跳转前记一次点击（哪个合作伙伴、哪个链接、哪个国家），usemagpie.ai 也会统计合作伙伴列表被拉取的次数。这部分是服务器本身看到的，和任何网站统计访问一样，不受上面的设置影响；不记录 ID、IP 和账号。插件、导入链接和库里的图标经 <code>usemagpie.ai/api/icon</code> 获取，图标所在的服务器只看到 Cloudflare 的地址，看不到你的 IP；这台服务器只转发图片，不计数也不记录。<a href="/docs/zh/privacy">隐私页</a>列出了 magpie 自己发出的所有内容，附每日计数的示例、它在本机留下的文件和每个开关。</p>
 
     <h3 id="proxy-loopback">Agent 报 502 或连不上，magpie 的路由标签页里却什么都没有？</h3>
     <p>代理软件（Surge、Clash、mihomo 等，开了系统代理、TUN 或增强模式）把 Agent 发往 <code>http://127.0.0.1:3425</code> 的请求接走、转去了别处，请求根本没到 magpie。只在跳过列表（<code>skip-proxy</code>、「绕过」）里写 127.0.0.1 不一定够：有些 Agent（比如 Codex）照样会走代理。在代理软件里加两条本地地址直连的规则，放在其他规则前面：</p>
@@ -298,6 +301,7 @@ IP-CIDR6,::1/128,DIRECT,no-resolve</pre>
     <a href="/docs/zh/plugins">插件开发</a>
     <a href="/docs/zh/remote">远程 magpie</a>
     <a href="/docs/zh/docker">Docker</a>
+    <a href="/docs/zh/privacy">隐私</a>
     <a href="/docs/zh/import">Add to magpie</a>
     <a href="/docs/zh/integrate">接入应用</a>
     <a href="https://github.com/yetone/magpie">GitHub</a>

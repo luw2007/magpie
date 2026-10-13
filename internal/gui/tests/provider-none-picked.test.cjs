@@ -9,8 +9,11 @@
 // again as none (#1818: it was saved as no picks, and the card, the gateway
 // and the auto groups all served 17). Kept for routing groups alone with
 // none picked, the models the groups use are drawn dashed too (#1818: drawn
-// as none while the groups used them). In every language, Chromium and
-// WebKit.
+// as none while the groups used them). What it serves is said by a
+// two-way control, Vendor's list or Picked only, and the last pick
+// unpicked leaves none, as Select none does, not the vendor's list again
+// (#1831, kchen0x). In every language, Chromium and WebKit, at 1100 and
+// 420 wide.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -52,23 +55,24 @@ function serve(lang, saves) {
 // hint after Select none; groupsWhy, groupsHint: those kept for routing
 // groups alone
 const words = {
-  en: { save: "Save", selectNone: "Select none", why: "Agents see it: none are picked", hint: "or Select none to use none of them while its balance and usage still show", none: "None selected: no agent or routing group uses its models", groupsWhy: "Routing groups use it: none are picked", groupsHint: "the routing groups they are in use the vendor's list" },
-  zh: { save: "保存", selectNone: "全不选", why: "Agent 能看到它：没有勾选任何模型时", hint: "点「全不选」则不使用任何模型，余额和用量照常显示", none: "全不选：Agent 和路由分组都不使用它的模型", groupsWhy: "路由分组会用到它", groupsHint: "它们所在的路由分组使用供应商的列表" },
-  "zh-TW": { save: "儲存", selectNone: "全不選", why: "Agent 能看到它：沒有勾選任何模型時", hint: "點「全不選」則不使用任何模型，餘額和用量照常顯示", none: "全不選：Agent 和路由分組都不使用它的模型", groupsWhy: "路由分組會用到它", groupsHint: "它們所在的路由分組使用供應商的列表" },
-  ja: { save: "保存", selectNone: "選択をすべて解除", why: "エージェントに表示されます：何も選択されていない", hint: "「選択をすべて解除」でどれも使わず", none: "選択なし：エージェントもルーティンググループも", groupsWhy: "ルーティンググループが使います", groupsHint: "所属するルーティンググループがベンダーのリスト" },
-  de: { save: "Speichern", selectNone: "Keine auswählen", why: "Agenten sehen es: Nichts ist gewählt", hint: "„Keine auswählen“, um keines zu nutzen", none: "Keine ausgewählt: Weder Agenten noch Weiterleitungsgruppen", groupsWhy: "Weiterleitungsgruppen nutzen es", groupsHint: "Die Weiterleitungsgruppen, in denen sie sind, nutzen die Liste des Anbieters" },
+  en: { save: "Save", selectNone: "Select none", list: "Vendor's list", picked: "Picked only", why: "Agents see it: none are picked", hint: "Vendor's list: agents see up to 24 of its models", none: "None selected: no agent or routing group uses its models", groupsWhy: "Routing groups use it: none are picked", groupsHint: "the routing groups its models are in use up to 24" },
+  zh: { save: "保存", selectNone: "全不选", list: "供应商列表", picked: "仅所选", why: "Agent 能看到它：没有勾选任何模型时", hint: "供应商列表：Agent 看到最多 24 个模型", none: "全不选：Agent 和路由分组都不使用它的模型", groupsWhy: "路由分组会用到它", groupsHint: "模型所在的路由分组最多使用其中 24 个" },
+  "zh-TW": { save: "儲存", selectNone: "全不選", list: "供應商列表", picked: "僅所選", why: "Agent 能看到它：沒有勾選任何模型時", hint: "供應商列表：Agent 看到最多 24 個模型", none: "全不選：Agent 和路由分組都不使用它的模型", groupsWhy: "路由分組會用到它", groupsHint: "模型所在的路由分組最多使用其中 24 個" },
+  ja: { save: "保存", selectNone: "選択をすべて解除", list: "ベンダーのリスト", picked: "選択したもののみ", why: "エージェントに表示されます：何も選択されていない", hint: "エージェントにはモデルが最大 24 件", none: "選択なし：エージェントもルーティンググループも", groupsWhy: "ルーティンググループが使います", groupsHint: "ルーティンググループが最大 24 件" },
+  de: { save: "Speichern", selectNone: "Keine auswählen", list: "Liste des Anbieters", picked: "Nur gewählte", why: "Agenten sehen es: Nichts ist gewählt", hint: "Agenten sehen bis zu 24 seiner Modelle", none: "Keine ausgewählt: Weder Agenten noch Weiterleitungsgruppen", groupsWhy: "Weiterleitungsgruppen nutzen es", groupsHint: "Weiterleitungsgruppen seiner Modelle nutzen bis zu 24" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of Object.keys(words)) {
-    const w = words[lang];
-    test(`${engine} ${lang}: with none picked, the models agents are served are drawn as served`, async (t) => {
+   const w = words[lang];
+   for (const width of [1100, 420]) {
+    test(`${engine} ${lang} ${width}: with none picked, the models agents are served are drawn as served`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
-      const page = await (await browser.newContext({ viewport: { width: 900, height: 760 }, reducedMotion: "reduce" })).newPage();
+      const page = await (await browser.newContext({ viewport: { width, height: 760 }, reducedMotion: "reduce" })).newPage();
       t.after(async () => {
         if (process.env.ARTIFACT_DIR) {
           await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
-          await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-provider-none-picked.png`) });
+          await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-${width}-provider-none-picked.png`) });
         }
         await browser.close();
       });
@@ -83,6 +87,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const chip = (id) => editor.locator(".mchips .mchip", { hasText: id });
       await chip("glm-5.2").waitFor();
       const cls = (id) => chip(id).evaluate((c) => [c.classList.contains("on"), c.classList.contains("auto")]);
+      // which of Vendor's list / Picked only is on, and the control fits
+      const serves = async () => {
+        const seg = editor.locator(".mserves");
+        const box = await seg.boundingBox(), ed = await editor.boundingBox();
+        assert.ok(box && box.x >= ed.x - 1 && box.x + box.width <= ed.x + ed.width + 1, "the control fits the editor");
+        return seg.locator(".opt.on").innerText();
+      };
 
       // opened with none picked, both are drawn as served, not as picked
       // (#614: they were drawn ticked, and the next Save made them picks)
@@ -92,12 +103,29 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
       assert.equal(await chip("glm-5.2").evaluate((c) => getComputedStyle(c).borderTopStyle), "dashed");
       await editor.getByText(w.hint, { exact: false }).waitFor();
+      assert.equal(await serves(), w.list);
 
       // a served one clicked is picked, alone (#681)
       await chip("glm-5.2").click();
       assert.deepEqual(await cls("glm-5.2"), [true, false]);
       assert.deepEqual(await cls("glm-5.3-free"), [false, false]);
       assert.equal(await editor.getByText(w.hint, { exact: false }).count(), 0);
+      assert.equal(await serves(), w.picked);
+      // and unpicked, it leaves none picked, which serves none, drawn as
+      // Select none draws it (#1831: it went back to the vendor's list)
+      await chip("glm-5.2").click();
+      for (const id of ["glm-5.3-free", "glm-5.2"]) assert.deepEqual(await cls(id), [false, false], id + " after the last pick unpicked");
+      await editor.getByText(w.none, { exact: false }).waitFor();
+      assert.equal(await serves(), w.picked);
+      // Vendor's list goes back to it
+      await editor.locator(".mserves .opt", { hasText: w.list }).click();
+      for (const id of ["glm-5.3-free", "glm-5.2"]) assert.deepEqual(await cls(id), [false, true], id + " vendor's list again");
+      await editor.getByText(w.hint, { exact: false }).waitFor();
+      assert.equal(await serves(), w.list);
+      // Picked only with none picked is none
+      await editor.locator(".mserves .opt", { hasText: w.picked }).click();
+      await editor.getByText(w.none, { exact: false }).waitFor();
+      await chip("glm-5.2").click();
       // and another clicked joins it
       await chip("glm-5.3-free").click();
       assert.deepEqual(await cls("glm-5.2"), [true, false]);
@@ -126,6 +154,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(errors, []);
     });
 
+   }
     test(`${engine} ${lang}: kept for routing groups with none picked, the models the groups use are drawn as served`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       t.after(() => browser.close());

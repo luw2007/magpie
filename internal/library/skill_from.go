@@ -30,7 +30,7 @@ func (tr *tracer) repoOf(s *Skill) string {
 		return o.Repo
 	}
 	if s.From != "" {
-		return s.From
+		return fromKey(s.From)
 	}
 	dir := skillDir(s.Name)
 	if !linked(dir) {
@@ -119,6 +119,19 @@ func wellKnownBase(base, src string) string {
 		}
 	}
 	return remoteRepo(src)
+}
+
+// fromKey is the group a skill's From names. A skill brought in from
+// ~/.agents/skills keeps the lock's key as it was then (ImportSkills), and
+// before well-known kits were grouped by their base that was each skill's
+// own sourceUrl, "docs.fish.audio/.well-known/agent-skills/fish-audio-api/
+// skill.md": read as the base before /.well-known/, so a kit brought in
+// then is one group as the lock now says (#1862, WardLu on v0.1.1223).
+func fromKey(from string) string {
+	if before, _, ok := strings.Cut(from, "/.well-known/"); ok && before != "" {
+		return before
+	}
+	return from
 }
 
 // siteOf reads a web address as host/path, or the host alone, with no

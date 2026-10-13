@@ -159,6 +159,10 @@ func TestCodexPausedOwnAccountPassedOver(t *testing.T) {
 	if code != 200 || strings.Join(tried, ",") != "acct-2" {
 		t.Fatalf("%d %s tried %v", code, body, tried)
 	}
+	// the account a model's note names as first (#1957) is the one tried
+	if got := provider.FirstLogin("codex"); got != "spare@example.com" {
+		t.Fatalf("first %q", got)
+	}
 	// the other off: the paused one is all there is, and is used
 	if err := provider.SetLoginOn("codex", "spare@example.com", false); err != nil {
 		t.Fatal(err)
@@ -799,5 +803,49 @@ func TestCodexPoolKeepsUltrafast(t *testing.T) {
 		if tiers[0] != want {
 			t.Errorf("%s: backend asked for %v", tier, tiers[0])
 		}
+	}
+}
+
+// Codex's auto-review of an approval (x-openai-subagent: guardian, on
+// codex-auto-review) while its own model calls go through magpie's
+// account failover: the account Codex is signed in to paused, the other
+// on with a list of models of its own, picked from the provider's, which
+// never shows codex-auto-review. The review is served by that account
+// as the model it asked for, not refused as "every account barred"
+// (#1959, parkavenue9639); the list still holds Codex's other models.
+func TestCodexReviewPassesAnAccountsModelList(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	var tried, models []string
+	usedUp(t, &tried, &models)
+	if err := provider.SetLoginOn("codex", "me@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetAccountModels("codex", "spare@example.com", []string{"gpt-6.1-sol", "gpt-5.6-luna"}); err != nil {
+		t.Fatal(err)
+	}
+	post := func(model, kind string) (int, string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"`+model+`","stream":true,"input":"ping"}`))
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		req.Header.Set("chatgpt-account-id", "acct-1")
+		if kind != "" {
+			req.Header.Set("x-openai-subagent", kind)
+		}
+		New().Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	code, body := post("codex-auto-review", "guardian")
+	if code != 200 || strings.Join(tried, ",") != "acct-2" || strings.Join(models, ",") != "codex-auto-review" {
+		t.Fatalf("review: %d %s tried %v models %v", code, body, tried, models)
+	}
+	// a model the list leaves out is still refused, not sent to it
+	tried, models = nil, nil
+	if code, body := post("gpt-5.5", ""); code != 403 || len(tried) != 0 {
+		t.Fatalf("a model the list leaves out: %d %s tried %v", code, body, tried)
+	}
+	// one it names is served by it
+	tried, models = nil, nil
+	if code, body := post("gpt-5.6-luna", ""); code != 200 || strings.Join(tried, ",") != "acct-2" {
+		t.Fatalf("a model the list names: %d %s tried %v", code, body, tried)
 	}
 }

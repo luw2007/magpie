@@ -418,14 +418,26 @@ var refreshing sync.WaitGroup
 // host left running: for tests that watch the providers' list on disk.
 func Refreshed() { refreshing.Wait() }
 
-// Told waits for the hooks told of a change (OnChange) to end: for tests,
-// so that a change one test made is not told in the next.
+// Told waits for the hooks told of a change or a sign-in (OnChange,
+// OnSignIn) to end: for tests, so that a change one test made is not told
+// in the next, nor written into its folder as it goes.
 func Told() {
 	telling.Lock()
 	for telling.n > 0 {
 		telling.Wait()
 	}
 	telling.Unlock()
+}
+
+// Answered is whether what Cached gives now is the plugins' own answer,
+// rather than what was kept from before they were last asked. A page that
+// would otherwise read "signs in to nothing" out of an empty list can say
+// so only when this holds: an empty list before the answer arrives means
+// "not asked yet", not "none" (#1112).
+func Answered() bool {
+	provMu.Lock()
+	defer provMu.Unlock()
+	return provGood
 }
 
 // Settle waits for Cached's refreshes to end, stops the host, waits for
@@ -435,6 +447,12 @@ func Told() {
 // ask is bounded and the retries are few, so this waits a bounded time
 // even for a host that never answers.
 func Settle() {
+	refreshing.Wait()
+	Restart()
+	// what the host said of a sign-in is written before the folder goes
+	// (#1935); a hook that read the providers to know the account's
+	// started a host again, which goes too
+	Told()
 	refreshing.Wait()
 	Restart()
 	// and no host goes on finishing its calls in a folder going away
@@ -600,7 +618,7 @@ func SignedIn(provider string) bool {
 
 // Prompt is a question a sign-in method asks before it starts.
 type Prompt struct {
-	Type        string `json:"type"` // text, select
+	Type        string `json:"type"` // text, select, password (text typed unseen, #1982)
 	Key         string `json:"key"`
 	Message     string `json:"message"`
 	Placeholder string `json:"placeholder,omitempty"`

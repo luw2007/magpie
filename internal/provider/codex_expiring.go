@@ -205,7 +205,7 @@ func SpendExpiringCodexResets(ctx context.Context) {
 			if !stillExpiring(ctx, who) {
 				return ResetOutcome{}, nil
 			}
-			return UseCodexReset(ctx, who)
+			return useCodexReset(ctx, who, ResetUsedExpiring)
 		})
 		switch {
 		case err != nil:

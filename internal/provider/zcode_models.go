@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/proc"
 )
@@ -229,7 +230,7 @@ func zcodeRemoteBuiltin(ctx context.Context) (zcodeBuiltin, error) {
 // it ships with, and the one it last took, under ~/.zcode.
 var zcodeBuiltinFiles = func() []string {
 	home, _ := os.UserHomeDir()
-	fs, _ := filepath.Glob(filepath.Join(home, ".zcode", "v2", "runtime", "provider", "*", "*", "*", "zcode-builtin.json"))
+	fs, _ := filepath.Glob(filepath.Join(appdir.ZCodeDataIn(home), ".zcode", "v2", "runtime", "provider", "*", "*", "*", "zcode-builtin.json"))
 	if runtime.GOOS == "darwin" {
 		fs = append(fs, proc.SystemDirs("/Applications/ZCode.app/Contents/Resources/config/provider/zcode-builtin.json")...)
 	}

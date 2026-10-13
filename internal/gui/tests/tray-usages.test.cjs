@@ -112,10 +112,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const menu = page.locator(".proto-menu");
         await menu.waitFor();
         const items = menu.locator(".pm-item");
-        assert.deepEqual((await items.locator(".pm-name").allTextContents()).map((s) => s.trim()), [off, "Claude Code", "Codex", "Copilot"]);
-        assert.deepEqual(await items.evaluateAll((bs) => bs.map((b) => b.getAttribute("role"))),
+        // magpie's own two totals follow the cards (#1984, tray-totals.test.cjs)
+        const cards = (xs) => xs.slice(0, -2);
+        assert.deepEqual(cards((await items.locator(".pm-name").allTextContents()).map((s) => s.trim())), [off, "Claude Code", "Codex", "Copilot"]);
+        assert.deepEqual(cards(await items.evaluateAll((bs) => bs.map((b) => b.getAttribute("role")))),
           ["menuitemradio", "menuitemcheckbox", "menuitemcheckbox", "menuitemcheckbox"]);
-        const checked = () => items.evaluateAll((bs) => bs.map((b) => b.getAttribute("aria-checked")));
+        const checked = async () => cards(await items.evaluateAll((bs) => bs.map((b) => b.getAttribute("aria-checked"))));
         assert.deepEqual(await checked(), ["false", "false", "false", "true"]);
         // no coloured stripe down a ticked row's side
         assert.equal(await items.nth(3).evaluate((b) => getComputedStyle(b).borderLeftWidth), "0px");
@@ -209,13 +211,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const menu = page.locator(".proto-menu");
       await menu.waitFor();
       const items = menu.locator(".pm-item");
-      const names = (await items.locator(".pm-name").allTextContents()).map((s) => s.trim()).slice(1);
+      const names = (await items.locator(".pm-name").allTextContents()).map((s) => s.trim()).slice(1, -2); // magpie's own totals follow (#1984)
       assert.deepEqual(names, ["Codex", "Command Code", "SudoCode", "DeepSeek", "Kimi Code"], "each card once, by name");
 
       // ticking Command Code ticks that row alone, and saves it once
       await items.nth(2).click();
       const checked = await items.evaluateAll((bs) => bs.map((b) => b.getAttribute("aria-checked")));
-      assert.deepEqual(checked, ["false", "false", "true", "false", "false", "false"]);
+      assert.deepEqual(checked, ["false", "false", "true", "false", "false", "false", "false", "false"]);
       await page.keyboard.press("Escape");
       await menu.waitFor({ state: "detached" });
       for (let i = 0; i < 50 && !posts.length; i++) await page.waitForTimeout(50);

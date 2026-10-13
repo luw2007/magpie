@@ -89,7 +89,7 @@ func morphIn(at place) *Agent {
 		return 0
 	}
 	return &Agent{
-		ID: "morph", Name: "Mister Morph", Icon: "mistermorph-color", Aliases: []string{"mistermorph", "mister-morph"}, Spelled: prefixed,
+		ID: "morph", Name: "Mister Morph", Icon: "mistermorph-color", Aliases: []string{"mistermorph", "mister-morph"}, Spelled: prefixed, NoNames: true,
 		UA: []string{morphUA},
 		// no Bin: morph is other tools' name too; ~/.morph is made by its
 		// first run, `morph install` or the desktop app's setup

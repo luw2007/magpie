@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/library"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/profile"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
@@ -528,5 +530,66 @@ func TestSealDerivesOnce(t *testing.T) {
 	keysMu.Unlock()
 	if derivedNow != 1 {
 		t.Fatalf("derived %d keys for two backups under one passphrase, want 1", derivedNow)
+	}
+}
+
+// A backup carries the plugins from npm, which the other machine installs,
+// and names the subscriptions it brought the settings of with no account
+// there (yapechan on Discord: the import said providers were added, and
+// none showed).
+func TestRestorePluginsAndSignIn(t *testing.T) {
+	home(t)
+	if err := os.MkdirAll(settings.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(settings.Dir(), "plugins.json"), []byte(`{"plugins":[
+		{"spec":"@magpie-community/opencode-cursor-auth"},{"spec":"/Users/me/mine"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provider.Path(), []byte(`{"providers":[
+		{"id":"claude","models":["claude-opus-4-8"]},
+		{"id":"acme","name":"Acme","chat":"https://acme.example.invalid/v1","key":"sk-acme"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Collect(false, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Seal(b, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home(t) // another machine
+	old := addPlugins
+	t.Cleanup(func() { addPlugins = old })
+	var asked []string
+	addPlugins = func(_ context.Context, es []plugin.Entry) ([]string, map[string]error) {
+		for _, e := range es {
+			asked = append(asked, e.Spec)
+		}
+		return asked[:1], map[string]error{"github:x/y": errors.New("no such repository")}
+	}
+	got, err := Open(data, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Restore(got, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(asked, []string{"@magpie-community/opencode-cursor-auth"}) {
+		t.Fatalf("asked to install %v, want the npm plugin only", asked)
+	}
+	if !slices.Equal(r.SignIn, []string{"claude"}) || !slices.Equal(r.Plugins, asked) ||
+		r.PluginErrors["github:x/y"] != "no such repository" || !slices.Equal(r.NeedKey, []string{"Acme"}) {
+		t.Fatalf("result: %+v, want claude to sign in to, the plugin added, the failure said, acme to key", r)
+	}
+
+	// a backup from a magpie before plugins installs nothing
+	asked = nil
+	got.Plugins = nil
+	if _, err := Restore(got, All); err != nil || asked != nil {
+		t.Fatalf("an older backup asked to install %v (%v)", asked, err)
 	}
 }

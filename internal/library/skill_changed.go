@@ -45,7 +45,11 @@ type editMemo struct {
 // aside what Finder keeps in it: "" when it can't be read.
 func libraryHash(name string) string {
 	dir := skillDir(name)
-	at := changedAt(dir)
+	// a folder not wholly read has no time to remember its hash by
+	at, err := changedAt(dir)
+	if err != nil {
+		at = time.Time{}
+	}
 	edits.Lock()
 	m, ok := edits.m[dir]
 	edits.Unlock()
@@ -92,7 +96,16 @@ func (l *Library) editState(s *Skill, targets []*Target) (edited, known bool) {
 			continue
 		}
 		made, ok := copiedAt(p)
-		if !ok || !changedAt(p).After(made) {
+		if !ok {
+			continue
+		}
+		// a copy not wholly read can't be told unchanged; the sync keeps
+		// it in place, and an update keeps the library's version aside
+		at, err := changedAt(p)
+		if err != nil {
+			return false, false
+		}
+		if !at.After(made) {
 			continue
 		}
 		if !sameTree(p, lib) {

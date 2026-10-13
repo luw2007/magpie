@@ -85,16 +85,16 @@ func (s *Server) ownSearch(ctx context.Context, p provider.Provider, query strin
 	}
 	ctx, cancel := context.WithTimeout(context.WithValue(ctx, searchingKey{}, true), searchTimeout)
 	defer cancel()
-	return s.searchWith(ctx, p, searcherModel(p), query)
+	return s.searchWith(ctx, p, searcherModel(p), query, "")
 }
 
 // searchBy searches with one searcher: a Kimi Code plan by its search
 // service, any other by its model.
-func (s *Server) searchBy(ctx context.Context, p provider.Provider, model, query string) (string, []Hit, error) {
+func (s *Server) searchBy(ctx context.Context, p provider.Provider, model, query, effort string) (string, []Hit, error) {
 	if provider.KimiCodeSearch(p) != "" {
 		return s.kimiSearch(ctx, p, query)
 	}
-	return s.searchWith(ctx, p, model, query)
+	return s.searchWith(ctx, p, model, query, effort)
 }
 
 // kimiSearch asks a Kimi Code plan's search service.

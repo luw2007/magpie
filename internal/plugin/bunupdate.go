@@ -145,7 +145,7 @@ func bunReported(exe string) string {
 
 // bunLatest is Bun's newest release and when it was published (tests stub it).
 var bunLatest = func(ctx context.Context) (string, time.Time, error) {
-	b, err := getURL(ctx, "https://api.github.com/repos/oven-sh/bun/releases/latest", 4<<20)
+	b, err := getURL(ctx, githubAPI+"/repos/oven-sh/bun/releases/latest", 4<<20)
 	if err != nil {
 		return "", time.Time{}, err
 	}

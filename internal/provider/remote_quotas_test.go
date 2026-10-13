@@ -24,6 +24,10 @@ type fakePeer struct {
 	// nil is a magpie too old to answer it. limitAsks counts them.
 	limits    map[string]string
 	limitAsks int
+	// held is a remote that holds the key to a budget, models or
+	// accounts (#1981): it answers everything but the key's own limit
+	// with 403 gateway_key_held.
+	held bool
 }
 
 // peerCards are the cards the remote has, without its keys' own.
@@ -60,6 +64,11 @@ func (f *fakePeer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if f.status != 0 {
 		w.WriteHeader(f.status)
+		return
+	}
+	if f.held {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":{"message":"held","type":"permission_error","code":"` + KeyHeldCode + `"}}`))
 		return
 	}
 	switch r.Method + " " + r.URL.Path {
@@ -390,5 +399,71 @@ func TestRemoteKeyNames(t *testing.T) {
 	names, _ := remoteKeys(Provider{Key: "sk-magpie-1111111111", Keys: []KeyAccount{{Name: "a", Key: "sk-magpie-1111111111"}, {Name: "a", Key: "sk-magpie-2222222222"}, {Key: "sk-magpie-3333333333"}, {Name: "off", Key: "x", Off: true}}})
 	if len(names) != 3 || names[0] == names[1] || !strings.HasPrefix(names[0], "a · ") || names[2] != Mask("sk-magpie-3333333333") {
 		t.Errorf("%q", names)
+	}
+}
+
+// #1981: a remote magpie that holds this computer's key to a budget,
+// models or accounts tells it none of its accounts. The cards read before
+// the key was held go, and only the key's own card stays; a 403 for that
+// reason doesn't say the remote isn't shared.
+func TestRemoteMagpieHeldKeyShowsOnlyItsOwnCard(t *testing.T) {
+	peer := &fakePeer{
+		cards:  []SubscriptionQuota{{Provider: "codex", Name: "Codex", User: "boss@x.com", Kind: "subscription", Windows: []QuotaWindow{{Name: "5h", Used: 40}}}},
+		limits: map[string]string{"sk-magpie-office": `{"limited":true,"key":"laptop","limit":{"period":"day","reset":"2026-10-12T00:00:00Z","tokens":10,"tokenLimit":100,"tokensLeft":90}}`},
+	}
+	remoteQuotaHome(t, peer)
+	ctx := context.Background()
+	if cs := peerCards(RemoteCards(ctx)); len(cs) != 1 || cs[0].User != "boss@x.com" {
+		t.Fatalf("before the key is held: %+v", cs)
+	}
+	peer.Lock()
+	peer.held = true
+	peer.Unlock()
+	p, err := Find("office")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteCards(ctx, *p, true)
+	all := RemoteCards(ctx)
+	if cs := peerCards(all); len(cs) != 0 {
+		t.Errorf("a held key still shows the remote's accounts: %+v", cs)
+	}
+	for _, q := range all {
+		if strings.Contains(q.Error, "isn't shared") || strings.Contains(q.User, "boss") {
+			t.Errorf("held card: %+v", q)
+		}
+	}
+	if ks := keyCards(all); len(ks) != 1 {
+		t.Errorf("the key's own card: %+v", ks)
+	} else if k := ks[Mask(p.Key)]; k.GatewayKey == nil || !k.GatewayKey.Limited {
+		t.Errorf("the key's own card: %+v", ks)
+	}
+	// a read asked before the held one came back after it: not kept
+	keepRemoteCards(remoteCardsID(*p), time.Now().Add(-time.Hour), peer.cards, nil)
+	if cs := peerCards(RemoteCards(ctx)); len(cs) != 0 {
+		t.Errorf("a slow earlier read brought the cards back: %+v", cs)
+	}
+}
+
+// #1981: cards are kept by provider and key, so a key changed to another
+// doesn't show what the first key was told.
+func TestRemoteMagpieCardsKeptByKey(t *testing.T) {
+	peer := &fakePeer{cards: []SubscriptionQuota{{Provider: "codex", Name: "Codex", User: "boss@x.com", Kind: "subscription"}}}
+	remoteQuotaHome(t, peer)
+	ctx := context.Background()
+	if cs := peerCards(RemoteCards(ctx)); len(cs) != 1 {
+		t.Fatalf("first key: %+v", cs)
+	}
+	p, err := Find("office")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReplaceKey("office", p.KeyID, "sk-magpie-other"); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range RemoteCards(ctx) {
+		if q.User == "boss@x.com" {
+			t.Errorf("another key shows the first key's card: %+v", q)
+		}
 	}
 }

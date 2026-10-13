@@ -43,7 +43,9 @@ function server(lang, web, saved, posts) {
     const settings = () => ({ lang, theme: "light", usageAgentsHidden: saved.hidden });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:${web}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: settings(), fx: { rate: 7.2, at: new Date().toISOString() } });
+    // the clients magpie knows, curl among them, as /api/state lists them:
+    // the others it doesn't know can be counted as one of them (#1958)
+    if (url.pathname === "/api/state") return json({ agents: [], clients: [{ id: "pi", name: "Pi", icon: "pi" }, { id: "curl", name: "curl", icon: "curl" }], profiles: [], settings: settings(), fx: { rate: 7.2, at: new Date().toISOString() } });
     if (url.pathname === "/api/usage/arrange") {
       const body = JSON.parse(req.postData() || "{}");
       posts.push(body);
@@ -132,13 +134,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             await reader.inView(p, row("Go-http-client"));
             at = await top(p);
             await row("Go-http-client").click({ button: "right" });
-            await p.locator(".row-menu .rm-item").click();
+            await p.locator(".row-menu .rm-item", { hasText: w.hide }).click();
             await p.waitForFunction(() => !document.querySelector('#usageAgents .row.stat[data-id="Go-http-client"]'));
           } else {
             await reader.inView(p, row("Go-http-client"));
             at = await top(p);
             await row("Go-http-client").locator(".us-more").click();
-            await p.locator(".row-menu .rm-item").click();
+            await p.locator(".row-menu .rm-item", { hasText: w.hide }).click();
             await p.waitForFunction(() => !document.querySelector('#usageAgents .row.stat[data-id="Go-http-client"]'));
           }
           assert.deepEqual(saved.hidden, ["python-httpx", "curl", "Go-http-client"]);

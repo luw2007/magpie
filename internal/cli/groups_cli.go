@@ -3,7 +3,9 @@ package cli
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -34,6 +36,8 @@ const groupUsage = `usage:
                                           effort=agent (the agent's again), classifier=<provider/model>|group/<id>,
                                           pick=<model> (routing=manual, every request to that one of its models),
                                           fast=<m1>[,m2…] (the models sent in their vendor's fast mode; empty for none),
+                                          weight=<m1>=<n>[,m2=<n>…] (each model's share under routing=weight,
+                                          1 to 1000; a model not named keeps its own, 1 by default; empty for all 1),
                                           listed=no (its models leave the lists agents see, offered through the
                                           group alone; listed=yes lists them too again)
   magpie group pick <id> <model>          route the group manually, every request to that one of its models
@@ -85,6 +89,9 @@ const groupUsage = `usage:
            usage   the account or key with the most of its allowance left first
            pace    the account with the most of its week left per hour until it renews first, so less
                    of a week is lost at its reset
+           weight  each model takes its share by its weight (weight=): one weighing 3 three requests for
+                   every one a model weighing 1 takes, spread out; one resting leaves the round, the next
+                   model is the fallback, a group in it is one model, a model's keys go as its provider routes
            manual  only the model you pick (pick=, or click it on the group's card): the others and
                    the rules wait until you pick another or route it otherwise; no failover to them
            benchmark  DeepSWE IQ ≥ 80 and ≥ 20 samples at each member's model+effort,
@@ -109,6 +116,7 @@ const groupUsage = `usage:
        magpie group add Fast models=codex/gpt-5.6-luna:low,deepseek/deepseek-v4-flash,glm/glm-5.3-flash:high
        magpie group set fast models+=gcloud/gemini-3.8-flash:medium
        magpie group add my-free-pool models='openrouter/*:free,opencode-zen/*-free' routing=order
+       magpie group set opus-anywhere routing=weight weight=claude/claude-opus-5-5=3
        magpie group pick opus-anywhere copilot/claude-opus-5.5
        magpie claude group/opus-anywhere`
 
@@ -123,6 +131,7 @@ var routingNames = []struct {
 	{provider.Rotate, "rotate", []string{"in-turn", "round-robin"}},
 	{provider.LeastUsed, "usage", []string{"least-used"}},
 	{provider.Pace, "pace", []string{"weekly-pace"}},
+	{provider.Weighted, "weight", []string{"weighted", "by-weight", "weighted-round-robin", "wrr"}},
 	{provider.Manual, "manual", []string{"pick", "picked", "pinned"}},
 	{provider.Benchmark, "benchmark", []string{"fast"}},
 }
@@ -182,6 +191,35 @@ func staysName(v string) string {
 
 func splitList(v string) []string {
 	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
+}
+
+// splitIDs splits a list of model ids at commas, each trimmed: an id can
+// hold a space ("Opus 5.5" on a relay, #1976), which splitList would cut in
+// two. An item with a space in it that whole doesn't take (no model the
+// group can have) is split at its spaces, as such a list was before; with
+// whole nil, never.
+func splitIDs(v string, whole func(string) bool) []string {
+	var out []string
+	for _, id := range strings.Split(v, ",") {
+		if id = strings.TrimSpace(id); id == "" {
+			continue
+		}
+		if whole != nil && strings.ContainsFunc(id, unicode.IsSpace) && !whole(id) {
+			out = append(out, strings.Fields(id)...)
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// inGroup: whether v names one of members, as pickMember finds it
+func inGroup(members []string) func(string) bool {
+	return func(v string) bool {
+		v, _ = provider.MemberFast(v)
+		_, err := pickMember(members, v)
+		return err == nil
+	}
 }
 
 // memberResolver spells a model the user typed as the catalog's
@@ -327,7 +365,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 	members := func(v string) ([]string, error) {
 		var out []string
 		patterns = nil
-		for _, m := range splitList(v) {
+		for _, m := range splitIDs(v, func(m string) bool { _, err := resolve(m); return err == nil }) {
 			if provider.IsPattern(m) {
 				ps, err := provider.CleanPatterns([]string{m})
 				if err != nil {
@@ -385,7 +423,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 				}
 			}
 		case "models-", "members-", "model-":
-			for _, m := range splitList(v) {
+			for _, m := range splitIDs(v, inGroup(g.Members)) {
 				if provider.IsPattern(m) {
 					m = strings.TrimPrefix(strings.TrimSpace(m), "magpie/")
 					i := slices.Index(g.Match, m)
@@ -467,7 +505,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 			// the members sent in their vendor's fast mode, as they are in
 			// the group
 			g.Fast = nil
-			for _, m := range splitList(v) {
+			for _, m := range splitIDs(v, inGroup(g.Members)) {
 				m, _ = provider.MemberFast(m)
 				id, perr := pickMember(g.Members, m)
 				if perr != nil {
@@ -475,13 +513,38 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 				}
 				g.Fast = append(g.Fast, id)
 			}
+		case "weight", "weights":
+			// each member's share when the group routes by weight (#1910):
+			// those named, the rest kept; empty for every one 1 again
+			if strings.TrimSpace(v) == "" {
+				g.Weights = nil
+			}
+			for _, mw := range splitIDs(v, func(mw string) bool {
+				at := strings.LastIndex(mw, "=")
+				return at > 0 && inGroup(g.Members)(mw[:at])
+			}) {
+				at := strings.LastIndex(mw, "=")
+				if at < 0 {
+					return fmt.Errorf("weight=<model>=<n>, as weight=%s=3, not %q", mw, mw)
+				}
+				n, aerr := strconv.Atoi(strings.TrimSpace(mw[at+1:]))
+				if aerr != nil || n < 1 || n > provider.MaxKeyWeight {
+					return fmt.Errorf("%s: a model's weight is 1 to %d", mw, provider.MaxKeyWeight)
+				}
+				m, _ := provider.MemberFast(mw[:at])
+				id, perr := pickMember(g.Members, m)
+				if perr != nil {
+					return perr
+				}
+				g.SetMemberWeight(id, n)
+			}
 		case "pick", "use":
 			// the one member a manual group sends to (#317): routing is
 			// manual then
 			g.Pick, err = pickMember(g.Members, v)
 			g.Routing = provider.Manual
 		default:
-			return fmt.Errorf("unknown field %q (fields: name, models, models+, models-, routing, pick, stays, context, levels, family, effort, classifier, fast, listed; magpie group help)", k)
+			return fmt.Errorf("unknown field %q (fields: name, models, models+, models-, routing, pick, stays, context, levels, family, effort, classifier, fast, weight, listed; magpie group help)", k)
 		}
 		if err != nil {
 			return err
@@ -1039,6 +1102,9 @@ func showGroup(g provider.Group) error {
 		if l, ok := memberLabel(id, names); ok {
 			if g.IsFast(id) {
 				l += " · fast"
+			}
+			if g.Routing == provider.Weighted {
+				l += fmt.Sprintf(" · weight %d", g.MemberWeight(id))
 			}
 			if slices.Contains(g.Matched, id) {
 				l += " · by pattern"

@@ -113,5 +113,6 @@ func usagePriceCacheKey(now time.Time) string {
 		fmt.Fprint(h, statKey(catalog.LivePath(current.ID)))
 	}
 	meta += fmt.Sprintf("|%x", h.Sum(nil))
-	return meta
+	// and the clients the user counts as agents (#1958)
+	return meta + "|" + clientAgentsKey()
 }

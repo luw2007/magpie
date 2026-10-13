@@ -98,6 +98,13 @@ cache.
    earlier images read as just sent. A first turn, or messages with no
    reply among them, are told as before. `start` logs "a new Claude Code
    is told the whole conversation" with the message and image counts.
+   Claude Code notes every image of the message after it, so after the
+   turn to answer: `[Image: source: …/images/N.png]` where it keeps the
+   images (the session kept on disk), or the size it showed a large one
+   at. When the history has images, the turn's opening says those notes
+   are the history's, or the history's first and then the turn's
+   (`currentTurnOpen`, #1751). Told nothing, the model said a text-only
+   turn had an image attached and offered to open the path.
 
 A Claude Code that ends before it answers a control request
 (`cliControl`: `initialize`, the safety context) is reported with its

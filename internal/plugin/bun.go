@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/libc"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/source"
@@ -283,6 +284,9 @@ func getURLFrom(ctx context.Context, url string, limit int64, mirror bool) ([]by
 	if err != nil {
 		return nil, err
 	}
+	// Bun's newest release is asked of GitHub's API: with the user's
+	// GitHub token, as every request magpie makes to it is (#1942)
+	ghtoken.Authorize(req, githubAPI)
 	var res *http.Response
 	if mirror {
 		res, err = source.Do(http.DefaultClient, req)

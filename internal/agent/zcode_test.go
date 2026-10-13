@@ -491,3 +491,58 @@ func TestZCodeKeepsUserFormat(t *testing.T) {
 		t.Fatalf("unknown format: %q %q", k, api)
 	}
 }
+
+// A ZCode whose data the user moved in its settings (数据存储路径) reads its
+// providers from the new folder: magpie's provider goes there, and the home
+// folder's .zcode, where only setting.json is left, gets none (flower on
+// Discord: magpie said connected, and ZCode's settings had no magpie).
+func TestZCodeMovedDataFolder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(t.TempDir(), "ZCodeData")
+	homeV2, movedV2 := filepath.Join(home, ".zcode", "v2"), filepath.Join(moved, ".zcode", "v2")
+	os.MkdirAll(homeV2, 0o755)
+	os.MkdirAll(movedV2, 0o755)
+	// what ZCode writes when the folder is moved: the choice stays at home,
+	// the data (an empty provider list among it) is copied over
+	setting, _ := json.Marshal(map[string]any{"locale": "zh-CN", "dataBaseDir": moved})
+	os.WriteFile(filepath.Join(homeV2, "setting.json"), setting, 0o644)
+	empty := `{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[]},"modelConfigRules":{"providerModelRules":[],"manualProviderModelRules":[]}}}`
+	os.WriteFile(filepath.Join(movedV2, "provider_config.json"), []byte(empty), 0o600)
+
+	a := zcode(home)
+	f := a.Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if !zcodeRuled(filepath.Join(movedV2, "provider_config.json")) {
+		b, _ := os.ReadFile(filepath.Join(movedV2, "provider_config.json"))
+		t.Fatalf("no magpie in the moved folder's provider_config.json: %s", b)
+	}
+	if _, ok := edit.GetJSON(filepath.Join(movedV2, "config.json"), "provider.magpie"); !ok {
+		t.Fatal("no magpie in the moved folder's config.json")
+	}
+	for _, n := range []string{"provider_config.json", "config.json"} {
+		if _, err := os.Stat(filepath.Join(homeV2, n)); err == nil {
+			t.Fatalf("%s written in the home folder ZCode no longer reads", n)
+		}
+	}
+	if f.Get() != "magpie" {
+		t.Fatalf("get: %q", f.Get())
+	}
+
+	// a relative or empty dataBaseDir is not a folder ZCode moved to
+	for _, d := range []string{"", "  ", "ZCodeData"} {
+		setting, _ := json.Marshal(map[string]any{"dataBaseDir": d})
+		os.WriteFile(filepath.Join(homeV2, "setting.json"), setting, 0o644)
+		if got := zcode(home).Dir; got != filepath.Join(home, ".zcode") {
+			t.Fatalf("dataBaseDir %q: %s", d, got)
+		}
+	}
+}

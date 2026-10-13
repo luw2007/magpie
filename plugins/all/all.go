@@ -1,0 +1,12 @@
+// Package all registers every built-in plugin. Only magpie's main imports
+// it: core never imports a plugin, and a plugin never imports another.
+package all
+
+import (
+	_ "github.com/yetone/magpie/plugins/gateway"
+	_ "github.com/yetone/magpie/plugins/groups"
+	_ "github.com/yetone/magpie/plugins/library"
+	_ "github.com/yetone/magpie/plugins/otel"
+	_ "github.com/yetone/magpie/plugins/sessions"
+	_ "github.com/yetone/magpie/plugins/warmups"
+)

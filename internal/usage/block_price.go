@@ -29,7 +29,7 @@ type blockPricer struct {
 	wires   map[string]string
 	price   func(Record) *catalog.Price
 	by      map[[4]string]pricedAs
-	agents  map[string]string
+	agents  map[string][2]string
 	pooled  []*[]packedRow
 }
 
@@ -48,7 +48,7 @@ func (b *blockPricer) release() {
 }
 
 func newBlockPricer(aliases, wires map[string]string, price func(Record) *catalog.Price) *blockPricer {
-	return &blockPricer{aliases: aliases, wires: wires, price: price, by: map[[4]string]pricedAs{}, agents: map[string]string{}}
+	return &blockPricer{aliases: aliases, wires: wires, price: price, by: map[[4]string]pricedAs{}, agents: map[string][2]string{}}
 }
 
 // as is priceRow's answer for a gateway call of these names.
@@ -73,13 +73,15 @@ func (b *blockPricer) as(prov, model, served, effort string) pricedAs {
 	return a
 }
 
-func (b *blockPricer) agent(ua string) string {
+// agent is reportedAs's answer for a client, the agent counted and the
+// client's own name when the user's counting changed it.
+func (b *blockPricer) agent(ua string) (string, string) {
 	a, ok := b.agents[ua]
 	if !ok {
-		a = AgentOf(ua)
+		a[0], a[1] = reportedAs(ua)
 		b.agents[ua] = a
 	}
-	return a
+	return a[0], a[1]
 }
 
 // block is the priced copy of a raw block, made for one query and not kept.
@@ -119,7 +121,7 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 		price    *catalog.Price
 	}
 	names := map[[4]uint32]ids{}
-	agents := map[uint32]uint32{}
+	agents := map[uint32][2]uint32{}
 	for i := range c.Rows {
 		p := &c.Rows[i]
 		k := [4]uint32{p.Text[1], p.Text[5], p.Text[7], p.Text[8]}
@@ -131,10 +133,11 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 		}
 		agent, ok := agents[p.Text[0]]
 		if !ok {
-			agent = intern(b.agent(c.Strings[p.Text[0]]), p.Text[0])
+			a, client := b.agent(c.Strings[p.Text[0]])
+			agent = [2]uint32{intern(a, p.Text[0]), intern(client, p.Text[rowClient])}
 			agents[p.Text[0]] = agent
 		}
-		p.Text[0], p.Text[1] = agent, got.provider
+		p.Text[0], p.Text[1], p.Text[rowClient] = agent[0], got.provider, agent[1]
 		p.Flags = p.Flags&^(1|2|32) | got.flags
 		if p.Flags&rowOwnCost != 0 {
 			// a reported call that said what it cost costs that (#1874)

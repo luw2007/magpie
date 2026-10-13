@@ -54,6 +54,42 @@ func TestSettleWaitsForTheHooksItTold(t *testing.T) {
 	})
 }
 
+// What a host said of an account's sign-in is written before Settle
+// returns (#1935, #1543): provider's OnSignIn hook writes the account's
+// lapse into logins.json, and run in the background with nothing waiting
+// for it, it wrote under a test's folder as the folder was removed
+// ("unlinkat .config/magpie: directory not empty").
+func TestSettleWaitsForTheSignInHook(t *testing.T) {
+	storeSandbox(t)
+	Settle()
+	t.Cleanup(func() { OnSignIn(nil) })
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var said atomic.Pointer[string]
+		OnSignIn(func(provider, account, s string) {
+			<-release
+			said.Store(&s)
+		})
+		(&host{}).dispatch(message{Event: "signIn", Provider: "fakeco", Account: "k", Said: "expired"})
+		settled := make(chan struct{})
+		go func() {
+			Settle()
+			close(settled)
+		}()
+		synctest.Wait()
+		select {
+		case <-settled:
+			t.Error("Settle returned while the sign-in hook was still running: it writes into a folder going away")
+		default:
+		}
+		close(release)
+		<-settled
+		if p := said.Load(); p == nil || *p != "expired" {
+			t.Errorf("the hook wasn't told: %v", p)
+		}
+	})
+}
+
 // The next test's plugins are its own. After Settle, the plugins' list in
 // the next test's folder read as changed (checkList), the list the last
 // test's folder had being the one seen last: the change was told there,

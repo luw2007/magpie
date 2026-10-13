@@ -33,6 +33,10 @@ type Row struct {
 	// which the gateway never saw: no status, no provider, no model asked
 	// for, but what the file says of the call. "" for one the gateway logged.
 	Source string `json:"source,omitempty"`
+	// Client is the client's own name when the user counts it as another
+	// agent (settings.ClientAgents, #1958): Agent is the one it is
+	// counted as, this what the ledger recorded it as
+	Client string `json:"client,omitempty"`
 }
 
 // Failed is whether the call failed: the agent was answered an error status,
@@ -146,7 +150,7 @@ func (f Filter) keeps(r Record) bool {
 	if f.Model != "" && r.Model != f.Model {
 		return false
 	}
-	if f.Agent != "" && AgentOf(r.Agent) != f.Agent {
+	if f.Agent != "" && ReportedAs(r.Agent) != f.Agent {
 		return false
 	}
 	if f.Provider != "" && r.Provider != f.Provider {
@@ -338,7 +342,7 @@ func logRecord(c sessions.Call) Record {
 func gatewayMatches(recs []Record, logs []sessions.Call) map[int]bool {
 	gateway, local := &rowChunk{}, &rowChunk{}
 	for i, r := range recs {
-		r.Agent = AgentOf(r.Agent)
+		r.Agent = ReportedAs(r.Agent)
 		gateway.add(Row{Record: r}, "", int64(i), false)
 	}
 	for i, c := range logs {
@@ -377,7 +381,7 @@ func ledgerMatched(since, until time.Time, f Filter, recs []Record, logs []sessi
 	agents, providers = []string{}, []string{}
 	identities := newSessionResolver(logs)
 	add := func(r Record, pr *catalog.Price, source string) {
-		if a := AgentOf(r.Agent); !slices.Contains(agents, a) {
+		if a := ReportedAs(r.Agent); !slices.Contains(agents, a) {
 			agents = append(agents, a)
 		}
 		if r.Provider != "" && !slices.Contains(providers, r.Provider) {
@@ -394,7 +398,7 @@ func ledgerMatched(since, until time.Time, f Filter, recs []Record, logs []sessi
 		if pr != nil && r.Input+r.Output > 0 {
 			row.Cost, row.Priced = r.CostAt(*pr), true
 		}
-		row.Agent = AgentOf(r.Agent)
+		row.Agent, row.Client = reportedAs(r.Agent)
 		if !r.IsRejected() {
 			sum.addFrom(row, pr)
 		}
@@ -506,7 +510,7 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 	"effort", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "reasoning_tokens",
 	"cost_usd", "duration_ms", "ttft_ms", "status", "error", "session", "kind", "provider_key_id", "provider_key_name", "provider_account", "route_id",
 	"request_id", "endpoint", "error_message", "error_type", "source", "rejected", "session_provider", "session_account", "session_official_login", "caller_key_id", "caller_key_name", "response_id", "upstream",
-	"cache_write_5m_tokens", "cache_write_1h_tokens", "tries", "handed_on"}
+	"cache_write_5m_tokens", "cache_write_1h_tokens", "tries", "handed_on", "tier_asked", "tier_sent", "tier_served", "upstream_stop"}
 
 // WriteCSV writes rows as CSV, a header first (cache_write_tokens is every
 // cache write, as it always was, and the last two columns split it into
@@ -517,6 +521,9 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 // gateway made at the request the row ends, when more than one, and
 // handed_on "true" for the row of a try that failed and handed the request
 // on: the request's outcome is the row with the same route_id after it.
+// tier_asked, tier_sent and tier_served are the service tier the client
+// asked for, the one sent on the row's try and the one the reply said it
+// ran at, each empty when there was none (Record.TierAsked).
 func WriteCSV(w io.Writer, rows []Row) error {
 	cw := csv.NewWriter(w)
 	cw.Write(CSVHeader)
@@ -542,7 +549,8 @@ func WriteCSV(w io.Writer, rows []Row) error {
 			strconv.FormatBool(r.Swapped), r.Effort, n(r.Input), n(r.Output), n(r.CacheWrite), n(r.CacheRead), n(r.Reasoning),
 			cost, strconv.FormatInt(r.Millis, 10), ttft, n(r.Status), strconv.FormatBool(r.Failed()), r.Session, r.Kind, r.ProviderKeyID, r.ProviderKeyName, r.Account(), routeID,
 			r.RequestID, r.Endpoint, r.Error, r.ErrType, r.Source, strconv.FormatBool(r.IsRejected()), r.SessionProvider, r.SessionAccount, strconv.FormatBool(r.SessionOfficialLogin), r.CallerKeyID, r.CallerKeyName, r.ResponseID, r.Upstream,
-			n(r.CacheWrite - min(r.CacheWrite1h, r.CacheWrite)), n(min(r.CacheWrite1h, r.CacheWrite)), tries, strconv.FormatBool(r.HandedOn)})
+			n(r.CacheWrite - min(r.CacheWrite1h, r.CacheWrite)), n(min(r.CacheWrite1h, r.CacheWrite)), tries, strconv.FormatBool(r.HandedOn),
+			r.TierAsked, r.TierSent, r.TierServed, r.Stop})
 	}
 	cw.Flush()
 	return cw.Error()

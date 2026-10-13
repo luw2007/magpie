@@ -50,5 +50,9 @@ func TestMain(m *testing.M) {
 	codexProxyEnv = func(string) string { return "" }
 	codexSystemProxy = func() netproxy.Proxy { return netproxy.Proxy{} }
 	proxyProbe = func(string, string) bool { return true }
+	// nor an address of the agent's own asked whether magpie answers
+	// there (a reverse proxy, #1985): known, and not magpie, as for a
+	// relay; the proxy-kept tests answer it
+	magpieAt = func(string) (bool, bool) { return false, true }
 	os.Exit(testenv.Run(m))
 }

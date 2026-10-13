@@ -218,7 +218,7 @@ func snowIn(at place) *Agent {
 	}
 
 	return atomic(&Agent{
-		ID: "snow", Name: "Snow CLI", Icon: "snow", Aliases: []string{"snow-cli", "snow-ai", "snow-app"}, Spelled: prefixed,
+		ID: "snow", Name: "Snow CLI", Icon: "snow", Aliases: []string{"snow-cli", "snow-ai", "snow-app"}, Spelled: prefixed, NoNames: true,
 		Bin: "snow", Dir: dir, Path: ours,
 		Sync: func() error {
 			b, err := edit.Read(ours)

@@ -21,6 +21,13 @@ var ollamaBalanceURL = "https://ollama.com/api/balance"
 //	   "period":{"from":"2026-09-15T09:30:00Z","until":"2026-10-15T09:30:00Z"}},
 //	 "purchased":{"balance_usd":25.0}}
 //
+// A legacy (early) plan has no allowance in dollars but a session and a
+// weekly limit, each as what is left of it (#1888, yangmingyuan380):
+//
+//	{"included":{"session":{"remaining_percent":75,"resets_at":"2026-10-01T07:00:00Z"},
+//	   "weekly":{"remaining_percent":40,"resets_at":"2026-10-05T00:00:00Z"}},
+//	 "purchased":{"balance_usd":25.0}}
+//
 // Each amount is kept as it came, so one left out (a plan with no included
 // allowance, an account that never bought credits) is unknown, not $0.
 type ollamaBalance struct {
@@ -31,10 +38,35 @@ type ollamaBalance struct {
 			From  string `json:"from"`
 			Until string `json:"until"`
 		} `json:"period"`
+		Session *ollamaLimit `json:"session"`
+		Weekly  *ollamaLimit `json:"weekly"`
 	} `json:"included"`
 	Purchased *struct {
 		Balance any `json:"balance_usd"`
 	} `json:"purchased"`
+}
+
+// ollamaLimit is a legacy plan's session or weekly limit.
+type ollamaLimit struct {
+	Remaining any    `json:"remaining_percent"`
+	ResetsAt  string `json:"resets_at"`
+}
+
+// window is the limit as a window, used = 100 - remaining; a limit that
+// doesn't say what is left is no window.
+func (l *ollamaLimit) window(name string, span time.Duration) (QuotaWindow, bool) {
+	if l == nil {
+		return QuotaWindow{}, false
+	}
+	left, ok := number(l.Remaining)
+	if !ok {
+		return QuotaWindow{}, false
+	}
+	w := QuotaWindow{Name: name, Used: min(100, max(0, 100-left)), Span: span}
+	if at, err := time.Parse(time.RFC3339, l.ResetsAt); err == nil {
+		w.ResetsAt = &at
+	}
+	return w, true
 }
 
 // errNoBalance is a reply that tells no balance for this card to show: not
@@ -64,6 +96,22 @@ func readOllamaPlan(b []byte) (string, []QuotaWindow, error) {
 	if in == nil {
 		return "", out, nil
 	}
+	bought := false
+	if r.Purchased != nil {
+		if v, ok := number(r.Purchased.Balance); ok && v > 0 {
+			bought = true
+		}
+	}
+	// A legacy plan's limits. How long Ollama's session is the reply
+	// doesn't say, so it has no span; a week is a week.
+	if w, ok := in.Session.window("Session limit", 0); ok {
+		w.Aside = bought
+		out = append(out, w)
+	}
+	if w, ok := in.Weekly.window("Weekly", 7*24*time.Hour); ok {
+		w.Aside = bought
+		out = append(out, w)
+	}
 	allowance, ok1 := number(in.Allowance)
 	left, ok2 := number(in.Balance)
 	if !ok1 || !ok2 || allowance <= 0 {
@@ -84,11 +132,7 @@ func readOllamaPlan(b []byte) (string, []QuotaWindow, error) {
 			}
 		}
 	}
-	if r.Purchased != nil {
-		if bought, ok := number(r.Purchased.Balance); ok && bought > 0 {
-			w.Aside = true
-		}
-	}
+	w.Aside = bought
 	return "", append(out, w), nil
 }
 

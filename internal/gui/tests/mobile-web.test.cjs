@@ -349,6 +349,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
                 }, addedFooter.height);
                 addedFooter = await current.locator("#agentsManage").boundingBox();
               }
+              // Plugins' Built-in tab is new: until BASE_REF has it, the
+              // page is compared with that tab taken out of its strip (the
+              // sidebar's list follows the strip); builtins.test.cjs covers
+              // the tab and its list.
+              if (view === "plugins" && !baselineFile("plugins.js").includes("function drawBuiltin")) {
+                await current.locator("#view-plugins .lib-tabs .opt").first().evaluate((b) => b.remove());
+                await current.waitForTimeout(350);
+              }
               const before = PNG.sync.read(await still(original));
               const after = PNG.sync.read(await still(current));
               const sameSize = before.width === after.width && before.height === after.height;

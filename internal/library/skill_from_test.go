@@ -136,6 +136,55 @@ func TestWellKnownKitGrouped(t *testing.T) {
 	}
 }
 
+// #1862 (WardLu, v0.1.1223): skills brought into the library before
+// well-known kits were grouped by their base kept the lock's key of then
+// as their From, each skill's own sourceUrl, and From is read before the
+// lock, so Feishu's three were three groups and Fish Audio's two were two
+// after the fix. The reporter's lock entries, with From as v0.1.1217's
+// ImportSkills wrote it.
+func TestWellKnownKitFromBeforeGrouped(t *testing.T) {
+	h := sandbox(t)
+	lock := `{"skills":{
+  "lark-base":{"source":"open.feishu.cn","sourceType":"well-known","sourceUrl":"https://open.feishu.cn/lark-cli/skills/regular/.well-known/agent-skills/lark-base.tar.gz","sourceBaseUrl":"https://open.feishu.cn/lark-cli/skills/regular"},
+  "lark-doc":{"source":"open.feishu.cn","sourceType":"well-known","sourceUrl":"https://open.feishu.cn/lark-cli/skills/regular/.well-known/agent-skills/lark-doc.tar.gz","sourceBaseUrl":"https://open.feishu.cn/lark-cli/skills/regular"},
+  "lark-sheets":{"source":"open.feishu.cn","sourceType":"well-known","sourceUrl":"https://open.feishu.cn/lark-cli/skills/regular/.well-known/agent-skills/lark-sheets.tar.gz","sourceBaseUrl":"https://open.feishu.cn/lark-cli/skills/regular"},
+  "fish-audio-api":{"source":"docs.fish.audio","sourceType":"well-known","sourceUrl":"https://docs.fish.audio/.well-known/agent-skills/fish-audio-api/skill.md","sourceBaseUrl":"https://docs.fish.audio"},
+  "fish-audio-sdk":{"source":"docs.fish.audio","sourceType":"well-known","sourceUrl":"https://docs.fish.audio/.well-known/agent-skills/fish-audio-sdk/skill.md","sourceBaseUrl":"https://docs.fish.audio"}
+}}`
+	write(t, filepath.Join(h, ".agents/.skill-lock.json"), lock)
+	before := map[string]string{ // remoteRepo of each sourceUrl, the key before 97dfed0f3
+		"lark-base":      "open.feishu.cn/lark-cli/skills/regular/.well-known/agent-skills/lark-base.tar.gz",
+		"lark-doc":       "open.feishu.cn/lark-cli/skills/regular/.well-known/agent-skills/lark-doc.tar.gz",
+		"lark-sheets":    "open.feishu.cn/lark-cli/skills/regular/.well-known/agent-skills/lark-sheets.tar.gz",
+		"fish-audio-api": "docs.fish.audio/.well-known/agent-skills/fish-audio-api/skill.md",
+		"fish-audio-sdk": "docs.fish.audio/.well-known/agent-skills/fish-audio-sdk/skill.md",
+	}
+	var names []string
+	for n := range before {
+		skill(t, filepath.Join(h, ".agents/skills", n), n, "D")
+		names = append(names, n)
+	}
+	ok(t)(ImportSkills(names))
+	l := mustLoad(t)
+	for n, f := range before {
+		l.skill(n).From = f
+	}
+	if err := l.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := repoIn(t)
+	for n := range before {
+		want := "docs.fish.audio"
+		if strings.HasPrefix(n, "lark-") {
+			want = "open.feishu.cn/lark-cli/skills/regular"
+		}
+		if got[n] != want {
+			t.Errorf("%s: repo %q, want %q", n, got[n], want)
+		}
+	}
+}
+
 // A well-known kit's base, from the lock's sourceBaseUrl or else its
 // sourceUrl; neither an http(s) address, its sourceUrl as a remote.
 func TestWellKnownBase(t *testing.T) {

@@ -49,6 +49,7 @@ type modelJSON struct {
 	Auto     []string `json:"auto,omitempty"`      // the APIs its vendor's list says it is served on, what Auto asks it on
 	Same     string   `json:"same,omitempty"`      // the model the user said it is the same as, for the groups magpie finds (#583)
 	Merge    string   `json:"merge,omitempty"`     // what those groups merge it by when the user says nothing
+	Kind     string   `json:"kind,omitempty"`      // what the user said it makes: image or video (#1399)
 	// what it costs, USD per million tokens (#819): the price the user set
 	// for it, and its list price, its vendor's else its maker's, before the
 	// provider's price rate
@@ -157,6 +158,9 @@ type providerJSON struct {
 	// System One question (provider.AsksDecideModels): a mixed
 	// provider's Jev too, beside its conversation models
 	DecideTest bool `json:"decideTest,omitempty"`
+	// MarksKinds is set when its models can be said to make images or
+	// videos (provider.MarksKinds, #1399): a chip's right-click offers it
+	MarksKinds bool `json:"marksKinds,omitempty"`
 	// Deciders explicitly identifies decision models for OpenRouter and
 	// remote magpie. An empty remote list suppresses name-based guessing.
 	Deciders *[]string `json:"deciders,omitempty"`
@@ -184,6 +188,9 @@ type providerJSON struct {
 	// KeepLoginAs: the account it is kept signed in to instead of the
 	// first, the gateway still trying them in their order
 	KeepLoginAs string `json:"keepLoginAs,omitempty"`
+	// SwitchOnly: magpie only moves Codex's own sign-in between its
+	// accounts, never routing its requests for failover (#1907)
+	SwitchOnly bool `json:"switchOnly,omitempty"`
 	// how many requests each of its keys or accounts has out at once, the
 	// rest queued: the user's (null: not set), and what its plugin says
 	// when the user set none (provider.Concurrency)
@@ -522,11 +529,11 @@ func presetOwnClient(pr provider.PresetDef) bool {
 func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
-		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(),
+		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, PassUserAgent: p.PassUserAgent, OwnClient: p.OwnClient(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, ModelsURL: p.ModelsURL,
 		Ready: p.Ready(), Chosen: p.Picks(), Models: []modelJSON{}, Agents: []providerAgent{},
-		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, Unlisted: p.Unlisted, NoModels: p.ServesNone(), Off: p.Off, Contexts: p.Contexts,
+		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Unlisted: p.Unlisted, NoModels: p.ServesNone(), Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), PriceRate: p.PriceRate,
 		AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
@@ -676,6 +683,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 			}
 		}
 		j.Same = sames[p.ID+"/"+m.ID]
+		j.Kind = p.ModelKind(m.ID)
 		j.Merge = provider.MergeName(m.ID)
 		if mp, ok := held.ModelPrices[p.ID+"/"+m.ID]; ok {
 			if pr, bad := mp.Price(); bad == "" {
@@ -1450,6 +1458,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					}
 					in.KeepLogin = old.KeepLogin // set on its own, with keeplogin
 					in.KeepLoginAs = old.KeepLoginAs
+					in.SwitchOnly = old.SwitchOnly
 					in.Off = old.Off // and this with off and on
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say
@@ -1642,6 +1651,15 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				return provider.SetKeepLogin(in.ID, in.KeepLogin)
 			})
 			if err != nil {
+				fail(rw, err)
+				return
+			}
+			agent.SyncCatalog()
+		case "switchonly":
+			// magpie only switches Codex's own sign-in, its requests going
+			// straight to OpenAI, or routes them for failover again
+			// (#1907); the agent's config follows at once
+			if err := provider.SetSwitchOnly(in.ID, in.SwitchOnly); err != nil {
 				fail(rw, err)
 				return
 			}

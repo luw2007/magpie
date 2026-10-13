@@ -37,11 +37,23 @@ func ompScopePlain(n *yaml.Node) []string {
 	return out
 }
 
+// ompEvery is the entry magpie adds to enabledModels for its own models:
+// every model magpie writes into models.yml for omp, which are the ones its
+// Agents page offers. omp matches a glob with Bun.Glob, whose * stops at a
+// slash, and a model of magpie's is magpie/<provider>/<model>, so it takes
+// **. With the default role's model alone there, omp's picker and Ctrl+P
+// left out every other model magpie gives it (#1769, real-jacket).
+const ompEvery = magpieID + "/**"
+
 // ompTakes reports whether an enabledModels entry surely takes in model, a
 // provider/model with no level: Pi's rules (piTakes), with the levels omp
-// reads off an entry's end, auto among them.
+// reads off an entry's end, auto among them, and a trailing ** taking in
+// everything under it, slashes and all, as Bun.Glob's does.
 func ompTakes(pattern, model string) bool {
 	p, _ := ompLevel(strings.TrimSpace(pattern))
+	if base, ok := strings.CutSuffix(p, "**"); ok && !strings.ContainsAny(base, "*?[") && (base == "" || strings.HasSuffix(base, "/")) {
+		return strings.HasPrefix(strings.ToLower(model), strings.ToLower(base))
+	}
 	return piTakes(p, model)
 }
 
@@ -59,22 +71,66 @@ func ompScopeTakes(plain []string, model string) bool {
 	return false
 }
 
-// ompScopeWith adds model, a provider/model, to the end of config.yml's
-// enabledModels when it has plain entries and none takes model in.
+// ompScopeOwnMagpie says whether the user chose for themselves which of
+// magpie's models the list holds: an entry on magpie with a glob or a
+// thinking level, or a glob of theirs that takes model in (deepseek/*,
+// which omp matches against the id alone), is theirs, not one magpie added.
+func ompScopeOwnMagpie(plain []string, model string) bool {
+	for _, p := range plain {
+		m, level := ompLevel(strings.TrimSpace(p))
+		glob := strings.ContainsAny(m, "*?[")
+		if glob && ompTakes(m, model) || strings.HasPrefix(strings.ToLower(m), magpieID+"/") && (glob || level != "") {
+			return true
+		}
+	}
+	return false
+}
+
+// ompScopeWith lets a session start on model, a provider/model, when
+// config.yml's enabledModels has plain entries and none takes it in. For
+// one of magpie's it is ompEvery that joins the end, in place of the
+// models of magpie's the list names one by one (what magpie added before),
+// so omp's picker has every model magpie offers it beside the user's own;
+// unless the user picked which of magpie's the list holds
+// (ompScopeOwnMagpie), when only model joins it. Another model joins as
+// itself.
 func ompScopeWith(cfg, model string) error {
 	return edit.EditYAMLNode(cfg, "enabledModels", func(n *yaml.Node) (bool, bool) {
-		if ompScopeTakes(ompScopePlain(n), model) {
+		plain := ompScopePlain(n)
+		if len(plain) == 0 {
 			return false, false
 		}
-		n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: model})
+		onMagpie := strings.HasPrefix(strings.ToLower(model), magpieID+"/")
+		if !onMagpie || ompScopeOwnMagpie(plain, model) {
+			if ompScopeTakes(plain, model) {
+				return false, false
+			}
+			n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: model})
+			return true, false
+		}
+		kept := n.Content[:0:0]
+		for _, c := range n.Content {
+			if c.Kind == yaml.ScalarNode && ompScopeMagpieOne(c.Value) {
+				continue
+			}
+			kept = append(kept, c)
+		}
+		n.Content = append(kept, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: ompEvery})
 		return true, false
 	})
 }
 
+// ompScopeMagpieOne is a plain entry naming one of magpie's models, with
+// no glob or level: what magpie adds, or ompEvery takes in all the same.
+func ompScopeMagpieOne(v string) bool {
+	v = strings.TrimSpace(v)
+	return !strings.ContainsAny(v, "*?[") && strings.HasPrefix(strings.ToLower(v), magpieID+"/")
+}
+
 // ompScopeWithout takes magpie's models out of enabledModels's plain
-// entries once nothing else in config.yml is on magpie, and its provider
-// leaves models.yml: there they would name nothing. A list left empty is
-// removed, never written as [].
+// entries, ompEvery among them, once nothing else in config.yml is on
+// magpie, and its provider leaves models.yml: there they would name
+// nothing. A list left empty is removed, never written as [].
 func ompScopeWithout(cfg string) error {
 	return edit.EditYAMLNode(cfg, "enabledModels", func(n *yaml.Node) (bool, bool) {
 		if n == nil || n.Kind != yaml.SequenceNode {
@@ -82,8 +138,8 @@ func ompScopeWithout(cfg string) error {
 		}
 		kept := n.Content[:0:0]
 		for _, c := range n.Content {
-			if c.Kind == yaml.ScalarNode && !strings.ContainsAny(c.Value, "*?[") &&
-				strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.Value)), magpieID+"/") {
+			if c.Kind == yaml.ScalarNode && (strings.EqualFold(strings.TrimSpace(c.Value), ompEvery) ||
+				!strings.ContainsAny(c.Value, "*?[") && strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.Value)), magpieID+"/")) {
 				continue
 			}
 			kept = append(kept, c)

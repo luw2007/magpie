@@ -87,10 +87,11 @@ func Videomakers(p provider.Provider) []catalog.Model {
 // customVideomakers are the video models of a provider set up with a base
 // URL — not a subscription's account, not another magpie, not a preset plan
 // whose own video API magpie speaks — that its fetched model list marks
-// "kind": "video" (catalog.LiveVideomakers, #1446). They are asked at the
+// "kind": "video" (catalog.LiveVideomakers, #1446), or the user said make
+// videos (provider.SetModelKind, #1399). They are asked at the
 // OpenAI-shaped videos API under its base, as another magpie's are. A
-// model's name alone makes none of them one: a list that doesn't say so
-// leaves the provider making no videos.
+// model's name alone makes none of them one: a list that doesn't say so,
+// and a user who doesn't, leave the provider making no videos.
 func customVideomakers(p provider.Provider) []catalog.Model {
 	if p.Account != nil || p.IsRemoteMagpie() || len(p.PlanVideos()) > 0 || videoBase(p) == "" {
 		return nil
@@ -99,7 +100,14 @@ func customVideomakers(p provider.Provider) []catalog.Model {
 	for i := range out {
 		out[i].Provider = p.ID
 	}
-	return out
+	// those the user said make videos, whatever the list says, and none
+	// they said draws (shen-joe, #1399: a relay whose /models marks none)
+	for _, id := range p.KindModels(provider.KindVideo) {
+		if !slices.ContainsFunc(out, func(m catalog.Model) bool { return m.ID == id }) {
+			out = append(out, kindModel(p, id))
+		}
+	}
+	return slices.DeleteFunc(out, func(m catalog.Model) bool { return p.ModelKind(m.ID) == provider.KindImage })
 }
 
 // videoBase is the root of the OpenAI-shaped videos API of another magpie
@@ -692,7 +700,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 	volcengine := p.Preset == "volcengine" && slices.ContainsFunc(p.PlanVideos(), func(m catalog.Model) bool { return m.ID == model })
 	// any grok-imagine-video*, not only those listed: the vendor's newer ones work before magpie names them
 	if !remote && !custom && !volcengine && (!drawsGrok(p) || !strings.HasPrefix(model, grokVideoFamily)) {
-		fail(400, fmt.Sprintf(`%s/%s can't make videos: magpie makes videos with a Grok subscription's grok-imagine-video, Volcengine Agent Plan's Seedance models, another magpie's, and the models a provider's own model list marks "kind": "video"`, p.ID, model))
+		fail(400, fmt.Sprintf(`%s/%s can't make videos: magpie makes videos with a Grok subscription's grok-imagine-video, Volcengine Agent Plan's Seedance models, another magpie's, and a provider's models its own model list marks "kind": "video" or that you mark a Video model (right-click the model in the provider's editor: Makes…)`, p.ID, model))
 		return
 	}
 	var unmask func()

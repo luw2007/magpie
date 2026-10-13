@@ -196,9 +196,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await scroll(), before, "a refusal moved the page");
         await fits(box);
 
-        // taken away with its Remove
+        // taken away with its Remove, wheeled into view first as a reader
+        // would: the list grew under the field, and in Chinese the button
+        // sat under the window's foot, where a click lands on the foot (a
+        // scroll that isn't the reader's is put back, #1554)
+        const remove = box.locator(".allow-ip-row").filter({ hasText: "10.0.0.0/8" }).locator("button", { hasText: w.remove });
+        const viewBox = await view.boundingBox();
+        for (let i = 0; i < 20; i++) {
+          const r = await remove.boundingBox();
+          if (r && r.y > viewBox.y && r.y + r.height < viewBox.y + viewBox.height) break;
+          await page.mouse.wheel(0, 40);
+          await scroll();
+        }
         before = await scroll();
-        await box.locator(".allow-ip-row").filter({ hasText: "10.0.0.0/8" }).locator("button", { hasText: w.remove }).click();
+        await remove.click();
         await page.waitForFunction(() => document.querySelectorAll("#allowList .allow-ip-row").length === 2);
         assert.deepEqual(posts.at(-1), ["203.0.113.50", "2001:db8::/32"]);
         assert.equal(await scroll(), before, "Remove moved the page");

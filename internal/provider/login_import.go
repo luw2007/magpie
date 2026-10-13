@@ -22,6 +22,7 @@ package provider
 // time it runs on it. Tokens are never logged or sent back.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,6 +40,10 @@ type loginImport struct {
 	scopes                                               []string
 	err                                                  string
 	file                                                 int // a file that held no account (ImportedAccount.File)
+	// claudeAccount and claudeOrg: the Claude account's and organization's
+	// uuids, Claude Code's oauthAccount accountUuid and organizationUuid,
+	// when the file has them
+	claudeAccount, claudeOrg string
 }
 
 // claudeImportScopes are what Claude Code's sign-in asks for, taken when a
@@ -123,16 +128,7 @@ func loginEntry(agent string, x map[string]any) loginImport {
 	e.accessToken = jsonStr(src, "access_token", "accessToken")
 	e.refreshToken = jsonStr(src, "refresh_token", "refreshToken")
 	e.accountID = jsonStr(src, "account_id", "accountId")
-	switch sc := src["scopes"].(type) {
-	case []any:
-		for _, s := range sc {
-			if s, ok := s.(string); ok && s != "" {
-				e.scopes = append(e.scopes, s)
-			}
-		}
-	case string:
-		e.scopes = strings.Fields(sc)
-	}
+	e.scopes = importScopes(src["scopes"])
 	typ := strings.ToLower(jsonStr(x, "type"))
 	switch {
 	case typ != "" && typ != agent:
@@ -205,13 +201,40 @@ func codexbarEntries(agent string, x map[string]any) ([]loginImport, bool) {
 // can't be renewed, so it isn't kept as an account that would just stop.
 const accessOnly = "only an access token, no refresh_token: it would stop working within days and can't be renewed; sign in to this account instead"
 
-// sub2apiEntry reads one account of a Sub2API export.
+// importScopes reads a sign-in's scopes, a list or one string of them
+// apart by spaces, as OAuth's scope is.
+func importScopes(v any) []string {
+	var out []string
+	switch sc := v.(type) {
+	case []any:
+		for _, s := range sc {
+			if s, ok := s.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+	case string:
+		out = strings.Fields(sc)
+	}
+	return out
+}
+
+// sub2apiEntry reads one account of a Sub2API export. A ChatGPT one keeps
+// email, id_token and chatgpt_account_id in credentials. A Claude one's
+// credentials are the token Sub2API was given, with Anthropic's own names
+// (email_address, scope, account_uuid, org_uuid), and extra holds the
+// account's email_address and uuids again (useAccountOAuth's
+// buildExtraInfo): email_address alone was "the file doesn't say which
+// Claude account this is" (#1975).
 func sub2apiEntry(agent string, x, c map[string]any) loginImport {
 	name := map[string]string{"codex": "Codex", "claude": "Claude"}[agent]
 	platform := jsonStr(x, "platform")
 	ours := map[string]string{"openai": "codex", "anthropic": "claude", "claude": "claude"}[strings.ToLower(platform)] == agent
-	e := loginImport{email: jsonStr(c, "email"), idToken: jsonStr(c, "id_token"), accessToken: jsonStr(c, "access_token"),
-		refreshToken: jsonStr(c, "refresh_token"), accountID: jsonStr(c, "chatgpt_account_id", "account_id")}
+	extra, _ := x["extra"].(map[string]any)
+	e := loginImport{email: cmp.Or(jsonStr(c, "email", "email_address"), jsonStr(extra, "email_address", "email")),
+		idToken: jsonStr(c, "id_token"), accessToken: jsonStr(c, "access_token"), refreshToken: jsonStr(c, "refresh_token"),
+		accountID: jsonStr(c, "chatgpt_account_id", "account_id"), scopes: importScopes(c["scope"]),
+		claudeAccount: cmp.Or(jsonStr(c, "account_uuid"), jsonStr(extra, "account_uuid")),
+		claudeOrg:     cmp.Or(jsonStr(c, "org_uuid"), jsonStr(extra, "org_uuid"))}
 	if n := jsonStr(x, "name"); e.email == "" && strings.Contains(n, "@") {
 		e.email = n // Cockpit Tools names each account by its email
 	}
@@ -378,6 +401,12 @@ func importLogin(ctx context.Context, agent string, e loginImport, name string, 
 			return fail("the file doesn't say which Claude account this is; sign in to it from magpie instead")
 		}
 		acct := map[string]any{"emailAddress": e.email}
+		if e.claudeAccount != "" {
+			acct["accountUuid"] = e.claudeAccount
+		}
+		if e.claudeOrg != "" {
+			acct["organizationUuid"] = e.claudeOrg
+		}
 		l, err = claudeLogin(c, acct)
 	}
 	if err != nil {
