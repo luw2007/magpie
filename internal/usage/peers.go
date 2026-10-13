@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,65 @@ func PeerDays(since time.Time) []SharedDay {
 
 var pulled struct {
 	sync.Mutex
-	whole map[string]bool // remote magpie id → its whole window was pulled once
+	whole  map[string]bool // remote magpie id → its whole window was pulled once
+	status map[string]PeerStatus
+}
+
+// PeerStatus is how the last pull of one remote magpie went, for the Usage
+// page to say so beside the computers it lists: data older than it looks must
+// not pass for current.
+type PeerStatus struct {
+	ID   string `json:"id"`   // the remote-magpie provider's id
+	Name string `json:"name"` // what the provider is called
+	// Pulling is set until the first pull of a remote has ended, so a remote
+	// just added is not read as one that has nothing.
+	Pulling bool `json:"pulling,omitempty"`
+	// At is when days were last kept from it; zero before a pull succeeded.
+	At time.Time `json:"at,omitzero"`
+	// Error is why the last pull failed, as the remote's answer tells it
+	// (provider.RemoteGet); empty when it went well.
+	Error string `json:"error,omitempty"`
+	// Kind sorts Error for the page: "unreachable", "key", "notShared",
+	// "tooOld" or "other"; empty when there is no error.
+	Kind string `json:"kind,omitempty"`
+}
+
+// Peers are the remote magpies this one pulls usage from and how each last
+// went, in the order the providers are listed. A provider switched off or
+// removed is not among them: its days stay kept, nothing is promised of them.
+func Peers() []PeerStatus {
+	ps := provider.RemoteMagpies()
+	pulled.Lock()
+	defer pulled.Unlock()
+	out := make([]PeerStatus, 0, len(ps))
+	for _, p := range ps {
+		s, ok := pulled.status[p.ID]
+		if !ok {
+			s = PeerStatus{Pulling: true}
+		}
+		s.ID, s.Name = p.ID, p.Name
+		if s.Name == "" {
+			s.Name = p.ID
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func notePeer(id string, err error) {
+	pulled.Lock()
+	defer pulled.Unlock()
+	if pulled.status == nil {
+		pulled.status = map[string]PeerStatus{}
+	}
+	s := pulled.status[id]
+	s.Pulling = false
+	if err == nil {
+		s.At, s.Error, s.Kind = time.Now(), "", ""
+	} else {
+		s.Error, s.Kind = err.Error(), provider.RemoteErrorKind(err)
+	}
+	pulled.status[id] = s
 }
 
 // PullPeers asks every remote magpie for its days and keeps them. The first
@@ -48,7 +107,7 @@ func PullPeers(ctx context.Context) map[string]error {
 	var wg sync.WaitGroup
 	for i, p := range ps {
 		wg.Add(1)
-		go func() { defer wg.Done(); errs[i] = pullPeer(ctx, p) }()
+		go func() { defer wg.Done(); errs[i] = pullPeer(ctx, p); notePeer(p.ID, errs[i]) }()
 	}
 	wg.Wait()
 	out := map[string]error{}
@@ -58,6 +117,25 @@ func PullPeers(ctx context.Context) map[string]error {
 		}
 	}
 	return out
+}
+
+// PullPeerNow asks one remote magpie for its days at once, for the page's
+// Pull now: after a remote is added or its key fixed, nobody waits for the
+// next round. It returns the status the pull ended with; a provider that is
+// not a remote magpie in use is an error.
+func PullPeerNow(ctx context.Context, id string) (PeerStatus, error) {
+	for _, p := range provider.RemoteMagpies() {
+		if p.ID != id {
+			continue
+		}
+		notePeer(id, pullPeer(ctx, p))
+		for _, s := range Peers() {
+			if s.ID == id {
+				return s, nil
+			}
+		}
+	}
+	return PeerStatus{}, os.ErrNotExist
 }
 
 func pullPeer(ctx context.Context, p provider.Provider) error {
@@ -105,9 +183,10 @@ func pullPeer(ctx context.Context, p provider.Provider) error {
 	return nil
 }
 
-// ForgetPeersForTest has the next pull take the whole window again.
+// ForgetPeersForTest has the next pull take the whole window again and
+// forgets how the pulls went.
 func ForgetPeersForTest() {
 	pulled.Lock()
-	pulled.whole = nil
+	pulled.whole, pulled.status = nil, nil
 	pulled.Unlock()
 }

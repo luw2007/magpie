@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -184,6 +185,10 @@ type ledgerJSON struct {
 	// Computers: this one ("this", no name) and the others whose usage
 	// sync brought (#542), for the filter; none while there are none
 	Computers []ledgerShare `json:"computers,omitempty"`
+	// Peers: the remote magpies usage is pulled from and how the last pull of
+	// each went, so the page can say a computer's calls are old, missing, or
+	// waiting on a fix (usage.PeerStatus); none while there are none.
+	Peers []usage.PeerStatus `json:"peers,omitempty"`
 }
 
 // ledgerShare is a usage.Share with the name and logo the page shows it by.
@@ -335,6 +340,7 @@ func ledgerPage(p usage.Period, f usage.Filter, offset, limit int) ledgerJSON {
 		}
 		out.Computers = append(out.Computers, ls)
 	}
+	out.Peers = usage.Peers()
 	return out
 }
 
@@ -389,6 +395,23 @@ func usageRoutes(mux *http.ServeMux, w Windows) {
 		offset, _ := strconv.Atoi(q.Get("offset"))
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		writeJSON(rw, ledgerPage(periodOf(q.Get("period")), ledgerFilter(q), offset, limit))
+	})
+	// the page's Pull now for one remote magpie: its days are asked for at
+	// once and how it went comes back, as the ledger's peers have it
+	mux.HandleFunc("POST /api/usage/peers/pull", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ ID string }
+		if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in) != nil || in.ID == "" {
+			http.Error(rw, "id names the remote magpie", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		s, err := usage.PullPeerNow(ctx, in.ID)
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(rw, "no such remote magpie in use", http.StatusNotFound)
+			return
+		}
+		writeJSON(rw, s)
 	})
 	// the heatmap (#1369): the last 53 weeks a day each, of the requests the
 	// page's filters keep, read from the same index as the page

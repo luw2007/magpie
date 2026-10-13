@@ -60,6 +60,26 @@ const errRemoteKey = "remote magpie didn't take this key; use one of its enabled
 // be reached at all.
 const errRemoteUnreachable = "couldn't reach the remote magpie"
 
+// RemoteErrorKind sorts an error remoteJSON gave for a page to word its own
+// advice: "unreachable", "key" (not taken), "notShared" (403), "tooOld"
+// (404 or 405: no such API there) or "other". The text stays the remote's.
+func RemoteErrorKind(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch s := err.Error(); {
+	case s == errRemoteNoShare:
+		return "tooOld"
+	case s == errRemoteNotShared:
+		return "notShared"
+	case s == errRemoteKey:
+		return "key"
+	case strings.HasPrefix(s, errRemoteUnreachable):
+		return "unreachable"
+	}
+	return "other"
+}
+
 // CachedCards is the Usage page's cards as this magpie last read them,
 // each with its kind, for another magpie to show: no vendor is asked,
 // whatever their age, and another magpie's cards shown here aren't

@@ -16305,6 +16305,57 @@ function ledFit() {
   hint.hidden = !tight;
 }
 
+// renderPeers says how the remote magpies this usage is pulled from are
+// doing, one line each, over the list: a computer's calls shown here are only
+// as new as the last pull, and a remote that can't be reached, doesn't take
+// the key, isn't shared or is too old shows nothing at all — so each failure
+// says what to do about it, and Pull now asks again without waiting for the
+// next round. A remote that is fine gets a quiet line with when it was read.
+const PEER_ADVICE = {
+  unreachable: "Can't reach it. Check that it is running and the address is right; calls shown are from the last pull.",
+  key: "It didn't take this key. Use one of its enabled gateway keys in the provider.",
+  notShared: "It isn't shared. Turn on Share on local network on that computer.",
+  tooOld: "It has no usage API. Update magpie on that computer.",
+};
+const peerPulling = new Set();
+function renderPeers(peers) {
+  const box = $("#ledPeers");
+  if (!box) return;
+  box.hidden = !peers?.length;
+  if (box.hidden) { box.replaceChildren(); return; }
+  const lines = peers.map((p) => {
+    const bad = !!p.error, wait = !!p.pulling && !bad && !p.at;
+    const row = el("div", "led-peer" + (bad ? " warn" : wait ? " wait" : ""));
+    row.dataset.peer = p.id;
+    row.append(el("span", "dot"), el("span", "name", p.name));
+    let msg;
+    if (bad) {
+      msg = t(PEER_ADVICE[p.kind] || "It didn't answer: {e}", { e: p.error });
+      const seen = p.at && !p.at.startsWith("0001") ? t("last read {when}", { when: ago(p.at) }) : t("not read yet");
+      msg += " · " + seen;
+    } else if (wait) msg = t("Reading its usage…");
+    else msg = t("Usage read {when}", { when: ago(p.at) });
+    const text = el("span", "msg", msg);
+    if (bad) text.title = p.error;
+    row.append(text);
+    const go = el("button", "text", t(peerPulling.has(p.id) ? "Reading…" : "Pull now"));
+    go.type = "button";
+    go.disabled = peerPulling.has(p.id);
+    go.onclick = async () => {
+      peerPulling.add(p.id);
+      renderPeers(ledger?.peers);
+      try {
+        await api("usage/peers/pull", { id: p.id });
+        await loadLedger(true);
+      } catch (e) { status(t(e.message), "err"); }
+      finally { peerPulling.delete(p.id); renderPeers(ledger?.peers); }
+    };
+    row.append(go);
+    return row;
+  });
+  box.replaceChildren(...lines);
+}
+
 function renderLedger() {
   const l = ledger;
   const callers = l.callerKeys || [];
@@ -16333,6 +16384,7 @@ function renderLedger() {
   renderPeriod();
   renderArchive();
 
+  renderPeers(l.peers);
   const cost = $("#usageCost");
   cost.replaceChildren();
   cost.title = "";

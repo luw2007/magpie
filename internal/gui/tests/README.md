@@ -1777,6 +1777,16 @@ Enter) enlarging the plot and another taking it back without moving the
 page, no curve for a key of one reading, and the allowances' Off taking it
 away, in Chinese and English, light and dark.
 
+`usage-peers.test.cjs` checks the lines over the Usage page's Requests that
+say how each remote magpie's usage is pulled: none without a remote; "reading"
+while a remote has not been pulled yet; the time of the last read when it is
+fine; and, when it fails, what to do about it for a remote that can't be
+reached, doesn't take the key, isn't shared or is too old (with the time of
+the last good read, or "not read yet"), amber only then. Pull now posts for
+that remote alone and the line follows the reloaded list; the click moves
+nothing and no row has a left border. English and Chinese, Chromium and
+WebKit, with the API faked.
+
 With Node.js and Playwright available, `make test-ui` manually runs the whole suite:
 every `internal/gui/tests/*.test.cjs`, discovered automatically. Files are
 independent and run a few at a time (`UI_TEST_CONCURRENCY`, default 2); set

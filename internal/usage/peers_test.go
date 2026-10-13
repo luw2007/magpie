@@ -3,8 +3,10 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -115,5 +117,87 @@ func TestPullPeersAggregatesRemoteDays(t *testing.T) {
 	check("remote down")
 	if asked != 2 {
 		t.Fatalf("remote asked %d times, want 2", asked)
+	}
+}
+
+// How the last pull of each remote went is what the Usage page tells the
+// reader: a remote just added is waiting, not empty; one that fails is sorted
+// by cause, so the page can say what to fix, and keeps the days it answered
+// before; one that answers again is clear of the error.
+func TestPeersSayHowEachPullWent(t *testing.T) {
+	peerHome(t)
+	status := http.StatusUnauthorized
+	var days []SharedDay
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": days})
+	}))
+	t.Cleanup(srv.Close)
+	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k", Chat: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	one := func() PeerStatus {
+		t.Helper()
+		ps := Peers()
+		if len(ps) != 1 || ps[0].ID != "office" || ps[0].Name != "Office" {
+			t.Fatalf("peers: %+v", ps)
+		}
+		return ps[0]
+	}
+	if s := one(); !s.Pulling || !s.At.IsZero() || s.Error != "" {
+		t.Fatalf("before any pull: %+v", s)
+	}
+	for _, c := range []struct {
+		code int
+		kind string
+	}{{http.StatusUnauthorized, "key"}, {http.StatusForbidden, "notShared"}, {http.StatusNotFound, "tooOld"}, {http.StatusInternalServerError, "other"}} {
+		status = c.code
+		PullPeers(context.Background())
+		if s := one(); s.Pulling || s.Kind != c.kind || s.Error == "" || !s.At.IsZero() {
+			t.Fatalf("%d: %+v, want kind %q and no success yet", c.code, s, c.kind)
+		}
+	}
+	remote := "245eab618771c093"
+	days = []SharedDay{{Computer: remote, Name: "devbox", Day: time.Now().Format(time.DateOnly), Calls: []SharedCall{{Record: Record{Time: time.Now(), Model: "m", Input: 5, Status: 200}}}}}
+	status = http.StatusOK
+	PullPeers(context.Background())
+	ok := one()
+	if ok.Error != "" || ok.Kind != "" || ok.At.IsZero() {
+		t.Fatalf("after an answer: %+v", ok)
+	}
+	// it stops answering: the error is told, the time of the last good read stays
+	status = http.StatusForbidden
+	PullPeers(context.Background())
+	s := one()
+	if s.Kind != "notShared" || !s.At.Equal(ok.At) {
+		t.Fatalf("failing after a good pull: %+v (last good %v)", s, ok.At)
+	}
+	if l := LedgerOf(All, Filter{Computer: remote}); len(l.Rows) != 1 {
+		t.Fatalf("the days it answered are gone: %d rows", len(l.Rows))
+	}
+	// the page's Pull now ends in the same status
+	status = http.StatusOK
+	got, err := PullPeerNow(context.Background(), "office")
+	if err != nil || got.Error != "" || got.At.Before(ok.At) {
+		t.Fatalf("pull now: %+v, %v", got, err)
+	}
+	if _, err := PullPeerNow(context.Background(), "nobody"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pull now for no such remote: %v", err)
+	}
+	// switched off: not a peer any more
+	p, err := provider.Find("office")
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := *p
+	off.Off = true
+	if err := provider.Save(off); err != nil {
+		t.Fatal(err)
+	}
+	if ps := Peers(); len(ps) != 0 {
+		t.Fatalf("a remote switched off is still told: %+v", ps)
 	}
 }

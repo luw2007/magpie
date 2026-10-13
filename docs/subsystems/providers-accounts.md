@@ -95,6 +95,26 @@ nothing aggregated is passed on to a third magpie.
 Verification: `TestPullPeersAggregatesRemoteDays`, `TestUsageDaysEndpoint`,
 `TestNetworkGatewayGuardsEveryRoute`.
 
+The Usage page's Requests tells the reader how each pull went, because the
+calls shown for a remote are only as new as its last good one.
+`usage.Peers` ([`usage/peers.go`](../../internal/usage/peers.go)) gives every
+remote magpie in use a `PeerStatus`, and `ledgerPage` sends them as `peers`.
+A remote not pulled yet is `pulling`, which the page words as reading, not
+as empty. A failed pull keeps its error and the time of the last good one
+(`at`), and `provider.RemoteErrorKind` sorts it as `unreachable`, `key`
+(401), `notShared` (403), `tooOld` (404 or 405) or `other`; the page words
+advice for each of the first four. The days already kept stay listed. A
+remote switched off or removed is no longer a peer, though its days stay
+kept. `POST /api/usage/peers/pull` with `{id}` asks one remote at once
+(`usage.PullPeerNow`), so nobody waits for the 5 minutes after adding a
+remote or fixing its key; an id that is not a remote in use is a 404. The
+status is in memory only: after a restart a remote is `pulling` until its
+first pull ends.
+
+Verification: `TestPeersSayHowEachPullWent`,
+`TestUsagePeersInLedgerAndPullNow`, and the browser test
+`usage-peers.test.cjs`.
+
 The CLI and TUI report model-list fetch errors for remote and other mixed providers
 (such as OpenRouter, serving conversation and decision models). Only a
 decision-only provider keeps the separate decision discovery behavior

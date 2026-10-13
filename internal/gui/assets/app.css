@@ -932,6 +932,16 @@ body.window .field.solo { grid-column: auto; }
 .led-arch-sw .lib-switch i { width: 12px; height: 12px; }
 .led-arch-sw .lib-switch.on i { transform: translateX(12px); }
 .led-arch-err { font-size: 11px; color: var(--red); cursor: default; }
+/* the remote magpies usage is pulled from: one calm line each, amber only when what is shown is stale or missing */
+.led-peers { display: flex; flex-direction: column; gap: 4px; padding: 6px 4px 0; }
+.led-peers[hidden] { display: none; }
+.led-peer { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: 11.5px; color: var(--muted); }
+.led-peer .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.led-peer.warn { color: var(--fg); }
+.led-peer.warn .dot { background: var(--amber); }
+.led-peer.wait .dot { background: var(--faint); }
+.led-peer .name { font-weight: 600; color: var(--fg-2); }
+.led-peer button.text { padding: 0 2px; font-size: 11.5px; }
 .led-sum { margin: 0 2px 7px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* the table scrolls sideways in its own box, never the page */
 .led-wrap { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
