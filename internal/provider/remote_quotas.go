@@ -213,10 +213,22 @@ func remoteMagpies() []Provider {
 func RemoteMagpies() []Provider { return remoteMagpies() }
 
 // RemoteGet asks remote magpie p's gateway at path for its {"data": …}
-// list, with p's key and the answers' errors told as the cards' are.
+// list, with p's key and the answers' errors told as the cards' are. Its
+// answer may be large (a day of calls is 10 MB on a busy computer), so it is
+// read up to remoteBulkMax in remoteBulkFor, where a quota card is read up to
+// 8 MiB in 8 seconds. An answer past the limit is an error, never a cut-off
+// body read as the end of the list.
 func RemoteGet(ctx context.Context, p Provider, path string, dst any) error {
-	return remoteJSON(ctx, p, http.MethodGet, path, dst)
+	return remoteJSONLimited(ctx, p, http.MethodGet, path, dst, remoteBulkMax, remoteBulkFor)
 }
+
+const (
+	remoteCardMax  = 8 << 20
+	remoteCardFor  = 8 * time.Second
+	remoteBulkMax  = 256 << 20
+	remoteBulkFor  = 2 * time.Minute
+	errRemoteLarge = "remote magpie's answer is larger than this one takes"
+)
 
 // RemoteCards is every remote magpie's cards, named for this computer.
 func RemoteCards(ctx context.Context) []SubscriptionQuota {
@@ -401,7 +413,11 @@ func askRemote(ctx context.Context, p Provider, method, path string) ([]Subscrip
 
 // remoteJSON asks p's gateway, with its key, for a {"data": …} list.
 func remoteJSON(ctx context.Context, p Provider, method, path string, dst any) error {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	return remoteJSONLimited(ctx, p, method, path, dst, remoteCardMax, remoteCardFor)
+}
+
+func remoteJSONLimited(ctx context.Context, p Provider, method, path string, dst any, max int64, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, p.Anthropic+path, nil)
 	if err != nil {
@@ -414,7 +430,13 @@ func remoteJSON(ctx context.Context, p Provider, method, path string, dst any) e
 		return fmt.Errorf("%s %s: %w", errRemoteUnreachable, remoteName(p), err)
 	}
 	defer res.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	b, err := io.ReadAll(io.LimitReader(res.Body, max+1))
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", errRemoteUnreachable, remoteName(p), err)
+	}
+	if int64(len(b)) > max {
+		return fmt.Errorf("%s", errRemoteLarge)
+	}
 	switch {
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed:
 		return fmt.Errorf("%s", errRemoteNoShare)

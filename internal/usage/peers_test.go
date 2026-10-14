@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,5 +200,39 @@ func TestPeersSayHowEachPullWent(t *testing.T) {
 	}
 	if ps := Peers(); len(ps) != 0 {
 		t.Fatalf("a remote switched off is still told: %+v", ps)
+	}
+}
+
+// A remote's days are far larger than a quota card: devbox's one day was
+// 10 MB and its whole window 42 MB. A pull that read them with the cards'
+// 8 MiB limit was cut off in the middle and failed as "unexpected end of
+// JSON input" every time once the remote had a busy day. A day bigger than
+// that is pulled whole and kept.
+func TestPullPeersTakesADayLargerThanAQuotaCard(t *testing.T) {
+	peerHome(t)
+	now := time.Now()
+	pad := strings.Repeat("x", 4096)
+	var calls []SharedCall
+	for i := range 3000 { // 3000 × ~4 KiB ≈ 12 MB, past the 8 MiB the cards are read with
+		calls = append(calls, SharedCall{Record: Record{Time: now.Add(-time.Duration(i) * time.Second), Model: "m", Session: pad, Input: 1, Status: 200}})
+	}
+	remote := "245eab618771c093"
+	answer, err := json.Marshal(map[string]any{"object": "list", "data": []SharedDay{{Computer: remote, Name: "devbox", Day: now.Format(time.DateOnly), Calls: calls}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(answer) <= 8<<20 {
+		t.Fatalf("the fixture is %d bytes, not past the cards' limit", len(answer))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(answer) }))
+	t.Cleanup(srv.Close)
+	if err := provider.Save(provider.Provider{ID: "office", Name: "Office", Preset: provider.RemoteMagpiePreset, Key: "k", Chat: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if errs := PullPeers(context.Background()); len(errs) != 0 {
+		t.Fatalf("a large day was not taken: %v", errs)
+	}
+	if l := LedgerOf(All, Filter{Computer: remote}); len(l.Rows) != 3000 {
+		t.Fatalf("%d of 3000 calls kept", len(l.Rows))
 	}
 }
