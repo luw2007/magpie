@@ -271,6 +271,7 @@
     start();
     if (changed) $("#view-routing").scrollTop = 0;
     if (page === "requests") { fitDays(); fitReqs(); }
+    drawSource();
   }
 
   const path = () => { const p = document.createElementNS(NS, "path"); wires.appendChild(p); return p; };
@@ -942,6 +943,11 @@
 
   const routes = new Map(); // id → the latest of each route
   let seq = 0, mine = true, loaded = false, daysAt = 0;
+  // source: the remote magpie (a remote-magpie provider's id) whose routing
+  // this page shows in place of this computer's; "" for this computer. Its
+  // decisions are its own, weighed by its providers and quota, so they are
+  // shown instead of this computer's, never mixed in, and kept nowhere here.
+  let source = "", srcGen = 0, pollAbort = null;
   let traceTotals = { requests: 0, rerouted: 0, errors: 0 };
   let offMsg = ""; // why the trace can't be watched here, when it can't
   // the request the window was opened on (?req=), from the tray panel
@@ -1870,7 +1876,7 @@
   window.openRoute = async (id, time, o = {}) => {
     let r = routes.get(id);
     if (!r) {
-      const res = await fetch("/api/gateway/route?id=" + encodeURIComponent(id) + "&day=" + encodeURIComponent(time.slice(0, 10)));
+      const res = await fetch(withSource("/api/gateway/route?id=" + encodeURIComponent(id) + "&day=" + encodeURIComponent(time.slice(0, 10))));
       if (res.status === 404) throw new Error(t("Routing history for this request is no longer available."));
       if (!res.ok) throw new Error(await res.text());
       r = whole(await res.json());
@@ -2061,10 +2067,13 @@
   };
   async function loadDays(d) {
     try {
-      const res = await (await fetch("/api/gateway/history?day=" + encodeURIComponent(d || ""))).json();
-      days = res.days || [];
-      noteAccounts(res.routes);
-      if (d && d === day) { past = (res.routes || []).map(whole); pastCut = !!res.cut; }
+      const r = await fetch(withSource("/api/gateway/history?day=" + encodeURIComponent(d || "")));
+      const res = await r.json();
+      if (source && !r.ok) { sourceNote(sourceFailed(res)); days = []; past = []; } else {
+        days = res.days || [];
+        noteAccounts(res.routes);
+        if (d && d === day) { past = (res.routes || []).map(whole); pastCut = !!res.cut; }
+      }
     } catch {}
     renderHist(); // shown once there are days, though none are live
   }
@@ -2133,7 +2142,7 @@
     return changed;
   }
   async function refreshSessionNames() {
-    if (namesBusy || !viewShown()) return;
+    if (namesBusy || !viewShown() || source) return; // another computer's sessions are named by its own files
     namesBusy = true;
     let others = false;
     try { others = await refreshOtherNames(); } catch {} finally { namesBusy = false; }
@@ -2558,7 +2567,7 @@
       // the Usage page read them (#1833): the figure above is the one
       // window routing went by. Live only: a kept day's requests were
       // weighed by readings long gone.
-      const ws = day ? [] : winsOf(w);
+      const ws = day || source ? [] : winsOf(w);
       if (ws.length) {
         const line = el("div", "wins");
         line.append(...ws.map((s) => el("span", "", s)));
@@ -2573,7 +2582,7 @@
         ms.append(...mdls.map((m) => el("code", "mdl", m)));
         row.append(ms);
       }
-      const lifts = resting ? (a.rest.key ? [a.rest] : []) : parts.map(([, x]) => x.rest).filter((x) => x.key);
+      const lifts = source ? [] : resting ? (a.rest.key ? [a.rest] : []) : parts.map(([, x]) => x.rest).filter((x) => x.key);
       if (lifts.length) {
         // any rest can be lifted by hand (#1869): a quota, a backoff, a
         // Retry-After, a network blip read as down. It only ends the rest;
@@ -3104,6 +3113,7 @@
   // countdowns tick once a second
   setInterval(() => {
     if (!viewShown()) return;
+    drawSource();
     if (shown() && !pinned && loaded && cur) sync();
     if (shown()) render();
     renderActs(listed());
@@ -3146,8 +3156,19 @@
   async function poll() {
     for (;;) {
       try {
-        const res = await fetch(`/api/gateway/trace?after=${seq}${loaded ? "&wait=1" : ""}`);
+        const myGen = srcGen, ac = pollAbort = new AbortController();
+        const res = await fetch(withSource(`/api/gateway/trace?after=${seq}${loaded ? "&wait=1" : ""}`), { signal: ac.signal });
         const d = await res.json();
+        if (myGen !== srcGen) continue; // switched while it was asked: the answer is the other computer's
+        if (source && !res.ok) {
+          offline(sourceFailed(d));
+          sourceNote(sourceFailed(d));
+          mine = true; loaded = false;
+          renderPanel();
+          for (let i = 0; i < 20 && myGen === srcGen; i++) await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        if (source) sourceNote("");
         noteAccounts(d);
         skew = at(d.now) - Date.now();
         mine = d.mine;
@@ -3221,13 +3242,72 @@
           wake();
           renderAll();
         }
-      } catch {
+      } catch (e) {
+        if (e?.name === "AbortError") continue; // switched to another computer
         await new Promise((r) => setTimeout(r, 3000));
       }
     }
   }
 
-  function hubText() { hubSub.textContent = (providers?.gateway?.url || "").replace(/^https?:\/\//, "") || t("gateway"); }
+  function hubText() { hubSub.textContent = source ? sourceName() : (providers?.gateway?.url || "").replace(/^https?:\/\//, "") || t("gateway"); }
+
+  // ---------- another computer's routing ----------
+
+  const withSource = (url) => source ? url + (url.includes("?") ? "&" : "?") + "source=" + encodeURIComponent(source) : url;
+  function sourceOpts() {
+    return (providers?.providers || []).filter((p) => p.preset === "remote-magpie" && !p.off).map((p) => ({ v: p.id, name: p.name, note: "" }));
+  }
+  const sourceName = () => sourceOpts().find((o) => o.v === source)?.name || source;
+  // what to do about a remote that did not answer, by the kind the server
+  // sorted its failure into (provider.RemoteErrorKind)
+  function sourceFailed(d) {
+    const name = sourceName();
+    switch (d?.kind) {
+      case "unreachable": return t("Can't reach {name}. Check that it is running and the address is right.", { name });
+      case "key": return t("{name} didn't take this key. Use one of its enabled gateway keys in the provider.", { name });
+      case "notShared": return t("{name} isn't shared. Turn on Share on local network on that computer.", { name });
+      case "tooOld": return t("{name} has no routing API. Update magpie on that computer.", { name });
+    }
+    return t("{name} didn't answer: {e}", { name, e: d?.error || "" });
+  }
+  // sourceNote says, over every pane, that the remote did not answer
+  function sourceNote(msg) {
+    const n = $("#rtSrcNote");
+    n.textContent = msg;
+    n.hidden = !msg;
+  }
+  function setSource(id) {
+    if (id === source) return;
+    source = id;
+    srcGen++;
+    pollAbort?.abort();
+    if (rp) endReplay(true);
+    stopPlays();
+    routes.clear();
+    seq = 0; loaded = false; mine = true; offMsg = "";
+    traceTotals = { requests: 0, rerouted: 0, errors: 0 };
+    day = ""; days = []; past = []; pastCut = false;
+    pinned = null; cur = null; capQ = [];
+    empty();
+    srcKey = "";
+    sourceNote("");
+    drawSource();
+  }
+  // The picker is there once a remote magpie is in use, on the pages that
+  // show requests; a remote taken away while it is looked at is left for
+  // this computer.
+  let srcKey = "";
+  function drawSource() {
+    const btn = $("#rtSource");
+    if (!btn) return;
+    const opts = sourceOpts();
+    if (source && !opts.some((o) => o.v === source)) { setSource(""); return; }
+    const key = source + "|" + routingPage + "|" + opts.map((o) => o.v + ":" + o.name).join(",");
+    if (key === srcKey) return;
+    srcKey = key;
+    sessPick(btn, "This computer", source, opts, "Computer", setSource);
+    btn.hidden = !opts.length || routingPage === "groups" || routingPage === "pools";
+  }
 
   // labels in the page's language, and again when it changes
   function words() {

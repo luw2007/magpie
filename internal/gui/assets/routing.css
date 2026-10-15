@@ -140,6 +140,7 @@
 .rt-steps li.bad::before { background: var(--red); }
 .rt-steps li.wait::before { animation: rtlive 1.8s infinite; }
 .rt-off { padding: 18px 4px; text-align: center; color: var(--muted); font-size: 13px; }
+.rt-srcnote { margin: 0 0 10px; padding: 8px 12px; border-radius: 9px; background: var(--card); box-shadow: var(--card-edge); color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 @media (prefers-reduced-motion: reduce) {
   .rt-accts li.on .dot, .rt-wires path.live, .rt-sky .pkt.held, .rt-accts li.new, .rt-accts li.hit, .rt-hub.tick, .rt-src.tick, .rt-cap.in, .rt-steps li.wait::before, .masking .pii { animation: none; }
   .rt-accts li { transition: none; }

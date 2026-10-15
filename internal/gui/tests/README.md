@@ -1944,6 +1944,15 @@ that remote alone and the line follows the reloaded list; the click moves
 nothing and no row has a left border. English and Chinese, Chromium and
 WebKit, with the API faked.
 
+`routing-source.test.cjs` checks the Routing page's Computer picker: none
+without a remote magpie, and nothing asked with a source; choosing a remote
+asks the live trace and the kept days with `source=` and replaces this
+computer's requests with the remote's, and choosing This computer again
+brings them back; a remote that fails (can't be reached, doesn't take the key,
+isn't shared, too old, anything else) says what to do about it over the page,
+keeps none of this computer's requests under its name, and is gone once the
+remote answers. English and Chinese, Chromium and WebKit, with the API faked.
+
 With Node.js and Playwright available, `make test-ui` manually runs the whole suite:
 every `internal/gui/tests/*.test.cjs`, discovered automatically. Files are
 independent and run a few at a time (`UI_TEST_CONCURRENCY`, default 2); set

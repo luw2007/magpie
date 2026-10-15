@@ -81,8 +81,6 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		gw = &gateway.Server{}
 	}
 	routes = gw.ResolveTitleParents(routes)
-	out := make([]routeJSON, 0, len(routes))
-	priceOf := usage.NewPricer()
 	ids := make([]string, 0, len(routes))
 	for _, r := range routes {
 		if r.Agent == "codex" {
@@ -94,6 +92,23 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		}
 	}
 	titles := sessions.CodexTitles(ids)
+	return priceRoutes(routes, func(r gateway.Route) string {
+		if r.Agent != "codex" {
+			return ""
+		}
+		if r.ParentSession != "" {
+			return titles[r.ParentSession]
+		}
+		return titles[r.Session]
+	})
+}
+
+// priceRoutes prices routes by this computer's price list; title names a
+// route's session. Another computer's routes get no title: its session ids
+// name nothing in this computer's own chats.
+func priceRoutes(routes []gateway.Route, title func(gateway.Route) string) []routeJSON {
+	out := make([]routeJSON, 0, len(routes))
+	priceOf := usage.NewPricer()
 	for _, r := range routes {
 		recs := make([]usage.Record, len(r.Usage))
 		for i, u := range r.Usage {
@@ -103,12 +118,8 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 		// Old history and calls without token counts stay unknown, not free.
 		priced := sum.Calls > sum.Unpriced && sum.Input+sum.Output > 0
 		name := ""
-		if r.Agent == "codex" {
-			id := r.Session
-			if r.ParentSession != "" {
-				id = r.ParentSession
-			}
-			name = titles[id]
+		if title != nil {
+			name = title(r)
 		}
 		out = append(out, routeJSON{Route: r, SessionTitle: name, Cost: sum.Cost, Priced: priced, Unpriced: sum.Unpriced})
 	}
@@ -243,6 +254,12 @@ func traceRoutes(mux *http.ServeMux) {
 			"resetInferred": in.Day != "" && rows == nil})
 	})
 	mux.HandleFunc("GET /api/gateway/route", func(rw http.ResponseWriter, r *http.Request) {
+		if p, ok := remoteSource(rw, r); ok {
+			if p.ID != "" {
+				remoteRoute(rw, r, p)
+			}
+			return
+		}
 		id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
 		if err != nil || id <= 0 {
 			http.Error(rw, "invalid route id", http.StatusBadRequest)
@@ -268,6 +285,12 @@ func traceRoutes(mux *http.ServeMux) {
 		http.Error(rw, "route history is no longer available", http.StatusNotFound)
 	})
 	mux.HandleFunc("GET /api/gateway/trace", func(rw http.ResponseWriter, r *http.Request) {
+		if p, ok := remoteSource(rw, r); ok {
+			if p.ID != "" {
+				remoteTrace(rw, r, p)
+			}
+			return
+		}
 		gw := served.Load()
 		out := traceJSON{TraceState: gateway.TraceState{Routes: []gateway.Route{}}, Mine: gw != nil}
 		if gw != nil {
@@ -285,6 +308,12 @@ func traceRoutes(mux *http.ServeMux) {
 	// the routes of a day gone by, from the history the gateway keeps on
 	// disk — read whichever magpie serves the gateway
 	mux.HandleFunc("GET /api/gateway/history", func(rw http.ResponseWriter, r *http.Request) {
+		if p, ok := remoteSource(rw, r); ok {
+			if p.ID != "" {
+				remoteHistory(rw, r, p)
+			}
+			return
+		}
 		day := r.URL.Query().Get("day")
 		days, routes, cut := gateway.History(day)
 		rememberTitleHistory(day, routes)

@@ -143,6 +143,47 @@ Verification: `TestPeersSayHowEachPullWent`,
 `TestUsagePeersInLedgerAndPullNow`, and the browser test
 `usage-peers.test.cjs`.
 
+### Routing across computers
+
+The Routing page can show a remote magpie's routing in place of this
+computer's. Routing is each computer's own decision, weighed by its own
+providers, accounts and quota, so it is switched, never merged, and nothing of
+it is stored here. The remote answers three read-only paths
+([`gateway/trace_peers.go`](../../internal/gateway/trace_peers.go)):
+`GET /v1/magpie/trace?after=&wait=` (the live trace; `wait` is capped at 25
+seconds, as the page's own long poll waits), `GET /v1/magpie/trace/history?day=`
+(the days kept, and the routes of one) and `GET /v1/magpie/trace/route?id=&day=`
+(one request, `null` when it has none: a 404 would read as "no such API"). All
+three follow the quotas' rule: this machine, or another with an enabled gateway
+key while the gateway is shared (`local`, `sharedWith`), and a key held to a
+budget, models or accounts is refused (`refuseHeld`, `heldRefused`), since the
+routes of every key's requests are not its to see.
+
+On the Mac, `?source=<id of a remote-magpie provider>` on `/api/gateway/trace`,
+`/history` and `/route` turns the read to that provider
+([`gui/trace_remote.go`](../../internal/gui/trace_remote.go), `remoteSource`).
+The answer has the local shape, priced by this computer's price list
+(`priceRoutes`) with no session titles, since another computer's session ids
+name nothing in this one's chats. An id that is no remote magpie in use is a
+404, never the local routing under another name. A remote that can't answer is
+a 502 `{error, kind}` with `provider.RemoteErrorKind`'s kind. It is fetched with
+`provider.RemoteGet`, so a day's routes can be as large as a usage day.
+
+The page (`source` in [`routing.js`](../../internal/gui/assets/routing.js)) has
+a Computer picker (`#rtSource`) beside the tabs, there only once a remote magpie
+is in use and not on the Groups and Several accounts pages, which are this
+computer's. Choosing a computer empties the page, ends a replay and the long
+poll in flight (`setSource`, `srcGen`), and asks all three reads with
+`source`; an answer that came back after a switch is dropped. A failure is told
+over every pane (`#rtSrcNote`) in words for its kind. For another computer the
+page leaves out this computer's quota windows and the Try now button, which
+lifts a rest on this gateway, and asks no session titles. A remote taken away
+while looked at returns the page to this computer.
+
+Verification: `TestPeerRoutingEndpoints`, `TestHeldKeyToldNoAccounts`,
+`TestNetworkGatewayGuardsEveryRoute`, `TestRoutingReadsARemoteMagpie`, and the
+browser test `routing-source.test.cjs`.
+
 The CLI and TUI report model-list fetch errors for remote and other mixed providers
 (such as OpenRouter, serving conversation and decision models). Only a
 decision-only provider keeps the separate decision discovery behavior
