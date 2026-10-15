@@ -758,6 +758,15 @@ leaves no `.view-room` and no blank under the page, nor scrolls it beyond
 the browser's own fit (#911). English and Chinese, light and dark;
 ARTIFACT_DIR gets screenshots at 100% and 150%.
 
+`page-width-setting.test.cjs` checks Settings › Page width (1200, 1600, 2000
+and Full width): a page that never chose keeps 1200 of content; a pick posts
+to /api/settings/page-width alone, widens every page at once and centred, and
+Full width leaves the 16px gutters; the width is there before the first paint
+after a reload (boot.js carries it), a window narrower than the pick keeps its
+gutter, and a save of the other settings leaves it be. English and Chinese,
+light and dark, Chromium and WebKit, with the API faked. `page-width.test.cjs`
+holds the default 1200 for every page.
+
 `settings-groups.test.cjs` puts the Settings page's warm-ups and check-in
 under a tab per service (#124): Codex, Claude Code and WorkBuddy tabs where a
 heading would be, in the Usage part after its list, Codex's picked to

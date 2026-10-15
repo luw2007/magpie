@@ -785,7 +785,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		s := settings.Load()
 		// and the text size, which the Mac's header measures against the
 		// traffic lights
-		boot := map[string]any{"lang": s.Lang, "theme": s.Theme, "textSize": s.TextSize, "web": isWeb(w)}
+		boot := map[string]any{"lang": s.Lang, "theme": s.Theme, "textSize": s.TextSize, "pageWidth": s.PageWidth, "web": isWeb(w)}
 		if !isWeb(w) {
 			boot["uiFont"], boot["codeFont"] = s.UIFont, s.CodeFont
 		}
@@ -1212,6 +1212,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.CodexWarmAtOf = cur.CodexWarmAtOf
 		// and the text size, which the keyboard changes too (text-size below)
 		in.TextSize = cur.TextSize
+		in.PageWidth = cur.PageWidth // and the page width, set on its own (page-width below)
 		// the version the Update pill was hidden for, set from the pill
 		in.UpdateSkip = cur.UpdateSkip
 		// the GitHub mirror updates come through, set by magpie update mirror
@@ -1738,6 +1739,23 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			off = nil
 		}
 		s.CheckinOff = off
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// how wide the pages are drawn on a large screen (Settings' choice),
+	// set on its own so the general save, which an older page sends without
+	// it, never puts it back
+	mux.HandleFunc("POST /api/settings/page-width", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Width int }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		s.PageWidth = in.Width
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return

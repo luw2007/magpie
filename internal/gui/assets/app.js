@@ -20094,6 +20094,26 @@ function applyZoom(n) {
   document.documentElement.style.setProperty("--zoom", web ? 1 : (n || 100) / 100);
 }
 let textSize = window.bootPrefs?.textSize || 100;
+// PAGE_WIDTHS are the content widths Settings offers on a large screen, in
+// px, -1 the whole window; 1200 is what a page that never chose has.
+const PAGE_WIDTHS = [[1200, "1200"], [1600, "1600"], [2000, "2000"], [-1, "Full width"]];
+function applyPageWidth(n) {
+  document.documentElement.style.setProperty("--page-half", n < 0 ? "100000px" : (n || 1200) / 2 + "px");
+}
+async function setPageWidth(n) {
+  if (n === (prefs?.pageWidth || 1200)) return;
+  applyPageWidth(n);
+  try {
+    prefs = await writingPrefs(api("settings/page-width", { width: n }));
+    state.settings = prefs;
+    if (view === "settings") renderSettings();
+    status(t("Page width: {w}", { w: t(PAGE_WIDTHS.find(([v]) => v === n)?.[1] || String(n)) }), "ok");
+  } catch (e) {
+    applyPageWidth(prefs?.pageWidth || 1200);
+    status(t(e.message), "err");
+    if (view === "settings") renderSettings();
+  }
+}
 // A new text size lays every page out anew: what was clicked (the size's
 // own button) isn't held where it was, nor any room kept for it, or the
 // page zoomed out at its foot was given a blank as tall as it shrank
@@ -20289,6 +20309,7 @@ function applyPrefs(s, rate) {
   }
   applyPrefs.painted = true;
   if (!prefsBusy && (s.textSize || 100) !== textSize) { textSize = s.textSize || 100; newTextSize(); applyZoom(textSize); }
+  applyPageWidth(s.pageWidth || 1200); // set from another window or the CLI, it follows
   const was = locale;
   setLocale(s.lang);
   if (was !== locale && mode === "window") queueMicrotask(() => { if (!sideNav()) slide($("#nav"), "nav"); navSubs(); renderSideGw(); renderSideToggle(); });
@@ -20667,6 +20688,7 @@ function renderSettings() {
   // the keys that do it too, kept in the choices' tooltip, the row saying no more than its name
   $("#textSizeSegs").title = t("Everything in magpie's windows, larger; {keys} too", { keys: textSizeKeys() });
   $("#textSizeSegs").replaceChildren(segs(TEXT_SIZES.map((n) => [n, n + "%"]), s.textSize || 100, (n) => setTextSize(n)));
+  $("#pageWidthSegs").replaceChildren(segs(PAGE_WIDTHS.map(([n, name]) => [n, t(name)]), s.pageWidth || 1200, (n) => setPageWidth(n)));
   $("#traySegs").replaceChildren(segs(TRAYS.map(([id, name]) => [id, t(name)]), s.tray || "panel", (tray) => savePrefs({ ...keep, tray })));
   // the Dock is the Mac's; the tray and the login item the app's
   $("#dockRow").hidden = !document.body.classList.contains("mac");

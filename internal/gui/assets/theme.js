@@ -9,4 +9,7 @@
   if (theme) document.documentElement.dataset.theme = theme;
   var prefs = window.bootPrefs;
   if (prefs) document.documentElement.style.setProperty("--zoom", prefs.web ? 1 : (prefs.textSize || 100) / 100);
+  // The content's width on a large screen (settings.PageWidth): 0 is the
+  // default 1200, -1 the whole window (a half no window is wider than).
+  if (prefs && prefs.pageWidth) document.documentElement.style.setProperty("--page-half", prefs.pageWidth < 0 ? "100000px" : prefs.pageWidth / 2 + "px");
 })();

@@ -161,6 +161,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexNoCredits:       []string{"me@example.com"},
 		CodexWarmAtOf:        map[string]string{"me@example.com": "09:00"},
 		TextSize:             125,
+		PageWidth:            1600,
 		UpdateSkip:           "0.1.500",
 		UpdateMirror:         "https://mirror.example/",
 		Window:               []int{900, 700},

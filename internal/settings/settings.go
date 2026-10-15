@@ -434,6 +434,11 @@ type Settings struct {
 	// drawn, in percent (one of TextSizes): the webviews' own zoom, as a
 	// browser's, so the text and everything around it grow together.
 	TextSize int `json:"textSize,omitempty"`
+	// PageWidth is how wide the window's pages are drawn on a large screen,
+	// in CSS pixels of content (one of PageWidths), every page centred in it.
+	// 0 is not chosen, which is 1200 (#860); -1 is no limit, the whole
+	// window. This computer's own, like TextSize: sync never replaces it.
+	PageWidth int `json:"pageWidth,omitempty"`
 	// UIFont and CodeFont are this computer's installed faces. Nil keeps
 	// the platform's stack (or Omarchy's). Sync never replaces them.
 	UIFont   *fonts.Face `json:"uiFont,omitempty"`
@@ -743,6 +748,9 @@ var (
 	// TextSizes are TextSize's values, in percent. None is under 100: the
 	// webviews' zoom on Windows and Linux (Wails' SetZoom) goes no lower.
 	TextSizes = []int{100, 110, 125, 150}
+	// PageWidths are PageWidth's values: the content's width in px, and -1
+	// for the whole window. 0 is "not chosen", which is 1200.
+	PageWidths = []int{0, 1200, 1600, 2000, -1}
 )
 
 // SearchFirst's values: a provider's search first, saved as "", or the
@@ -867,6 +875,7 @@ func (s Settings) Compact() int {
 func (s *Settings) KeepOwn(cur Settings) {
 	s.GatewayConversations = cur.GatewayConversations
 	s.UIFont, s.CodeFont = cur.UIFont, cur.CodeFont
+	s.PageWidth = cur.PageWidth
 	s.Window, s.Proxy, s.Port, s.Dock, s.DockWindow, s.Lightweight = cur.Window, cur.Proxy, cur.Port, cur.Dock, cur.DockWindow, cur.Lightweight
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird
@@ -1140,6 +1149,9 @@ func save(s Settings, recording bool) error {
 	}
 	if !slices.Contains(TextSizes, s.TextSize) {
 		return fmt.Errorf("text size must be one of %v percent, not %d", TextSizes, s.TextSize)
+	}
+	if !slices.Contains(PageWidths, s.PageWidth) {
+		return fmt.Errorf("page width must be one of %v px (-1 for the whole window), not %d", PageWidths, s.PageWidth)
 	}
 	s.OTel.Endpoint = strings.TrimRight(strings.TrimSpace(s.OTel.Endpoint), "/")
 	if err := s.OTel.Check(); err != nil {
