@@ -47,10 +47,14 @@ func TestReboundPageRefused(t *testing.T) {
 	if c := call("GET", evil, "User-Agent", "Mozilla/5.0 (Macintosh) Safari/605"); c != http.StatusForbidden || reached {
 		t.Fatal("an older browser:", c)
 	}
-	for _, host := range []string{"127.0.0.1:3425", "localhost:3425", "[::1]:3425", "wails.localhost", "host.docker.internal:3425", "LOCALHOST.:3425"} {
+	for _, host := range []string{"127.0.0.1:3425", "localhost:3425", "[::1]:3425", "host.docker.internal:3425", "LOCALHOST.:3425"} {
 		if c := call("GET", host, chrome...); c != 200 || !reached {
 			t.Fatal("a browser at", host, c)
 		}
+	}
+	// a subdomain of localhost is a name Safari asks the DNS for (#2256)
+	if c := call("GET", "wails.localhost", chrome...); c != http.StatusForbidden || reached {
+		t.Fatal("a browser at a localhost subdomain:", c)
 	}
 	// an agent sends no browser marks, whatever name it was given
 	if c := call("POST", evil, "Authorization", "Bearer magpie", "User-Agent", "claude-cli/2.1"); c != 200 || !reached {

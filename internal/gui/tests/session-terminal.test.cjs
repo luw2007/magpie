@@ -109,10 +109,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal((await select.textContent()).trim(), lang === "zh" ? "系统默认（Terminal）" : "System default (Terminal)");
       const top = await page.evaluate(() => document.scrollingElement.scrollTop);
 
+      // the page is drawn again once the save is in; a Theme button from
+      // before then still sends the page as it was drawn, the old terminal
+      // with it, so the Theme click below waits for the new buttons, as a
+      // reader can only click what is on the page
+      await page.evaluate(() => document.querySelectorAll("#themeSegs .opt").forEach((b) => { b.dataset.before = "1"; }));
       await choose("Ghostty");
       assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), top, "the page doesn't move");
       await page.waitForFunction(() => document.querySelector("#sessionTerminalSelect").dataset.value === "com.mitchellh.ghostty");
       assert.equal((await select.textContent()).trim(), "Ghostty");
+      await page.waitForFunction(() => !document.querySelector("#themeSegs .opt[data-before]"));
       // another setting saved (Theme, scrolled away above) keeps the terminal
       await page.locator("#themeSegs .opt").last().evaluate((b) => b.click());
       await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");

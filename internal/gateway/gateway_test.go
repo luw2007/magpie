@@ -972,12 +972,14 @@ func TestModelsListReasoning(t *testing.T) {
 	}
 	want := map[string]string{
 		"a/sol": "low,medium,high,max", "b/sol": "medium,high", "group/auto-sol": "medium,high",
-		"a/mixed": "low,high", "b/mixed": "", "group/auto-mixed": "", "a/plain": "",
+		"a/mixed": "low,high", "b/mixed": "", "group/auto-mixed": "low,high", "a/plain": "",
 	}
 	// a group reasons when any member does: b/mixed has no levels and a
 	// list that says nothing of reasoning, but a/mixed does, so the group
-	// is told to reason — Levelless, with no levels to pick from (#756's
-	// rule for images, applied to reasoning)
+	// is told to reason (#756's rule for images, applied to reasoning),
+	// at a/mixed's levels: b/mixed is sent no reasoning ask (quiet.go), so
+	// it doesn't take them away (#2127: Codex showed no effort control for
+	// a group with none, and ran it at medium)
 	reasoning := map[string]bool{"group/auto-mixed": true}
 	for _, m := range response.Data {
 		expected, ok := want[m.ID]

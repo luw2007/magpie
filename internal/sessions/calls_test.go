@@ -213,13 +213,13 @@ func TestCallsCodex(t *testing.T) {
 
 	cs := Calls(time.Time{})
 	want := []Call{
-		{Time: callT0.Add(200 * time.Second), Agent: "codex", Session: "0190cccc-1111-7222-8333-444455556666", Tokens: Tokens{6, 3, 4, 0, 0}},
-		{Time: callT0.Add(103 * time.Second), Agent: "codex", Session: "thread-2", Model: "gpt-6-astra", Tokens: Tokens{500, 20, 0, 0, 0}, Reasoning: 5, Effort: "medium", Cwd: "/work/it", Millis: 1000},
-		{Time: callT0.Add(102 * time.Second), Agent: "codex", Session: "thread-2", Model: "gpt-6-astra", Tokens: Tokens{100, 100, 3900, 0, 0}, Reasoning: 30, Effort: "medium", Cwd: "/work/it", Millis: 1000},
+		{Time: callT0.Add(200 * time.Second), Agent: "codex", Session: "0190cccc-1111-7222-8333-444455556666", ThreadID: "0190cccc-1111-7222-8333-444455556666", Tokens: Tokens{6, 3, 4, 0, 0}},
+		{Time: callT0.Add(103 * time.Second), Agent: "codex", Session: "thread-2", ThreadID: "thread-2", Model: "gpt-6-astra", Tokens: Tokens{500, 20, 0, 0, 0}, Reasoning: 5, Effort: "medium", Cwd: "/work/it", Millis: 1000},
+		{Time: callT0.Add(102 * time.Second), Agent: "codex", Session: "thread-2", ThreadID: "thread-2", Model: "gpt-6-astra", Tokens: Tokens{100, 100, 3900, 0, 0}, Reasoning: 30, Effort: "medium", Cwd: "/work/it", Millis: 1000},
 		// input_tokens holds the cache write as well as the read (#589): 2500 - 2000 - 300
-		{Time: callT0.Add(12 * time.Second), Agent: "codex", Session: "sess-x", Model: "gpt-6-luna", Tokens: Tokens{200, 150, 2000, 300, 0}, Reasoning: 40, Effort: "low", Cwd: "/work/it", Millis: 1000},
-		{Time: callT0.Add(11 * time.Second), Agent: "codex", Session: "sess-x", Model: "gpt-6-luna", Tokens: Tokens{1000, 100, 1000, 0, 0}, Reasoning: 40, Effort: "low", Cwd: "/work/it", Millis: 1000},
-		{Time: callT0.Add(2 * time.Second), Agent: "codex", Session: "sess-x", Model: "gpt-6-astra", Tokens: Tokens{400, 50, 600, 0, 0}, Reasoning: 20, Effort: "high", Cwd: "/work/it", TTFT: 700, Millis: 5000},
+		{Time: callT0.Add(12 * time.Second), Agent: "codex", Session: "sess-x", ThreadID: "thread-id", Model: "gpt-6-luna", Tokens: Tokens{200, 150, 2000, 300, 0}, Reasoning: 40, Effort: "low", Cwd: "/work/it", Millis: 1000},
+		{Time: callT0.Add(11 * time.Second), Agent: "codex", Session: "sess-x", ThreadID: "thread-id", Model: "gpt-6-luna", Tokens: Tokens{1000, 100, 1000, 0, 0}, Reasoning: 40, Effort: "low", Cwd: "/work/it", Millis: 1000},
+		{Time: callT0.Add(2 * time.Second), Agent: "codex", Session: "sess-x", ThreadID: "thread-id", Model: "gpt-6-astra", Tokens: Tokens{400, 50, 600, 0, 0}, Reasoning: 20, Effort: "high", Cwd: "/work/it", TTFT: 700, Millis: 5000},
 	}
 	if len(cs) != len(want) {
 		t.Fatalf("want %d calls, got %d: %+v", len(want), len(cs), cs)
@@ -592,6 +592,131 @@ func TestCallsCodexTimedFromTheAsk(t *testing.T) {
 	}
 	if fmt.Sprint(took) != "[15000 29000 8000 9000]" {
 		t.Fatalf("took %v", took)
+	}
+}
+
+// A Claude Code compaction is no call of the file's, but its compact_boundary
+// line says how long it took (shape from a real 2026-10 transcript): the
+// first call after it carries that, an API error between them does not take
+// it, and a call with no compaction before it carries none.
+func TestCallsClaudeCompactTook(t *testing.T) {
+	d := setupCalls(t)
+	boundary := func(sec, ms int) string {
+		return fmt.Sprintf(`{"parentUuid":null,"logicalParentUuid":"p","isSidechain":false,"type":"system","subtype":"compact_boundary","content":"Conversation compacted","isMeta":false,"timestamp":"%s","uuid":"b%d","level":"info","compactMetadata":{"trigger":"auto","preTokens":169492,"postTokens":7669,"durationMs":%d},"sessionId":"sess1","cwd":"/work/app"}`, stamp(sec), sec, ms)
+	}
+	summary := func(sec int) string {
+		return fmt.Sprintf(`{"type":"user","timestamp":"%s","message":{"role":"user","content":"This session is being continued"},"isCompactSummary":true,"sessionId":"sess1"}`, stamp(sec))
+	}
+	writeLines(t, filepath.Join(d.claude, "projects", "-work-app", "sess1.jsonl"),
+		claudeMsg("a", "claude-opus-5-5", 1, 1, 160000, 0, 10),
+		boundary(60, 48913),
+		summary(60),
+		claudeSynthetic("API Error: overloaded", 61, `,"isApiErrorMessage":true`),
+		claudeMsg("b", "claude-opus-5-5", 1, 1, 0, 9000, 70),
+		claudeMsg("c", "claude-opus-5-5", 1, 1, 9000, 0, 80),
+	)
+	got := map[string]int64{}
+	check := func() {
+		t.Helper()
+		clear(got)
+		for _, c := range Calls(time.Time{}) {
+			got[c.RequestID+c.Error] += c.Compact
+		}
+		if got["req_a"] != 0 || got["req_b"] != 48913 || got["req_c"] != 0 || got["unknown"] != 0 {
+			t.Fatalf("compact: %v", got)
+		}
+	}
+	check()
+	Reset() // read again from the call cache
+	check()
+}
+
+// Codex compacts by a call of its own (a token_usage_record the compacted
+// line names): that call's time is the compaction's (real fixture: asked at
+// task_started 01:41:35.120, answered 01:44:20.576). Other calls carry none.
+func TestCallsCodexCompactTook(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "codex-native-compaction.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexUsageLog(t, strings.Split(strings.TrimSpace(string(data)), "\n"))
+	check := func() {
+		t.Helper()
+		got := map[string]int64{}
+		for _, c := range Calls(time.Time{}) {
+			got[c.ResponseID] = c.Compact
+		}
+		for id, ms := range got {
+			if want := map[bool]int64{true: 165456}[id == "resp_4"]; ms != want {
+				t.Fatalf("compact %v", got)
+			}
+		}
+		if _, ok := got["resp_4"]; !ok {
+			t.Fatalf("no compaction call: %v", got)
+		}
+	}
+	check()
+	Reset()
+	check()
+}
+
+func TestCallsCodexLateCompactionMarkerPatchesZeroDuration(t *testing.T) {
+	u := cxUse(100, 40, 0, 10, 2)
+	lines := append(cxTurnLines(0, "t1", "gpt-6-astra", "high"), cxRecordLine(0, "resp-zero", u, u))
+	path := codexUsageLog(t, lines)
+	find := func(want bool) Call {
+		t.Helper()
+		for _, call := range Calls(time.Time{}) {
+			if call.ResponseID == "resp-zero" {
+				if call.Compaction != want {
+					t.Fatalf("compaction marker %v; want %v: %+v", call.Compaction, want, call)
+				}
+				return call
+			}
+		}
+		t.Fatalf("compaction response missing: %+v", Calls(time.Time{}))
+		return Call{}
+	}
+	if call := find(false); call.Compact != 0 || call.Millis != 0 {
+		t.Fatalf("initial call has unexpected timing: %+v", call)
+	}
+	appendText(t, path, cxCompactionLine(0, "resp-zero", u, u)+"\n")
+	if call := find(true); call.Compact != 0 || call.Millis != 0 {
+		t.Fatalf("late marker changed zero duration: %+v", call)
+	}
+	Reset()
+	if call := find(true); call.Compact != 0 || call.Millis != 0 {
+		t.Fatalf("cached marker lost zero duration: %+v", call)
+	}
+}
+
+func TestCallsCodexOldCacheWithoutCompactionMarkerIsIgnored(t *testing.T) {
+	u := cxUse(100, 40, 0, 10, 2)
+	lines := append(cxTurnLines(0, "t1", "gpt-6-astra", "high"), cxRecordLine(0, "resp-old-cache", u, u), cxCompactionLine(0, "resp-old-cache", u, u))
+	path := codexUsageLog(t, lines)
+	if calls := Calls(time.Time{}); len(calls) != 1 || !calls[0].Compaction {
+		t.Fatalf("native compaction: %+v", calls)
+	}
+	st := loadCalls(file{path: path, agent: "codex"})
+	if st == nil || len(st.Calls) != 1 {
+		t.Fatal("could not load the cached call")
+	}
+	st.Calls[0].Compaction = false // an older cache has no marker field
+	writeCalls(st, 0, false)
+	old := filepath.Join(filepath.Dir(CachePath()), "calls-v14", hashHead(path)+".gob")
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(callCachePath(path), old); err != nil {
+		t.Fatal(err)
+	}
+	Reset()
+	calls := Calls(time.Time{})
+	if len(calls) != 1 || !calls[0].Compaction {
+		t.Fatalf("old cache hid the native compaction marker: %+v", calls)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old call cache still exists: %v", err)
 	}
 }
 

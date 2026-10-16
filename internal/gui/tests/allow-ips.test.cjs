@@ -44,7 +44,7 @@ function clean(list) {
     if (!/^[0-9a-f:.]+(\/\d+)?$/i.test(e)) return { error: `"${raw}" is not an IP address or range: write it as 203.0.113.7, 10.0.0.0/8 or 2001:db8::/32` };
     if (!out.includes(e)) out.push(e);
   }
-  if (out.length && out.every((e) => e.startsWith("172.16."))) return { error: "that allow list would shut out 203.0.113.50, the address this page is open from: add it first" };
+  if (out.length && !out.includes("203.0.113.50") && out.every((e) => e.startsWith("172.16."))) return { error: "that allow list would shut out 203.0.113.50, the address this page is open from: add it first" };
   return { ips: out };
 }
 
@@ -81,7 +81,9 @@ const en = {
   sub: "Other computers reach magpie only from these addresses or ranges (CIDR), even with a gateway key; this computer always can. None listed lets every address in",
   envSub: "Set by MAGPIE_ALLOW_IPS. Other computers reach magpie only from these addresses, even with a gateway key; this computer always can",
   notIP: "Write an address as 203.0.113.7, or a range as 10.0.0.0/8 or 2001:db8::/32",
-  shutOut: "That list leaves out the address this page is open from: add it first, or this page can’t reach magpie",
+  shutOut: "That list leaves out {addr}, the address magpie sees this page open from: add it first, or this page can’t reach magpie",
+  fix: "Add {addr}",
+  fixTip: "Behind Docker or a reverse proxy, this is the proxy’s address, not your computer’s: adding it lets in everyone who comes through that proxy",
   envSet: "MAGPIE_ALLOW_IPS sets this list; change it there",
 };
 const zh = { name: "允许的地址", add: "添加", remove: "移除" };
@@ -241,9 +243,26 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(30);
       }
       await box.locator(".allow-ip-row").filter({ hasText: "203.0.113.50" }).locator("button").click();
-      const says = await page.evaluate((s) => t(s), en.shutOut);
+      // the refusal names the address magpie sees the page from
+      // (Mathresearcher on Discord: which one?), in the page's language
+      const says = await page.evaluate((s) => t(s, { addr: "203.0.113.50" }), en.shutOut);
+      assert.match(says, /203\.0\.113\.50/);
       await page.waitForFunction((s) => document.querySelector("#allowList .rule-row .sub.err")?.textContent.trim() === s, says);
       assert.equal(await box.locator(".allow-ip-row").count(), 2, "nothing saved");
+      // and adds it to the list that was refused in one click, which then saves
+      const fix = row.locator("button.allow-fix");
+      assert.equal((await fix.textContent()).trim(), await page.evaluate((s) => t(s, { addr: "203.0.113.50" }), en.fix));
+      assert.equal(await fix.getAttribute("title"), await page.evaluate((s) => t(s), en.fixTip));
+      await fits(box);
+      const view = page.locator("#view-settings");
+      const scroll = () => view.evaluate((v) => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok(v.scrollTop)))));
+      const before = await scroll();
+      await fix.click();
+      await page.waitForFunction(() => !document.querySelector("#allowList .rule-row .sub.err"));
+      assert.deepEqual(posts.at(-1), ["172.16.0.0/12", "203.0.113.50"]);
+      assert.deepEqual(await box.locator(".allow-ip-row .name").allTextContents(), ["172.16.0.0/12", "203.0.113.50"]);
+      assert.equal(await row.locator("button.allow-fix").count(), 0, "the fix goes with the refusal");
+      assert.equal(await scroll(), before, "the fix moved the page");
       assert.deepEqual(errors, []);
       await page.context().close();
     });

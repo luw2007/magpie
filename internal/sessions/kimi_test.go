@@ -127,6 +127,53 @@ func TestKimiCodeSessions(t *testing.T) {
 	}
 }
 
+// #2103 (infinitr0us): a session whose state.json names no folder (1.4's
+// early ones, those migrated from the Python kimi-cli) takes it from
+// session_index.jsonl, as Kimi documents it; a folder state.json names wins.
+func TestKimiCodeSessionFolderFromIndex(t *testing.T) {
+	inZone(t, 0)
+	claude, _ := setup(t)
+	dir := filepath.Join(filepath.Dir(claude), "home", ".kimi-code")
+	kimiSessionsIn(t, dir)
+	sessions := filepath.Join(dir, "sessions")
+	line := func(slug, id, work string) string {
+		b, _ := json.Marshal(map[string]string{"sessionId": id, "sessionDir": filepath.Join(sessions, slug, id), "workDir": work})
+		return string(b) + "\n"
+	}
+	index := line("wd_v14-june-subagent_000000000001", kimiJune, "/Users/me/Desktop/june") +
+		line("wd_v10-migrated_000000000006", kimiOld, "/Users/me/Desktop/test") +
+		line("wd_v15-early-no-agentid_000000000007", kimiEarly, "/elsewhere")
+	if err := os.WriteFile(filepath.Join(dir, "session_index.jsonl"), []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ss := List(0)
+	j := find(t, ss, "kimi", kimiJune)
+	if j.Cwd != "/Users/me/Desktop/june" {
+		t.Fatalf("june folder %q", j.Cwd)
+	}
+	want := "cd '/Users/me/Desktop/june' && kimi --session " + kimiJune
+	if runtime.GOOS == "windows" {
+		want = "Set-Location -LiteralPath '/Users/me/Desktop/june'; kimi --session " + kimiJune
+	}
+	if j.Resume != want {
+		t.Fatalf("june resume %q", j.Resume)
+	}
+	if o := find(t, ss, "kimi", kimiOld); o.Cwd != "/Users/me/Desktop/test" {
+		t.Fatalf("migrated folder %q", o.Cwd)
+	}
+	if e := find(t, ss, "kimi", kimiEarly); e.Cwd != "/work/kimi" {
+		t.Fatalf("state.json's cwd lost to the index: %q", e.Cwd)
+	}
+	// state.json's workDir, no line in the index
+	if c := find(t, ss, "kimi", kimiCancel); c.Cwd != "/work/kimi-old" {
+		t.Fatalf("cancel folder %q", c.Cwd)
+	}
+	// no folder anywhere: still none
+	if n := find(t, ss, "kimi", "session_7d423a2a-9c30-4478-8fb0-ceb78f9dbb6a"); n.Cwd != "" {
+		t.Fatalf("no-turn folder %q", n.Cwd)
+	}
+}
+
 // The prompts typed (not a subagent's task, not a skill's), the replies that
 // end a turn and the name the user gave, from the main file.
 func TestKimiCodeSessionCounts(t *testing.T) {

@@ -28,6 +28,7 @@ package provider
 // Only the Chinese build has the event: WorkBuddy AI ships with it off.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,9 +73,10 @@ const (
 	// CheckinCaptcha is a plugin's check-in the vendor asked a captcha
 	// of: the user checks in in its own app, magpie never solves one
 	CheckinCaptcha = "captcha"
-	// CheckinOwnApp is a check-in the vendor pays out only to its own
-	// app (Trae CN's 9074 to a device its app didn't register): an
-	// answer for the day, and the user checks in in the vendor's app
+	// CheckinOwnApp is a check-in the user is to do in the vendor's own
+	// app: an answer for the day. WorkBuddy's check-in answered 401 while
+	// the sign-in works; Trae CN refused the claim with 9074, which says
+	// so in its own words (#1920), not that only its app is paid
 	CheckinOwnApp = "own-app"
 )
 
@@ -206,7 +208,7 @@ func (c wbCheckiner) checkiner() checkiner {
 			if a.creds.UID != "" {
 				key = wbCheckinKey(a)
 			}
-			out = append(out, checkinAcct{User: a.User, On: a.On, key: key, do: func(ctx context.Context) WorkBuddyCheckin { return wbCheckin(ctx, a) }})
+			out = append(out, checkinAcct{User: a.User, On: a.On, key: key, provider: cmp.Or(a.card, a.site.id), do: func(ctx context.Context) WorkBuddyCheckin { return wbCheckin(ctx, a) }})
 		}
 		return out
 	}}

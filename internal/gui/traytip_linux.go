@@ -109,3 +109,50 @@ func setTrayPassive(tray *application.SystemTray, passive bool) (ok bool) {
 	}
 	return true
 }
+
+// traySchemeLight says whether the desktop prefers a light colour scheme,
+// as xdg-desktop-portal's Settings has it; false for dark, for no
+// preference, and when there is no portal to ask.
+func traySchemeLight() bool {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return false
+	}
+	obj := conn.Object("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop")
+	var v dbus.Variant
+	if err := obj.Call("org.freedesktop.portal.Settings.Read", 0, "org.freedesktop.appearance", "color-scheme").Store(&v); err != nil {
+		return false
+	}
+	return portalLight(v)
+}
+
+// watchTrayScheme calls f with the new preference each time the desktop's
+// colour scheme changes (the portal's SettingChanged), on a connection of
+// its own so Wails' signals on the shared one aren't held up by it.
+func watchTrayScheme(f func(light bool)) {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return
+	}
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchObjectPath("/org/freedesktop/portal/desktop"),
+		dbus.WithMatchInterface("org.freedesktop.portal.Settings"),
+		dbus.WithMatchMember("SettingChanged"),
+	); err != nil {
+		conn.Close()
+		return
+	}
+	ch := make(chan *dbus.Signal, 8)
+	conn.Signal(ch)
+	for s := range ch {
+		if len(s.Body) < 3 {
+			continue
+		}
+		ns, _ := s.Body[0].(string)
+		key, _ := s.Body[1].(string)
+		v, ok := s.Body[2].(dbus.Variant)
+		if ns == "org.freedesktop.appearance" && key == "color-scheme" && ok {
+			f(portalLight(v))
+		}
+	}
+}

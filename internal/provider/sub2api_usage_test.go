@@ -603,3 +603,115 @@ func TestKeyAllowanceRenewed(t *testing.T) {
 	KeyBalances(context.Background())
 	tellsSo("its usage reset, read on its card", 2)
 }
+
+// A sub2api login JWT added for the account's balance, then removed
+// (lx_78654 on Discord): the editor's "Use …/api/v1/user/profile" left
+// that URL behind, which the key alone can never ask, so the card said
+// "Allowance unavailable" for good. Without the token, the panel's query
+// for the key is asked with the key, as a key with no JWT is; the account
+// query is asked again once a token is pasted again. new-api's
+// /api/user/self, which its editor offers beside it, falls back to
+// /api/usage/token the same way.
+func TestAccountQueryWithoutTokenAsksTheKey(t *testing.T) {
+	keyLimitsHome(t)
+	const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln"
+	var withKey atomic.Int32 // the account queries asked with the key
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		switch strings.TrimRight(r.URL.Path, "/") {
+		case "/api/v1/user/profile":
+			if auth != "Bearer "+jwt {
+				withKey.Add(1)
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"code":"UNAUTHORIZED","message":"Invalid token"}`))
+				return
+			}
+			w.Write([]byte(`{"code":0,"message":"success","data":{"id":1,"balance":12.5}}`))
+		case "/v1/usage":
+			if auth != "Bearer sk-one" {
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":{"type":"authentication_error","message":"Invalid API key"}}`))
+				return
+			}
+			w.Write([]byte(`{"mode":"unrestricted","isValid":true,"planName":"钱包余额","remaining":7.25,"unit":"USD","balance":7.25}`))
+		case "/api/user/self":
+			withKey.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"success":false,"message":"无权进行此操作，未登录且未提供 access token"}`))
+		case "/api/usage/token":
+			if auth != "Bearer sk-one" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Write([]byte(`{"code":true,"message":"ok","data":{"object":"token_usage","total_granted":2000000,"total_used":500000,"total_available":1500000,"unlimited_quota":false}}`))
+		default:
+			t.Errorf("asked %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	card := func(id string) SubscriptionQuota {
+		t.Helper()
+		ForgetBalances()
+		for _, q := range KeyBalances(context.Background()) {
+			if q.Provider == id {
+				return q
+			}
+		}
+		t.Fatalf("no card for %s", id)
+		return SubscriptionQuota{}
+	}
+	// as the editor saves it: the URL and field its "Use" button set
+	p := Provider{ID: "sub2", Name: "Sub2API", Chat: srv.URL + "/v1", Key: "sk-one",
+		BalanceURL: srv.URL + "/api/v1/user/profile", BalancePath: "$data.balance", BalanceToken: jwt}
+	if err := Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if q := card(p.ID); q.Error != "" || q.Balance != "$12.50" {
+		t.Fatalf("with the JWT: %+v", q)
+	}
+	// Remove, and save
+	p.BalanceToken = ""
+	if err := Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if q := card(p.ID); q.Error != "" || q.Balance != "$7.25" {
+		t.Fatalf("the JWT removed: %+v", q)
+	}
+	if u, field := BalanceQuery(p); u != srv.URL+"/v1/usage" || field != "" {
+		t.Fatalf("asked at %q %q", u, field)
+	}
+	saved, err := Find(p.ID)
+	if err != nil || saved.BalanceURL != srv.URL+"/api/v1/user/profile" || saved.BalancePath != "$data.balance" {
+		t.Fatalf("the saved URL changed: %+v %v", saved, err)
+	}
+	// a token pasted again asks the account again
+	p.BalanceToken = jwt
+	if err := Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if q := card(p.ID); q.Balance != "$12.50" {
+		t.Fatalf("the JWT again: %+v", q)
+	}
+
+	// new-api's account query, its token removed
+	n := Provider{ID: "newapi", Name: "Relay", Chat: srv.URL + "/v1", Key: "sk-one",
+		Headers: map[string]string{"New-Api-User": "42"}, BalanceURL: srv.URL + "/api/user/self/", BalancePath: newAPIQuotaPath}
+	if got, ok, err := Balance(context.Background(), n); err != nil || !ok || got != "$3.00" {
+		t.Fatalf("new-api without its token: %q %v %v", got, ok, err)
+	}
+	// a field of the user's own is theirs
+	n.BalancePath = "$data.total_used / 500000"
+	if got, _, err := Balance(context.Background(), n); err != nil || got != "$1.00" {
+		t.Fatalf("own field: %q %v", got, err)
+	}
+	if withKey.Load() != 0 {
+		t.Fatalf("an account query was asked with the key %d times", withKey.Load())
+	}
+	// one that authenticates the account query by a header of its own
+	// still asks it as set
+	n.BalancePath = ""
+	n.Headers = map[string]string{"Authorization": "tok"}
+	if _, _, err := Balance(context.Background(), n); err == nil || withKey.Load() != 1 {
+		t.Fatalf("own Authorization: %v, asked %d", err, withKey.Load())
+	}
+}

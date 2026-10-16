@@ -177,7 +177,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const posts = [];
         const { p, errors } = await open("http://magpie.test/", { width: 900, height: 420 }, false, [], [], posts);
         await p.locator("#prefs").click();
-        await p.locator(":is(#setTab-sync, .nav-s[data-of=setTab-sync]):visible").click();
+        await reader.openPart(p, "sync");
         const first = p.locator("#syncList .row.pref").first();
         await first.waitFor({ state: "visible" });
         const toEnd = async () => {

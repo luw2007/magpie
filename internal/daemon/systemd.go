@@ -27,13 +27,21 @@ func (systemd) file() string {
 
 func (systemd) logs() string { return "journalctl --user -u " + Name + " -f" }
 
-// unitText is the unit for exe, with env set in it.
-func unitText(exe string, env []string) string {
+// unitText is the unit running exe with args, with env set in it.
+func unitText(exe string, args, env []string) string {
 	var b strings.Builder
 	b.WriteString("# Written by `magpie daemon install`; `magpie daemon uninstall` removes it.\n")
 	b.WriteString("[Unit]\nDescription=magpie gateway\nWants=network-online.target\nAfter=network-online.target\n\n")
 	b.WriteString("[Service]\nType=simple\n")
-	b.WriteString("ExecStart=" + unitQuote(exe) + " serve\n")
+	b.WriteString("ExecStart=" + unitQuote(exe))
+	for _, a := range args {
+		if a == "serve" {
+			b.WriteString(" serve")
+		} else {
+			b.WriteString(" " + unitQuote(a))
+		}
+	}
+	b.WriteString("\n")
 	b.WriteString("Restart=on-failure\nRestartSec=5\n")
 	for _, kv := range env {
 		b.WriteString("Environment=" + unitQuote(kv) + "\n")
@@ -49,14 +57,14 @@ func unitQuote(s string) string {
 	return `"` + s + `"`
 }
 
-func (s systemd) install(exe string, env []string) error {
+func (s systemd) install(exe string, args, env []string) error {
 	if err := s.reachable(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(s.file()), 0o755); err != nil {
 		return err
 	}
-	if err := private(s.file(), []byte(unitText(exe, env))); err != nil {
+	if err := private(s.file(), []byte(unitText(exe, args, env))); err != nil {
 		return err
 	}
 	if _, err := systemctl("daemon-reload"); err != nil {

@@ -31,8 +31,8 @@ func (launchd) logs() string { return "tail -f " + strconv.Quote(logFile()) }
 func domain() string  { return "gui/" + strconv.Itoa(os.Getuid()) }
 func service() string { return domain() + "/" + Label }
 
-// plist is the launch agent for exe, with env set in it.
-func plist(exe string, env []string) string {
+// plist is the launch agent running exe with args, with env set in it.
+func plist(exe string, args, env []string) string {
 	s := func(v string) string { return "<string>" + html.EscapeString(v) + "</string>" }
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
@@ -42,7 +42,7 @@ func plist(exe string, env []string) string {
 <dict>
 	<key>Label</key>` + s(Label) + `
 	<key>ProgramArguments</key>
-	<array>` + s(exe) + s("serve") + `</array>
+	<array>` + s(exe) + strings.Join(mapped(args, s), "") + `</array>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key>
 	<dict><key>SuccessfulExit</key><false/></dict>
@@ -63,14 +63,14 @@ func plist(exe string, env []string) string {
 	return b.String()
 }
 
-func (l launchd) install(exe string, env []string) error {
+func (l launchd) install(exe string, args, env []string) error {
 	if err := os.MkdirAll(filepath.Dir(l.file()), 0o755); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(logFile()), 0o755); err != nil {
 		return err
 	}
-	if err := private(l.file(), []byte(plist(exe, env))); err != nil {
+	if err := private(l.file(), []byte(plist(exe, args, env))); err != nil {
 		return err
 	}
 	// one loaded before runs the old plist until it is taken out
@@ -161,6 +161,14 @@ func (l launchd) status() (Status, error) {
 	}
 	st.Running = st.State == "running"
 	return st, nil
+}
+
+func mapped(xs []string, f func(string) string) []string {
+	out := make([]string, len(xs))
+	for i, x := range xs {
+		out[i] = f(x)
+	}
+	return out
 }
 
 func launchctl(args ...string) (string, error) { return run("launchctl", args...) }

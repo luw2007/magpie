@@ -43,8 +43,9 @@
 .pm-sechead h3 { margin: 0; font-size: 12.5px; font-weight: 650; }
 .pm-sechead span { font-size: 11.5px; color: var(--muted); }
 .pm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(262px, 1fr)); gap: 10px; }
-/* the GitHub section's kinds and its own field, on one line while they fit;
-   the field goes under the kinds, the whole width, when they don't */
+/* the GitHub section's kinds, what's installed and its own field, on one
+   line while they fit; the field goes under them, the whole width, when
+   they don't */
 .pm-ghbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pm-ghbar .segs { flex: none; max-width: 100%; }
 .pm-ghfind { width: min(240px, 100%); }
@@ -82,6 +83,10 @@ button.pm-chip { border: 0; font-family: inherit; cursor: pointer; }
 button.pm-chip.up:hover:not(:disabled) { background: var(--accent); color: var(--accent-fg); }
 button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-mw-fail { color: var(--red); }
+/* a plugin's tools: the names on one line, the MCP server's address to copy */
+.pm-row .sub.pm-tools { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pm-tools > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-tools > .copy { flex: none; width: 20px; height: 20px; }
 .pm-chip.bad { background: var(--red-soft); color: var(--red); }
 .pm-chip.moved { gap: 4px; background: var(--accent-soft); color: var(--accent); }
 .pm-chip.moved .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }

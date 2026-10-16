@@ -6,7 +6,8 @@
 // chip is greyed on the row and in the editor with the reason, and a value
 // typed back to plain text lights it again. The editor says how to write
 // one under Headers and Environment. A check magpie can't make because the
-// variable isn't set where magpie runs says which one, not "couldn't check".
+// variable isn't set where magpie runs says which one, not "couldn't check",
+// and isn't painted red as a broken server is (#2308).
 // In en, zh, ja and de at 440px: no sideways scroll.
 // No backend: the API is faked here.
 const assert = require("node:assert/strict");
@@ -14,6 +15,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { strings } = require("./strings.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const HOME = "/Users/emo";
@@ -26,8 +28,7 @@ const lib = (servers) => ({
 
 let I18N;
 async function loadI18N() {
-  const src = await fs.readFile(path.join(assets, "i18n.js"), "utf8");
-  I18N = new Function(src.slice(0, src.indexOf("\n};") + 3) + "; return I18N;")();
+  I18N = strings().I18N; // i18n.js's and the plugins'
 }
 function tr(lang, key, vars = {}) {
   let s = key;
@@ -107,7 +108,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // the check: which variable magpie's own environment hasn't
         const status = v.locator('.lib-health[data-server="gh"]');
-        await page.waitForFunction(() => document.querySelector('#view-library .lib-health[data-server="gh"]')?.classList.contains("err"));
+        await page.waitForFunction(() => document.querySelector('#view-library .lib-health[data-server="gh"]')?.classList.contains("unknown"));
+        // not painted as broken: the server may well work where the agent runs (#2308)
+        assert.equal(await status.evaluate((e) => e.classList.contains("err")), false);
+        assert.notEqual(await status.evaluate((e) => getComputedStyle(e).color), await page.evaluate(() => {
+          const x = document.createElement("span"); x.className = "lib-health err"; document.body.append(x);
+          const c = getComputedStyle(x).color; x.remove(); return c;
+        }));
         assert.equal((await status.textContent()).trim(), w("{names} not set", { names: "GH_TOKEN" }));
         assert.equal((await status.getAttribute("title")).split("\n")[0], w("magpie can't check it: {names} isn't set where magpie runs. An agent started where it is set still gets it", { names: "GH_TOKEN" }));
 

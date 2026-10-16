@@ -213,3 +213,54 @@ func TestCursorEditorDatabase(t *testing.T) {
 		t.Fatal("editor database changed")
 	}
 }
+
+// #1988: the chat list must come off the key's index. A LIKE over the key
+// scans every bubble in a store of several GB, from a copy that is cold in
+// the page cache each time Cursor has written, and Sessions never loaded.
+func TestCursorComposersQueryUsesTheKeyIndex(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.vscdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Cursor's own schema
+	if _, err := db.Exec("CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"bubbleId:a:1", "checkpointId:a:1", "composerData", "composerData:a", "composerData:b:c", "composerData;x", "composerDataZ", "composerdata:lower", "inlineDiffs-a"} {
+		if _, err := db.Exec("INSERT INTO cursorDiskKV VALUES (?,?)", k, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := db.Query("EXPLAIN QUERY PLAN " + cursorComposersQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	rows.Close()
+	if p := strings.Join(plan, "; "); !strings.Contains(p, "USING INDEX") || strings.Contains(p, "SCAN") {
+		t.Fatalf("the chat list reads %q, want a search on the key's index", p)
+	}
+	rows, err = db.Query(cursorComposersQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var v string
+		rows.Scan(&v)
+		got = append(got, v)
+	}
+	rows.Close()
+	if strings.Join(got, ",") != "composerData:a,composerData:b:c" {
+		t.Fatalf("listed %v, want only the composerData: keys", got)
+	}
+}

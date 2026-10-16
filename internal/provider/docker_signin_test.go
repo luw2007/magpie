@@ -293,3 +293,48 @@ export const P = async () => ({
 		t.Fatalf("finished %+v (installer %q)", st, ran)
 	}
 }
+
+// The command line's plugin sign-in (`magpie plugin login grok`) installs
+// Grok Build through InstallPluginCLI, as the window's does; it said
+// "install Grok Build first: curl … | bash" in Docker, which has no curl
+// (#2223, evier12345). Only a plugin that signs in with a vendor's CLI
+// gets one.
+func TestInstallPluginCLIInstallsGrokBuild(t *testing.T) {
+	home := claudeHome(t)
+	exe := filepath.Join(home, ".grok", "bin", "grok")
+	oldExe := GrokExecutable
+	GrokExecutable = func() string {
+		if isFile(exe) {
+			return exe
+		}
+		return ""
+	}
+	t.Cleanup(func() { GrokExecutable = oldExe })
+	var ran []string
+	oldRun := runInstaller
+	runInstaller = func(ctx context.Context, c agentCLI) ([]byte, error) {
+		ran = append(ran, c.Name)
+		os.MkdirAll(filepath.Dir(exe), 0o755)
+		return nil, testenv.WriteProgram(exe, "#!/bin/sh\n")
+	}
+	t.Cleanup(func() { runInstaller = oldRun })
+
+	if got := PluginCLIMissing("fakeco"); got != "" {
+		t.Fatalf("a plugin that runs no CLI needs %q", got)
+	}
+	if err := InstallPluginCLI(context.Background(), "fakeco"); err != nil || len(ran) != 0 {
+		t.Fatalf("a plugin that runs no CLI: %v, installed %v", err, ran)
+	}
+	if got := PluginCLIMissing("grok"); got != "Grok Build" {
+		t.Fatalf("Grok's plugin without Grok Build needs %q", got)
+	}
+	if err := InstallPluginCLI(context.Background(), "grok"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 1 || ran[0] != "Grok Build" || !isFile(exe) {
+		t.Fatalf("installed %v", ran)
+	}
+	if got := PluginCLIMissing("grok"); got != "" {
+		t.Fatalf("with Grok Build there, still missing %q", got)
+	}
+}

@@ -21,7 +21,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/gateway"
-	_ "modernc.org/sqlite"
+	_ "github.com/yetone/magpie/internal/sqlitedb"
 )
 
 // CindyScheme begins every Cindy import link.

@@ -59,10 +59,12 @@ function serve(lang, asked) {
 test("every mask picture is drawn through maskSpan", async () => {
   // a page that sets a mask's --i itself makes a logo that blinks again
   const at = [];
-  for (const f of await fs.readdir(assets)) {
+  // the plugins' pages too (assets/plugins/<id>/), and maskSpan's own
+  // picture, named in full once (pic)
+  for (const f of await fs.readdir(assets, { recursive: true })) {
     if (!f.endsWith(".js")) continue;
     const src = await fs.readFile(path.join(assets, f), "utf8");
-    src.split("\n").forEach((line, i) => { if (/setProperty\(\s*["']--i["']\s*,\s*[`"']url\(/.test(line)) at.push(`${f}:${i + 1}`); });
+    src.split("\n").forEach((line, i) => { if (/setProperty\(\s*["']--i["']\s*,\s*([`"']url\(|pic\))/.test(line)) at.push(`${f}:${i + 1}`); });
   }
   assert.equal(at.length, 2, `only maskSpan sets a mask's picture (its span and its shelf's): ${at.join(", ")}`);
   const app = await fs.readFile(path.join(assets, "app.js"), "utf8");
@@ -109,7 +111,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         return [ic.className, ic.querySelector(".mask")?.style.getPropertyValue("--i") || ic.querySelector("img")?.getAttribute("src") || ic.querySelector("svg") && "svg"];
       }));
       const before = await look();
-      assert.deepEqual(before, [["ic", "url(icons/commandcode.svg)"], ["ic", "icons/deepseek-color.svg"], ["ic generic", "svg"]]);
+      // maskSpan names the picture in full, as a plugin's stylesheet would
+      // read a bare name against its own folder
+      const ccPic = `url("${new URL("/icons/commandcode.svg", page.url()).href}")`;
+      assert.deepEqual(before, [["ic", ccPic], ["ic", "icons/deepseek-color.svg"], ["ic generic", "svg"]]);
       const askedBefore = asked.filter((p) => p === "/icons/commandcode.svg").length;
 
       // drawn again, both ways: the editor's own redraw (a member switched
@@ -136,7 +141,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           box: [r.width, r.height], visibility: cs.visibility, hidden: shelf.getAttribute("aria-hidden"), parent: shelf.parentElement.tagName,
           scroll: [document.documentElement.scrollWidth <= innerWidth] };
       });
-      const cc = st.shelved.indexOf("url(icons/commandcode.svg)");
+      const cc = st.shelved.indexOf(ccPic);
       assert.ok(cc >= 0, "the shelf keeps Command Code's picture");
       assert.equal(new Set(st.shelved).size, st.shelved.length, "each picture once");
       assert.ok(!st.shelved.some((s) => s.includes("no-such-logo")), "nothing that didn't load");

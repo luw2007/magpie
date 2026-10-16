@@ -24,7 +24,8 @@ const route = (id, model) => ({
   order: [who], tries: [{ id: who.id, model, start: at(0), done: true, status: 200, ms: 1200 }],
   done: true, status: 200, ms: 1200, tokens: 3000,
 });
-const HERE = route(11, "model-here"), THERE = route(22, "model-there");
+// Route IDs belong to each computer: deliberately collide to catch local body leaks.
+const HERE = route(11, "model-here"), THERE = route(11, "model-there");
 const state = { agents: [{ id: "fixture", name: "Fixture", path: "/test/config.toml", fields: [] }], profiles: [], settings: { lang: "en", theme: "light" } };
 
 const TEXT = {
@@ -63,6 +64,10 @@ function server(lang, remotes, seen, fail) {
       }
       const d = url.searchParams.get("day");
       return json({ cut: false, days: [{ day, requests: 1 }], routes: d ? [src ? THERE : HERE] : [] });
+    }
+    if (url.pathname === "/api/gateway/call") {
+      seen.push("call:" + url.searchParams.get("route"));
+      return json({ requestBody: '{"secret":"local-only-secret"}', responseBody: '{"ok":true}' });
     }
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/providers") {
@@ -125,6 +130,29 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await pick(page, w.here);
         await page.locator(".rt-req", { hasText: "model-here" }).waitFor();
         assert.equal(await page.locator(".rt-req", { hasText: "model-there" }).count(), 0, "the remote's request stayed in the list");
+        assert.deepEqual(errors, []);
+      });
+
+      await t.test(lang + ": request bodies are local only even when route IDs collide", async () => {
+        const { page, errors, seen } = await open(lang, ["devbox"]);
+        await openPane(page, "live");
+        await page.locator(".rt-bodies-b").click();
+        await page.locator(".rt-bodies").filter({ hasText: "local-only-secret" }).waitFor();
+        assert.equal(seen.filter((s) => s.startsWith("call:")).length, 1);
+
+        await pick(page, "Devbox");
+        await openPane(page, "requests");
+        await page.locator(".rt-req", { hasText: "model-there" }).waitFor();
+        await openPane(page, "live");
+        assert.equal(await page.locator(".rt-bodies-b").count(), 0, "remote request exposed the local body action");
+        assert(await page.locator(".rt-bodies").isHidden(), "remote request exposed local bodies");
+        assert(!await page.locator(".rt-bodies").textContent(), "local secret survived the source switch");
+        assert.equal(seen.filter((s) => s.startsWith("call:")).length, 1, "remote request fetched local bodies");
+
+        await pick(page, w.here);
+        await page.locator(".rt-bodies-b").click();
+        await page.locator(".rt-bodies").filter({ hasText: "local-only-secret" }).waitFor();
+        assert.equal(seen.filter((s) => s.startsWith("call:")).length, 2, "source switch retained the old body cache");
         assert.deepEqual(errors, []);
       });
 

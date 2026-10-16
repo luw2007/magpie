@@ -73,7 +73,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await openPane(page, "requests");
         // The request history has its own pane and responsive list.
         assert.equal(await tracks(page, ".rt-reqs"), width < 800 ? 2 : 4, "the requests' columns");
-        // The requests and account summary share the available pane width.
+        // The requests and account summary share the available pane width,
+        // with the sidebar aside (routing/client.js byWidth).
         const room = await page.locator(".rt-more").first().evaluate((e) => e.getBoundingClientRect().width);
         assert.equal(await tracks(page, ".rt-cols"), room >= 1150 ? 2 : 1, "the requests and the accounts, side by side or one under the other");
 

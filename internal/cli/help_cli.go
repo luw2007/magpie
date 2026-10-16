@@ -49,6 +49,8 @@ func helpFor(args []string) string {
 		return pluginUsage
 	case "quota", "quotas":
 		return quotaUsage
+	case "statusline":
+		return statuslineUsage
 	case "sessions":
 		return sessionsUsage
 	case "search":
@@ -132,6 +134,9 @@ func agentHelp(a *agent.Agent) string {
 			names = strings.Join(both[:n-1], ", ") + " and " + both[n-1]
 		}
 		fmt.Fprintf(&b, "  %s alone name the %s: magpie %s %s sets its %s to %s\n", names, a.Fields[0].Label, id, both[0], a.Fields[0].Label, both[0])
+		// they are the agent's own models, not magpie's: setting one takes
+		// magpie out (#2000, read as a query of the tier)
+		fmt.Fprintf(&b, "  they are %s's own models, not magpie's: setting one takes magpie out; magpie %s alone shows each\n", a.Name, id)
 	}
 	return b.String()
 }

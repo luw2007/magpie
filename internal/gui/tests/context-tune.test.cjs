@@ -341,3 +341,106 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     }
   });
 }
+
+// An agent whose files time its compactions (HirotaNagai on X, a Codex
+// user: a window that compacts more often keeps you waiting more): the
+// advice is named for tokens and the wait, the why says how long a
+// compaction took, the wait at the advice against the window now, and the
+// cheaper window it passed over for waiting longer; the caveat no longer
+// says tokens only, and each window in the picker says its wait beside its
+// tokens, "Fewest tokens" on the cheapest one, not the advice. A row whose
+// compactions aren't timed reads as before. In both engines, every
+// language, a phone's width and a desk's.
+const timedCurve = () => {
+  const pts = [];
+  for (let v = 100000; v <= 400000; v += 10000) {
+    const compacts = Math.round(9e6 / v);
+    // 100K the cheapest, but it compacts more often than the window now
+    pts.push({ value: v, cost: v === 100000 ? 0.95e9 : 1e9 + Math.abs(v - 200000) * 500, compacts, wait: compacts * 76 });
+  }
+  return pts;
+};
+const timedTune = {
+  days: 7,
+  agents: [{ agent: "codex", calls: 5200, advice: [
+    { knob: "compact", setting: { value: "120000", source: "config" },
+      compact: { model: "gpt-6-astra", current: 120000, window: 272000, best: 240000, cost: 1.3e9, low: 1.02e9, curve: timedCurve(), wait: 5700, wait_best: 2888, cheapest: 100000, wait_cheapest: 6840, facts: { ...facts, took: 76, timed: 14 } } },
+  ] }],
+};
+const waitBest = { en: "Tokens + wait", zh: "Token + 等待", "zh-TW": "Token + 等待", ja: "トークン + 待ち時間", de: "Tokens + Wartezeit" };
+const waitWhy = {
+  en: "Each compaction kept you waiting about 76s (14 timed). Over the range that's about 48m at 240K, against 1h 35m at 120K. 100K would spend 7% fewer tokens, but wait about 1h 54m.",
+  zh: "每次压缩让你等了约 76 秒（计时 14 次）。这段时间里，240K 下约等 48 分钟，120K 下约等 1 小时 35 分。 100K 能少花 7% Token，但要等约 1 小时 54 分。",
+  "zh-TW": "每次壓縮讓你等了約 76 秒（計時 14 次）。這段時間裡，240K 下約等 48 分鐘，120K 下約等 1 小時 35 分。 100K 能少花 7% Token，但要等約 1 小時 54 分。",
+  ja: "コンパクト 1 回の待ち時間は約 76 秒（14 回を計測）。この期間では 240K で約 48 分、120K では約 1 時間 35 分待ちます。 100K ならトークンは 7% 減りますが、約 1 時間 54 分待ちます。",
+  de: "Jede Kompaktierung ließ dich etwa 76 s warten (14 gemessen). Im Zeitraum sind das bei 240K etwa 48 Min., gegenüber 1 Std. 35 Min. bei 120K. 100K würde 7% weniger Tokens verbrauchen, aber etwa 1 Std. 54 Min. warten lassen.",
+};
+const waitTip = {
+  en: "240K: the fewest tokens without waiting longer on compactions",
+  zh: "240K：不多等压缩的前提下，Token 最省",
+  "zh-TW": "240K：不多等壓縮的前提下，Token 最省",
+  ja: "240K: コンパクトの待ち時間を増やさずに、トークンが最も少ない",
+  de: "240K: die wenigsten Tokens, ohne länger auf Kompaktierungen zu warten",
+};
+const waitCaveat = {
+  en: "Tokens and waiting only: it doesn't measure how well the agent keeps the task after a compaction. The lower the window, the more often it compacts.",
+  zh: "只算了 Token 和等待：没有衡量压缩后 Agent 还能多好地接着做任务。阈值越低，压缩越频繁。",
+  "zh-TW": "只算了 Token 和等待：沒有衡量壓縮後 Agent 還能多好地接著做任務。閾值越低，壓縮越頻繁。",
+  ja: "トークンと待ち時間だけの見積もりです。コンパクトのあとエージェントが作業をどれだけ保てるかは測っていません。しきい値が低いほどコンパクトの回数は増えます。",
+  de: "Nur Tokens und Wartezeit: Wie gut der Agent die Aufgabe nach einer Kompaktierung behält, misst das nicht. Je niedriger die Schwelle, desto öfter wird kompaktiert.",
+};
+const waitNote100 = { en: "Fewest tokens · about 90 compactions · about 1h 54m waiting", zh: "最省 Token · 约压缩 90 次 · 约等 1 小时 54 分", "zh-TW": "最省 Token · 約壓縮 90 次 · 約等 1 小時 54 分", ja: "トークン最少 · コンパクト約 90 回 · 待ち約 1 時間 54 分", de: "Wenigste Tokens · etwa 90 Kompaktierungen · etwa 1 Std. 54 Min. Wartezeit" };
+const waitNote240 = { en: "+70M tokens (+7%) · about 38 compactions · about 48m waiting", zh: "多花 70M Token（+7%） · 约压缩 38 次 · 约等 48 分钟", "zh-TW": "多花 70M Token（+7%） · 約壓縮 38 次 · 約等 48 分鐘", ja: "70M トークン多い（+7%） · コンパクト約 38 回 · 待ち約 48 分", de: "+70M Tokens (+7%) · etwa 38 Kompaktierungen · etwa 48 Min. Wartezeit" };
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: timed compactions put their wait beside the tokens`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    const errors = [];
+    t.after(() => browser.close());
+    for (const lang of Object.keys(heading)) for (const [width, height] of [[360, 760], [1100, 760]]) {
+      await t.test(`${lang}, ${width}x${height}`, async () => {
+        const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
+        const page = await ctx.newPage();
+        page.setDefaultTimeout(5000);
+        page.on("pageerror", (e) => errors.push(e.message));
+        const base = serve(lang, []);
+        await page.route("**/*", (r) => new URL(r.request().url()).pathname === "/api/tune" ? r.fulfill({ json: timedTune }) : base(r));
+        await page.goto("http://magpie.test/?view=usage");
+        const row = page.locator(".ctx-tune-row").nth(0);
+        await row.locator(".ctx-tune-pick").waitFor();
+        await page.locator(".ctx-none").waitFor();
+        assert.equal(await row.locator(".ctx-tune-val.best .ctx-k").textContent(), waitBest[lang]);
+        assert.equal(await row.locator(".ctx-tc-dot.best .ctx-tc-tag").innerText(), waitBest[lang]);
+        assert.equal(await row.locator(".ctx-tc-dot.best").getAttribute("data-tt"), waitTip[lang]);
+        const why = await row.locator(".ctx-tune-why").innerText();
+        assert.ok(why.endsWith(" " + waitWhy[lang]), `${lang}: ${why}`);
+        assert.equal(await row.locator(".ctx-tune-caveat").innerText(), waitCaveat[lang]);
+        const over = await page.evaluate(() => {
+          const out = [];
+          const view = document.querySelector("#view-usage");
+          if (view.scrollWidth > view.clientWidth + 1) out.push("page " + view.scrollWidth + ">" + view.clientWidth);
+          for (const c of document.querySelectorAll(".ctx-tune")) {
+            const b = c.getBoundingClientRect();
+            for (const e of c.querySelectorAll("*")) {
+              const r = e.getBoundingClientRect();
+              if (r.width && (r.right > b.right + 1 || r.left < b.left - 1)) out.push((e.className.baseVal ?? e.className) + " " + Math.round(r.left) + "–" + Math.round(r.right));
+            }
+          }
+          return out;
+        });
+        assert.deepEqual(over, []);
+        await row.locator(".ctx-tune-pick").evaluate((b) => b.click());
+        const menu = page.locator(".proto-menu.ctx-tune-menu");
+        await menu.waitFor();
+        const item = (v) => menu.locator(".pm-item", { has: page.locator(".pm-name", { hasText: new RegExp("^" + v + "$") }) });
+        assert.equal(await item("100K").locator(".pm-note").innerText(), waitNote100[lang]);
+        assert.equal(await item("240K").locator(".pm-note").innerText(), waitNote240[lang]);
+        const box = await menu.boundingBox();
+        assert.ok(box.x >= 0 && box.x + box.width <= width + 1, `the menu is inside the window: ${JSON.stringify(box)}`);
+        await page.keyboard.press("Escape");
+        await ctx.close();
+      });
+    }
+    assert.deepEqual(errors, []);
+  });
+}

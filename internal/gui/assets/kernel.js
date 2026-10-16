@@ -8,9 +8,10 @@
 // them (pluginrt.SchemaOf).
 //
 // Loaded after i18n.js and before the plugins' scripts and app.js. A
-// plugin's scripts register at once, so its page is in the page before
-// app.js looks for it, but run nothing of app.js's then: mount runs at
-// magpie.start, which app.js calls once it is set up.
+// plugin's words come with it (its i18n.js, magpie.strings). Its scripts
+// register at once, so its page is in the page before app.js looks for
+// it, but run nothing of app.js's then: mount runs at magpie.start, which
+// app.js calls once it is set up.
 (() => {
   const plugins = new Map(); // id → { id, config, onConfig: [], disposers: [] }
   const pages = new Map(); // key → { plugin, part, main, mounted, broken }
@@ -24,6 +25,13 @@
       // ctx.config has it
       onConfig(fn) { p.onConfig.push(fn); },
       onDispose(fn) { p.disposers.push(fn); },
+      // a page of the plugin's that broke after its hook returned (a
+      // frame's own error, one that never answered): it shows what broke,
+      // with a Try again, as a hook that throws does
+      broke(key, err) {
+        const page = pages.get(key);
+        if (page && page.plugin === p && !page.broken) fail(page, "open", [], err);
+      },
       slots: { add: (slot, part) => add(p, slot, part) },
       ui,
     };
@@ -235,6 +243,18 @@
     call(key, hook, ...args) {
       const page = pages.get(key);
       return page ? run(page, hook, args) : undefined;
+    },
+    // a plugin's words in each language ({ zh: { English: 中文 }, … }),
+    // added to i18n.js's; one already there is a mistake, said and not
+    // taken, as the later one would silently win
+    strings(dict) {
+      for (const [lang, words] of Object.entries(dict)) {
+        const to = (I18N[lang] ||= {});
+        for (const [k, v] of Object.entries(words)) {
+          if (k in to) console.error(`[magpie] ${lang} ${JSON.stringify(k)} is said twice`);
+          else to[k] = v;
+        }
+      }
     },
     page: (key) => pages.get(key)?.part,
     pages: () => [...pages.keys()],

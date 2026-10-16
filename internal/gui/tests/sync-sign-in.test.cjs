@@ -6,13 +6,15 @@
 // name the subscriptions not signed in on this computer (by the name the
 // Add sheet gives them), and the import says which plugins it added and
 // which it couldn't. In English, Chinese, Japanese and German, Chromium and
-// WebKit, at 900 and 440px. The API is faked; nothing is synced.
+// WebKit, at 900 and 440px. 悠悠哥 on Discord asked why sync said ChatGPT
+// wasn't signed in: the line says the synced settings use it, and that one
+// not used here needs nothing (zh-TW too, 1100 and 420px). The API is faked; nothing is synced.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { reach } = require("./reader.cjs");
+const { reach, openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -43,10 +45,11 @@ function serve(lang, sync, imported) {
 }
 
 const words = {
-  en: { sync: "Not signed in on this computer: Claude, Cursor. Sync carries no sign-in", backup: "Not signed in on this computer: Claude, Cursor. A backup carries no sign-in", added: "Plugins added: ", failed: "Couldn't add the plugin github:x/y: " },
-  zh: { sync: "本机尚未登录：Claude, Cursor。同步不含登录信息", backup: "本机尚未登录：Claude, Cursor。备份不含登录信息", added: "已添加插件：", failed: "无法添加插件 github:x/y：" },
-  ja: { sync: "このコンピュータではまだサインインしていません：Claude, Cursor。同期に", backup: "このコンピュータではまだサインインしていません：Claude, Cursor。バックアップに", added: "追加したプラグイン：", failed: "プラグイン github:x/y を追加できませんでした：" },
-  de: { sync: "Auf diesem Computer nicht angemeldet: Claude, Cursor. Die Synchronisierung", backup: "Auf diesem Computer nicht angemeldet: Claude, Cursor. Eine Sicherung", added: "Hinzugefügte Erweiterungen: ", failed: "Die Erweiterung github:x/y konnte nicht hinzugefügt werden: " },
+  en: { sync: "Your synced settings use Claude, Cursor, which isn't signed in on this computer. Sync carries settings, not sign-ins", backup: "This backup's settings use Claude, Cursor, which isn't signed in on this computer. A backup carries settings, not sign-ins", added: "Plugins added: ", failed: "Couldn't add the plugin github:x/y: " },
+  zh: { sync: "同步过来的设置用到了 Claude, Cursor，但本机尚未登录。同步只带设置", backup: "这份备份的设置用到了 Claude, Cursor，但本机尚未登录。备份只带设置", added: "已添加插件：", failed: "无法添加插件 github:x/y：" },
+  "zh-TW": { sync: "同步過來的設定用到了 Claude, Cursor，但本機尚未登入。同步只帶設定", backup: "這份備份的設定用到了 Claude, Cursor，但本機尚未登入。備份只帶設定", added: null, failed: null },
+  ja: { sync: "同期した設定は Claude, Cursor を使っていますが、このコンピュータではまだサインインしていません。", backup: "このバックアップの設定は Claude, Cursor を使っていますが、このコンピュータではまだサインインしていません。", added: "追加したプラグイン：", failed: "プラグイン github:x/y を追加できませんでした：" },
+  de: { sync: "Deine synchronisierten Einstellungen nutzen Claude, Cursor, auf diesem Computer aber nicht angemeldet.", backup: "Die Einstellungen dieser Sicherung nutzen Claude, Cursor, auf diesem Computer aber nicht angemeldet.", added: "Hinzugefügte Erweiterungen: ", failed: "Die Erweiterung github:x/y konnte nicht hinzugefügt werden: " },
 };
 
 const base = { on: true, kind: "webdav", url: "https://dav.example.invalid/dav/", user: "me", passwordSet: true, passphraseSet: true, keys: true, agents: true, library: true, usage: true, last: new Date(Date.now() - 60000).toISOString() };
@@ -54,7 +57,7 @@ const imported = { Added: 3, Replaced: 0, Profiles: 0, Agents: 0, NeedKey: ["Acm
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of Object.keys(words)) {
-    for (const width of [900, 440]) {
+    for (const width of [1100, 900, 440, 420]) {
       const w = words[lang];
       test(`${engine} ${lang} ${width}px: the subscriptions to sign in to here are named`, async (t) => {
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
@@ -67,7 +70,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           page.setDefaultTimeout(5000);
           await page.goto("http://magpie.test/");
           await page.locator("#prefs").click();
-          await page.locator(":is(#setTab-sync, .nav-s[data-of=setTab-sync]):visible").click();
+          await openPart(page, "sync");
           const first = page.locator("#syncList .row.pref").first();
           await first.waitFor({ state: "visible" });
           const line = first.locator(".sync-sign-in");
@@ -99,8 +102,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await done.first().waitFor({ state: "visible" });
           const lines = await done.allTextContents();
           assert.ok(lines.some((l) => l.startsWith(w.backup)), `import names what to sign in to: ${lines.join(" | ")}`);
-          assert.ok(lines.includes(w.added + "@magpie-community/opencode-cursor-auth"), lines.join(" | "));
-          assert.ok(lines.includes(w.failed + "no such repository"), lines.join(" | "));
+          // zh-TW: the plugin lines' own words aren't this test's; their presence is
+          if (w.added) assert.ok(lines.includes(w.added + "@magpie-community/opencode-cursor-auth"), lines.join(" | "));
+          else assert.ok(lines.some((l) => l.endsWith("@magpie-community/opencode-cursor-auth")), lines.join(" | "));
+          if (w.failed) assert.ok(lines.includes(w.failed + "no such repository"), lines.join(" | "));
+          else assert.ok(lines.some((l) => l.endsWith("no such repository")), lines.join(" | "));
           assert.ok(!lines.some((l) => /: ,|：,|:\s*$/.test(l)), `no empty name: ${lines.join(" | ")}`);
           const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
           assert.ok(over <= 0, `no sideways scroll: ${over}`);

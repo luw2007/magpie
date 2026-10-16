@@ -455,6 +455,27 @@ func TestJevPicksTheEffort(t *testing.T) {
 	}
 }
 
+// A turn the agent turned reasoning off in — Hermes sends
+// reasoning_effort "none" — isn't rated: its pick would never be sent,
+// only shown in the route beside the "none" that went (#2247). Nor are
+// its tool rounds given the pick of a turn before.
+func TestJevLeavesReasoningOff(t *testing.T) {
+	s, a, _, j := jevved(t, provider.EffortAuto)
+	j.score = 0.31 // low
+	_, r := postOK(t, s, "s1", chat("look at the repo", nil, 0, `,"reasoning_effort":"high"`))
+	if r.Rule.Pick != "low" || j.n() != 1 || !strings.Contains(a.last, `"reasoning_effort":"low"`) {
+		t.Fatalf("high: %+v %d %s", r.Rule, j.n(), a.last)
+	}
+	_, r = postOK(t, s, "s1", chat("look at the repo", []string{"now fix it"}, 0, `,"reasoning_effort":"none"`))
+	if r.Rule.Pick != "" || r.Rule.Classified != nil || j.n() != 1 || r.Tries[0].Picked {
+		t.Fatalf("none: %+v %+v %d", r.Rule, r.Tries, j.n())
+	}
+	_, r = postOK(t, s, "s1", chat("look at the repo", []string{"now fix it"}, 1, `,"reasoning_effort":"none"`))
+	if r.Rule.Pick != "" || j.n() != 1 || r.Tries[0].Picked {
+		t.Fatalf("none, tool round: %+v %+v %d", r.Rule, r.Tries, j.n())
+	}
+}
+
 // withEffort changes the effort in each API's own words, only where the
 // request asked for reasoning.
 func TestWithEffort(t *testing.T) {

@@ -218,12 +218,17 @@ func (s *slowFrames) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // past its 300s with no event. Now, once Codex has gone agentQuietMost
 // with none, the try held goes to it as it is, and the next one's reply
 // follows; a group's pause that would run past it isn't waited.
+//
+// Room on both sides (#1800): a fails 1.3s before Codex's quiet limit
+// here, so a busy machine's lag doesn't carry a's failure past it to go
+// as it is; the bounds sit over a second from both what is expected and
+// what the old waits would take.
 func TestCodexHeardWithinItsIdleTimeout(t *testing.T) {
 	k, w, q := keepHeldAfter, watchEvery, agentQuietMost
-	keepHeldAfter, watchEvery, agentQuietMost = 50*time.Millisecond, 10*time.Millisecond, time.Second
+	keepHeldAfter, watchEvery, agentQuietMost = 50*time.Millisecond, 10*time.Millisecond, 2*time.Second
 	t.Cleanup(func() { keepHeldAfter, watchEvery, agentQuietMost = k, w, q })
 	fresh(t)
-	const wait = 1500 * time.Millisecond
+	const wait = 4 * time.Second
 	a := &slowFrames{wait: 700 * time.Millisecond, then: func(int) string { return sse(overloadedFailed) }}
 	b := &slowFrames{wait: wait, then: func(int) string {
 		return sse(`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"hello"}`,
@@ -260,9 +265,9 @@ func TestCodexHeardWithinItsIdleTimeout(t *testing.T) {
 			break
 		}
 	}
-	// a failed at 0.7s and b, held, would have gone at 2.2s: b's frames
-	// go at 1s, Codex's idle timeout here, and its reply after them
-	if first == 0 || first > 1600*time.Millisecond {
+	// a failed at 0.7s and b, held, would have gone at 4.7s: b's frames
+	// go at 2s, Codex's idle timeout here, and its reply after them
+	if first == 0 || first > 3500*time.Millisecond {
 		t.Fatalf("Codex's first event came after %s:\n%s", first, got.String())
 	}
 	if !strings.Contains(got.String(), "hello") || strings.Contains(got.String(), "server_is_overloaded") {
@@ -275,7 +280,7 @@ func TestCodexHeardWithinItsIdleTimeout(t *testing.T) {
 	a.wait, b.wait = 600*time.Millisecond, 600*time.Millisecond
 	b.then = a.then
 	k2 := retryPause
-	retryPause = 2 * time.Second
+	retryPause = 10 * time.Second
 	t.Cleanup(func() { retryPause = k2 })
 	for id, up := range map[string]http.Handler{"a": a, "b": b} {
 		srv := httptest.NewServer(up)
@@ -296,7 +301,9 @@ func TestCodexHeardWithinItsIdleTimeout(t *testing.T) {
 	}
 	body, _ := io.ReadAll(res2.Body)
 	res2.Body.Close()
-	if took := time.Since(start); took > 3*time.Second || !strings.Contains(string(body), "server_is_overloaded") {
+	// a's failure at 0.6s and b's at 1.2s; the pause waited would make it
+	// 11.2s
+	if took := time.Since(start); took > 6*time.Second || !strings.Contains(string(body), "server_is_overloaded") {
 		t.Fatalf("after %s (a %d, b %d):\n%s", took, a.n, b.n, body)
 	}
 }

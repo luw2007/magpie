@@ -353,8 +353,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		w.OpenURL(st.URL)
-		writeJSON(rw, st)
+		writeJSON(rw, mcpSignInOpened{st, openError(w, st.URL)})
 	})
 	mux.HandleFunc("GET /api/library/mcp-signin/{id}", func(rw http.ResponseWriter, r *http.Request) {
 		st, ok := mcpauth.Progress(r.PathValue("id"))
@@ -433,15 +432,17 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			Paths  []string
 			Names  []string // the skills to update, of those a check found changed; to bring in, of those found in the agents
 			Server library.Server
-			Hook   library.Hook      // a hook saved (#1790)
-			Agent  string            // the agent whose own skill is in the library's way
-			ID     string            // a market server's, or a market skill's in its repository
-			Values map[string]string // what a market server needs
-			Dir    string            // a project's folder
-			Copy   bool              // a project gets copies, not links
-			Keep   bool              // a project removed keeps what magpie put in it
-			On     bool              // every skill or server given to the agents, or taken from them
-			How    string            // link or copy: how skills are given to Agent, or to every agent with none (#896)
+			Hook   library.Hook // a hook saved (#1790)
+			// a subagent saved (#2283)
+			Subagent library.Subagent
+			Agent    string            // the agent whose own skill is in the library's way
+			ID       string            // a market server's, or a market skill's in its repository
+			Values   map[string]string // what a market server needs
+			Dir      string            // a project's folder
+			Copy     bool              // a project gets copies, not links
+			Keep     bool              // a project removed keeps what magpie put in it
+			On       bool              // every skill or server given to the agents, or taken from them
+			How      string            // link or copy: how skills are given to Agent, or to every agent with none (#896)
 			// Replace updates a skill changed here all the same, its
 			// changed version kept with the backups (#1449)
 			Replace bool
@@ -489,6 +490,12 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveHooks([]string{in.Name})
 		case "hooks/remove-all":
 			res, err = library.RemoveHooks(in.Names)
+		case "subagents/save":
+			res, err = library.SaveSubagent(in.Old, in.Subagent)
+		case "subagents/agents":
+			res, err = library.SubagentAgentsSet(in.Name, in.Agents)
+		case "subagents/remove":
+			res, err = library.RemoveSubagents([]string{in.Name})
 		case "skills/install":
 			res, err = library.InstallSkills(in.Source, in.Paths, in.Agents)
 		case "skills/update":

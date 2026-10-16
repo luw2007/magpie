@@ -1,4 +1,4 @@
-<!-- reviewed-through: c98160c0 (2026-10-10 13:51 +0800) -->
+<!-- reviewed-through: e297a8ab2 (2026-10-13 23:30 +0800) -->
 # Lessons from merged work
 
 magpie's code is written, reviewed, merged and released by agents. Each night
@@ -44,6 +44,29 @@ those reds was a real rate-limit gap. Two lessons were seen a third day and
 moved into the code standards: whatever a test starts ends when it does, and
 a timing test leaves room on both sides.
 
+From 10-11 05:20 to 10-14 04:00 there were 602 commits and 56 tags
+(v0.1.1173 to v0.1.1228). Every tag the review checked was on a green run,
+but v0.1.1213 and v0.1.1218 were never published (#1846), and two sessions
+tagged one commit twice. What went wrong was mostly running less than the
+suite: four commits on 10-13 ran chosen packages and turned main red through
+guard tests in packages they didn't touch, and two left GUI files red. Seven
+lessons were seen a third day and moved into the code standards: a failed
+read means unknown, nothing blocks under a lock its reader needs, another
+app's values come from that app, a test named for a guarantee fails without
+it, a test never reaches the network, a tag waits for a green run and is not
+a release, and a large commit has a body with what was run.
+
+From 10-14 04:16 to 10-15 07:30 there were 275 commits and 16 tags
+(v0.1.1229 to v0.1.1244), each on a green run with its 16 assets. Two
+security holes were reported and fixed where every route passes: a page
+sending `Origin: null` (#2242) and a `*.localhost` page that WebKit
+resolves through DNS (#2256) both spent a subscription without a key. Main
+went red six times from tests that measured time instead of the state
+they were about: five waited a fixed duration, and one pinned a date that
+was tomorrow in UTC. A community layout change was merged and reverted the
+same day (#1354). Three plugin versions were bumped but never reached npm
+(plugins#56).
+
 ## Reading the report
 
 **Reproduce the reporter's exact case, on the surface they use, before you
@@ -57,7 +80,10 @@ not a step on the way to it.
   TUI in WSL. Fixed in f3c05b5e.
 - 60b910b7 made a warm /api/state faster. The report was the cold start
   (~8.5s of SyncCatalog). Fixed in 2a4042a9.
-- Seen 1× (2026-10-05).
+- 10-13: def3a41e3 built on a request its reporter (Fallmonkey) had put on
+  hold ("先别做"), and was reverted in 2c30e5cee. Read the whole thread,
+  to its last comment, before starting.
+- Seen 2× (2026-10-05, 2026-10-13).
 
 **Build fixtures from the reporter's literal bytes, not a similar sample you
 made up.**
@@ -148,6 +174,67 @@ protocol, never by a key's name.**
 - When writing such a sentence, file an issue in the same commit.
 - Seen 1× (2026-10-10).
 
+**An origin exemption judges every Origin a browser can send, not only
+the http(s) names it expects.**
+- c20bb76c4 (#2242, JasonBuildAI): `foreignPage` judged only http and https
+  origins, so `Origin: null`, which a sandboxed frame sends, passed
+  corsGuard without a key and spent the user's subscription. Null now needs
+  a gateway key.
+- d182294be (#2256, ggbdpq): every `*.localhost` counted as this computer
+  because "browsers resolve it to loopback". Chrome and Firefox do; WebKit
+  before macOS 26 asks the system resolver, so a hostile network's DNS
+  serves such a page from anywhere. Now it needs a key too, except
+  tauri.localhost and wails.localhost on Windows, where those webviews
+  live.
+- List what can arrive: null, each scheme, each engine's resolution of the
+  name, and a missing Origin (the 10-10 rebinding case). Test each one
+  without a key.
+- Seen 2× (2026-10-10, 2026-10-14).
+
+**A file another process rewrites is read as possibly half-written.**
+- #1928's host.js `mdev()` read models.json while catalog.Sync rewrote it
+  in place, and could drop the catalog on a half-written read (194b2fd3c).
+- Done right: d5847f198 writes Codex's auth.json to a flushed temp file
+  and renames it over the old one.
+- Write through temp-and-rename, and keep the last good read when a parse
+  fails.
+- Seen 1× (2026-10-14).
+
+**A pinned hash or a new download source is checked against the vendor,
+and trusted only as far as who can write it.**
+- 4e9335c96 pinned Bun's windows-aarch64 SHA-256. The review checked it
+  against Bun's own SHASUMS256.txt, not the commit's word.
+- 118f4f28b installs a plugin npm doesn't have from the plugins repo's
+  `dist` branch. Its sha512 comes from the same branch, so it only guards
+  against a bad mirror. The trust is in who can push `dist`: publish.yml
+  on a push to main (pull_request runs get no write token).
+- Seen 1× (2026-10-14).
+
+**Text magpie adds to a prompt that goes to a vendor names neither magpie
+nor the vendor's limits.**
+- 5d33f060b (10-12) headed the models it added to Codex's spawn_agent
+  description "(Codex names only five above; magpie serves these too)".
+  That text goes upstream, to OpenAI too. 3c4f8f9ae made it neutral, and
+  its test fails when the text names magpie, Codex or "five". The cost is
+  ban risk, so a prompt change gets the same care as a header change.
+- Seen 1× (2026-10-12).
+
+**A bit or enum value has one owner.**
+- d4c2512d2 (#1874) gave a usage row's Flags bit 256 to rowOwnCost while
+  a rebase of #1463 gave it to rowReasoningHidden, so every reported cost
+  read back as hidden reasoning. 8179ce768's TestRowFlagsApart fails when
+  a bit is used twice. After a rebase, grep the values both sides claim.
+- Seen 1× (2026-10-13).
+
+**A command never takes a flag, or a value it doesn't know, as data to
+write.**
+- `magpie snow --help` took "--help" as a model: it deleted
+  profiles/magpie.json and wrote "--help" into the user's profile. 76db4c6c2
+  (#1457) made --help print usage on every command, and Snow and Gemini CLI
+  refuse an unknown value. Try each command with --help and a bad value in
+  a sandbox HOME.
+- Seen 1× (2026-10-11).
+
 ## The user's own files and settings
 
 **Never let magpie's default override a value the user set themselves.**
@@ -165,30 +252,6 @@ protocol, never by a key's name.**
   - Each was written first without a test that holds a user-set value.
 - Seen 2× (2026-10-05, 2026-10-10).
 
-**A failed read, parse or hash means "unknown". It never means "empty" or
-"equal".**
-- relink's `fresh()` treated two unreadable folders as equal and deleted the
-  copy (9fb9a8ab).
-- readLogins returned an empty list on a parse error, which the next add or
-  sign-out wrote back as "no accounts" (d5619d5a only retried for 15ms).
-  Fixed in b363327d: the accounts read before are kept, and a file that
-  doesn't parse is copied aside before it is written over.
-- Done right on 10-07: d40fee80 (#1097) backs up Pi's mcp.json before
-  moving it whole, and doesn't move it when the backup fails. 2c2137be
-  deletes a dsh session only under its own folder, to the trash, with
-  Restore, and was tried with real dsh.
-- 10-11: agent/stash.go, which holds every agent's config from before
-  magpie, had readLogins' bug, never looked at when b363327d fixed it. A
-  stash.json that didn't parse read as empty, writes were plain
-  os.WriteFile with no lock, and 40 stashes at once kept none of them
-  (270b5257). 8b393938 (StepCode, the same evening) noticed and wrote its
-  own strict reader beside the shared one instead of fixing it. When you
-  find a shared helper wrong, fix the helper.
-- Done right on 10-10: 89271cd4 (#1505) recovers zeroed state files from a
-  .bak, copies a bad one aside, and deliberately doesn't recover caller
-  keys (a revoked key must stay revoked).
-- Seen 2× (2026-10-05, 2026-10-11).
-
 **Before deleting or overwriting a live credential, find every record that
 could match the same key.**
 - 43a65950 matched Codex accounts by display name. Two Team seats of one
@@ -201,20 +264,31 @@ could match the same key.**
   start (20bdf1e9).
 - Seen 1× (2026-10-05).
 
-**Take another app's field types from that app's own data or validator.**
-- 84554e57 wrote updatedAt as milliseconds, without trying the real Claude
-  Desktop. Its skills page hung for 2 days (#863, 50d6c9a3).
-- For layered vendor configs, read the vendor's merge code first. 9761248d
-  guessed dsh's merge rules (#838).
-- 10-06: #966's review asked that Codex's limit_reached count as "held",
-  without reading the app. 38 minutes later #996 read ChatGPT.app's app.asar.
-  Its composer only stops on rate_limit.allowed === false, so #996 undid part
-  of #966. #996 and e2f1c6ba are how to do it: e2f1c6ba sealed its fixture
-  the way OpenHanako 1.0 seals provider-catalog.json and was checked on a
-  copy of the owner's real ~/.hanako.
-- Seen 2× (2026-10-05, 2026-10-06).
-
 ## Verification
+
+**A fixed date in a test is checked against every clock the code reads.**
+- 3c4b4dc97 (#1591) held usage's clock at 2026-10-15 12:00 and wrote its
+  rollouts then, but /api/sessions/overview counts seven days up to the
+  real today. In UTC+8 it passed; on CI, in UTC on 10-14, the fixture was
+  tomorrow and main went red (21aa40285). From 10-23 it would have been
+  red everywhere.
+- Hold every clock the path reads, or write the fixture at time.Now(). Run
+  it once with TZ=UTC and once in a far zone.
+- Seen 1× (2026-10-15).
+
+**A new field on a polled endpoint is costed at the poll's rate.**
+- 644f4316f's Codex model/effort consumption was read again on every 15s
+  Sessions poll. 019199e0f reads it again only when a call, price or
+  identity changed, before a release.
+- Seen 1× (2026-10-14), done right.
+
+**A full run gives the slow packages room.** `go test ./...` at the default
+10m timeout times out in internal/gateway (#2108), and under load in
+internal/provider and internal/agent. Use -timeout 45m, so "every package
+ok except gateway" stops being a normal run record.
+- 194b2fd3c, 2fbbd1694, 3e812ebde and 3ec45e715 each recorded a timed-out
+  package.
+- Seen 1× (2026-10-14).
 
 **Windows CI only compiles the tests, so a Windows-only red shows
 nowhere.** Run the package on the Windows box before calling a Windows
@@ -235,17 +309,6 @@ re-derives every place that discloses it.**
   privacy text in the same commit.
 - Seen 1× (2026-10-08).
 
-**A test never loads a real third-party page.**
-- 9755201b's test opened ChatGPT, whose Cloudflare challenge hung it.
-  9f0831b2 and 88f2eb8a did the same with other vendor pages.
-- Serve the page from httptest, built from bytes saved from the real one.
-- 10-11: the same holds for a test's broken state. With the icon proxy
-  turned off by hand, a library test's github.com avatar URL reached the
-  real GitHub, and a worker test's stub fell through to a real fetch
-  (f04792f9 moved them to .invalid hosts and a stub that throws). Break the
-  change and watch where the test's requests go.
-- Seen 2× (2026-10-08, 2026-10-11).
-
 **A test that reads a dependency's source needs the dependency on disk.**
 - 884dbdb2's TestTrayMenuOpenFrameIsWails read Wails' source through
   `go list -m` Dir. CI's fresh module cache hasn't unpacked it, so main was
@@ -261,6 +324,22 @@ re-derives every place that discloses it.**
   TestMask too.
 - Seen 1× (2026-10-10).
 
+**Playwright's WebKit is not WebKitGTK.** A GUI change with motion or a new
+browser API is tried in the real Linux app too.
+- 18e82adc6 (10-11) traded the layouts in a view transition. The GUI suite
+  passed in WebKit, but under Wayland magpie turns WebKitGTK's compositing
+  off, and WebKitGTK 2.52 crashed in the transition and froze the window
+  (f5dd4d604, a reporter on X).
+- Seen 1× (2026-10-12).
+
+**A path that differs by OS is tested with each OS's value.**
+- ee7a9b24a (10-11) read Grok App's folder from $XDG_DATA_HOME on Linux.
+  The test sandbox set HOME, XDG_CONFIG_HOME and XDG_CACHE_HOME but not
+  XDG_DATA_HOME, so the drift test was red on ubuntu CI (f38f65030). Force
+  the OS switch in a test, and give the sandbox every variable the code
+  reads.
+- Seen 1× (2026-10-11).
+
 **Reproduce on CI's Go version.**
 - #1184 couldn't be reproduced on go1.27.1 locally. CI ran 1.26.x, and the
   cause was a Go 1.26.8 segfault. Docker `golang:1.26.8` with
@@ -268,21 +347,6 @@ re-derives every place that discloses it.**
 - Seen 1× (2026-10-08).
 
 ## Concurrency and tests
-
-**Never send on a channel, or call anything that can block, while holding a
-lock the receiver needs before it reads. Set shared state before the
-handoff that lets another goroutine look at it.**
-- 85fd35ab's emit sent to a full 64-slot segment while holding r.mu, and the
-  reader takes r.mu first. It hung macOS -race CI for 20 minutes
-  (4fb8e887). -race -count=50 locally didn't catch it. A test that fills the
-  buffer first catches it every time.
-- The Claude subscription run recorded run.tools after continueWith had
-  already answered the agent, so a quick turn read the old tools
-  (TestToolSearchLoadKeepsTheRun, c8690ca0).
-- 10-08: 01e66e0f's claudeCredentials.marshal wrote into the raw map that
-  every copy of the struct shares. A struct copied by value that holds a
-  map is not a copy (15afd988).
-- Seen 2× (2026-10-06, 2026-10-08).
 
 **A fake or child process a test starts ends when the test does**, and
 **a timing test leaves room on both sides**, are in the code standards
@@ -293,13 +357,14 @@ Two habits from them:
   timeout panic is not a hang until its stacks show one.
 - Reproduce a timing flake by injecting the delay, not by rerunning until
   it fails (0f8e4ebc, 229ce19a, 9e35eef3).
-
-**A test named for a guarantee fails when the guarantee breaks.**
-- #1318's TestHistoryWriteHoldsNoWaiter still passes with the waiter held:
-  nothing in it waits while the history write is held. Filed as #1358 with
-  a design that fails on the old code.
-- Before merging, break the guarantee by hand and watch the test go red.
-- Seen 1× (2026-10-08).
+- Wait for the state, or count what the test is about, never a duration.
+  On 10-14 five tests went red on CI for a fixed wait:
+  TestClaudeRunEndsAfterStructuredOutput (c4c3cafa2),
+  TestAgentGoneInTheRetryPause's 100ms (b8070cc6c),
+  TestCanceledRequestRestsNobody's 50ms (685521888),
+  TestProviderListReadsSettingsOnce's 2s bar, now a count of parses
+  (a36319d60), and TestCursorEditorCopiedOncePerChange's 100ms linger
+  (2efb71ea0).
 
 ## Red tests and releases
 
@@ -307,9 +372,12 @@ Two habits from them:
 now" is in the code standards. What the reviews found about finding the
 cause:
 - TestPluginSOCKSProxy timed out at 60s on ubuntu CI and was rerun as "load
-  jitter". It takes 3s on a Mac every time, and a dead local proxy should
-  refuse in milliseconds, so something on that path waits. Its cause
-  isn't found yet.
+  jitter". The cause (9a852ae9d, 10-15): the test freed a port for a dead
+  SOCKS proxy, the netproxy bridge's :0 listen was handed that same port,
+  and the bridge dialled itself under a one-minute read deadline. Found by
+  injecting the reuse (60.03s red, 2.4s green after), not by rerunning. A
+  port a test frees can be handed to anything next: d0ccbbebc fixed the
+  gateway's proxy-down tests for the same reason.
 - TestUnreadLoginsNotWrittenOver needed two writes inside one wall-clock
   second (a `.bad-<second>` name) and failed on Linux CI (237d216b). Test a
   name made from time.Now() across a second boundary.
@@ -342,28 +410,28 @@ cause:
   test was being written. Checking `git log` isn't enough while both are
   working; say on an issue, or file one, that you are on it before you
   start.
+- 10-12/10-13: #1794 got four "seen again" comments before anyone took
+  it (fixed in 6ae6b3402), and #1543 was seen three times with no owner
+  (097479dab). A comment that a red came back is not work on it: take it
+  or say who has it. 31c1e3ab1 named 8 GUI files that "fail the same way
+  on an origin/main 552e974f2 copy" and filed none of them; they were
+  fixed one by one over the next day (searcher-pick, profile-in-use,
+  library-mcp-tools among them).
+- 10-14: reds named in a body and left unfiled again. 56fcd1dc2 shipped
+  past a usage-ledger red that "passes alone". hhh2210's
+  TestPluginSOCKSProxy red on Bun 1.4.3 was filed only by the review
+  (#2207). b476dc5a9's Routing GUI reds on untouched main have #2252 and
+  nothing else. A red gets its own issue, with its output, in the same
+  commit.
+- A cancelled run tests nothing. On 10-14 nine pushes in ten minutes
+  cancelled each other's runs, and 3c4b4dc97 never had a run of its own;
+  its red showed first at 84f14e555.
 - Done right: 2bd49cc5's race was fixed at its cause in 25 minutes
   (28049bd2, -race -count=40 -cpu 1,2). 60f87223, b1cba654, 443f1cbc and
   395c4bc5 fixed flakes at their cause instead of retrying. 06420a71 fixed
   the macOS first-run check at its cause.
 - Seen 3× (2026-10-05, 2026-10-06, 2026-10-07); the rule itself is in the
   code standards.
-
-**Don't tag until a CI Test run on that commit, or one containing it, has
-finished green. A cancelled run is not a pass.**
-- On 10-05 nearly every CI run was cancelled by the next push. Linux-only
-  TestCursorLocal failed from v0.1.877 to v0.1.892 (b7fef387).
-- Batch fixes rather than tagging every commit. 294 tags in 51 hours left
-  no run to finish.
-- Before naming a version to a reporter, check it has all 16 assets.
-  v0.1.956 was announced on #856 but never built.
-- Before listing a package in market.json, check it resolves with
-  `npm view`. 2f135ed4's middleware packages reached npm 5h after the
-  release. Done right on 10-07: 35485f2d, 01aaa8e9 and 92e4fc32 each checked
-  the package on npm first.
-- 10-08: 01e66e0f's own run was cancelled, so its red showed up on the next
-  commit's run. Every tag that day waited for a green run.
-- Seen 2× (2026-10-05, 2026-10-08).
 
 ## Merging and closing
 
@@ -392,14 +460,6 @@ it doesn't.**
   GUI tests up to date.
 - Seen 2× (2026-10-05, 2026-10-06).
 
-**A large commit has a body: what changed, why, and what was run.**
-- 586f2bce changed 5133 lines with a subject line only. bb8a3e30, ed4476b9,
-  e22d5eef and d2241a57 had no body either, so a later review can't tell
-  what was verified.
-- Seen 1× (2026-10-08).
-- Done right on 10-09/10-10: none of the 22 commits over 400 lines lacks a
-  body.
-
 **A squash merge's message is written, not GitHub's default.** Give
 `gh pr merge --squash` a `--subject` and a `--body-file` holding the PR's
 own change and what was run at the reviewed head.
@@ -409,7 +469,19 @@ own change and what was run at the reviewed head.
   isn't in git at all: the body after its subject is other commits.
 - Before pushing, check that `git log -1 --format=%B | wc -c` is a few KB at
   most.
-- Seen 1× (2026-10-13).
+- 10-14: b6e82c6c5 put a paragraph in the subject line. The subject is one
+  short line; the rest goes in the body.
+- Seen 2× (2026-10-13, 2026-10-14).
+
+**A community PR that changes how a page looks is not merged on review
+alone.**
+- #1354 (Nxir) rearranged the Routing page with no issue asking for it. It
+  passed review and shipped, users rejected it the same day ("v0.1.1231
+  没有这个问题"), and bfef5d51b reverted it whole. The fault was the merge,
+  not the author.
+- A layout change needs an issue or the owner asking for it. The default is
+  no.
+- Seen 1× (2026-10-14).
 
 **Two sessions never commit from the same checkout.**
 - 10-09 12:10: 2018882e carries the davsync subject but holds the GTK
@@ -419,7 +491,10 @@ own change and what was run at the reviewed head.
 - Work in a worktree of your own (`git worktree add --detach`). After
   committing, `git show --stat HEAD` must list your files and only yours. An
   empty commit means another session took your index.
-- Seen 1× (2026-10-09).
+- 10-12 21:25: 3e88fc09d carries the auto-mode subject but holds the Get
+  started card; the auto-mode change is 24350a372. A review reads
+  `git show --stat` against the subject, not the subject alone (#1825).
+- Seen 2× (2026-10-09, 2026-10-12).
 
 ## Moved to the code standards
 
@@ -471,6 +546,87 @@ each one.
 - **A timing test leaves room on both sides** (10-08, 10-09, 10-11). On
   10-10 8424a004 assumed two concurrent handlers let go in order
   (3a1ade97). On 10-11 TestMaxRPM and the queued-stream tests (above).
+- **A failed read, parse or hash means "unknown"** (10-05, 10-11, 10-12,
+  10-13). On 10-12 7a9490638's IP allow list let every address in when
+  settings.json couldn't be read (7d9382db2). On 10-13 #2017's patch read an
+  unreadable codex-autoreset.json as "no reset spent" (e297a8ab2). When a
+  shared reader is wrong, fix it, not a strict copy beside it.
+- **Nothing that can block runs under a lock its reader needs** (10-06,
+  10-08, 10-11, 10-13). 7cba316b9's timer went red under -race
+  (a2afc1828); a fake Codex appended from two goroutines (a75de4c21).
+- **Another app's values come from that app** (10-05, 10-06, 10-13).
+  accc8c090 sent 127.0.0.1 where Claude Code sends localhost (e0ecf0161).
+- **A test named for a guarantee fails when it breaks** (10-08, 10-12,
+  10-13). bbe8825c0 (9dd5917a4) and ggbdpq's 44b5b2b96 and e21b1dbc1
+  (cc93b566e) passed on the old code. Break it by hand, watch it go red.
+- **A test never reaches the network** (10-08, 10-11, 10-13). TestPiPackage
+  tested npm's latest pi (f230fa23b); tests waited 30s on models.dev
+  (bde11c778).
+- **A tag waits for a green run, and a tag is not a release** (10-05,
+  10-08, 10-12, 10-13). v0.1.1192/1193 tagged one commit; v0.1.1213 and
+  v0.1.1218 never published (#1846). `npm view --prefer-online` a plugin
+  version before naming it.
+- **A large commit has a body with what was run** (10-08, 10-12, 10-13).
+  ea3d480ed and 1cd814004 (community, no record); 3ccbe6bc1's "push notes"
+  hid two red GUI tests (2dcc51417, ba0712888).
+- **10-11 to 10-13, criteria still missed.**
+  - The suite: 6fa3109ea, 43d8a5633, 5617281f5 and cdb7b5ff7 ran chosen
+    packages and broke guard tests elsewhere (494609866, 24146c031,
+    c6de0d2a5).
+  - GUI: 18e82adc6 left 8 GUI files red after a run cut short (054bdb8bb);
+    e3a497d7a left gui-ja red ~3h (28aac86bc).
+  - Sibling: 4ed379f11 left three deciders on the raw body (0c6752dbd);
+    90ac1f038 mended StepCode only (cb003877f).
+  - Timing: #1874's TestUsageIngestTouchesNoLimit stamped its calls a
+    minute ago and went red a minute after midnight UTC (1acdf3a8f).
+  - Whatever a test starts: Devin's held installer (2ff4ecb42) and a
+    Claude sign-in's `claude auth login` run (ebbe76420, #1802) outlived
+    their tests.
+- **10-14, criteria still missed.**
+  - A large commit has a body with what was run: 509328ccb and c1e354245
+    pointed to "the push" for it. A pointer is not a record.
+  - A tag is not a release: zed 0.1.7 and zen-free 0.1.2 to 0.1.4 were
+    bumped and never reached npm (plugins#56). Done right: every mover min
+    raised on 10-14 (0337ce4bc, 50929661f, bd4cb7a26, 2c18c697c,
+    aae49d086) named a version npm had.
+- **10-15, criteria still missed.**
+  - A large commit has a body with what was run: 113 of the 120 commits
+    pushed at 23:08 (728cb2d29 to a7a012202) end "Full suite:
+    SUITE_LINE", a placeholder no one filled in. The batch's real record
+    is in 386d341e7 alone. Before pushing, grep the bodies for a
+    template's placeholder.
+  - A tag is not a release, and a release is not Latest: v0.1.1255
+    (a1f7b8c13) was published 25 minutes after v0.1.1256 (37fec1240), so
+    GitHub marked the older one Latest and the site's downloads served
+    it until the review moved the mark. Publish in tag order, or pass
+    `--latest` to the newest.
+  - A rerun's green hides the first try: a1f7b8c13's run is green on
+    attempt 2, its attempt 1 red (#2390, fixed at its cause in
+    4a6bf80f4). Read `attempt` before calling a run green.
+  - GUI tests in every file a change can reach: three changes ran the
+    GUI files they chose and left others red on main, which CI never
+    runs. 64b0f3a20 (10-15) had the sidebar ask /api/plugin-pages, and
+    menu-scroll's strict fixture threw on it, 24 of 24 red until
+    a61a6f954 the next day. 8f55c27ad (#2396) held Settings' tabs at the
+    top, and text-size's click landed under them, red ~5h until
+    d3ca90afc. 94942f9f3 ran only the i18n files, and
+    agent-connect-no-models went 8 of 16 red until cf21b71ff (#2435). A
+    new API call or a layout change runs the whole GUI suite.
+  - A Windows rule needs each test of that agent judged for the right
+    system: 6e2aa8e32 (#2300) made ~\.dsh never gone on Windows, and two
+    Mac-app dsh tests that didn't force goneOS went red on Windows CI,
+    which now runs the Dsh tests, until ce1251cc9.
+- **Done right on 10-14.** 86cc7ac56 (hhh2210) ran -race -count=20 and
+  says its ordering was injected, not captured. f074996d9 named its load
+  red's issue (#2066). bfef5d51b checked the reverted page's screenshots
+  against v0.1.1231's assets. 21aa40285 ran the fixed test in four time
+  zones.
+- **Done right on 10-11 to 10-13.** 2dcc51417 found 3ccbe6bc1's reds the
+  same evening. 5241de909 guards a caller's image URL at the one place all
+  three draw paths download it. 86b2f4d05 fixed revoked sign-ins for every
+  built-in at once. 8179ce768 says what it broke by hand. 097479dab fixed
+  #1543 at its cause, and ebbe76420 forced each failure by hand instead of
+  rerunning.
 - **Done right on 10-10/10-11.**
   - 9e35eef3 fixed #1469 half an hour after it was filed, reproducing CI's
     numbers with an injected pause.

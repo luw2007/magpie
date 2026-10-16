@@ -21,13 +21,15 @@ import (
 // updater keeps the app current. It asks the feed at start-up and every six
 // hours, or as often as Settings says, or only when asked (#472); when a newer release is out and the app may replace itself — the
 // bundle on a Mac, the binary elsewhere — the new one is downloaded
-// straight away, so all that is left is a restart. Quitting installs it too, and the next launch is
+// straight away, so all that is left is a restart; with Settings'
+// NoAutoDownload it is only said to be out, and downloaded on a click
+// (#2296). Quitting installs it too, and the next launch is
 // the new version. Where the app's folder isn't the user's to change, the
 // restart asks for the administrator's password; only an app that can't be
 // replaced at all (run from its disk image, say) is sent to the release page.
 type updater struct {
 	mu     sync.Mutex
-	state  string // checking | latest | downloading | ready | available | source | error | blocked
+	state  string // checking | latest | found | downloading | ready | available | source | error | blocked
 	latest *update.Release
 	err    string
 	bundle string      // the .app to replace, "" when not in one or stuck
@@ -44,6 +46,10 @@ type updater struct {
 	// under way is the clock's
 	blocked *update.Blocked
 	byClock bool
+	// fetch: the check under way is a click on Download update, which
+	// downloads what it finds whatever Settings' NoAutoDownload says; with
+	// it on, any other check stops at found (#2296)
+	fetch   bool
 	asked   time.Time // when the feed was last asked, by the clock or a click
 	done    int64     // downloading: bytes so far, of total (0 when unknown)
 	total   int64
@@ -63,6 +69,12 @@ type updater struct {
 	whenIdle func() bool
 	onWait   func()
 	loops    sync.WaitGroup // the waits going on
+	// With Settings' AutoRestart, the clock has autoRestart run (the app's
+	// or magpie web's restart) once a downloaded update is ready and the
+	// gateway idle (#2096); autoSkip is the version whose wait the user
+	// called off, which isn't restarted into by itself again.
+	autoRestart func() bool
+	autoSkip    string
 }
 
 type updateJSON struct {
@@ -83,6 +95,9 @@ type updateJSON struct {
 	// blocked: the version this computer wouldn't start, and why (#894)
 	Blocked *update.Blocked `json:"blocked,omitempty"`
 	Total   int64           `json:"total,omitempty"`
+	// found: the size of the file Download update would fetch, in bytes
+	// (0 when the feed doesn't say)
+	Size int64 `json:"size,omitempty"`
 	// ready: what the gateway this process serves has in flight, which a
 	// restart would cut short; Waiting, the restart waits for it to end;
 	// GaveUp, the last wait ran out with it still busy
@@ -109,9 +124,11 @@ func (u *updater) start() {
 			u.mu.Lock()
 			last := u.asked
 			u.mu.Unlock()
-			if updateDue(settings.Load(), last, time.Now()) {
+			s := settings.Load()
+			if updateDue(s, last, time.Now()) {
 				u.checkByClock()
 			}
+			u.autoTick(s)
 			time.Sleep(time.Minute)
 		}
 	}()
@@ -198,6 +215,21 @@ func (u *updater) checkByClock() {
 	}
 }
 
+// download is a click on Download update (or the header's Update) with a
+// newer version found but not downloaded, Settings' NoAutoDownload on
+// (#2296): a check that downloads what it finds. It reports whether one
+// started.
+func (u *updater) download() bool {
+	if !u.begin() {
+		return false
+	}
+	u.mu.Lock()
+	u.fetch = true
+	u.mu.Unlock()
+	go u.run()
+	return true
+}
+
 // recheck asks the feed again before a restart into what was downloaded,
 // so a newer version out since is the one restarted into. It waits for
 // the feed a little while; a newer version is then downloading.
@@ -240,23 +272,29 @@ func (u *updater) begin() bool {
 	if u.state == "checking" || u.state == "downloading" {
 		return false
 	}
-	u.state, u.err, u.retry, u.mirror, u.asked, u.byClock = "checking", "", false, "", time.Now(), false
+	u.state, u.err, u.retry, u.mirror, u.asked, u.byClock, u.fetch = "checking", "", false, "", time.Now(), false, false
 	return true
 }
 
 func (u *updater) run() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	s := settings.Load()
 	u.mu.Lock()
 	lang := u.lang
+	// Settings' NoAutoDownload: what is found is only said, unless this
+	// is a click on Download update
+	hold := s.NoAutoDownload && !u.fetch
 	u.mu.Unlock()
 	if lang == "" {
-		lang = notesLang(trayLang(settings.Load().Lang, systemLang))
+		lang = notesLang(trayLang(s.Lang, systemLang))
 	}
 	rel, err := update.LatestIn(ctx, lang)
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.staged != "" && u.latest != nil && (err != nil || !update.Newer(rel.Version, u.latest.Version)) {
+	// a version downloaded on a click stays the one restarted into while
+	// downloads wait for a click: a newer one out since isn't fetched
+	if u.staged != "" && u.latest != nil && (err != nil || !update.Newer(rel.Version, u.latest.Version) || hold) {
 		u.state = "ready" // what was downloaded is still the latest
 		// the feed found it before it had its notes (the site, kept from
 		// GitHub's API, reads them from the releases feed, which can lag
@@ -295,6 +333,11 @@ func (u *updater) run() {
 		if u.onReady != nil {
 			go u.onReady(rel.Version)
 		}
+		return
+	case hold:
+		// downloads wait for a click (#2296): the version row and the
+		// header's Update say it is out, and offer it
+		u.state = "found"
 		return
 	}
 	// an older download is replaced by this one: until it is in, there is
@@ -384,6 +427,15 @@ func (u *updater) wontStart(err error) {
 	u.err = err.Error()
 }
 
+// assetSize is the size of rel's file this app downloads to update
+// itself, 0 when the feed doesn't say.
+func (u *updater) assetSize(rel *update.Release) int64 {
+	if u.bundle != "" {
+		return rel.Assets[update.AppAsset()].Size
+	}
+	return rel.Assets[update.BinaryAsset()].Size
+}
+
 // replaced is whether the binary was updated by another magpie since this
 // one started, which runs on from where it was moved aside.
 func (u *updater) replaced() bool {
@@ -424,6 +476,9 @@ func (u *updater) jsonIn(lang string) updateJSON {
 	}
 	if u.state == "blocked" {
 		j.Blocked = u.blocked
+	}
+	if u.state == "found" && u.latest != nil {
+		j.Size = u.assetSize(u.latest)
 	}
 	if j.State == "ready" || u.waiting {
 		j.Waiting, j.GaveUp = u.waiting, u.gaveUp && !u.waiting
@@ -521,7 +576,7 @@ func updateRoutes(mux *http.ServeMux, w Windows) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		if in.When == "cancel" {
-			updates.cancelWait()
+			updates.callOff()
 			writeJSON(rw, updates.json())
 			return
 		}
@@ -547,12 +602,12 @@ func updateRoutes(mux *http.ServeMux, w Windows) {
 				go w.Quit()
 				return
 			}
-		case j.State == "error" && j.Retry:
-			if updates.begin() {
-				go updates.run()
-			}
+		case j.State == "error" && j.Retry, j.State == "found":
+			// a click: the download is asked for, whatever Settings'
+			// NoAutoDownload says (#2296)
+			updates.download()
 		case j.State == "available" && j.URL != "":
-			w.OpenURL(j.URL)
+			_ = w.OpenURL(j.URL) // nothing waits on the page: the card still shows the update
 		}
 		writeJSON(rw, updates.json())
 	})
@@ -567,6 +622,13 @@ var relaunchBinary = update.RelaunchBinary
 // Off the Mac, the new one opens its window on view when window is set, and
 // only the tray icon when not; the Mac's always opens its window.
 func restartToUpdate(web, window bool, view string) bool {
+	return restartInto(web, window, view, false)
+}
+
+// restartInto is restartToUpdate; bySelf, Settings' AutoRestart restarts
+// (#2096), and the Mac's new one too opens only its menu bar icon when no
+// window was up, rather than putting up one the user had closed.
+func restartInto(web, window bool, view string, bySelf bool) bool {
 	bundle, exe := updates.bundle, updates.exe
 	updates.mu.Lock()
 	version := ""
@@ -584,7 +646,7 @@ func restartToUpdate(web, window bool, view string) bool {
 	}
 	var err error
 	if bundle != "" {
-		err = update.Relaunch(bundle)
+		err = update.Relaunch(bundle, window || !bySelf)
 	} else {
 		updates.mu.Lock()
 		aside := updates.aside

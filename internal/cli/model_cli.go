@@ -22,6 +22,7 @@ const modelUsage = `usage:
   magpie model efforts <provider/model>          the reasoning levels it offers, and those it has
   magpie model efforts <provider/model> <l>,<l>  offer only these of them, e.g. low,medium,high
   magpie model efforts <provider/model> --reset  offer every level it has again
+  magpie model efforts <provider/model> off      send it no reasoning field at all
   magpie model price <provider/model>            what the model costs you, and what you said it costs
   magpie model price <provider/model> <in>,<out>,<cache read>,<cache write>
                                                  say what it costs, in USD per million tokens, all four parts as
@@ -211,7 +212,20 @@ func modelEfforts(args []string) error {
 	all := p.Efforts(model)
 	rest := args[1:]
 	given := len(p.Known(model)) == 0 // levels aren't known: those it has are the user's
+	if len(rest) == 1 && slices.Contains([]string{"off", "--off"}, rest[0]) {
+		// no reasoning field at all, for a vendor that turns one away
+		// though its list says the model reasons (yuexian7 on Discord)
+		if err := provider.SetModelReasonless(id, true); err != nil {
+			return err
+		}
+		fmt.Println(green.Render("✓"), id, muted.Render("is sent no reasoning field"), faint.Render("· --reset offers its levels again"))
+		return nil
+	}
 	if len(rest) == 0 {
+		if provider.Reasonless(p.ID, model) {
+			fmt.Println(muted.Render(id+" is sent no reasoning field"), faint.Render("· --reset offers its levels again"))
+			return nil
+		}
 		if len(all) == 0 {
 			fmt.Println(muted.Render(id+" has no reasoning levels known"), faint.Render("· give it some of "+strings.Join(provider.Levels, ", ")))
 			return nil
@@ -300,7 +314,13 @@ func modelPrice(args []string) error {
 	if len(rest) == 0 {
 		pr, ok := provider.EffectivePrice(p.ID, model)
 		if !ok {
+			// a call to it counts at no cost until one is given: say how
+			// (#2052)
 			fmt.Println(muted.Render(id), faint.Render("· no price is known for it"))
+			fmt.Println(faint.Render("  · magpie model price " + typedRef(id) +
+				" <in>,<out>,<cache read>,<cache write> sets it, in USD per 1M tokens"))
+			fmt.Println(faint.Render("  · magpie model price " + typedRef(provider.AnyPriceKey(model)) +
+				" <in>,<out>,<cache read>,<cache write> sets it from every provider"))
 			return nil
 		}
 		fmt.Println(bold.Render(perMillion(pr)), muted.Render("· "+id))
@@ -320,8 +340,15 @@ func modelPrice(args []string) error {
 			fmt.Println(faint.Render("  · a price you gave is not usable and is ignored"))
 		default:
 			from := "what its provider lists, else its maker's on models.dev"
-			if p.RemotePriced(model) {
+			_, listed := p.ListPrice(model)
+			_, made := provider.MakerPrice(model)
+			st := settings.Load()
+			if _, same := provider.SamePriceIn(st, p.ID, model); same && !listed && !made {
+				from = "the maker's price of " + st.ModelSameAs[p.ID+"/"+model] + " on models.dev, which you said it is the same as"
+			} else if p.RemotePriced(model) {
 				from = "what the other magpie counts it at"
+			} else if c := p.EndpointCatalog(); c != "" {
+				from = "what models.dev's " + c + " lists at its endpoint, else its maker's"
 			}
 			fmt.Println(faint.Render("  · " + from + " · magpie model price " +
 				typedRef(id) + " <in>,<out>,<cache read>,<cache write> to change it"))
@@ -669,9 +696,11 @@ func modelCompact(args []string) error {
 func modelNames() error {
 	s := settings.Load()
 	keys := slices.Sorted(maps.Keys(s.ModelNames))
-	for k := range s.ModelEfforts {
-		if !slices.Contains(keys, k) {
-			keys = append(keys, k)
+	for _, m := range []map[string][]string{s.ModelEfforts, reasonlessLevels(s.ModelReasonless)} {
+		for k := range m {
+			if !slices.Contains(keys, k) {
+				keys = append(keys, k)
+			}
 		}
 	}
 	slices.Sort(keys)
@@ -691,9 +720,23 @@ func modelNames() error {
 		if es := s.ModelEfforts[k]; len(es) > 0 {
 			line += "  " + muted.Render(strings.Join(es, "/"))
 		}
+		if s.ModelReasonless[k] {
+			line += "  " + muted.Render("no reasoning field")
+		}
 		fmt.Println(line)
 	}
 	return nil
+}
+
+// reasonlessLevels are the models sent no reasoning field, as keys.
+func reasonlessLevels(m map[string]bool) map[string][]string {
+	out := map[string][]string{}
+	for k, on := range m {
+		if on {
+			out[k] = nil
+		}
+	}
+	return out
 }
 
 // modelWires lists the names the user gave the vendors their models are asked

@@ -651,6 +651,7 @@ magpie.plugin("gateway", (ctx) => {
   });
   ctx.slots.add("page", {
     key: "gateway",
+    title: "Gateway",
     // what the page draws from: the shell reads /api/providers for it
     loads: "providers",
     html: `

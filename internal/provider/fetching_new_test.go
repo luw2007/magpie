@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -207,7 +208,12 @@ func TestFetchingNewOnceStarted(t *testing.T) {
 // A CLI forgotten while the Providers page's FetchNewBehind lists the
 // accounts (a sign-in finishing then) left its account out of that list:
 // the fetch is asked behind the page, which is told lists are on their
-// way, not that none is due.
+// way, not that none is due. The forget is that listing's own, and the CLI
+// answers only once the page was told: a read another test left running
+// (a usage refresh reads Grok's account, then Cursor's) took the first
+// GrokExecutable call, forgot Cursor before the listing read it, and
+// Cursor answered nobody at once, so nothing was left to wait on and
+// nothing was due (#2390, red on ubuntu CI).
 func TestFetchingNewForgottenWhileListed(t *testing.T) {
 	isolate(t)
 	home := t.TempDir()
@@ -220,26 +226,36 @@ func TestFetchingNewForgottenWhileListed(t *testing.T) {
 	newFetches.Unlock()
 	newSoonAt.Store(0)
 	ForgetAccounts()
+	answer := make(chan struct{})
+	answered := sync.OnceFunc(func() { close(answer) })
 	wasCursor, wasDevin, wasGrok := cursorStatus, devinStatus, GrokExecutable
 	t.Cleanup(func() {
+		answered()
 		waitFetchingNew(t)
 		cursorStatus, devinStatus, GrokExecutable = wasCursor, wasDevin, wasGrok
 		ForgetAccounts()
 	})
 	nobody := func() (string, string, bool, error) { return "", "", false, nil }
 	now := time.Now()
-	cursor := &cliIdentity{name: "cursor-test", exe: func() string { return "" }, read: true, at: now, ask: nobody}
+	// asked again once forgotten, Cursor answers after the page was told
+	cursor := &cliIdentity{name: "cursor-test", exe: func() string { return "" }, read: true, at: now,
+		ask: func() (string, string, bool, error) { <-answer; return nobody() }}
 	cursorStatus = cursor
 	devinStatus = &cliIdentity{name: "devin-test", exe: func() string { return "" }, read: true, at: now, ask: nobody}
-	// Grok's account is read after Cursor's: the sign-in lands there
+	// Grok's account is read after Cursor's: the sign-in lands there, in
+	// the page's own listing, not in anything else reading the accounts
 	var once sync.Once
 	GrokExecutable = func() string {
-		once.Do(cursor.forget)
+		b := make([]byte, 64<<10)
+		if strings.Contains(string(b[:runtime.Stack(b, false)]), "provider.FetchNewBehind(") {
+			once.Do(cursor.forget)
+		}
 		return ""
 	}
 
 	FetchNewBehind(5 * time.Second)
 	busy := FetchingNew()
+	answered()
 	waitFetchingNew(t)
 	if !busy {
 		t.Fatal("a CLI forgotten while the accounts were listed, and FetchingNew says none is on its way")

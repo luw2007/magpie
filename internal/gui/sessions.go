@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +102,16 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		if len(list) > n {
 			list = list[:n]
 		}
+		var modelEffort map[string][]sessions.ModelEffort
+		for _, s := range list {
+			if s.Agent == "codex" {
+				modelEffort = usage.CodexModelEffort(usage.All)
+				break
+			}
+		}
+		for i := range list {
+			addCodexModelEffort(&list[i], modelEffort)
+		}
 		since := time.Now()
 		for _, s := range list {
 			if !s.Start.IsZero() && s.Start.Before(since) {
@@ -111,7 +122,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		for _, s := range list {
 			j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic", Via: vias[s.Agent+"|"+s.ID]}
 			if a := agents[s.Agent]; a != nil {
-				j.Name, j.Icon = a.Name, a.Icon
+				j.Name, j.Icon = a.SharedName(), a.Icon
 			}
 			j.Name = wslName(j.Name, s)
 			j.Path = tilde(j.Path)
@@ -127,7 +138,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		st := statsFor(n)
 		names := map[string]string{}
 		for _, a := range agent.Clients() {
-			names[a.ID] = a.Name
+			names[a.ID] = a.SharedName()
 		}
 		agents := map[string]string{}
 		for _, d := range st.Days {
@@ -149,7 +160,33 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("GET /api/sessions/overview", func(rw http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		n, _ := strconv.Atoi(q.Get("days"))
-		writeJSON(rw, statsFor(n).Overview(q.Get("agent"), q.Get("model"), q.Get("cwd"), 8))
+		st := statsFor(n)
+		out := st.Overview(q.Get("agent"), q.Get("model"), q.Get("cwd"), 8)
+		period := usage.All
+		if n > 0 {
+			if p, ok := usage.RangeOf(st.From, st.To); ok {
+				period = p
+			}
+		}
+		needCodex := false
+		for key, top := range out.Top {
+			out.Top[key] = slices.Clone(top)
+			for i := range out.Top[key] {
+				if out.Top[key][i].Agent == "codex" {
+					needCodex = true
+				}
+			}
+		}
+		if needCodex {
+			modelEffort := usage.CodexModelEffort(period)
+			for key, top := range out.Top {
+				for i := range top {
+					addCodexSummaryModelEffort(&top[i], modelEffort)
+				}
+				out.Top[key] = top
+			}
+		}
+		writeJSON(rw, out)
 	})
 	// progress is how far the reading of the session files has got, for
 	// the page to show while its first read takes a while.
@@ -175,10 +212,13 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			_ = json.NewEncoder(rw).Encode(map[string]string{"error": "no such session"})
 			return
 		}
+		if s.Agent == "codex" {
+			addCodexModelEffort(&s, usage.CodexModelEffort(usage.All))
+		}
 		j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic"}
 		for _, a := range agent.Clients() {
 			if a.ID == s.Agent {
-				j.Name, j.Icon = a.Name, a.Icon
+				j.Name, j.Icon = a.SharedName(), a.Icon
 			}
 		}
 		j.Name = wslName(j.Name, s)
@@ -209,7 +249,13 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no such session"))
 			return
 		}
-		t, err := sessions.TranscriptOf(s)
+		// sub: one of its subagents, found among those the session lists
+		// (#2261)
+		read := sessions.TranscriptOf
+		if sub := q.Get("sub"); sub != "" {
+			read = func(s sessions.Session) (sessions.Transcript, error) { return sessions.SubagentTranscript(s, sub) }
+		}
+		t, err := read(s)
 		if err != nil {
 			fail(rw, err)
 			return
@@ -305,7 +351,7 @@ func sessionMarkdown(agentID, id string) (stem string, md []byte, err error) {
 	name := s.Agent
 	for _, a := range agent.Clients() {
 		if a.ID == s.Agent {
-			name = a.Name
+			name = a.SharedName()
 		}
 	}
 	var b bytes.Buffer

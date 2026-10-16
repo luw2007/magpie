@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/otlp"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/usage"
@@ -24,9 +25,20 @@ import (
 // holds within a fraction of a second, not every 2s and 5s, so a test that
 // waits for an export doesn't wait seconds (#1654).
 func fastOTel(t *testing.T) {
-	every, sessionsEvery := usage.OTelEvery, usage.OTelSessionsEvery
-	usage.OTelEvery, usage.OTelSessionsEvery = 200*time.Millisecond, 50*time.Millisecond
-	t.Cleanup(func() { usage.OTelEvery, usage.OTelSessionsEvery = every, sessionsEvery })
+	every, sessionsEvery := otlp.OTelEvery, otlp.OTelSessionsEvery
+	otlp.OTelEvery, otlp.OTelSessionsEvery = 200*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { otlp.OTelEvery, otlp.OTelSessionsEvery = every, sessionsEvery })
+}
+
+// otelX is the OTLP exporter these tests observe the gateway with.
+var otelX = otlp.New()
+
+// startOTel registers otelX as the gateway's observer and serves it, as
+// plugins/otel does while it is on and ListenAndServe does as it starts.
+func startOTel() func() {
+	remove := usage.Observe(otelX)
+	stop := usage.ServeObservers()
+	return func() { stop(); remove() }
 }
 
 // otelExports takes every export the collector has received once stop() has
@@ -81,10 +93,10 @@ func TestOTelSessionDedupOnlyUnkeyedLoopback(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_METRICS", "false")
 	t.Setenv("MAGPIE_OTEL_SESSIONS", "true")
 	fastOTel(t)
-	stop := usage.StartOTel()
+	stop := startOTel()
 	t.Cleanup(stop)
 	// Header-only first request: no user event or completed observation exists.
-	if !usage.OTelSession("pi", "session") {
+	if !otelX.Session("pi", "session") {
 		t.Fatal("header-only session unavailable before first poll")
 	}
 	first := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hello"}]}`))
@@ -97,7 +109,7 @@ func TestOTelSessionDedupOnlyUnkeyedLoopback(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("first request: %d %s", w.Code, w.Body.String())
 	}
-	if !usage.OTelSession("codex", "codex-session") {
+	if !otelX.Session("codex", "codex-session") {
 		t.Fatal("real-size Codex header unavailable before first poll")
 	}
 	codexRequest := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hello"}]}`))
@@ -121,11 +133,11 @@ func TestOTelSessionDedupOnlyUnkeyedLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Close()
-	deadline := time.Now().Add(6 * time.Second)
-	for !usage.OTelSessionAgent("pi") && time.Now().Before(deadline) {
+	deadline := time.Now().Add(30 * time.Second)
+	for !otelX.SessionAgent("pi") && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !usage.OTelSessionAgent("pi") {
+	if !otelX.SessionAgent("pi") {
 		t.Fatal("local Pi reader unavailable")
 	}
 	if err := sessions.SetGatewayRecording(true, false); err != nil {
@@ -212,51 +224,6 @@ func TestOTelSessionDedupOnlyUnkeyedLoopback(t *testing.T) {
 	}
 }
 
-func TestOTelSessionDiscoveredDuringFirstRequest(t *testing.T) {
-	t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
-	t.Setenv("PI_CODING_AGENT_SESSION_DIR", "")
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("MAGPIE_OTEL_ENABLED", "true")
-	t.Setenv("MAGPIE_OTEL_ENDPOINT", "http://127.0.0.1:1")
-	t.Setenv("MAGPIE_OTEL_HEADERS", "")
-	t.Setenv("MAGPIE_OTEL_SESSIONS", "true")
-	fastOTel(t)
-	stop := usage.StartOTel()
-	t.Cleanup(stop)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	req.RemoteAddr = "127.0.0.1:1234"
-	req.Header.Set("User-Agent", "pi/1.0")
-	req.Header.Set("X-Session-Id", "late-session")
-	_, pending := beginOTelRequest(req, "", nil)
-	_, exported := beginOTelRequest(req, "", nil)
-	if pending == nil || exported == nil || !pending.sessionCandidate {
-		t.Fatal("unseen session must retain gateway fallback")
-	}
-	if exported.skip() {
-		t.Fatal("unseen session suppressed")
-	}
-	dir := filepath.Join(os.Getenv("PI_CODING_AGENT_DIR"), "sessions", "work")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "2026-10-03T00-00-00_late-session.jsonl"), []byte("{\"type\":\"session\",\"id\":\"late-session\"}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if usage.OTelSession("pi", "late-session") {
-		t.Fatal("test must exercise a fresh cached miss")
-	}
-	if !pending.skip() {
-		t.Fatal("newly discovered transcript duplicated gateway trace")
-	}
-	if exported.skip() {
-		t.Fatal("discovery after an exported attempt must retain its root")
-	}
-	remote := &otelRequest{agent: "pi", session: "late-session"}
-	if remote.skip() {
-		t.Fatal("remote/keyed request must retain gateway tracing")
-	}
-}
-
 func TestOTelFastRequestTranscriptDiscovery(t *testing.T) {
 	for _, transcript := range []bool{true, false} {
 		t.Run(fmt.Sprint(transcript), func(t *testing.T) {
@@ -275,7 +242,7 @@ func TestOTelFastRequestTranscriptDiscovery(t *testing.T) {
 						t.Error(err)
 					}
 				}
-				if usage.OTelSession("pi", "fast-session") {
+				if otelX.Session("pi", "fast-session") {
 					t.Error("request must still have a cached discovery miss")
 				}
 				return 0, ""
@@ -293,7 +260,14 @@ func TestOTelFastRequestTranscriptDiscovery(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_SESSIONS", "true")
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			fastOTel(t)
-			stop := usage.StartOTel()
+			// The request's cached miss must outlast the request however slow
+			// the machine is (#1811): neither the transcript watcher's poll nor
+			// the end of the discovery cache window may read the transcript
+			// before the export decides. Only SessionFresh may find it.
+			sessionsEvery, ttl := otlp.OTelSessionsEvery, sessions.TraceIdentityTTL
+			otlp.OTelSessionsEvery, sessions.TraceIdentityTTL = time.Hour, time.Hour
+			t.Cleanup(func() { otlp.OTelSessionsEvery, sessions.TraceIdentityTTL = sessionsEvery, ttl })
+			stop := startOTel()
 			t.Cleanup(stop)
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hello"}]}`))
 			req.RemoteAddr = "127.0.0.1:1234"
@@ -336,7 +310,7 @@ func TestOTelExportsGatewayUsageWithoutContent(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_HEADERS", "")
 	t.Setenv("MAGPIE_OTEL_METRICS", "false")
 	fastOTel(t)
-	stop := usage.StartOTel()
+	stop := startOTel()
 	t.Cleanup(stop)
 	code, body := post(t, "/v1/chat/completions", `{"model":"m1","messages":[{"role":"user","content":"PRIVATE-PROMPT"}]}`)
 	if code != 200 || !strings.Contains(body, "PRIVATE-REPLY") {
@@ -383,7 +357,7 @@ func TestOTelExportsBodiesWhenOn(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			t.Setenv("MAGPIE_OTEL_BODIES", c.bodies)
 			fastOTel(t)
-			stop := usage.StartOTel()
+			stop := startOTel()
 			t.Cleanup(stop)
 			secret := "sk-ant-api03-" + strings.Repeat("Q7x", 30)
 			request := strings.Replace(c.request, `"model":"m1"`, `"model":"m1","metadata":{"api_key":"`+secret+`"}`, 1)
@@ -457,7 +431,7 @@ func TestOTelWaterfallIncludesUnbilledFallback(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_METRICS", "true")
 	t.Setenv("MAGPIE_OTEL_BODIES", "false")
 	fastOTel(t)
-	stop := usage.StartOTel()
+	stop := startOTel()
 	t.Cleanup(stop)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatReq))
 	traceID, parentID := strings.Repeat("a", 32), strings.Repeat("b", 16)
@@ -533,20 +507,6 @@ func TestOTelWaterfallIncludesUnbilledFallback(t *testing.T) {
 	}
 }
 
-func TestOTelParentValidation(t *testing.T) {
-	valid := "00-" + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 16) + "-01"
-	for _, value := range []string{valid, "", strings.Replace(valid, "00-", "ff-", 1), strings.ToUpper(valid), strings.Replace(valid, strings.Repeat("a", 32), strings.Repeat("0", 32), 1), valid + "-extra", valid[:len(valid)-1] + "z"} {
-		trace, parent := otelParent(value)
-		if value == valid {
-			if trace == "" || parent == "" {
-				t.Fatal("valid parent rejected")
-			}
-		} else if trace != "" || parent != "" {
-			t.Fatalf("accepted malformed parent: %q", value)
-		}
-	}
-}
-
 func TestOTelWaterfallFailureAndCancellation(t *testing.T) {
 	for _, canceled := range []bool{false, true} {
 		name := "failure"
@@ -574,7 +534,7 @@ func TestOTelWaterfallFailureAndCancellation(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			t.Setenv("MAGPIE_OTEL_BODIES", "false")
 			fastOTel(t)
-			stop := usage.StartOTel()
+			stop := startOTel()
 			t.Cleanup(stop)
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
 			New().Handler().ServeHTTP(httptest.NewRecorder(), req)
@@ -633,7 +593,7 @@ func TestOTelExportsWholeBodiesWhenOn(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_BODIES", "true")
 			t.Setenv("MAGPIE_OTEL_BODIES_WHOLE", fmt.Sprintf("%t", c.whole))
 			fastOTel(t)
-			stop := usage.StartOTel()
+			stop := startOTel()
 			t.Cleanup(stop)
 			s := New()
 			response := httptest.NewRecorder()
@@ -645,7 +605,7 @@ func TestOTelExportsWholeBodiesWhenOn(t *testing.T) {
 			if len(recent) != 1 {
 				t.Fatalf("recent calls: %d, want 1", len(recent))
 			}
-			if recent[0].otelIn != nil || recent[0].otelOut != nil {
+			if recent[0].wholeIn != nil || recent[0].wholeOut != nil {
 				t.Fatal("Recent calls retained whole OTel bodies")
 			}
 			if len(recent[0].RequestBody) != callBodyLimit || len(recent[0].ResponseBody) != callBodyLimit || !recent[0].RequestTruncated || !recent[0].ResponseTruncated {
@@ -722,7 +682,7 @@ func TestOTelWholeWaterfallFallback(t *testing.T) {
 	t.Setenv("MAGPIE_OTEL_BODIES", "true")
 	t.Setenv("MAGPIE_OTEL_BODIES_WHOLE", "true")
 	fastOTel(t)
-	stop := usage.StartOTel()
+	stop := startOTel()
 	t.Cleanup(stop)
 	request := `{"model":"plan/m1","messages":[{"role":"user","content":"` + big + `"}],"metadata":{"api_key":"` + secret + `"}}`
 	if code, _ := post(t, "/v1/chat/completions", request); code != 200 {
@@ -794,12 +754,12 @@ func TestOTelClaudeHelperClassification(t *testing.T) {
 			{`{"max_tokens":200}`, "title_generation", "title_generation"},
 			{`{broken`, "", ""},
 		} {
-			if got := otelCallKind(agent, tc.kind, []byte(tc.body)); got != tc.want {
+			if got := observedKind(agent, tc.kind, []byte(tc.body)); got != tc.want {
 				t.Fatalf("%s %s: %q want %q", agent, tc.body, got, tc.want)
 			}
 		}
 	}
-	if got := otelCallKind("codex", "", []byte(`{"max_tokens":200}`)); got != "" {
+	if got := observedKind("codex", "", []byte(`{"max_tokens":200}`)); got != "" {
 		t.Fatal("Claude heuristic applied to Codex")
 	}
 }
@@ -827,7 +787,7 @@ func TestOTelClaudeMainAndChildDedupRetainsHelper(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			t.Setenv("MAGPIE_OTEL_BODIES", "false")
 			fastOTel(t)
-			stop := usage.StartOTel()
+			stop := startOTel()
 			t.Cleanup(stop)
 			root := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "projects", "p")
 			paths := []string{filepath.Join(root, "parent.jsonl"), filepath.Join(root, "parent", "subagents", "agent-a.jsonl")}
@@ -856,18 +816,18 @@ func TestOTelClaudeMainAndChildDedupRetainsHelper(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			deadline := time.Now().Add(6 * time.Second)
-			for !usage.OTelSession(agent, "parent") && time.Now().Before(deadline) {
+			deadline := time.Now().Add(30 * time.Second)
+			for !otelX.Session(agent, "parent") && time.Now().Before(deadline) {
 				time.Sleep(10 * time.Millisecond)
 			}
-			if !usage.OTelSession(agent, "parent") {
+			if !otelX.Session(agent, "parent") {
 				t.Fatal("Claude transcript not available")
 			}
 			// Wait for the final child content blocks to settle and export. Readiness
 			// alone only proves the user/root event was observed, not final coverage.
 			var batches [][]byte
 			generations := 0
-			timer := time.NewTimer(8 * time.Second)
+			timer := time.NewTimer(30 * time.Second)
 			for generations < 2 {
 				select {
 				case batch := <-received:

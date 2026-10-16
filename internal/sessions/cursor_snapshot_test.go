@@ -24,9 +24,20 @@ func cursorTempCopies(t *testing.T) []string {
 func TestCursorEditorCopiedOncePerChange(t *testing.T) {
 	cursorSetup(t)
 	t.Setenv("TMPDIR", t.TempDir())
+	// The copy lingers past any pause a loaded runner makes between two
+	// reads while copies are counted (a 100ms linger let a slow runner drop
+	// it between List and the next visit, and count a third copy); it is
+	// cut short only to see the last one removed. The timers read the
+	// linger under cursorSnaps' lock, so it is set under it.
+	linger := func(d time.Duration) {
+		cursorSnaps.Lock()
+		cursorSnapLinger = d
+		cursorSnaps.Unlock()
+	}
 	minWas, lingerWas := cursorSnapMin, cursorSnapLinger
-	cursorSnapMin, cursorSnapLinger = 0, 100*time.Millisecond
-	t.Cleanup(func() { cursorSnapMin, cursorSnapLinger = minWas, lingerWas })
+	cursorSnapMin = 0
+	linger(time.Hour)
+	t.Cleanup(func() { cursorSnapMin = minWas; linger(lingerWas) })
 
 	config, err := os.UserConfigDir()
 	if err != nil {
@@ -98,6 +109,10 @@ func TestCursorEditorCopiedOncePerChange(t *testing.T) {
 	if n := cursorCopies.Load() - before; n != 2 {
 		t.Fatalf("copies after one change: %d, want 2", n)
 	}
+
+	// one more read lets the copy go with a short linger
+	linger(100 * time.Millisecond)
+	List(All)
 
 	deadline := time.Now().Add(5 * time.Second)
 	for len(cursorTempCopies(t)) > 0 {

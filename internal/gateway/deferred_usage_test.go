@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
-	"github.com/yetone/magpie/internal/usage"
 )
 
 // The Cursor plugin's step that collected an earlier step's late usage
@@ -157,7 +156,7 @@ func TestDeferredUsageThroughTheGateway(t *testing.T) {
 			t.Setenv("MAGPIE_OTEL_HEADERS", "")
 			t.Setenv("MAGPIE_OTEL_METRICS", "false")
 			fastOTel(t)
-			stop := usage.StartOTel()
+			stop := startOTel()
 			t.Cleanup(stop)
 			code, body := post(t, c.path, c.request)
 			if code != 200 {

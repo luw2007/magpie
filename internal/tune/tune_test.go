@@ -151,3 +151,135 @@ func TestCompactCurveCountsCompactions(t *testing.T) {
 		t.Fatalf("%d compactions replayed at %d, %d seen in the files", last.Compacts, last.Value, r.Facts.Compacts)
 	}
 }
+
+// timed marks the first ms compactions of cs (the call after each drop) as
+// having kept the agent waiting ms milliseconds, as its files would say.
+func timed(cs []Call, n int, ms int64) []Call {
+	out := append([]Call(nil), cs...)
+	for i := 1; i < len(out) && n > 0; i++ {
+		if out[i].Stream == out[i-1].Stream && compacted(out[i-1].Prompt, out[i].Prompt) {
+			out[i].Compact = ms
+			n--
+		}
+	}
+	return out
+}
+
+// With the agent's compactions timed, the advice never waits longer than
+// the window now does: of the windows that compact no more often, the
+// cheapest, and of those within 3% of it the fewest compactions. The
+// cheaper window untimed advice takes, which compacts more often, is said
+// with its wait instead. Each window says the seconds its compactions
+// would have waited.
+func TestCompactTimedWaitsLeast(t *testing.T) {
+	cs := many(4, func(id string, t0 time.Time) []Call {
+		return session(id, t0, 400, 30000, 4000, 967000, 60000, 30*time.Second, false)
+	})
+	for _, cur := range []int{1000000, 600000, 150000} {
+		o := claudeOpts
+		o.Window, o.Current = 1000000, cur
+		plain := Compact(cs, o)
+		r := Compact(timed(cs, 4, 61400), o)
+		if plain == nil || r == nil {
+			t.Fatal("no advice")
+		}
+		if r.Facts.Took != 61 || r.Facts.Timed != 4 {
+			t.Fatalf("took %ds of %d timed, want 61s of 4", r.Facts.Took, r.Facts.Timed)
+		}
+		nowN := r.Wait / 61 // the window now may sit under the curve
+		low := r.Curve[0]
+		for _, p := range r.Curve {
+			if p.Cost < low.Cost {
+				low = p
+			}
+		}
+		var best Point
+		for _, p := range r.Curve {
+			if p.Wait != p.Compacts*61 {
+				t.Fatalf("%d waits %ds for %d compactions", p.Value, p.Wait, p.Compacts)
+			}
+			if p.Value == r.Best {
+				best = p
+			}
+		}
+		if best.Compacts > nowN {
+			t.Fatalf("at %d: advised %d makes %d compactions, more than %d now", cur, r.Best, best.Compacts, nowN)
+		}
+		for _, p := range r.Curve {
+			if p.Compacts <= nowN && p.Cost*(1+sameCost) < best.Cost {
+				t.Fatalf("at %d: %d waits no longer than now and costs %.0f, over 3%% under %.0f at %d", cur, p.Value, p.Cost, best.Cost, r.Best)
+			}
+		}
+		if r.Cheapest != low.Value || r.WaitCheapest != low.Wait {
+			t.Fatalf("at %d: cheapest said %d (%ds), want %d (%ds)", cur, r.Cheapest, r.WaitCheapest, low.Value, low.Wait)
+		}
+		if r.WaitBest != best.Wait {
+			t.Fatalf("at %d: wait %ds now, %ds advised", cur, r.Wait, r.WaitBest)
+		}
+		t.Logf("at %d (%d compactions): untimed %d (%d), timed %d (%d), cheapest %d (%d)", cur, nowN, plain.Best, compactsAt(plain, plain.Best), r.Best, best.Compacts, low.Value, low.Compacts)
+	}
+	// from 1M, untimed advice goes to 260000 and compacts far more often;
+	// timed, it stays where the wait doesn't grow
+	o := claudeOpts
+	o.Window, o.Current = 1000000, 1000000
+	plain, r := Compact(cs, o), Compact(timed(cs, 4, 61400), o)
+	if compactsAt(plain, plain.Best) <= compactsAt(r, 1000000) {
+		t.Fatalf("fixture: untimed %d makes %d compactions, no more than %d now", plain.Best, compactsAt(plain, plain.Best), compactsAt(r, 1000000))
+	}
+	if r.Best == plain.Best {
+		t.Fatalf("timed advice %d is untimed's, which waits longer than now", r.Best)
+	}
+}
+
+func compactsAt(r *Compaction, v int) int {
+	for _, p := range r.Curve {
+		if p.Value == v {
+			return p.Compacts
+		}
+	}
+	return -1
+}
+
+// Too few compactions timed, or none, and the advice is what it was without
+// their time: the same window, no wait said.
+func TestCompactUntimedUnchanged(t *testing.T) {
+	cs := many(4, func(id string, t0 time.Time) []Call {
+		return session(id, t0, 400, 30000, 4000, 967000, 60000, 30*time.Second, false)
+	})
+	o := claudeOpts
+	o.Window, o.Current = 1000000, 1000000
+	plain := Compact(cs, o)
+	few := Compact(timed(cs, 2, 61400), o)
+	if plain == nil || few == nil {
+		t.Fatal("no advice")
+	}
+	if plain.Best != 260000 || few.Best != plain.Best {
+		t.Fatalf("best %d untimed, %d with 2 timed; want 260000 both", plain.Best, few.Best)
+	}
+	if few.Facts.Took != 0 || few.Facts.Timed != 0 || few.Wait != 0 || few.WaitBest != 0 || few.Cheapest != 0 || few.WaitCheapest != 0 {
+		t.Fatalf("wait said from 2 timed: %+v", few)
+	}
+	for _, p := range few.Curve {
+		if p.Wait != 0 {
+			t.Fatalf("%d waits %ds", p.Value, p.Wait)
+		}
+	}
+}
+
+// A model whose window isn't known (Window 0) caps nothing short of Max:
+// the windows tried don't stop at the largest prompt seen (zhemu on
+// Discord: a 1M model offered no more than 412K), and with no setting and
+// no compaction seen it runs now at Max.
+func TestCompactUnknownWindowCapsNothing(t *testing.T) {
+	cs := many(2, func(id string, t0 time.Time) []Call {
+		return session(id, t0, 80, 20000, 5000, 0, 0, 20*time.Second, false)
+	})
+	o := CompactOpts{Min: 50000, Max: 1000000, Step: 10000}
+	r := Compact(cs, o)
+	if r == nil {
+		t.Fatal("no advice")
+	}
+	if last := r.Curve[len(r.Curve)-1].Value; last != 1000000 || r.Current != 1000000 || r.Window != 0 {
+		t.Fatalf("curve to %d, now %d, window %d; want 1000000, 1000000, 0", last, r.Current, r.Window)
+	}
+}

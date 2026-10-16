@@ -512,7 +512,7 @@ func syncShow(k syncKind) error {
 		fmt.Println("  couldn't share usage:", v.UsageError)
 	}
 	if len(v.SignIn) > 0 {
-		fmt.Println("  not signed in on this computer (sync carries no sign-in; magpie accounts add <id>):", strings.Join(v.SignIn, ", "))
+		fmt.Println("  synced settings use these, not signed in on this computer (sync carries settings, not sign-ins; to use one here: magpie accounts add <id>):", strings.Join(v.SignIn, ", "))
 	}
 	if n := v.Notice; n != nil && n.Restored {
 		fmt.Println("  Restored from the server:", partNames(n.Here))

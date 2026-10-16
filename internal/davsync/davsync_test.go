@@ -3,6 +3,7 @@ package davsync
 import (
 	"context"
 	"fmt"
+	"github.com/yetone/magpie/internal/testenv"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -143,7 +144,17 @@ func (c computer) use(t *testing.T) {
 	t.Setenv("USERPROFILE", string(c))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(string(c), ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(string(c), ".cache"))
-	t.Setenv("PATH", "")
+	// Claude Code's and Codex's CLIs are here: an agent whose CLI is gone
+	// is no Library target (#2254), and a computer's library is synced to
+	// them
+	bin := filepath.Join(string(c), "bin")
+	for _, cli := range []string{"claude", "codex"} {
+		testenv.Program(t, filepath.Join(bin, cli), "#!/bin/sh\n")
+		if err := os.WriteFile(filepath.Join(bin, cli+".exe"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
 	for _, v := range agentenv.Vars {
 		t.Setenv(v, "")
 	}
@@ -180,7 +191,7 @@ func TestSync(t *testing.T) {
 	a, b := newComputer(t), newComputer(t)
 	a.use(t)
 	provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k1"})
-	settings.Save(settings.Settings{Theme: "dark", Proxy: "http://127.0.0.1:7890", Window: []int{900, 700}, TrayUsages: []string{"claude|a@b.c"}, TrayUsageEvery: 5, TrayNoLogos: true, TrayNoBird: true})
+	settings.Save(settings.Settings{Theme: "dark", Proxy: "http://127.0.0.1:7890", Window: []int{900, 700}, TrayUsages: []string{"claude|a@b.c"}, TrayUsageEvery: 5, TrayNoLogos: true, TrayNoBird: true, TrayPace: true, TrayNoCost: true})
 	profile.Save("work", profile.Profile{Fields: map[string]string{"claude.model": "x"}})
 	same := cfg
 	same.Passphrase = cfg.Password
@@ -225,7 +236,7 @@ func TestSync(t *testing.T) {
 	}
 	// nor does a's menu bar: what shows beside the icon is b's own (yoooo
 	// on Discord)
-	if s := settings.Load(); len(s.TrayUsages) != 0 || s.TrayUsage != "" || s.TrayUsageEvery == 5 || s.TrayNoLogos || s.TrayNoBird {
+	if s := settings.Load(); len(s.TrayUsages) != 0 || s.TrayUsage != "" || s.TrayUsageEvery == 5 || s.TrayNoLogos || s.TrayNoBird || s.TrayPace || s.TrayNoCost {
 		t.Fatalf("b's menu bar: %+v", s)
 	}
 	if ps, _ := profile.Load(); len(ps) != 1 {

@@ -1,12 +1,15 @@
 package provider
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,11 +54,34 @@ type KeyRest struct {
 
 // RestKey is what the gateway rests the key k of a provider by: the
 // provider's id while it has one key on, else the id and the key's.
-func (p Provider) RestKey(k KeyInfo) string {
-	if len(p.KeysOn()) > 1 {
-		return p.ID + "#" + k.ID
+func (p Provider) RestKey(k KeyInfo) string { return p.RestKeys()(k) }
+
+// RestKeys is RestKey for each of a provider's keys in turn, whether it
+// has more than one on found once: found again for every key, a list of
+// a thousand keys was read a thousand times over, and the Providers page
+// took seconds to draw it, minutes for five thousand (@NetRozee on X).
+func (p Provider) RestKeys() func(KeyInfo) string {
+	several := p.severalOn()
+	return func(k KeyInfo) string {
+		if several {
+			return p.ID + "#" + k.ID
+		}
+		return p.ID
 	}
-	return p.ID
+}
+
+// severalOn is len(p.KeysOn()) > 1 without listing them: a key on after
+// the first that isn't the first again.
+func (p Provider) severalOn() bool {
+	if p.Key == "" {
+		return false
+	}
+	for _, k := range p.Keys {
+		if !k.Off && k.Key != "" && k.Key != p.Key {
+			return true
+		}
+	}
+	return false
 }
 
 func newKeyID() string {
@@ -66,14 +92,52 @@ func newKeyID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// mergeKey lists the constructor's Key among Keys when none of them holds
+// it; Key is never persisted as a mirror.
+func (p *Provider) mergeKey() {
+	if p.Account != nil {
+		return
+	}
+	if p.KeyID == "" && strings.TrimSpace(p.Key) != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return strings.TrimSpace(k.Key) == strings.TrimSpace(p.Key) }) {
+		p.Keys = append([]KeyAccount{{Key: strings.TrimSpace(p.Key)}}, p.Keys...)
+	}
+}
+
+// adoptKeyIDs gives each key with no id the id of the stored key holding
+// the same secret, so saving a provider built from a bare Key, or from keys
+// that lost their ids, keeps the identities that pools, rests and usage
+// name them by instead of minting new ones.
+func (p *Provider) adoptKeyIDs(was []KeyAccount) {
+	if p.Account != nil || len(was) == 0 {
+		return
+	}
+	p.mergeKey()
+	taken := make(map[string]bool, len(p.Keys))
+	for _, k := range p.Keys {
+		if k.ID != "" {
+			taken[k.ID] = true
+		}
+	}
+	for i := range p.Keys {
+		k := &p.Keys[i]
+		if k.ID != "" {
+			continue
+		}
+		for _, w := range was {
+			if w.ID != "" && !taken[w.ID] && strings.TrimSpace(w.Key) == strings.TrimSpace(k.Key) {
+				k.ID = w.ID
+				taken[w.ID] = true
+				break
+			}
+		}
+	}
+}
+
 func (p *Provider) normalizeKeys() {
 	if p.Account != nil {
 		return
 	} // OAuth credentials never become saved keys
-	// Constructors may supply Key, but it is never persisted as a mirror.
-	if p.KeyID == "" && strings.TrimSpace(p.Key) != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key == strings.TrimSpace(p.Key) }) {
-		p.Keys = append([]KeyAccount{{Key: strings.TrimSpace(p.Key)}}, p.Keys...)
-	}
+	p.mergeKey()
 	seen := make(map[string]bool, len(p.Keys))
 	for i := range p.Keys {
 		k := &p.Keys[i]
@@ -125,15 +189,19 @@ func (p Provider) KeyList() []KeyInfo {
 
 // KeysOn is the keys in use, first to last, each secret once.
 func (p Provider) KeysOn() []KeyAccount {
+	keysListed.Add(1)
 	if p.Account != nil {
 		return nil
 	}
 	var out []KeyAccount
+	seen := make(map[string]bool, len(p.Keys)+1)
 	if p.KeyID == "" && p.Key != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return k.Key == p.Key }) {
 		out = append(out, KeyAccount{Key: p.Key}) // unsaved constructor only
+		seen[p.Key] = true
 	}
 	for _, k := range p.Keys {
-		if !k.Off && k.Key != "" && !slices.ContainsFunc(out, func(o KeyAccount) bool { return o.Key == k.Key }) {
+		if !k.Off && k.Key != "" && !seen[k.Key] {
+			seen[k.Key] = true
 			out = append(out, k)
 		}
 	}
@@ -148,6 +216,16 @@ func keyProtocolOK(proto Protocol) error {
 	return fmt.Errorf("unknown protocol %q", proto)
 }
 
+// keysListed counts KeysOn's lists (KeysListed).
+var keysListed atomic.Int64
+
+// KeysListed is how many times a provider's keys on have been listed in
+// this process: a test counts them, not the time a page or request took,
+// to say they are listed once and not once a key (@NetRozee on X).
+func KeysListed() int64 { return keysListed.Load() }
+
+// AddKey saves one more key for a provider, on: it takes requests after
+// the ones before it. It becomes the first when the provider has none.
 func AddKey(id, name, key string, proto Protocol) error {
 	if err := keyProtocolOK(proto); err != nil {
 		return err
@@ -251,6 +329,39 @@ func AddKeys(id string, keys []string, proto Protocol) (added, had int, err erro
 
 // MaxKeyWeight is the most a key's weight can be.
 const MaxKeyWeight = 1000
+
+// keyReadsAtOnce is how many of one provider's keys have their balance,
+// plan or limits read from the vendor at once. Every key at once was a
+// thousand requests to one relay together for a provider of a thousand
+// keys (@NetRozee on X); other providers' keys are read beside them.
+const keyReadsAtOnce = 8
+
+// keySlots is one read's slots, keyReadsAtOnce for each provider.
+type keySlots struct {
+	sync.Mutex
+	m map[string]chan struct{}
+}
+
+// take waits for a slot of the provider id's, and gives what frees it. A
+// read given up on (ctx done) goes on without one, to fail at once.
+func (s *keySlots) take(ctx context.Context, id string) (release func()) {
+	s.Lock()
+	if s.m == nil {
+		s.m = map[string]chan struct{}{}
+	}
+	c := s.m[id]
+	if c == nil {
+		c = make(chan struct{}, keyReadsAtOnce)
+		s.m[id] = c
+	}
+	s.Unlock()
+	select {
+	case c <- struct{}{}:
+		return func() { <-c }
+	case <-ctx.Done():
+		return func() {}
+	}
+}
 
 // WeightOf is the key's weight as Weighted routing counts it: 1 when none.
 func (k KeyAccount) WeightOf() int { return max(k.Weight, 1) }

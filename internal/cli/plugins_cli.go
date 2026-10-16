@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/middleware"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/pluginrt"
@@ -53,7 +55,7 @@ func pluginCmd(args []string) error {
 		if !plugin.IsPath(rest[0]) && !plugin.HasBun() {
 			fmt.Println(muted.Render("Downloading Bun " + plugin.BunInUse() + ", which plugins run on…"))
 		}
-		e, err := plugin.Add(ctx, rest[0])
+		e, err := provider.AddPlugin(ctx, rest[0])
 		if err != nil {
 			return err
 		}
@@ -201,6 +203,13 @@ func listPlugins(ctx context.Context, asJSON bool) error {
 	clashes := plugin.Clashes(loaded)
 	ps, perr := plugin.Providers(ctx)
 	mws := middleware.States()
+	var pts []plugin.PluginTools
+	for _, p := range loaded {
+		if len(p.Tools) > 0 {
+			pts = append(pts, plugin.PluginTools{Spec: p.Spec, Tools: p.Tools})
+		}
+	}
+	toolNames := gateway.ToolNames(pts)
 	if asJSON {
 		b, _ := json.MarshalIndent(map[string]any{"plugins": l.Plugins, "loaded": loaded, "providers": ps, "middleware": mws}, "", "  ")
 		fmt.Println(string(b))
@@ -231,8 +240,17 @@ func listPlugins(ctx context.Context, asJSON bool) error {
 			if m.Error != "" {
 				fmt.Printf("  %s  %s\n", muted.Render("gateway middleware"), amber.Render("didn't load: "+m.Error))
 			} else {
-				fmt.Printf("  %s  %s\n", muted.Render("gateway middleware"), strings.Join(m.Hooks, ", "))
+				fmt.Printf("  %s  %s\n", muted.Render("gateway middleware"), mwPoints(m))
 			}
+		}
+		// the tools it gives agents, by their names on the plugin tools
+		// MCP server (the host loads no plugin that is off, so one has
+		// none), and the page it adds to the window
+		if ts := toolsLine(toolNames[e.Spec]); ts != "" {
+			fmt.Printf("  %s  %s\n", muted.Render("tools"), ts)
+		}
+		if pg, _ := plugin.WindowPage(plugin.Target(e.Spec)); pg != nil {
+			fmt.Printf("  %s  %s\n", muted.Render("page"), pageLine(pg))
 		}
 		for _, p := range ps {
 			if p.Spec != e.Spec {
@@ -284,7 +302,7 @@ func installedName(name string) string {
 		}
 	}
 	for _, x := range ps {
-		if plugin.ShortName(plugin.Name(x.Spec)) == name {
+		if plugin.Called(plugin.Name(x.Spec), name) {
 			return plugin.Name(x.Spec)
 		}
 	}
@@ -307,7 +325,7 @@ func pluginOptions(name string, set []string) error {
 	}
 	// a short name, as the community's READMEs write it
 	for i, x := range ps {
-		if e == nil && plugin.ShortName(plugin.Name(x.Spec)) == name {
+		if e == nil && plugin.Called(plugin.Name(x.Spec), name) {
 			e = &ps[i]
 		}
 	}
@@ -369,6 +387,13 @@ func pluginProvider(ctx context.Context, name string) (plugin.Provider, error) {
 	return plugin.Provider{}, fmt.Errorf("no plugin signs in to %q; they sign in to %s", name, strings.Join(ids, ", "))
 }
 
+// pluginSignInCLI finds and installs the vendor CLI a plugin's sign-in
+// runs through; tests stand in for it.
+var pluginSignInCLI = struct {
+	missing func(id string) string
+	install func(ctx context.Context, id string) error
+}{provider.PluginCLIMissing, provider.InstallPluginCLI}
+
 // pluginLogin signs in to a plugin's provider as OpenCode's `auth login`
 // does: the method, its questions, then a browser (and a code pasted
 // back) or a key.
@@ -403,6 +428,17 @@ func pluginLogin(ctx context.Context, name, method string) error {
 			return err
 		}
 		m = n
+	}
+	if pp.Methods[m].Type != "api" {
+		// the vendor's CLI it signs in with, installed first as the
+		// window's sign-in installs it (#2223: Grok Build in Docker)
+		if name := pluginSignInCLI.missing(pp.ID); name != "" {
+			fmt.Println(amber.Render("!"), name, "isn't installed here: "+pp.Name+" signs in through it. Installing it, as its vendor's installer does…")
+			if err := pluginSignInCLI.install(ctx, pp.ID); err != nil {
+				return err
+			}
+			fmt.Println(green.Render("✓"), name, "installed")
+		}
 	}
 	inputs := map[string]string{}
 	for {
@@ -560,4 +596,40 @@ func askPrompt(q *plugin.Prompt) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+// mwPoints is what a gateway module serves, as the Plugins page's mwLine
+// tells it: its hooks, the routings its strategies serve, and whether it
+// has onUsage.
+func mwPoints(m middleware.State) string {
+	var parts []string
+	if len(m.Hooks) > 0 {
+		parts = append(parts, strings.Join(m.Hooks, ", "))
+	}
+	if len(m.Strategies) > 0 {
+		parts = append(parts, "routings "+strings.Join(m.Strategies, ", "))
+	}
+	if m.Usage {
+		parts = append(parts, "onUsage")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// toolsLine is a plugin's tools by their MCP names, sorted.
+func toolsLine(names map[string]string) string {
+	var out []string
+	for _, n := range names {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
+}
+
+// pageLine is a plugin's page: its title and what it may read of magpie's.
+func pageLine(pg *plugin.PageSpec) string {
+	reads := "reads nothing"
+	if len(pg.Reads) > 0 {
+		reads = "reads " + strings.Join(pg.Reads, ", ")
+	}
+	return pg.Title + " " + muted.Render("("+reads+")")
 }

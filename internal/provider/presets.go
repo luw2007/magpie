@@ -137,7 +137,7 @@ var presets = []PresetDef{
 		Website: "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models",
 		NoList:  true,
 		Models: []string{"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite",
-			"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite", "gemini-3-flash-preview",
+			"gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite", "gemini-3-flash-preview",
 			"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
 		HeaderHints: []string{"X-Vertex-AI-LLM-Request-Type", "X-Vertex-AI-LLM-Shared-Request-Type"}},
 	{ID: "deepseek", Name: "DeepSeek", Icon: "deepseek-color", Kind: KindVendor, Catalog: "deepseek",
@@ -397,13 +397,24 @@ var presets = []PresetDef{
 	{ID: AzurePreset, Name: "Azure OpenAI", Icon: "azure-color", Kind: KindVendor, Catalog: "azure, openai", Hosts: true,
 		Note:         "your resource's endpoint and key",
 		Endpoint:     "https://<resource>.openai.azure.com",
-		EndpointHint: "Your resource's endpoint, from Keys and Endpoint in the Azure portal. magpie asks its v1 API; the model ids are your deployments' names.",
+		EndpointHint: "Your resource's endpoint, from Keys and Endpoint in the Azure portal. Once added, magpie asks the resource for its deployments with this key, over its v1 API; the deployments' names are the model ids.",
 		Website:      "https://ai.azure.com", KeysURL: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/OpenAI"},
 	// Ollama's own hosted models: the local server's API, at ollama.com with a key
 	{ID: "ollama-cloud", Name: "Ollama Cloud", Icon: "ollama", Kind: KindVendor, Catalog: "ollama-cloud", Hosts: true,
 		Chat: "https://ollama.com/v1", Anthropic: "https://ollama.com",
 		Note:    "cloud models, with an API key",
 		Website: "https://docs.ollama.com/cloud", KeysURL: "https://ollama.com/settings/keys"},
+	// Nous Research's Nous Portal (#392): its own Hermes models and other
+	// makers', at inference-api.nousresearch.com/v1, OpenAI's chat
+	// completions with a Portal API key as a Bearer (Hermes Agent's
+	// nous-api provider, NOUS_API_KEY). Its /v1/messages serves only the
+	// anthropic/* models, so Claude Code's requests are translated to chat
+	// completions for every model. Model ids are vendor/model, as its
+	// /v1/models lists them.
+	{ID: "nous", Name: "Nous Portal", Icon: "nousresearch", Kind: KindVendor, Hosts: true,
+		Chat:    "https://inference-api.nousresearch.com/v1",
+		Note:    "Nous Research · Hermes and other models",
+		Website: "https://portal.nousresearch.com", KeysURL: "https://portal.nousresearch.com"},
 
 	{ID: "openrouter", Name: "OpenRouter", Icon: "openrouter", Kind: KindRelay, Catalog: "openrouter",
 		Chat: "https://openrouter.ai/api/v1", Anthropic: "https://openrouter.ai/api",
@@ -462,7 +473,13 @@ var presets = []PresetDef{
 		Website: "https://fireworks.ai", KeysURL: "https://app.fireworks.ai/settings/users/api-keys"},
 	{ID: "siliconflow", Name: "SiliconFlow", Icon: "siliconcloud-color", Kind: KindRelay, Catalog: "siliconflow",
 		Chat:    "https://api.siliconflow.cn/v1",
-		Website: "https://cloud.siliconflow.cn", KeysURL: "https://cloud.siliconflow.cn/account/ak"},
+		Website: "https://cloud.siliconflow.cn", KeysURL: "https://cloud.siliconflow.cn/account/ak",
+		// the international site is another account, keys and balance (in $)
+		Regions: []Region{
+			{ID: "cn", Name: "China", Chat: "https://api.siliconflow.cn/v1"},
+			{ID: "intl", Name: "Global", Chat: "https://api.siliconflow.com/v1",
+				Website: "https://cloud.siliconflow.com", KeysURL: "https://cloud.siliconflow.com/account/ak"},
+		}},
 	// NVIDIA's hosted NIM endpoints (#197): chat completions only; its
 	// /v1/responses answers for a few models alone, 404 for the rest
 	{ID: "nvidia", Name: "NVIDIA NIM", Icon: "nvidia-color", Kind: KindRelay, Catalog: "nvidia",

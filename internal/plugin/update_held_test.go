@@ -97,6 +97,8 @@ func TestUpdateBunHoldsBackSaysWhy(t *testing.T) {
 	sandbox(t)
 	const pkg = "@magpie-community/opencode-factory-auth"
 	heldRegistry(t, pkg, map[string]time.Time{"0.1.18": time.Now().Add(-72 * time.Hour), "0.1.21": time.Now().Add(-time.Hour)}, "0.1.21")
+	// the dist branch has 0.1.21 too: the user's hold is kept, not stepped round
+	fakeDist(t, map[string][]string{pkg: {"0.1.18", "0.1.21"}}, false)
 	home, _ := os.UserHomeDir()
 	bunfig := []byte("[install]\nminimumReleaseAge = 172800\n")
 	for _, p := range []string{filepath.Join(home, ".bunfig.toml"), filepath.Join(os.Getenv("XDG_CONFIG_HOME"), ".bunfig.toml")} {

@@ -14,6 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -78,7 +79,7 @@ async function open(browser, lang, width, posts, over) {
   await page.route("**/*", server(lang, posts, over));
   await page.goto("http://magpie.test/?view=usage");
   await page.locator("#prefs").click();
-  await page.locator(":is(#setTab-privacy, .nav-s[data-of=setTab-privacy]):visible").click();
+  await openPart(page, "privacy");
   await page.locator("#discoveryList .opt").first().waitFor();
   return { context, page, errors };
 }

@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { fixture } = require("./fixtures/caller-keys.cjs");
+const { openPart } = require("./reader.cjs");
 
 // coeo91 on Discord: the LAN address picked as Gateway's Base URL went back
 // to 127.0.0.1 after a restart or an update. The address and the gateway key
@@ -59,12 +60,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // Share on local network's address is kept the same way
         await page.locator("#prefs").click();
-        await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
+        await openPart(page, "network");
         await page.locator("#lanList .lan-address-row").waitFor();
         await pick("#lanList .lan-interface", "10.0.0.10");
         await page.reload();
         await page.locator("#prefs").click();
-        await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
+        await openPart(page, "network");
         await page.locator("#lanList .lan-address-row").waitFor();
         assert.match(await shown("#lanList .lan-interface"), /10\.0\.0\.10:3999/);
 

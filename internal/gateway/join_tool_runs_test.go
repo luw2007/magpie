@@ -242,9 +242,18 @@ func TestJoinToolRunsOnlyMovesWhatBreaksARun(t *testing.T) {
 		in   []string
 		want []string // "type:call_id", or the text of a message
 	}{
-		{"the model's own step between its calls stays",
-			[]string{call("a"), reasoning, note("assistant", "and"), call("b"), res("a"), res("b")},
-			[]string{"function_call:a", "reasoning:", "message:", "function_call:b", "function_call_output:a", "function_call_output:b"}},
+		{"the model's reasoning between its calls stays",
+			[]string{call("a"), reasoning, call("b"), res("a"), res("b")},
+			[]string{"function_call:a", "reasoning:", "function_call:b", "function_call_output:a", "function_call_output:b"}},
+		{"the model's text between its calls goes ahead of the first, with the reasoning before it (#2100)",
+			[]string{reasoning, note("assistant", "first"), call("a"), reasoning, note("assistant", "and"), call("b"), res("a"), res("b")},
+			[]string{"reasoning:", "message:", "reasoning:", "message:", "function_call:a", "function_call:b", "function_call_output:a", "function_call_output:b"}},
+		{"text after the run's last call goes ahead of the first too",
+			[]string{call("a"), call("b"), note("assistant", "and"), res("a"), res("b")},
+			[]string{"message:", "function_call:a", "function_call:b", "function_call_output:a", "function_call_output:b"}},
+		{"a second run's text goes ahead of its own first call",
+			[]string{call("a"), res("a"), note("assistant", "next"), call("b"), note("assistant", "and"), call("c"), res("b"), res("c")},
+			[]string{"function_call:a", "function_call_output:a", "message:", "message:", "function_call:b", "function_call:c", "function_call_output:b", "function_call_output:c"}},
 		{"a note before any result, not the model's, goes after the run",
 			[]string{call("a"), note("user", "from a subagent"), res("a")},
 			[]string{"function_call:a", "function_call_output:a", "message:"}},
@@ -311,5 +320,143 @@ func TestTranslatedToolRunKeepsItsRealResults(t *testing.T) {
 	}
 	if !slices.Contains(roles, "tool:looked") || !slices.Contains(roles, "tool:ran") || bytes.Contains(f.got, []byte("unavailable")) {
 		t.Fatalf("the run's results went as %v\n%s", roles, f.got)
+	}
+}
+
+// TestTextBetweenABatchsCallsStaysInItsStep is #2100's shape on the other
+// route, translated for a Chat upstream: the model wrote a line before each
+// of one step's two calls, and both results came after. The step must reach
+// it as one assistant message holding both calls and both lines, followed
+// by the two tool messages.
+func TestTextBetweenABatchsCallsStaysInItsStep(t *testing.T) {
+	cases := map[string]string{
+		"V1 text between the calls": `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll run two commands."}]},` +
+			`{"type":"function_call","call_id":"call_aaaa1111","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},` +
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Also this."}]},` +
+			`{"type":"function_call","call_id":"call_bbbb2222","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},` +
+			`{"type":"function_call_output","call_id":"call_aaaa1111","output":"a.txt"},` +
+			`{"type":"function_call_output","call_id":"call_bbbb2222","output":"/w"}`,
+		"V3 calls together": `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll run two commands."}]},` +
+			`{"type":"function_call","call_id":"call_aaaa1111","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},` +
+			`{"type":"function_call","call_id":"call_bbbb2222","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},` +
+			`{"type":"function_call_output","call_id":"call_aaaa1111","output":"a.txt"},` +
+			`{"type":"function_call_output","call_id":"call_bbbb2222","output":"/w"}`,
+	}
+	for name, items := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fake{t: t, reply: sse(
+				`data: {"id":"c1","choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}`,
+				`data: [DONE]`)}
+			setup(t, provider.Chat, f)
+			body := `{"model":"fake/m1","stream":true,"input":[` +
+				`{"type":"message","role":"user","content":[{"type":"input_text","text":"run them"}]},` + items + `]}`
+			if code, out := post(t, "/v1/responses", body); code != 200 {
+				t.Fatalf("status %d: %s", code, out)
+			}
+			var sent struct {
+				Messages []map[string]any `json:"messages"`
+			}
+			if err := json.Unmarshal(f.got, &sent); err != nil {
+				t.Fatal(err)
+			}
+			var shape []string
+			for _, m := range sent.Messages {
+				s, _ := m["role"].(string)
+				switch s {
+				case "assistant":
+					calls, _ := m["tool_calls"].([]any)
+					s += fmt.Sprintf("(%d calls)", len(calls))
+				case "tool":
+					s += ":" + fmt.Sprint(m["content"])
+				}
+				shape = append(shape, s)
+			}
+			want := []string{"user", "assistant(2 calls)", "tool:a.txt", "tool:/w"}
+			if !slices.Equal(shape, want) {
+				t.Fatalf("sent %v, want %v\n%s", shape, want, f.got)
+			}
+			if !bytes.Contains(f.got, []byte("I'll run two commands.")) {
+				t.Fatalf("the step's first line is gone\n%s", f.got)
+			}
+			if strings.Contains(name, "V1") && !bytes.Contains(f.got, []byte("Also this.")) {
+				t.Fatalf("the line between the calls is gone\n%s", f.got)
+			}
+		})
+	}
+}
+
+// #2100's four variants, relayed to a Responses upstream that checks the
+// exchange the way OpenCode Go does on the chat form it builds: an
+// assistant message after a call, before the call's result, starts a new
+// assistant message, and the call before it is then answered by nothing.
+// V1 (text between the calls) was refused "No tool output found for tool
+// call call_aaaa1111"; V2, V3 and V4 must reach it as they were sent, or
+// with the text of the step ahead of its calls.
+func TestRelayedTextBetweenABatchsCallsIsAnswered(t *testing.T) {
+	const (
+		say1  = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll run two commands."}]}`
+		say2  = `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Also this."}]}`
+		callA = `{"type":"function_call","call_id":"call_aaaa1111","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}`
+		callB = `{"type":"function_call","call_id":"call_bbbb2222","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"}`
+		outA  = `{"type":"function_call_output","call_id":"call_aaaa1111","output":"a.txt"}`
+		outB  = `{"type":"function_call_output","call_id":"call_bbbb2222","output":"/w"}`
+	)
+	for _, c := range []struct {
+		name  string
+		items []string
+	}{
+		{"V1", []string{say1, callA, say2, callB, outA, outB}},
+		{"V2", []string{say1, callA, outA, say2, callB, outB}},
+		{"V3", []string{say1, callA, callB, outA, outB}},
+		{"V4", []string{say1, strings.Replace(callA, `{\"cmd\":\"ls\"}`, `{\"cmd\":\"ls -la\"}`, 1), say2, callB, outA, outB}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fake{t: t, reply: sse(`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}
+			f.refuse = func(body []byte) (int, string) {
+				var sent struct {
+					Input []struct {
+						Type   string `json:"type"`
+						Role   string `json:"role"`
+						CallID string `json:"call_id"`
+					} `json:"input"`
+				}
+				if err := json.Unmarshal(body, &sent); err != nil {
+					t.Fatal(err)
+				}
+				var calls []string // the assistant message being built's calls
+				answered := map[string]bool{}
+				for _, it := range sent.Input {
+					switch {
+					case it.Type == "function_call":
+						calls = append(calls, it.CallID)
+					case it.Type == "function_call_output":
+						answered[it.CallID] = true
+					case it.Type == "message" && it.Role == "assistant" && len(calls) > 0:
+						for _, id := range calls {
+							if !answered[id] {
+								return 400, `{"type":"error","error":{"type":"invalid_request_error","message":"No tool output found for tool call ` + id + `."}}`
+							}
+						}
+						calls = nil
+					}
+				}
+				return 0, ""
+			}
+			setup(t, provider.Responses, f)
+			body := `{"model":"fake/m1","stream":true,"input":[` +
+				`{"type":"message","role":"user","content":[{"type":"input_text","text":"run them"}]},` +
+				strings.Join(c.items, ",") + `]}`
+			if code, out := post(t, "/v1/responses", body); code != 200 {
+				t.Fatalf("status %d: %s", code, out)
+			}
+			for _, s := range []string{"I'll run two commands.", "a.txt", "/w"} {
+				if !bytes.Contains(f.got, []byte(s)) {
+					t.Fatalf("%q is gone:\n%s", s, f.got)
+				}
+			}
+			if c.name != "V3" && !bytes.Contains(f.got, []byte("Also this.")) {
+				t.Fatalf("the second line is gone:\n%s", f.got)
+			}
+		})
 	}
 }

@@ -172,10 +172,11 @@ func TestCheckinOnTheUsageLine(t *testing.T) {
 		{Name: "WorkBuddy", User: "second", Checkins: true, Windows: win, Checkin: &provider.WorkBuddyCheckin{Day: "2020-01-01", Outcome: provider.CheckinClaimed}},
 		{Name: "WorkBuddy", User: "third", Checkins: true, Error: "sign-in has expired", Checkin: &provider.WorkBuddyCheckin{Day: today, Outcome: provider.CheckinFailed}},
 		{Name: "WorkBuddy", User: "fourth", Checkins: true, Windows: win, Checkin: &provider.WorkBuddyCheckin{Day: today, Outcome: provider.CheckinOwnApp}},
+		{Name: "Trae CN", User: "fifth", Checkins: true, Windows: win, Checkin: &provider.WorkBuddyCheckin{Day: today, By: "trae", Outcome: provider.CheckinOwnApp}},
 		{Name: "Codex", User: "me@example.com", Windows: win},
 	}
 	got := strings.Join(quotaLines(qs, true, false, 200, now), "\n")
-	for _, want := range []string{"签到 ✓ +100 · 4-day streak", "second", "签到 not yet today · c", "sign-in has expired   签到 failed · c tries again", "签到 only in WorkBuddy's own app · check in there"} {
+	for _, want := range []string{"签到 ✓ +100 · 4-day streak", "second", "签到 not yet today · c", "sign-in has expired   签到 failed · c tries again", "签到 only in WorkBuddy's own app · check in there", "签到 refused by Trae CN (9074) · check in in its app"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in\n%s", want, got)
 		}
@@ -203,5 +204,19 @@ func TestTUIChecksPluginsIn(t *testing.T) {
 	wantFlash(t, m, true, "FakeCo b@x asks for a captcha: check in in its own app")
 	if *calls != 1 {
 		t.Fatalf("checked in %d times", *calls)
+	}
+}
+
+// Trae CN's 9074 says what Trae did, refused the check-in, and where it
+// can still be done; it doesn't say Trae pays only its own app, which
+// Buddy Switch's check-ins disprove (#1920). WorkBuddy's keeps its words.
+func TestTraeOwnAppSaysTraeRefused(t *testing.T) {
+	trae := checkinWords(provider.WorkBuddyCheckin{User: "hu", By: "trae", Outcome: provider.CheckinOwnApp})
+	if !strings.HasSuffix(trae, ": Trae CN refused this check-in (9074: too many taking part); check in in the Trae CN app") || strings.Contains(trae, "only gives") {
+		t.Errorf("Trae CN's 9074: %q", trae)
+	}
+	wb := checkinWords(provider.WorkBuddyCheckin{User: "hu", Outcome: provider.CheckinOwnApp})
+	if !strings.Contains(wb, "WorkBuddy only gives check-in credits to its own app") {
+		t.Errorf("WorkBuddy's own-app: %q", wb)
 	}
 }

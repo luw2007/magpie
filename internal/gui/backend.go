@@ -89,6 +89,10 @@ func watchGateway(ctx context.Context, every time.Duration) {
 	}
 }
 
+// takenSaid: the log has said the gateway's port is taken by one that
+// doesn't answer, said once until it is free again.
+var takenSaid atomic.Bool
+
 // gatewayMu keeps one start of the gateway here at a time: the watch's,
 // a restart's, a take-over's (takeover.go).
 var gatewayMu sync.Mutex
@@ -118,7 +122,18 @@ func serveGatewayLocked() *gateway.Server {
 			}
 			return nil
 		}
+		// a magpie too busy to answer the question in time (a small
+		// server, one starting), or another program, has the port: a
+		// second listen only fails (K.Liu on Discord: magpie web beside
+		// the service logged "bind: address already in use")
+		if gateway.Taken() {
+			if !takenSaid.Swap(true) {
+				log.Printf("gateway: %s is taken but doesn't answer as magpie yet; this magpie serves the gateway once it is free", gateway.URL())
+			}
+			return nil
+		}
 	}
+	takenSaid.Store(false)
 	gw := gateway.New()
 	served.Store(gw)
 	serving.Add(1)

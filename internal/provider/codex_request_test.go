@@ -351,3 +351,19 @@ func TestDeclareSearch(t *testing.T) {
 		t.Errorf("Lite: %+v", lite)
 	}
 }
+
+// #2154 (neavo): the ChatGPT backend turns prompt_cache_options away on
+// every model (400 "prompt_cache_options is not supported on this model"),
+// so the Codex request goes without it; the cache key stays.
+func TestCodexBodyDropsPromptCacheOptions(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	var m map[string]any
+	json.Unmarshal(codexBody([]byte(`{"model":"gpt-5.5","prompt_cache_key":"k","prompt_cache_options":{"mode":"explicit"},"input":"hi"}`)), &m)
+	if _, ok := m["prompt_cache_options"]; ok {
+		t.Errorf("prompt_cache_options sent: %v", m)
+	}
+	if m["prompt_cache_key"] != "k" {
+		t.Errorf("cache key lost: %v", m)
+	}
+}

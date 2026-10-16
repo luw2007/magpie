@@ -133,3 +133,54 @@ func noBrowser(t *testing.T) {
 	openInBrowser = func(string) {}
 	t.Cleanup(func() { openInBrowser = old })
 }
+
+// magpie plugin login installs the CLI a plugin signs in through before
+// the sign-in, as the window's does, and a failed install stops it there
+// rather than the plugin saying "install Grok Build first: curl … | bash",
+// which magpie's Docker image has no curl to run (#2223, evier12345).
+func TestPluginLoginInstallsItsCLIFirst(t *testing.T) {
+	fakeCoHome(t)
+	noBrowser(t)
+	var installed []string
+	missing := "Fake CLI"
+	fail := error(nil)
+	old := pluginSignInCLI
+	pluginSignInCLI.missing = func(id string) string { return missing }
+	pluginSignInCLI.install = func(ctx context.Context, id string) error {
+		installed = append(installed, id)
+		if fail == nil {
+			missing = ""
+		}
+		return fail
+	}
+	t.Cleanup(func() { pluginSignInCLI = old })
+
+	fail = fmt.Errorf("installing Fake CLI failed")
+	piped(t, "2", "2", "team", "good")
+	if out, err := said(t, func() error { return pluginCmd([]string{"plugin", "login", "fakeco"}) }); err == nil || err != fail {
+		t.Fatalf("a failed install went on: %v: %s", err, out)
+	}
+	if ls := provider.Logins("fakeco"); len(ls) != 0 {
+		t.Fatalf("signed in without its CLI: %+v", ls)
+	}
+	fail = nil
+	piped(t, "2", "2", "team", "good")
+	if out, err := said(t, func() error { return pluginCmd([]string{"plugin", "login", "fakeco"}) }); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if len(installed) != 2 || installed[1] != "fakeco" {
+		t.Fatalf("installed %v", installed)
+	}
+	if ls := provider.Logins("fakeco"); len(ls) != 1 {
+		t.Fatalf("not signed in after the install: %+v", ls)
+	}
+	// an API key's way runs no CLI: nothing is installed for it
+	missing = "Fake CLI"
+	piped(t, "1", "sk-one-key-1111")
+	if out, err := said(t, func() error { return pluginCmd([]string{"plugin", "login", "fakeco"}) }); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if len(installed) != 2 {
+		t.Fatalf("installed for a key: %v", installed)
+	}
+}

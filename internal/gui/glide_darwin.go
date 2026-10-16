@@ -213,6 +213,10 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// zoomsAfterLoad: the Mac's text size is put on a page by applyZoom and
+// madeAgain.
+const zoomsAfterLoad = false
+
 // setPageZoom zooms w's page to z, the text size.
 func setPageZoom(w *application.WebviewWindow, z float64) {
 	if p := w.NativeWindow(); p != nil {

@@ -76,6 +76,12 @@ async function open(engine, lang, scene, width, t) {
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  // counts the routing view's once-a-second redraws, to hold a press over one
+  await page.addInitScript(() => {
+    const every = window.setInterval;
+    window.__redraws = 0;
+    window.setInterval = (f, ms, ...a) => every(typeof f === "function" && String(f).includes("renderActs") ? (...x) => { f(...x); window.__redraws++; } : f, ms, ...a);
+  });
   await page.route("**/*", serve(lang, scene));
   await page.goto("http://magpie.test/?view=routing");
   await openPane(page, "requests");
@@ -138,8 +144,24 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("on")), true);
         assert.equal((await page.evaluate(() => document.activeElement.textContent)).trim(), smart[lang]);
 
-        // The keyboard does the same after returning to Live.
         await openPane(page, "live");
+        // a press held over the head's redraw is still a click (#2151): the
+        // chip is not written over under the pointer, which WebKit takes
+        // for a press that never ends where it began
+        await view.evaluate((v) => { v.scrollTop = 0; });
+        await pool.evaluate((p) => p.classList.remove("rt-found"));
+        const box = await chip.boundingBox();
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.down();
+        const drawn = await page.evaluate(() => window.__redraws);
+        await page.waitForFunction((n) => window.__redraws > n, drawn, { polling: 50 });
+        await page.mouse.up();
+        await page.waitForFunction(() => document.querySelector('.rt-pool[data-provider="relay"]')?.classList.contains("rt-found"));
+        assert.equal(await inView(), true);
+
+        // the keyboard does the same after returning to Live
+        await openPane(page, "live");
+        await view.evaluate((v) => { v.scrollTop = 0; });
         await chip.focus();
         await page.keyboard.press("Enter");
         await pool.waitFor();

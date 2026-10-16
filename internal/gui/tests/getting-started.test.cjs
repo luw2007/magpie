@@ -33,6 +33,8 @@ function agents(w) {
     { id: "opencode", name: "OpenCode", icon: "generic", path: "/fixture/opencode", fields: field("", []) },
     // never connectable: not offered on the card
     { id: "cursor", name: "Cursor", icon: "generic", path: "/fixture/cursor", fields: [] },
+    // its folder left behind with the CLI uninstalled (#2173): not offered
+    { id: "hermes", name: "Hermes Agent", icon: "generic", path: "/fixture/hermes", cliMissing: true, fields: field("", [{ value: "hermes-own", label: "Own" }]) },
   ];
 }
 

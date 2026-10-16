@@ -137,7 +137,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // A transcript read started before clearing must not restore old content.
       holdNextTranscript = true;
       const readStarted = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/sessions/transcript");
-      await page.evaluate(() => window.loadSessionsPage());
+      await page.evaluate(() => magpie.call("sessions", "open"));
       await readStarted;
       await assertRecordCard(page);
       assert.equal(await page.locator(".sm-record .sm-record-clear").count(), 1, "kept text can be deleted from the card");

@@ -192,3 +192,51 @@ func TestDescribe(t *testing.T) {
 		t.Error("JSON misjudged")
 	}
 }
+
+// KeepUnparsed keeps aside a file its reader can't read as its type (cut
+// short, or valid JSON of another shape), leaves one that parses, an empty
+// one and one not there alone, and keeps the same bad bytes once.
+func TestKeepUnparsed(t *testing.T) {
+	p := setup(t)
+	parses := Into[map[string]string]
+	bads := func() []string { m, _ := filepath.Glob(p + ".bad-*"); return m }
+	if err := KeepUnparsed(p, parses); err != nil {
+		t.Fatalf("a file not there: %v", err)
+	}
+	for _, ok := range []string{`{"a":"b"}`, "", "  \n", "null"} {
+		os.WriteFile(p, []byte(ok), 0o600)
+		if err := KeepUnparsed(p, parses); err != nil || len(bads()) != 0 {
+			t.Fatalf("%q: err %v, kept %v", ok, err, bads())
+		}
+	}
+	for i, bad := range []string{`[]`, `{"a":"b"`, `{"a":1}`} {
+		os.WriteFile(p, []byte(bad), 0o600)
+		for range 2 {
+			if err := KeepUnparsed(p, parses); err != nil {
+				t.Fatalf("%q: %v", bad, err)
+			}
+		}
+		if got := bads(); len(got) != i+1 {
+			t.Fatalf("%q: kept %v, want %d copies", bad, got, i+1)
+		}
+	}
+}
+
+// A file that doesn't parse and can't be copied aside stops the write.
+func TestKeepUnparsedFailsWhenItCantBeKept(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a folder's mode doesn't stop a new file on Windows")
+	}
+	p := setup(t)
+	os.WriteFile(p, []byte(`[]`), 0o600)
+	dir := filepath.Dir(p)
+	os.Chmod(dir, 0o500)
+	defer os.Chmod(dir, 0o700)
+	if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+		f.Close()
+		t.Skip("the filesystem does not enforce the read-only folder")
+	}
+	if err := KeepUnparsed(p, Into[map[string]string]); err == nil {
+		t.Fatal("a bad file not kept, and the write let go on")
+	}
+}

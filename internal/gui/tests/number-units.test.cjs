@@ -14,6 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const midnight = new Date();
@@ -164,7 +165,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         await p.locator("#prefs").click();
 
-        await p.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
+        await openPart(p, "usage");
         await p.locator("#currencySegs .opt").first().waitFor();
         if (lang === "en") {
           assert.equal(await p.locator("#unitsRow").isHidden(), true, "no Number units row in English");

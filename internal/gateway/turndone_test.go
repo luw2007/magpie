@@ -170,6 +170,49 @@ func TestTurnDoneWaitsForEveryRequest(t *testing.T) {
 	noEnd(t, ends, "the stale turn's start isn't the new one's")
 }
 
+// Concurrent tasks of an agent that sends no session id are told apart by
+// the conversation a request belongs to (#2001): the short one's end reads
+// its own length, not the long one's, and is said when it ends — not held
+// for the long one still going.
+func TestTurnDoneConcurrentTasksByTheirConversation(t *testing.T) {
+	ends, _ := turnsFollowed(t, time.Minute)
+	var ts turns
+	long := &Route{turn: true, Agent: "codex", Conv: "magpie-long"}
+	short := &Route{turn: true, Agent: "codex", Conv: "magpie-short"}
+	t0 := time.Now().Add(-time.Hour)
+	ts.begin(long, t0)
+	// the short task runs while the long one is going, and ends first
+	ts.begin(short, t0.Add(30*time.Minute))
+	ts.end(short, true, t0.Add(30*time.Minute+time.Minute))
+	if e := gotEnd(t, ends); e.Took != time.Minute {
+		t.Fatalf("the short task's end took %v, want its own minute", e.Took)
+	}
+	// the long one still going: no second end yet, its own when it ends
+	noEnd(t, ends, "the long task still going")
+	ts.end(long, true, t0.Add(time.Hour))
+	if e := gotEnd(t, ends); e.Took != time.Hour {
+		t.Fatalf("the long task's end took %v, want its own hour", e.Took)
+	}
+}
+
+// Tasks of the same session still share one turn, as before (#2001): a
+// session's end waits for every request of it, and its span is the turn's.
+func TestTurnDoneSameSessionStillOneTurn(t *testing.T) {
+	ends, _ := turnsFollowed(t, time.Minute)
+	var ts turns
+	t0 := time.Now().Add(-time.Hour)
+	a := &Route{turn: true, Agent: "codex", Session: "s"}
+	b := &Route{turn: true, Agent: "codex", Session: "s"}
+	ts.begin(a, t0)
+	ts.begin(b, t0.Add(time.Minute))
+	ts.end(a, true, t0.Add(2*time.Minute))
+	noEnd(t, ends, "b still going in the same session")
+	ts.end(b, true, t0.Add(3*time.Minute))
+	if e := gotEnd(t, ends); e.Took != 3*time.Minute {
+		t.Fatalf("took %v, want the session's whole turn", e.Took)
+	}
+}
+
 // A reply's tool calls are seen in every wire format, split anywhere, and
 // never in text that only mentions one.
 func TestToolScan(t *testing.T) {

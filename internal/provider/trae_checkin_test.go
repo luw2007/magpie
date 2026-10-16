@@ -178,9 +178,10 @@ func TestTraeCheckinAnswers(t *testing.T) {
 }
 
 // #808: with the check-in on and today's not in, a claim answered 9074
-// 「当前参与用户太多，请稍后再试」 (the reporter's bytes) is Trae paying
-// only its own app: the day's answer, so neither the loop nor a press
-// claims again that day; the account is told to check in in Trae's app.
+// 「当前参与用户太多，请稍后再试」 (the reporter's bytes) is Trae refusing
+// the claim: the day's answer, so neither the loop nor a press claims
+// again that day; the account is told Trae CN refused it and to check in
+// in Trae's app (#1920).
 // The next day it is asked as any other.
 func TestTraeCheckin9074IsOwnAppOnly(t *testing.T) {
 	ctx := context.Background()

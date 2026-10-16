@@ -10,7 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { watchSettingsReads, settingsDrawn, openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -96,7 +96,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               await watchSettingsReads(page);
               await page.goto("http://magpie.test/?view=settings");
               await settingsDrawn(page);
-              await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
+              await openPart(page, "network");
               const sub = page.locator("#proxySub");
               await sub.waitFor({ state: "visible" });
               assert.equal((await sub.textContent()).trim(), words[lang][source], `${lang} ${source}`);

@@ -1,4 +1,4 @@
-// A gateway key's limit every N days and its Reset (#1509, PennyVibe):
+// A gateway key's limit every N days or every N hours (#1509, #2102) and its Reset:
 // the window menu offers "Every N days" with its days beside it, and Reset
 // usage, after a confirm, counts the key from 0 again, tokens and cost
 // together. In every language, both engines, and at a narrow width.
@@ -134,6 +134,44 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await wed.waitFor({ state: "detached" });
       assert.deepEqual(sent("limit-key").map((e) => e.body), [{ key: "work", limit: { period: "days", days: 3, tokens: 2000000, cost: 0, cacheReads: false } }]);
       assert.match(await row("work").locator(".amodels.limit").textContent(), new RegExp(tr("every {n} days", { n: 3 })));
+
+      // every 5 hours (#2102): its hours field, checked, then sent; days are not
+      await row("work").getByRole("button", { name: tr("Change this key's limit"), exact: true }).click();
+      const hed = row("work").locator(".key-limit-ed");
+      await hed.waitFor();
+      await hed.getByRole("button", { name: tr("Limit window"), exact: true }).click();
+      await page.locator(".proto-menu .pm-item", { hasText: tr("Every N hours") }).click();
+      const hrs = hed.getByRole("textbox", { name: tr("Hours in a cycle"), exact: true });
+      assert.equal(await hrs.isVisible(), true);
+      assert.equal(await hed.getByRole("textbox", { name: tr("Days in a cycle"), exact: true }).isVisible(), false, "hours show the days field");
+      assert.equal(await hed.getByRole("button", { name: tr("Save"), exact: true }).isDisabled(), true, "no hours yet");
+      assert.equal(await hed.locator(".klf-err").textContent(), tr("Hours is a whole number from 1 to 8760"));
+      for (const bad of ["0", "8761", "1.5", "x"]) {
+        await hrs.fill(bad);
+        assert.equal(await hed.getByRole("button", { name: tr("Save"), exact: true }).isDisabled(), true, bad);
+      }
+      await hrs.fill("5");
+      assert.equal(await hed.locator(".klf-err").isVisible(), false);
+      await page.setViewportSize({ width: 500, height: 740 });
+      await page.waitForFunction(() => getComputedStyle(document.querySelector("#gatewayKeys .klf")).gridTemplateColumns.split(" ").length === 1);
+      assert.equal(await hed.evaluate((e) => e.scrollWidth > e.clientWidth || e.getBoundingClientRect().right > window.innerWidth), false, "the editor overflows at 500px");
+      const hbox = await hrs.boundingBox();
+      assert(hbox && hbox.width > 100 && hbox.x + hbox.width <= 500, "the hours field is squeezed");
+      await page.setViewportSize({ width: 1000, height: 700 });
+      await hed.getByRole("button", { name: tr("Save"), exact: true }).click();
+      await hed.waitFor({ state: "detached" });
+      assert.deepEqual(sent("limit-key").at(-1).body, { key: "work", limit: { period: "hours", hours: 5, tokens: 2000000, cost: 0, cacheReads: false } });
+      assert.match(await row("work").locator(".amodels.limit").textContent(), new RegExp(tr("every {n} hours", { n: 5 })));
+      // its Reset says a new 5-hour cycle starts
+      await row("work").getByRole("button", { name: tr("Change this key's limit"), exact: true }).click();
+      const red = row("work").locator(".key-limit-ed");
+      await red.waitFor();
+      assert.equal(await red.getByRole("textbox", { name: tr("Hours in a cycle"), exact: true }).inputValue(), "5");
+      await red.getByRole("button", { name: tr("Reset usage"), exact: true }).click();
+      assert.match(await modal.textContent(), new RegExp(tr("The tokens and cost {name} has used go back to 0 together, and a new {n}-hour cycle starts now.", { name: "Work", n: 5 }).replace(/[.?()]/g, "\\$&")));
+      await modal.getByRole("button", { name: tr("Cancel"), exact: true }).click();
+      await modal.waitFor({ state: "hidden" });
+      await red.getByRole("button", { name: tr("Cancel"), exact: true }).click();
       assert.deepEqual(errors, []);
     });
   }

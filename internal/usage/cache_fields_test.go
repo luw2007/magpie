@@ -12,6 +12,8 @@ import (
 // as one whose cache wasn't kept (#1839). A record from before they were
 // written reads as none.
 func TestRecordAlwaysCarriesCacheTokens(t *testing.T) {
+	// a log of its own: at -count>1 the last run's lines would stand here
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	now := time.Now().UTC()
 	Append(Record{Time: now, Agent: "claude", Provider: "p", Model: "m", Input: 3, Output: 900, Status: 200})
 	Append(Record{Time: now.Add(time.Second), Agent: "claude", Provider: "p", Model: "m", Input: 3, Output: 900, CacheRead: 52000, CacheWrite: 400, Status: 200})

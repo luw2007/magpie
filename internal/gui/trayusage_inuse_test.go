@@ -39,7 +39,7 @@ func TestTrayInUse(t *testing.T) {
 	if got[2].Name != "DeepSeek" || got[3].User != "a@x.y" || got[3].Name != "Claude Code" {
 		t.Errorf("named ones as they were: %+v", got[2:])
 	}
-	if label, tip := trayUsageText(got[0], time.Now(), false); label != "70%" || tip != "Claude Code · B@x.y\n5-hour 70% used" {
+	if label, tip := trayUsageText(got[0], time.Now(), false, false); label != "70%" || tip != "Claude Code · B@x.y\n5-hour 70% used" {
 		t.Errorf("text: %q %q", label, tip)
 	}
 	// switched: the card follows
@@ -74,7 +74,7 @@ func TestTrayInUseFollowsWhoAnswered(t *testing.T) {
 	if len(got) != 1 || got[0].User != "b@x.y" || got[0].Name != "Codex · b@x.y" {
 		t.Fatalf("in use: %+v", got)
 	}
-	if label, _ := trayUsageText(got[0], now, false); label != "12%" {
+	if label, _ := trayUsageText(got[0], now, false, false); label != "12%" {
 		t.Errorf("label %q", label)
 	}
 	// nothing answered lately: whom the gateway goes to first

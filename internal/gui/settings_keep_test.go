@@ -119,9 +119,11 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		FastPicks:            map[string][]string{"codex": {"p/n"}},
 		AgentEfforts:         map[string]string{"cursor-local": "high"},
 		PluginCheckins:       map[string]bool{"fakeco": true},
+		PluginOptions:        map[string]map[string]bool{"fakeco": {"auto": true}},
 		CheckinOff:           []string{"workbuddy|u1"},
 		ModelNames:           map[string]string{"p/m": "Mine"},
 		ModelEfforts:         map[string][]string{"p/m": {"low"}},
+		ModelReasonless:      map[string]bool{"p/n": true},
 		ModelImages:          map[string]bool{"p/m": true},
 		ModelOutputs:         map[string]int{"p/m": 131072},
 		ModelCompacts:        map[string]int{"p/*": 500000},
@@ -156,8 +158,10 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexPredictions:     "off",
 		CodexAutoReview:      "fake/m1",
 		CodexSubagentModel:   "codex/gpt-6-astra",
+		DesktopSubagentModel: "fake/m2",
 		ChinaMirror:          true,
 		CodexAutoReset:       []string{"me@example.com"},
+		CodexAutoResetOnly:   map[string]string{"me@example.com": "expiring"},
 		CodexNoCredits:       []string{"me@example.com"},
 		CodexWarmAtOf:        map[string]string{"me@example.com": "09:00"},
 		TextSize:             125,
@@ -173,6 +177,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		QuotaReads:           "asked",
 		NoAccountDiscovery:   true,
 	}
+	was.DesktopSubagentEffort = "high"
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

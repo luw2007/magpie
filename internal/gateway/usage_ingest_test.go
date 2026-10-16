@@ -192,7 +192,7 @@ func TestUsageIngestTouchesNoLimit(t *testing.T) {
 
 // Who may report: this computer; another only with an enabled key while
 // shared; a browser page, from anywhere, only with a key, since corsGuard
-// lets a page on localhost and an opaque origin through; never a key held
+// lets a page on localhost through keyless (an opaque origin it refuses);
 // to a budget. Nothing refused is written.
 func TestUsageIngestAccess(t *testing.T) {
 	do := ingestServer(t)

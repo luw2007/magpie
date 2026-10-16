@@ -129,11 +129,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await view.locator(".sm-bar .sm-check").uncheck();
 
         // another agent starts at a page, and so does coming back
-        await page.evaluate(() => window.openSessionOnPage({ agent: "codex" }));
+        await page.evaluate(() => magpie.call("sessions", "reveal", { agent: "codex" }));
         await view.locator('.row.sm-sess[data-id^="codex"]').first().waitFor();
         assert.equal(await rows.count(), 100);
         // a session opened from the Usage page, far down its folder, is drawn
-        await page.evaluate(() => window.openSessionOnPage({ agent: "claude", id: "claude-180", cwd: "/work/big" }));
+        await page.evaluate(() => magpie.call("sessions", "reveal", { agent: "claude", id: "claude-180", cwd: "/work/big" }));
         await view.locator('.sm-item.open .row.sm-sess[data-id="claude-180"]').waitFor();
         assert.equal(await rows.count(), 181);
         assert.equal(await more.textContent(), lang === "en" ? "Show 69 more" : "显示其余 69 个");

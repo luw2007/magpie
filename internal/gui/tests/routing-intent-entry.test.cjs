@@ -1,11 +1,12 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// A routing group's rule by intent has an entry of its own (CherryL1quor on
+// A routing group's rule by intent is what Add a rule makes (CherryL1quor on
 // X took Jev for picking the effort only: the intent was one of a rule's
-// seven conditions). Beside "Add a rule", "Route by what it asks for" adds a
-// rule with its intent box focused and Jev picked as the classifier when
-// there is one, the button kept under the pointer as the rule comes in
-// above it; it saves as {use, intent} with the classifier. A group whose effort Jev picks offers, under the classifier,
-// to add a rule with an intent. At a narrow window both buttons stay inside
+// seven conditions; the owner, 10-14, found the editor too much to fill
+// in). Add a rule adds a rule with its intent box focused and Jev picked as
+// the classifier when there is one, the button kept under the pointer as
+// the rule comes in above it; it saves as {use, intent} with the
+// classifier. A group whose effort Jev picks offers, under the classifier,
+// to add a rule with an intent. At a narrow window the button stays inside
 // the editor. In English and Chinese.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -31,8 +32,8 @@ const groups = () => ({
 });
 
 const words = {
-  en: { edit: "Edit", add: "Add a rule", intent: "Route by what it asks for", more: "It can pick the model too: add a rule with an intent", told: "Intent told by", save: "Save" },
-  zh: { edit: "编辑", add: "添加规则", intent: "按意图分流", more: "它也能挑模型：添加一条带意图的规则", told: "意图判断模型", save: "保存" },
+  en: { edit: "Edit", add: "Add a rule", more: "It can pick the model too: add a rule with an intent", told: "Intent told by", save: "Save" },
+  zh: { edit: "编辑", add: "添加规则", more: "它也能挑模型：添加一条带意图的规则", told: "意图判断模型", save: "保存" },
 };
 
 function serve(lang, posts) {
@@ -77,7 +78,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
   for (const lang of ["en", "zh"]) {
     const w = words[lang];
     for (const width of [1100, 440]) {
-      test(`${engine} ${lang} ${width}: a rule by intent has its own entry`, async (t) => {
+      test(`${engine} ${lang} ${width}: Add a rule makes a rule by intent`, async (t) => {
         // a window shorter than the editor, as the reader's usually is: the page
         // scrolls, and what is clicked is held under the pointer (a page at its
         // top stays there instead, by design)
@@ -96,13 +97,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         await press(page, group.locator("button", { hasText: w.edit }), height);
         const ed = page.locator(".rt-gedit");
-        const add = ed.locator(".rt-gadds button", { hasText: w.add });
-        const byIntent = ed.locator(".rt-gadds button", { hasText: w.intent });
+        const byIntent = ed.locator(".rt-gadds button", { hasText: w.add });
         await byIntent.waitFor();
-        assert(await add.isVisible(), "Add a rule is there too");
-        // both inside the editor, however narrow
+        assert.equal(await ed.locator(".rt-gadds button").count(), 1, "one way to add a rule");
+        // inside the editor, however narrow
         const eb = await ed.boundingBox();
-        for (const b of [await add.boundingBox(), await byIntent.boundingBox()]) assert(b.x >= eb.x - 0.5 && b.x + b.width <= eb.x + eb.width + 0.5, `${JSON.stringify(b)} in ${JSON.stringify(eb)}`);
+        for (const b of [await byIntent.boundingBox()]) assert(b.x >= eb.x - 0.5 && b.x + b.width <= eb.x + eb.width + 0.5, `${JSON.stringify(b)} in ${JSON.stringify(eb)}`);
         // no classifier yet: no rule has an intent
         assert.equal(await ed.locator(".rt-classifier").isVisible(), false);
 
@@ -125,7 +125,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // button, so its top may sit above the window or under the sticky page head
         // (which wraps to 125px there); the reader wheels it clear, and the box
         // they type in must then show whole and take the click
-        const box = rule.locator(".rt-cond.in input");
+        const box = rule.locator(".rt-cond.in textarea");
         const hit = () => box.evaluate((b) => { const r = b.getBoundingClientRect(); return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
         await page.mouse.move(Math.min(550, width / 2), 400);
         for (let i = 0; i < 12 && !(await hit()); i++) {
@@ -159,7 +159,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(mb.x + mb.width <= eb2.x + eb2.width + 0.5, "the offer wraps inside the editor");
         await press(page, more, height);
         await ed.locator(".rt-rule").first().waitFor();
-        assert(await ed.locator(".rt-rule .rt-cond.in input").first().evaluate((b) => b === document.activeElement), "its intent box has the focus");
+        assert(await ed.locator(".rt-rule .rt-cond.in textarea").first().evaluate((b) => b === document.activeElement), "its intent box has the focus");
         assert.equal(await more.count(), 0, "offered no more once a rule has an intent");
         assert.deepEqual(errors, []);
       });

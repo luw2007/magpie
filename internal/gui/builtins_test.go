@@ -44,12 +44,14 @@ func TestBuiltinSwitch(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 			t.Fatal(err)
 		}
-		if len(out) != 6 {
+		if len(out) != 14 {
 			t.Fatalf("the built-ins: %+v", out)
 		}
 		for _, b := range out {
-			// the gateway page is essential: on in every preset
-			if b.On != (b.ID == "library" || b.ID == "gateway") || b.On != (b.State == pluginrt.Active) {
+			// the Gateway, Routing and Usage pages, the routing strategies,
+			// the gateway middleware, privacy masking, web search, key
+			// limits and plugin tools are essential: on in every preset
+			if b.On != (b.ID == "budget" || b.ID == "library" || b.ID == "gateway" || b.ID == "middleware" || b.ID == "redact" || b.ID == "rotation" || b.ID == "routing" || b.ID == "search" || b.ID == "tools" || b.ID == "usage") || b.On != (b.State == pluginrt.Active) {
 				t.Fatalf("after library on: %+v", out)
 			}
 		}
@@ -173,9 +175,10 @@ func TestBuiltinConfig(t *testing.T) {
 	}
 }
 
-// Every script a built-in plugin says it has is on disk, loaded by the
-// page after the kernel and before app.js, which looks for its pages, and
-// named with its hash so a new one isn't read from the cache.
+// Every file a built-in plugin says it has is on disk, loaded by the page
+// and named with its hash so a new one isn't read from the cache: a script
+// after the kernel and before app.js, which looks for its pages, a
+// stylesheet in the head with the others.
 func TestBuiltinClientsLoaded(t *testing.T) {
 	page, err := os.ReadFile("assets/index.html")
 	if err != nil {
@@ -183,15 +186,19 @@ func TestBuiltinClientsLoaded(t *testing.T) {
 	}
 	src := string(page)
 	at := func(name string) int {
-		i := strings.Index(src, `<script src="`+name+`"></script>`)
+		tag := `<script src="` + name + `"></script>`
+		if strings.HasSuffix(name, ".css") {
+			tag = `<link rel="stylesheet" href="` + name + `">`
+		}
+		i := strings.Index(src, tag)
 		if i < 0 {
 			t.Fatalf("index.html doesn't load %s", name)
 		}
 		return i
 	}
-	kernel, app := at("kernel.js"), at("app.js")
-	if kernel > app {
-		t.Fatal("kernel.js after app.js")
+	kernel, app, start := at("kernel.js"), at("app.js"), at("start.js")
+	if kernel > app || app > start {
+		t.Fatal("kernel.js, app.js and start.js out of order")
 	}
 	n := 0
 	for _, m := range pluginrt.Registered() {
@@ -200,10 +207,22 @@ func TestBuiltinClientsLoaded(t *testing.T) {
 			if _, err := os.Stat(filepath.Join("assets", name)); err != nil {
 				t.Errorf("%s: %v", name, err)
 			}
-			if i := at(name); i < kernel || i > app {
+			attr := "src"
+			if strings.HasSuffix(name, ".css") {
+				attr = "href"
+				if i := at(name); i > strings.Index(src, "</head>") {
+					t.Errorf("%s isn't in the head", name)
+				}
+			} else if c == "page.js" {
+				// a page's code that runs on app.js's helpers: after app.js,
+				// before start.js shows the first page
+				if i := at(name); i < app || i > start {
+					t.Errorf("%s isn't between app.js and start.js", name)
+				}
+			} else if i := at(name); i < kernel || i > app {
 				t.Errorf("%s isn't between kernel.js and app.js", name)
 			}
-			if !strings.Contains(string(versionedPage(page)), `src="`+name+`?v=`) {
+			if !strings.Contains(string(versionedPage(page)), attr+`="`+name+`?v=`) {
 				t.Errorf("%s isn't named with its hash", name)
 			}
 			n++

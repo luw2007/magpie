@@ -62,7 +62,7 @@ func TestCodexHeadersReachKeyedRelay(t *testing.T) {
 			"application/json", `{"id":"r","object":"response","status":"completed","output":[]}`},
 		// Codex's default web_search makes magpie build the request again
 		{provider.Responses, "/v1/responses", `{"model":"fake/m1","input":"hi","stream":false,"tools":[{"type":"web_search","external_web_access":false}]}`,
-			"", "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[]}}\n\n"},
+			"", "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n"},
 		{provider.Chat, "/v1/responses", `{"model":"fake/m1","input":"hi","stream":false}`,
 			"", "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"},
 	} {

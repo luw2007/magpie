@@ -129,7 +129,7 @@
     <p>密钥保存在 <code>~/.config/magpie/providers.json</code>，只有你自己可读。magpie 从不读取 shell 环境变量里的密钥：你添加什么，它就用什么。</p>
 
     <h2 id="agents"><a class="anchor" href="#agents">2 · 给每个 Agent 选模型</a></h2>
-    <p><span class="ui">Agent</span> 标签页里，本机装了或配置过的每个 Agent 各占一行。magpie 支持 Claude Code、Codex、Gemini CLI、OpenCode、MiMo Code、DevEco Code、Pi、Goose、Cursor、Copilot CLI、Crush、DeepSeek Harness、Command Code、omp、OmO、Devin、Hermes Agent、MiniMax Code、Grok Build、ZCode、OpenHanako 和 Alma。</p>
+    <p><span class="ui">Agent</span> 标签页里，本机装了或配置过的每个 Agent 各占一行。magpie 支持 Claude Code、Codex、Gemini CLI、OpenCode、MiMo Code、DevEco Code、Pi、Goose、Cursor CLI、Copilot CLI、Crush、DeepSeek Harness、Command Code、omp、OmO、Devin、Hermes Agent、MiniMax Code、Grok Build、ZCode、OpenHanako 和 Alma。</p>
 
     <figure class="figure">
       <img class="for-light" src="/img/agents-zh-light.png" width="2080" height="1256" loading="lazy" alt="Agent 页：每个 Agent 一行，显示当前模型，底部是保存的方案">
@@ -194,7 +194,7 @@
       <li>子代理是单独的会话，规则可以把它发到别处，主代理仍留在原处。</li>
       <li>意图是用几个词描述用户想做什么，例如“写或修测试”“一个简单问题”。每一轮开始时，magpie 会问一次组里指定的意图判断模型：用户这条消息属于哪个可能命中的意图。这个模型可以是 magpie 里的任意模型，建议选小而快、不带推理的。发过去的只有这条消息，不包括整段对话。它出错、超时（8 秒）或给不出答案时，意图条件都不命中，这一轮按其他规则走。如果前面有不带意图的规则已经能决定，就不会去问；同一条消息也不会问两次。它的调用在用量里显示为 magpie 自己的调用。它具体被问了什么、回答怎么用、失败时怎么办，详见<a href="/docs/zh/intent">意图路由</a>。</li>
       <li><span class="ui">压缩上下文时</span>：Agent 压缩对话上下文时命中——Claude Code 的 <code>/compact</code> 和自动压缩、Codex、OpenCode、Pi、Gemini CLI、Qwen Code、Kimi Code——让更便宜、更快的模型来写总结，对话本身仍留在原来的模型上。压缩请求单独决定：它所在的这一轮和缓存都留在原处。对话比规则里的模型能装下的还长时，改由下一条命中的规则或组本来的顺序决定。</li>
-      <li><b>时段和星期。</b>规则可以只在某些时段、某几天生效，按这台电脑的时钟——比如厂商的高峰期。把这段时间的对话“先发给”别的模型，厂商那个模型仍排在后面做故障转移。要把它完全拿掉，把规则里的 <span class="ui">先发给</span> 改成 <span class="ui">暂停</span>：规则生效期间（它的时段、星期和 Agent），这个模型移出分组——不排第一、不做备用、也不会因为会话粘性被留住——时段过了自动回来。暂停只按时段、星期和 Agent 判断；组里所有模型都被暂停时，会告诉 Agent。</li>
+      <li><b>时段和星期。</b>规则可以只在某些时段、某几天生效，按这台电脑的时钟——比如厂商的高峰期。把这段时间的对话“先发给”别的模型，厂商那个模型仍排在后面做故障转移。要把它完全拿掉，在规则的 <span class="ui">⋯</span> 菜单里选 <span class="ui">改为暂停该模型</span>：规则生效期间（它的时段、星期和 Agent），这个模型移出分组——不排第一、不做备用、也不会因为会话粘性被留住——时段过了自动回来。暂停只按时段、星期和 Agent 判断；组里所有模型都被暂停时，会告诉 Agent。</li>
       <li><b>文件夹。</b><span class="ui">项目文件夹</span>：Agent 的工作目录是你列出的文件夹之一或其子文件夹时命中：<code>~/work/acme</code> 包括 <code>~/work/acme/web</code>，不包括 <code>~/work/acme-old</code>。文件夹以 Agent 在请求里告诉模型的为准——Claude Code、Codex、OpenCode 和 Pi 都会说——不说明工作目录的 Agent 不会命中任何按文件夹的规则。<code>~</code> 是你的主目录，<code>C:\work</code> 也就是 WSL 里的 <code>/mnt/c/work</code>，macOS 和 Windows 上不区分大小写。</li>
       <li>路由标签页会显示每一轮是被哪条规则送到哪里的、意图判断模型给出的答案，以及 Agent 说的工作目录。</li>
     </ul>
@@ -267,7 +267,7 @@ magpie claude group/opus-anywhere    <span class="c"># 使用它</span></pre>
     <h3>需要自己 export <code>OPENAI_BASE_URL</code> 或 <code>ANTHROPIC_BASE_URL</code> 吗？</h3>
     <p>不需要。对 magpie 列出的 Agent，它会把网关地址和令牌直接写进 Agent 自己的配置文件。这些环境变量只用于 magpie 不管理的、带 base URL 设置的其他工具：<span class="ui">网关</span> 标签页的 <span class="ui">接入</span> 部分有一键复制和示例代码。</p>
     <h3>magpie 必须一直开着吗？</h3>
-    <p>通过 magpie 使用的模型需要：网关随应用一起运行。关掉窗口后它仍留在菜单栏或托盘里；<code>magpie tray</code> 只启动图标（可以放进登录项），<code>magpie serve</code> 只运行网关，<code>magpie daemon install</code> 把它装成服务（Linux 上是 systemd，Mac 上是 launchd），登录或开机就启动，不需要窗口。Agent 用它自己的模型和自己的登录时，不经过 magpie。</p>
+    <p>通过 magpie 使用的模型需要：网关随应用一起运行。关掉窗口后它仍留在菜单栏或托盘里；<code>magpie tray</code> 只启动图标（可以放进登录项），<code>magpie serve</code> 只运行网关，<code>magpie daemon install</code> 把它装成服务（Linux 上是 systemd，Mac 上是 launchd），登录或开机就启动，不需要窗口；<code>magpie daemon install --web</code> 让服务同时提供浏览器页面，<code>magpie daemon status</code> 会打印页面的链接。Agent 用它自己的模型和自己的登录时，不经过 magpie。</p>
     <h3>怎么把 Agent 恢复原样？</h3>
     <p>在选择列表里选 Agent 自带的模型，或运行 <code>magpie &lt;agent&gt; default</code>。magpie 会删掉它写入的内容，并恢复被它替换掉的值，比如你原来的 <code>ANTHROPIC_BASE_URL</code>。</p>
     <h3>换了模型，Agent 还在用旧的？</h3>

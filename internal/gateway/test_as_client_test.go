@@ -156,3 +156,56 @@ func TestModelTestAsClient(t *testing.T) {
 		t.Errorf("Anthropic's API offers Claude Code: %v", a.TestClients())
 	}
 }
+
+// Claude Code through magpie on a model a relay doesn't serve on Messages
+// — a Chat-only provider here, a subscription or a translated model alike —
+// still lets a relay's models be tested as Claude Code: what a test asks
+// with is Claude Code's headers, whatever served its request (neiko on
+// Discord: connected, and "Test as Claude Code" stayed grey).
+func TestClaudeCodeSeenOnAnyRoute(t *testing.T) {
+	fresh(t)
+	f := &clientOnlyRelay{}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	chat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(chat.Close)
+	for _, p := range []provider.Provider{
+		{ID: "relay", Name: "Relay", Key: "k", Models: []string{"claude-opus-4-8"}, Anthropic: up.URL},
+		{ID: "glm", Name: "GLM", Key: "g", Models: []string{"glm-4.6"}, Chat: chat.URL + "/v1"},
+	} {
+		if err := provider.Save(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := provider.Find("relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if why := p.TestClients()[provider.ClientClaudeCode]; !strings.Contains(why, "no Claude Code request") {
+		t.Fatalf("before Claude Code came: %q", why)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"glm/glm-4.6","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("User-Agent", "claude-cli/2.1.200 (external, cli)")
+	req.Header.Set("X-App", "cli")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("Authorization", "Bearer "+Token)
+	New().Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("Claude Code on a Chat provider: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if why := p.TestClients()[provider.ClientClaudeCode]; why != "" {
+		t.Fatalf("after Claude Code came on a Chat provider: %q", why)
+	}
+	r := p.TestModels(provider.TestAs(context.Background(), provider.ClientClaudeCode), []string{"claude-opus-4-8"})[0]
+	head, _, _ := f.last()
+	if !r.OK || head.Get("User-Agent") != "claude-cli/2.1.200 (external, cli)" || head.Get("X-App") != "cli" {
+		t.Errorf("as Claude Code: %+v, headers %v", r, head)
+	}
+}

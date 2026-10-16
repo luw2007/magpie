@@ -99,3 +99,24 @@ func TestAllowIPsUnreadableSettingsNotSavedOver(t *testing.T) {
 		}
 	}
 }
+
+// The desktop window's requests reach the API through Wails, which names
+// their address 192.0.2.1:1234 when it has none. Saving an allow list from
+// the window doesn't call that address the page's and refuse the list
+// (Mathresearcher on Discord).
+func TestAllowIPsFromTheAppWindow(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	t.Setenv(gateway.AllowIPsEnv, "")
+	srv := ownWindow(Handler(nil, nil))
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/settings/allowips", strings.NewReader(`{"ips":["10.0.0.0/8"]}`))
+	r.RemoteAddr = "192.0.2.1:1234" // what Wails' asset server fills in
+	srv.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "192.0.2.1") || !slices.Equal(settings.Load().AllowIPs, []string{"10.0.0.0/8"}) {
+		t.Fatalf("%d %s, saved %v", rec.Code, rec.Body, settings.Load().AllowIPs)
+	}
+}

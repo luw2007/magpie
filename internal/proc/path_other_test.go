@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/testenv"
 	"golang.org/x/sys/unix"
 )
@@ -134,6 +135,49 @@ func TestLoginEnvProxyVarsNotSet(t *testing.T) {
 	}
 }
 
+// jw1dev on X: CLAUDE_CODE_USE_BEDROCK=1 sends Claude Code to Bedrock past
+// magpie. One in the profile is read (LoginEnv), for magpie to say so, but
+// never set in magpie's own environment, where every agent magpie starts
+// would take it.
+func TestLoginEnvClaudeProvidersNotSet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sh := filepath.Join(home, "sh")
+	testenv.Program(t, sh, "#!/bin/sh\nexport CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_USE_MANTLE=true\neval \"$2\"\n")
+	t.Setenv("SHELL", sh)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	for _, v := range agentenv.ClaudeProviders {
+		t.Setenv(v, "")
+		os.Unsetenv(v)
+	}
+	exec.Command(sh, "-c", ":").Run()
+	login.Lock()
+	dirs, vars, at := login.dirs, login.vars, login.at
+	login.dirs, login.vars, login.at = nil, nil, time.Time{}
+	login.Unlock()
+	t.Cleanup(func() {
+		login.Lock()
+		login.dirs, login.vars, login.at = dirs, vars, at
+		login.Unlock()
+	})
+
+	UserPath()
+	for _, v := range agentenv.ClaudeProviders {
+		if _, set := os.LookupEnv(v); set {
+			t.Fatalf("%s set in magpie's own environment", v)
+		}
+	}
+	if got := LoginEnv("CLAUDE_CODE_USE_BEDROCK"); got != "1" {
+		t.Fatalf("CLAUDE_CODE_USE_BEDROCK = %q, want the profile's", got)
+	}
+	if got := LoginEnv("CLAUDE_CODE_USE_MANTLE"); got != "true" {
+		t.Fatalf("CLAUDE_CODE_USE_MANTLE = %q, want the profile's", got)
+	}
+	if got := LoginEnv("CLAUDE_CODE_USE_VERTEX"); got != "" {
+		t.Fatalf("CLAUDE_CODE_USE_VERTEX = %q, want none", got)
+	}
+}
+
 // A login shell that doesn't expand "$CLAUDE_CONFIG_DIR" prints the
 // reference itself. That is no folder: the variable counts as unset,
 // rather than magpie setting CLAUDE_CONFIG_DIR to "$CLAUDE_CONFIG_DIR" and
@@ -227,8 +271,8 @@ func TestAskShellOwnSession(t *testing.T) {
 // config.fish that echoes a line, puts /Users/john/.fishbin first on PATH
 // and sets CODEX_HOME: PATH joined with ':' (a path variable), then each of
 // agentenv.Vars. The captured tail after CODEX_HOME was all empty values;
-// it is padded to shellVars' count (agentenv.Vars, then ProxyVars) as it is
-// now.
+// it is padded to shellVars' count (agentenv.Vars, ProxyVars, then
+// agentenv.ClaudeProviders) as it is now.
 func fishProbeOutput() string {
 	s := "hello from config.fish\n" + shellMark +
 		"/Users/john/.fishbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin" +

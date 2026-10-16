@@ -311,3 +311,40 @@ func TestAgentDefaultInAnyCase(t *testing.T) {
 		}
 	}
 }
+
+// magpie claude sonnet, run by an agent that took it for a query of the
+// sonnet tier, put Claude Code back on the DeepSeek endpoint it had before
+// magpie, which refused Sonnet with a 400, and printed only "✓ Claude Code
+// model sonnet" (#2000, marshalys). An alias set while Claude Code is on
+// magpie now says it took magpie out, and how to connect it again; help
+// says so beside the aliases.
+func TestClaudeAliasSaysItTookMagpieOut(t *testing.T) {
+	for _, alias := range []string{"opus", "sonnet", "haiku", "fable"} {
+		cliHome(t)
+		path := writeHomeFile(t, filepath.Join(".claude", "settings.json"),
+			"{\n  \"model\": \"deepseek-chat\",\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://deepseek.invalid/anthropic\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-own\"\n  }\n}\n")
+		for _, args := range [][]string{{"group", "add", "advanced", "models=a/m"}, {"claude", "group/advanced"}} {
+			if _, err := printed(t, func() error { return run(args) }); err != nil {
+				t.Fatalf("magpie %s: %v", strings.Join(args, " "), err)
+			}
+		}
+		if b, _ := os.ReadFile(path); strings.Contains(string(b), "deepseek.invalid") {
+			t.Fatalf("Claude Code isn't on magpie:\n%s", b)
+		}
+		out, err := printed(t, func() error { return run([]string{"claude", alias}) })
+		b, _ := os.ReadFile(path)
+		if err != nil || !strings.HasPrefix(out, "✓ Claude Code model "+alias+"\n  disconnected from magpie: "+alias+" is Claude Code's own") ||
+			!strings.Contains(out, "magpie claude <model>") || !strings.Contains(string(b), "deepseek.invalid") {
+			t.Errorf("magpie claude %s: %v %q, want it to say magpie is out\n%s", alias, err, out, b)
+		}
+		// set again, off magpie already: nothing to say
+		out, err = printed(t, func() error { return run([]string{"claude", alias}) })
+		if err != nil || strings.Contains(out, "disconnected") {
+			t.Errorf("magpie claude %s, off magpie: %v %q", alias, err, out)
+		}
+	}
+	out, err := printed(t, func() error { return run([]string{"claude", "help"}) })
+	if err != nil || !strings.Contains(out, "they are Claude Code's own models, not magpie's: setting one takes magpie out") {
+		t.Errorf("magpie claude help: %v\n%s", err, out)
+	}
+}

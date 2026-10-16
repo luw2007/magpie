@@ -84,7 +84,9 @@
     <a href="#test">Testing</a>
     <a href="#publish">Publishing and listing</a>
     <a href="#middleware">Gateway middleware</a>
+    <a href="#tools">Tools for every agent</a>
     <a href="#agents">Agent plugins</a>
+    <a href="#pages">Pages in the window</a>
     <a href="#pi">pi packages</a>
     <a href="#protocol">The host protocol</a>
     <a href="#faq">FAQ</a>
@@ -288,6 +290,9 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     </div>
     <p>A model can also say <code>provider: { npm, api }</code> to use another API or address than the provider’s, <code>headers</code>, <code>options</code>, and <code>disabled: true</code> to hide it.</p>
 
+        <h3 id="searches">An upstream that searches the web</h3>
+    <p>When your plugin sits in front of Anthropic’s or OpenAI’s own API, which runs the hosted web search tool itself, set <code>searches: true</code> on the provider in the <code>config</code> hook. A client’s web search (Claude Code’s WebSearch, Codex’s <code>web_search</code>) then reaches your <code>fetch</code> as it was sent, on the provider’s Anthropic or Responses models, rather than going through magpie’s own search. Its Chat models are unaffected. magpie doesn’t search with it for other models by itself, but it can be named as the searcher in Settings.</p>
+
         <h3 id="decide">A decision API (System One)</h3>
     <p>A plugin can serve TypeSafe’s System One API for its provider, so its models can be a <a href="/docs/intent">routing group’s classifier</a>. Set <code>decide: true</code> on the provider in the <code>config</code> hook, and <code>decides: true</code> on each model that answers questions rather than a conversation, in the <code>config</code> hook or on the <code>models</code> hook’s list. magpie then posts each question as <code>POST {baseURL}/systemone</code> through your loader’s <code>fetch</code>, with the account’s sign-in, as it sends any other request. The body is <code>{"model", "questions", "state"}</code>; answer <code>{"model", "answers": {"&lt;question&gt;": {"choice", "score", "confidence"}}}</code>.</p>
     <p>A marked model, and one named <code>jev-*</code>, is offered as a classifier and kept from agents: a chat request to it is refused. Without <code>decide: true</code> on the provider, <code>decides</code> is ignored and every model stays one to chat with.</p>
@@ -343,6 +348,7 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
           <li><code>rateWas</code>: the rate before a discount that is running now.</li>
         </ul>
         Model pickers show them.</li>
+      <li><code>serviceTiers</code>, on a model the <code>models</code> hook gives: the service tiers its vendor serves it at, as ids, such as <code>["priority", "ultrafast"]</code>. Codex is offered them in its model list (<code>priority</code> as Fast), and a Chat or Responses request that asks for one of them reaches your <code>fetch</code> with its <code>service_tier</code>. A tier the model doesn’t list isn’t sent where magpie translates the request.</li>
       <li>The keys of <code>variants</code> become the model’s reasoning levels when it reasons.</li>
     </ul>
     <h3>When the vendor can’t be reached</h3>
@@ -519,9 +525,11 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     resetsAt: <span class="s">"2026-10-03T18:00:00Z"</span>, <span class="c">// or resetSecs: 3600</span>
     span: 18000,                <span class="c">// seconds the window runs</span>
     display: <span class="s">"370 / 1000 credits"</span>,
+    amount: 370, limit: 1000, unit: <span class="s">"credits"</span>, <span class="c">// its own count, when it counts amounts</span>
     model: <span class="s">"opus"</span>,              <span class="c">// counts only models whose ids hold this word</span>
     models: [], notModels: [],  <span class="c">// or exactly these ids, or all but these</span>
     aside: false,               <span class="c">// true: using it up doesn't stop the account</span>
+    runsOutAt: <span class="s">"2026-10-05T00:00:00Z"</span>, runsOut: 120, <span class="c">// when the soonest credits left are lost, and how many</span>
   }],
   resets: { count: 2, until: <span class="s">"…"</span>, byWindow: false, fiveHour: 1, weekly: 1 }, <span class="c">// resets the account may spend</span>
   signIn: <span class="s">"kept"</span>,               <span class="c">// as X-Magpie-Sign-In</span>
@@ -591,11 +599,11 @@ m plugin logout acme</pre>
   <span class="s">"providers"</span>: [<span class="s">"acme"</span>],
   <span class="s">"summary"</span>: { <span class="s">"en"</span>: <span class="s">"Your Acme Coding Plan."</span>, <span class="s">"zh"</span>: <span class="s">"使用你的 Acme Coding Plan。"</span> } }</pre>
         </div>
-        A middleware’s entry has <code>"kind": "middleware"</code> and no <code>providers</code>; it is listed under <span class="ui">Gateway middleware</span>. <code>MAGPIE_PLUGIN_MARKET=&lt;url&gt;</code> points magpie at another list, which is useful to check yours, and <code>off</code> keeps to the built-in copy.</li>
+        A middleware’s entry has <code>"kind": "middleware"</code> and no <code>providers</code>; it is listed under <span class="ui">Gateway middleware</span>. The other kinds are listed the same way: <code>"kind": "tools"</code> under <span class="ui">Tools for agents</span>, <code>"kind": "page"</code> under <span class="ui">Pages</span> and <code>"kind": "agent"</code> under <span class="ui">Agents</span>. <code>MAGPIE_PLUGIN_MARKET=&lt;url&gt;</code> points magpie at another list, which is useful to check yours, and <code>off</code> keeps to the built-in copy.</li>
       <li><b>A GitHub topic.</b> A repository tagged <code>magpie-plugin</code> on GitHub is shown under <span class="ui">Plugins → Discover → Unofficial, on GitHub</span>, the most starred first, marked as reviewed by no one. Keep <code>package.json</code> at the repository’s root. Published to npm with <code>repository</code> naming the repository, it is installed from npm; otherwise from the repository as it stands, so the file it loads must be committed: one whose <code>dist</code> is built only to publish is left out. Forks, archived repositories and magpie-community’s own are left out too. magpie asks GitHub at most every ten minutes, so a repository shows within minutes of being tagged. Its card shows the icon <code>"magpie": { "icon": "…" }</code> in its <code>package.json</code> gives, else a puzzle piece.</li>
       <li><b>The community packages.</b> To contribute one to <a href="https://github.com/magpie-community/plugins">magpie-community/plugins</a>:
         <ul>
-          <li>Put it under <code>packages/&lt;name&gt;</code>, named <code>@magpie-community/opencode-&lt;name&gt;-auth</code> (a provider) or <code>@magpie-community/middleware-&lt;name&gt;</code> (middleware), with no runtime dependencies unless one is really needed.</li>
+          <li>Put it under <code>packages/&lt;name&gt;</code>, named <code>@magpie-community/opencode-&lt;name&gt;-auth</code> (a provider) , <code>@magpie-community/middleware-&lt;name&gt;</code> (middleware or a routing strategy), <code>@magpie-community/tools-&lt;name&gt;</code> (tools), <code>@magpie-community/page-&lt;name&gt;</code> (a page) or <code>@magpie-community/agent-&lt;name&gt;</code> (an agent), with no runtime dependencies unless one is really needed.</li>
           <li>Pushing a version bump to <code>main</code> publishes it.</li>
           <li>These packages update by themselves in every magpie.</li>
         </ul></li>
@@ -665,6 +673,67 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
     <h3>When a hook fails</h3>
     <p>A hook has 250 ms for a request or a whole reply and 50 ms for an event; loading has a second. A hook that throws, runs out of time or returns something else goes on as if it weren’t there: the request or the event is sent as it was. Settings → Plugins shows each middleware’s hooks, how many calls it had, the average time each took and how many failed, with the last error. The hooks see what the agent sent and gets back, before magpie’s redaction on the way out and after it on the way back. magpie’s own requests (thread titles, the router’s classifier) don’t go through middleware.</p>
 
+    <h3 id="gateway-points"><a class="anchor" href="#gateway-points">Routings and usage rows</a></h3>
+    <p>The same module can also export <code>strategies</code> and <code>onUsage</code>. Such a file can be named <code>*.gateway.js</code>, and a package can say <code>"magpie": { "gateway": "./gw.js" }</code>.</p>
+    <ul>
+      <li><b>Routings.</b> Each <code>strategies[name]</code> is a routing named <code>&lt;plugin&gt;/&lt;name&gt;</code> (the package’s short name, or the file’s name without <code>.gateway.js</code>), offered in every routing picker of a provider, a pool and a group while the plugin is on. It is a function <code>(pool, seats, options)</code>, or an object with <code>order</code>, and returns the order to try the seats in, as indexes. Each seat has <code>key</code>, <code>account</code>, <code>known</code>, <code>learns</code>, <code>used</code>, <code>soon</code> (when its windows renew, in ms), <code>pace</code>, <code>weight</code>, <code>resting</code> and <code>tokens</code> (what it was sent lately). It has 20 ms; if it throws, takes longer or returns something else, the seats are tried in their listed order. Off, a provider or group routed by it is too.</li>
+      <li><b>Usage.</b> <code>onUsage(row, options)</code> gets each request’s usage row after it ends: provider, account and key, model, tokens, <code>ms</code>, <code>ttftMs</code>, status, error type and cost, never a body, prompt or error text. It runs on its own, so a request never waits for it; rows that come while it is busy past a queue are dropped and counted. It has 250 ms.</li>
+    </ul>
+    <div class="code">
+      <span class="lang">spread.gateway.js</span>
+      <button class="copy" data-copy="gp-ex">Copy</button>
+      <pre id="gp-ex"><span class="c">// spread.gateway.js</span>
+<span class="k">export const</span> strategies = {
+  <span class="s">"fewest-tokens"</span>: (pool, seats) =&gt;
+    seats.map((_, i) =&gt; i).sort((a, b) =&gt;
+      (seats[a].resting - seats[b].resting) || (seats[a].tokens - seats[b].tokens)),
+}
+
+<span class="k">let</span> slow = 0
+
+<span class="k">export function</span> onUsage(row, options) {
+  <span class="k">if</span> (row.ms &gt; (options.slowMs ?? 30000)) {
+    slow++
+    console.log(`slow: ${row.provider} ${row.model} ${row.ms} ms (${slow} so far)`)
+  }
+}</pre>
+    </div>
+    <div class="code">
+      <span class="lang">shell</span>
+      <button class="copy" data-copy="gp-cli">Copy</button>
+      <pre id="gp-cli">magpie plugin add ./spread.gateway.js
+magpie group set fast routing=spread/fewest-tokens</pre>
+    </div>
+
+    <h2 id="tools"><a class="anchor" href="#tools">Tools for every agent</a></h2>
+    <p>A plugin can give tools, with OpenCode’s <code>tool</code> hook, and magpie offers them to every agent, not only OpenCode: they are an MCP server of magpie’s own at <code>/mcp/magpie/tools</code> (Streamable HTTP). Add that address to any agent that takes an MCP server, and its model can call every tool your plugins that are on give. Each is named <code>&lt;plugin&gt;_&lt;tool&gt;</code>, the plugin’s short name first: <code>weather-tools_now</code> below.</p>
+    <div class="code">
+      <span class="lang">index.js</span>
+      <button class="copy" data-copy="tools-ex">Copy</button>
+      <pre id="tools-ex"><span class="k">import</span> { tool } <span class="k">from</span> <span class="s">"@opencode-ai/plugin"</span>
+
+<span class="k">export const</span> WeatherTools = <span class="k">async</span> () =&gt; ({
+  tool: {
+    now: tool({
+      description: <span class="s">"The weather now in a city."</span>,
+      args: { city: tool.schema.string().describe(<span class="s">"A city, e.g. Berlin"</span>) },
+      <span class="k">async</span> execute({ city }, ctx) {
+        <span class="k">const</span> r = <span class="k">await</span> fetch(<span class="s">`https://wttr.in/${encodeURIComponent(city)}?format=3`</span>, { signal: ctx.abort })
+        <span class="k">return</span> <span class="k">await</span> r.text()  <span class="c">// text; an object is sent as its JSON</span>
+      },
+    }),
+  },
+})</pre>
+    </div>
+    <div class="code">
+      <span class="lang">shell</span>
+      <button class="copy" data-copy="tools-cli">Copy</button>
+      <pre id="tools-cli">magpie plugin add ./weather-tools
+claude mcp add --transport http magpie-tools http://127.0.0.1:3425/mcp/magpie/tools   <span class="c"># Claude Code; other agents take the same address</span></pre>
+    </div>
+    <p>Settings → Plugins lists each plugin’s tools by these names and copies the server’s address. <code>args</code> is a zod shape (<code>tool.schema</code> is zod), a zod object or a JSON Schema object. The agent is shown it, and magpie checks a call’s arguments against it before <code>execute</code> runs; a wrong argument is answered as an error naming it. <code>ctx</code> is OpenCode’s, with <code>agent</code> the agent that called. A tool has 55 seconds, and <code>ctx.abort</code> fires when they are up.</p>
+    <p>The built-in plugin <span class="ui">Plugin tools</span> serves the server. It stays on while a plugin that is on gives a tool; off, no tool is listed and a call says so. A call made with a gateway key counts against that key’s limits. A tool runs in the plugin host with your rights, as a provider plugin does, and its answer goes only to the agent that called it.</p>
+
     <h2 id="agents"><a class="anchor" href="#agents">Agent plugins</a></h2>
     <p>A plugin can also add an <em>agent</em>: one magpie has no setup of its own for. It says where the agent keeps its model and what else to write there for the agent to use magpie’s gateway. The agent is then on the <span class="ui">Agents</span> page like magpie’s own: pick one of magpie’s models in its row and magpie writes it into the agent’s config, with the gateway’s address and a key of the agent’s own; switch it off and everything goes back to how the user had it. The example below adds <a href="https://aider.chat">Aider</a>.</p>
     <div class="code">
@@ -700,7 +769,7 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
       <tr><td><code>name</code></td><td>What the page calls it. The id when left out.</td></tr>
       <tr><td><code>config</code></td><td>The file magpie edits. <code>~</code> and <code>$VAR</code> are expanded. It is made when it isn’t there.</td></tr>
       <tr><td><code>format</code></td><td><code>json</code>, <code>yaml</code> or <code>env</code>, when the file’s name doesn’t say it (<code>.json</code>/<code>.jsonc</code>, <code>.yaml</code>/<code>.yml</code>, <code>.env</code>). TOML isn’t supported yet.</td></tr>
-      <tr><td><code>model</code></td><td>The key of the model in the file, as a dotted path for JSON and YAML (<code>llm.model</code>).</td></tr>
+      <tr><td><code>model</code></td><td>The key of the model in the file, as a dotted path for JSON and YAML (<code>llm.model</code>). Leave it out for an agent whose model is picked in the agent itself, among the models <code>connect</code> writes (Raycast): the row is then a switch with no model picker, and <code>connect</code>, which such a plugin must have, is called without <code>model</code>.</td></tr>
       <tr><td><code>prefix</code></td><td>Written before magpie’s model id: <code>openai/</code> for an agent that reaches OpenAI-compatible endpoints through LiteLLM. The id itself is <code>&lt;provider&gt;/&lt;model&gt;</code>, as the gateway takes it.</td></tr>
       <tr><td><code>bin</code>, <code>dir</code></td><td>The command on <code>PATH</code> and the folder that say the agent is installed.</td></tr>
       <tr><td><code>ua</code></td><td>Words of the agent’s User-Agent, to name its requests in Usage when they come without its key.</td></tr>
@@ -709,7 +778,7 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
       <tr><td><code>library</code></td><td>Where the agent reads what the <span class="ui">Library</span> gives: <code>instructions</code> (a Markdown file it reads before every conversation), <code>mcp</code> (its MCP servers file) with <code>mcpFormat</code>, the agent whose file it is shaped like (<code>alma</code>, <code>antigravity</code>, <code>claude</code>, <code>cline</code>, <code>codex</code>, <code>commandcode</code>, <code>copilot</code>, <code>crush</code>, <code>cursor</code>, <code>devin</code>, <code>gemini</code>, <code>goose</code>, <code>grok</code>, <code>hermes</code>, <code>kimi</code>, <code>omp</code>, <code>opencode</code>, <code>zed</code>; <code>claude</code> is <code>{"mcpServers": {…}}</code>), and <code>skills</code> (a folder of <code>SKILL.md</code> folders). Each is optional, with <code>~</code> and <code>$VAR</code> expanded: <code>library: { instructions: "~/.toy/AGENTS.md", mcp: "~/.toy/mcp.json", mcpFormat: "claude", skills: "~/.toy/skills" }</code>. Without it the agent is given nothing from the Library, and giving it an item is refused, naming the key its plugin would set.</td></tr>
     </table></div>
     <h3>connect</h3>
-    <p><code>connect(input)</code> returns the other keys to write beside the model, by key path, each with its value; it may be <code>async</code>. It is given <code>gateway</code> (<code>url</code>, <code>v1</code> — the URL ending in <code>/v1</code> — and <code>key</code>, the agent’s own key, which counts its requests under its id), <code>model</code> (<code>id</code>, <code>name</code>, <code>context</code>, <code>output</code>, <code>images</code>, <code>efforts</code>), <code>models</code> (every model magpie offers the agent, the same way) and <code>agent</code> (<code>id</code>, <code>config</code>). A plugin without <code>connect</code> writes only the model.</p>
+    <p><code>connect(input)</code> returns the other keys to write beside the model, by key path, each with its value; it may be <code>async</code>. It is given <code>gateway</code> (<code>url</code>, <code>v1</code> — the URL ending in <code>/v1</code> — and <code>key</code>, the agent’s own key, which counts its requests under its id), <code>model</code> (<code>id</code>, <code>name</code>, <code>context</code>, <code>output</code>, <code>images</code>, <code>efforts</code>), <code>models</code> (every model magpie offers the agent, the same way) and <code>agent</code> (<code>id</code>, <code>config</code>). A plugin without <code>connect</code> writes only the model. It is called again when magpie’s models change, so a list it writes stays current.</p>
     <h3>What magpie does with it</h3>
     <ul>
       <li><b>Writing.</b> Each key is set in place, the user’s comments and other keys kept. Before the first write, what each key held is kept aside, typed (a number stays a number).</li>
@@ -718,6 +787,56 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
       <li><b>How it runs.</b> As <a href="#middleware">middleware</a> does: in moejs, in magpie’s own process, with imports inside the plugin only, no Node APIs and <code>console.log</code> into magpie’s log. Loading and <code>connect</code> each have a second. A plugin whose module doesn’t load, or whose <code>connect</code> throws, says why in its row on the Plugins page and writes nothing.</li>
       <li><b>The Library.</b> With <code>library</code>, the agent is one of the Library’s agents: its instructions go between magpie’s marker lines in the file, its MCP servers into the file beside the user’s own (whose other fields are kept), and its skills linked or copied into the folder. Taking one off takes away only what magpie wrote there, and what a file held before is kept in magpie’s backups. An <code>mcpFormat</code> that isn’t one of the list, or an <code>mcp</code> without one, keeps the plugin from loading.</li>
       <li><b>Declaring it.</b> <code>"magpie": { "agent": "./agent.js" }</code> in <code>package.json</code>, or a single file named <code>*.agent.js</code> (or <code>.mjs</code>). A package can be a provider, middleware and an agent at once. In the plugin market an agent’s entry has <code>"kind": "agent"</code> and is listed under <span class="ui">Agents</span>; a community one is named <code>@magpie-community/agent-&lt;name&gt;</code>.</li>
+    </ul>
+
+    <h2 id="pages"><a class="anchor" href="#pages">Pages in the window</a></h2>
+    <p>A plugin can add a page of its own to magpie’s window. Once it is on, the page has a tab in the sidebar’s <span class="ui">Plugins</span> group, after magpie’s own pages. The page is plain HTML, CSS and JavaScript in the plugin’s folder, and needs no Bun and no build step. The example below shows today’s usage.</p>
+    <div class="code">
+      <span class="lang">package.json</span>
+      <button class="copy" data-copy="pg-pkg">Copy</button>
+      <pre id="pg-pkg">{
+  <span class="s">"name"</span>: <span class="s">"magpie-usage-glance"</span>,
+  <span class="s">"version"</span>: <span class="s">"0.1.0"</span>,
+  <span class="s">"magpie"</span>: {
+    <span class="s">"page"</span>: { <span class="s">"title"</span>: <span class="s">"Usage glance"</span>, <span class="s">"file"</span>: <span class="s">"page/index.html"</span>, <span class="s">"icon"</span>: <span class="s">"page/icon.svg"</span> },
+    <span class="s">"permissions"</span>: [<span class="s">"usage:summary"</span>]
+  }
+}</pre>
+    </div>
+    <div class="code">
+      <span class="lang">page/index.html</span>
+      <button class="copy" data-copy="pg-html">Copy</button>
+      <pre id="pg-html">&lt;!doctype html&gt;
+&lt;link rel="stylesheet" href="style.css"&gt;
+&lt;script src="_magpie/bridge.js"&gt;&lt;/script&gt;   <span class="c">&lt;!-- served beside every page --&gt;</span>
+&lt;script src="app.js" defer&gt;&lt;/script&gt;
+&lt;p id="calls"&gt;…&lt;/p&gt;</pre>
+    </div>
+    <div class="code">
+      <span class="lang">page/app.js</span>
+      <button class="copy" data-copy="pg-js">Copy</button>
+      <pre id="pg-js"><span class="k">await</span> magpie.ready                                  <span class="c">// the window's theme, painted</span>
+<span class="k">const</span> s = <span class="k">await</span> magpie.read(<span class="s">"usage:summary"</span>, { period: <span class="s">"today"</span> })
+document.getElementById(<span class="s">"calls"</span>).textContent = `${s.calls} calls`
+<span class="k">const</span> opts = <span class="k">await</span> magpie.options.get()            <span class="c">// this plugin's own options</span>
+<span class="k">await</span> magpie.options.set({ ...opts, hideCost: <span class="k">true</span> })</pre>
+    </div>
+    <p>The Plugins page shows the page, and what it may read, on the plugin’s row before it is turned on. <code>page.file</code> and <code>page.icon</code> are paths inside the plugin. The page’s files are what sits in <code>file</code>’s folder; a path out of it, or a link that leads out, isn’t served. A package can be a page and a provider, middleware or an agent too. A plugin that is only a page doesn’t start the plugin host.</p>
+    <h3>What the page can ask</h3>
+    <div class="table-wrap"><table>
+      <tr><th>Field / call</th><th>What it gives</th></tr>
+      <tr><td><code>magpie.ready</code></td><td>A promise of the window’s theme. It resolves once the window has answered. Until then the page has said nothing to magpie, and a page that doesn’t say it in 10 seconds is shown as not answering.</td></tr>
+      <tr><td><code>magpie.theme, magpie.onTheme(fn)</code></td><td><code>{ dark, lang, tokens }</code>. The bridge also sets <code>data-theme</code>, <code>lang</code>, <code>color-scheme</code> and <code>--magpie-bg</code>, <code>--magpie-fg</code>, <code>--magpie-accent</code> and so on on <code>&lt;html&gt;</code>, and again on each change.</td></tr>
+      <tr><td><code>magpie.options.get(), .set(o)</code></td><td>The plugin’s own options in plugins.json, never another plugin’s. <code>set</code> takes an object and answers with the options saved. It can be called at most once a second.</td></tr>
+      <tr><td><code>magpie.read(name, params)</code></td><td>A read that <code>magpie.permissions</code> declares. Anything else is refused, by the window and again by magpie. <code>usage:summary</code> (<code>period</code>: <code>today</code>, <code>7d</code> or <code>30d</code>) gives calls, errors, tokens and cost, with the top 20 models. <code>providers:list</code> gives each provider’s id and name. No read gives keys, accounts, sign-ins or request bodies.</td></tr>
+    </table></div>
+    <h3>What the page can’t do</h3>
+    <ul>
+      <li>The page runs in a frame sandboxed to scripts alone (<code>sandbox="allow-scripts"</code>, and the same in its <code>Content-Security-Policy</code>), in an origin of its own. It can’t reach the window, magpie’s cookie or the window’s storage.</li>
+      <li>Its policy allows its own files and nothing else: <code>connect-src 'none'</code>, so no <code>fetch</code>, WebSocket or beacon, and no forms or frames. Scripts must be files (<code>&lt;script src&gt;</code>), not inline. Inline styles and <code>data:</code> pictures are fine.</li>
+      <li>magpie’s API refuses any request a frame like this one can make (<code>Origin: null</code>, a frame or another site’s request), so it is closed to the page even without the policy. Its files are served at <code>/_magpie/plugin/&lt;token&gt;/</code>, a token that changes each time magpie starts.</li>
+      <li>A page can still send itself to another site, which then holds its frame. That is why reads give nothing secret. Treat what a page can read as public.</li>
+      <li>An error the page doesn’t catch shows <span class="ui">This page stopped working</span> in its place, with <span class="ui">Try again</span>. Its own scripts’ errors reach it as “Script error.”, so look in the window’s console for the rest.</li>
     </ul>
 
     <h2 id="pi"><a class="anchor" href="#pi">pi packages</a></h2>

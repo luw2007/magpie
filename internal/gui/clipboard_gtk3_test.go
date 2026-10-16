@@ -36,18 +36,19 @@ func TestClipboardReadBack(t *testing.T) {
 	if out, err := exec.Command("cc", args...).CombinedOutput(); err != nil {
 		t.Fatalf("build probe: %v\n%s", err, out)
 	}
-	run := func(t *testing.T, mode, text string) (primary, read int, held string) {
+	run := func(t *testing.T, mode, text string) (primary, read int, held string, out string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, bin, mode, text)
 		cmd.Env = append(os.Environ(), "GDK_BACKEND=wayland")
-		out, err := cmd.Output()
+		b, err := cmd.CombinedOutput()
+		out = string(b)
 		t.Logf("%s: %s", mode, out)
 		if err != nil {
 			t.Fatalf("probe: %v", err)
 		}
 		primary, read = -2, -2
-		for _, l := range strings.Split(string(out), "\n") {
+		for _, l := range strings.Split(out, "\n") {
 			fmt.Sscanf(l, "primary=%d", &primary)
 			if strings.HasPrefix(l, "read=") {
 				var n int
@@ -60,17 +61,17 @@ func TestClipboardReadBack(t *testing.T) {
 		if read == -1 {
 			t.Skip("the compositor sent the probe no selection (no focus?)")
 		}
-		return primary, read, held
+		return primary, read, held, out
 	}
 	text := "claude --resume 1881 «剪贴板»"
 	t.Run("magpie", func(t *testing.T) {
-		_, read, held := run(t, "magpie", text)
+		_, read, held, _ := run(t, "magpie", text)
 		if !copyHeld(read, held, text) {
 			t.Errorf("read back %d %q, want %q", read, held, text)
 		}
 	})
 	t.Run("wails", func(t *testing.T) {
-		primary, read, held := run(t, "wails", text)
+		primary, read, held, _ := run(t, "wails", text)
 		if primary != 0 {
 			t.Skip("the compositor has a primary selection: Wails' copy works there")
 		}
@@ -79,6 +80,19 @@ func TestClipboardReadBack(t *testing.T) {
 		}
 		if copyHeld(read, held, text) {
 			t.Error("an empty read back counts as a copy made")
+		}
+	})
+	// #2039: a read back that left its data device alive in the
+	// compositor broke GTK's connection on the next clipboard changes
+	// ("Error reading events from display: Invalid argument") and the app
+	// exited.
+	t.Run("copies after a read back", func(t *testing.T) {
+		_, read, held, out := run(t, "again", text)
+		if !copyHeld(read, held, text) {
+			t.Errorf("read back %d %q, want %q", read, held, text)
+		}
+		if !strings.Contains(out, "\nalive") {
+			t.Errorf("the probe died after more copies:\n%s", out)
 		}
 	})
 }

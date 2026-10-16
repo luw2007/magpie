@@ -10,13 +10,12 @@
 // backend: the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
-const fsSync = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
-const I18N = new Function(fsSync.readFileSync(path.join(assets, "i18n.js"), "utf8") + ";return I18N;")();
+const { I18N } = require("./strings.cjs").strings(); // i18n.js's and the plugins'
 const tr = (lang, s, vars = {}) => ((lang === "en" ? s : I18N[lang][s]) || s).replace(/\{(\w+)\}/g, (_, k) => vars[k]);
 const HOME = "/Users/xv";
 const agent = (id, name) => ({ id, name, icon: "", skills: `${HOME}/.${id}/skills`, mcp: `${HOME}/.${id}/mcp.json` });

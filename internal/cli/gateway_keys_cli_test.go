@@ -6,8 +6,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/access"
+	"github.com/yetone/magpie/internal/budget"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -183,6 +185,29 @@ func TestGatewayKeyLimitCLI(t *testing.T) {
 	if keys, _ = access.List(); keys[0].Limit.Since.Before(since) || keys[0].Limit.Cost != 800 {
 		t.Fatalf("reset kept %+v", keys[0].Limit)
 	}
+	// every 5 hours (#2102): a new cycle from now, then Reset starts another
+	if got, err = call("limit", id, "5h", "--tokens", "200k"); err != nil || !strings.Contains(got, "this 5-hour cycle") {
+		t.Fatal(got, err)
+	}
+	keys, _ = access.List()
+	if l := keys[0].Limit; l == nil || l.Period != "hours" || l.Hours != 5 || l.Days != 0 || l.Tokens != 200_000 || l.Since.IsZero() || l.Since.Before(since) {
+		t.Fatalf("limit kept as %+v", keys[0].Limit)
+	}
+	if st := budget.Of(keys[0], keys[0].Limit.Since.Add(time.Minute)); st == nil || st.Reset.Sub(st.Start) != 5*time.Hour || st.Hours != 5 {
+		t.Fatalf("a 5-hour key's window: %+v", st)
+	}
+	if got, _ := call("list"); !strings.Contains(got, "0/200000 tokens every 5 hours") {
+		t.Fatal(got)
+	}
+	if got, err = call("limit", id, "reset"); err != nil || !strings.Contains(got, "this 5-hour cycle") {
+		t.Fatal(got, err)
+	}
+	for _, args := range [][]string{{"limit", id, "0h", "--tokens", "5"}, {"limit", id, "8761h", "--tokens", "5"}, {"limit", id, "xh", "--tokens", "5"},
+		{"limit", id, "1.5h", "--tokens", "5"}, {"limit", id, "hours", "--tokens", "5"}} {
+		if _, err := call(args...); err == nil {
+			t.Error("accepted", args)
+		}
+	}
 	if got, err := call("limit", id, "off"); err != nil || !strings.Contains(got, "no limit") {
 		t.Fatal(got, err)
 	}
@@ -284,5 +309,131 @@ func TestGatewayKeyAccountsCLI(t *testing.T) {
 	}
 	if keys, _ = access.List(); keys[0].Accounts != nil {
 		t.Fatal("all kept accounts", keys[0].Accounts)
+	}
+}
+
+// magpie gateway-key limit adds, lists, changes and removes a key's
+// several limits (#2227); the single-limit form still sets an only limit.
+func TestGatewayKeySeveralLimitsCLI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := settings.Save(settings.Settings{LAN: true}); err != nil {
+		t.Fatal(err)
+	}
+	call := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		err := gatewayKeysTo(&out, append([]string{"gateway-key"}, args...))
+		return out.String(), err
+	}
+	if _, err := call("add", "Team"); err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := access.List()
+	id := keys[0].ID
+	limits := func() []*access.Limit {
+		keys, _ := access.List()
+		return keys[0].Limits()
+	}
+	if _, err := call("limit", id, "add", "5h", "--cost", "10"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := call("limit", id, "add", "week", "--cost", "50")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Limit 1", "every 5 hours", "Limit 2", "per week", "this 5-hour cycle", "this week", "$10.00", "$50.00"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("two limits show %q, without %q", got, want)
+		}
+	}
+	if list, err := call("limit", id, "list"); err != nil || list != got {
+		t.Fatal("list:", list, err)
+	}
+	// the plain form changes the one with that window
+	if _, err := call("limit", id, "week", "--cost", "60"); err != nil {
+		t.Fatal(err)
+	}
+	if ls := limits(); len(ls) != 2 || ls[1].Cost != 60 || ls[0].Cost != 10 {
+		t.Fatalf("after changing the week: %+v %+v", ls[0], ls[1])
+	}
+	for _, args := range [][]string{{"limit", id, "day", "--tokens", "5"}, {"limit", id, "add", "week", "--tokens", "5"}, {"limit", id, "remove", "3"},
+		{"limit", id, "remove"}, {"limit", id, "remove", "x"}, {"limit", id, "reset", "0"}, {"limit", id, "list", "extra"}, {"limit", id, "add"}} {
+		if _, err := call(args...); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	if ls := limits(); len(ls) != 2 {
+		t.Fatalf("a refused command left %d limits", len(ls))
+	}
+	if _, err := call("limit", id, "reset", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call("limit", id, "remove", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if ls := limits(); len(ls) != 1 || ls[0].Period != "week" {
+		t.Fatalf("after removing the first: %+v", ls)
+	}
+	if got, err := call("limit", id); err != nil || strings.Contains(got, "Limit 1") || !strings.Contains(got, "this week") {
+		t.Fatal("one limit shows", got, err)
+	}
+	// the single form, with one limit, replaces it as before
+	if _, err := call("limit", id, "day", "--tokens", "5"); err != nil {
+		t.Fatal(err)
+	}
+	if ls := limits(); len(ls) != 1 || ls[0].Period != "day" {
+		t.Fatalf("the single form: %+v", ls)
+	}
+	if _, err := call("limit", id, "remove", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := call("limit", id); err != nil || !strings.Contains(got, "no limit") {
+		t.Fatal(got, err)
+	}
+}
+
+// #2216: whether a key held to a budget, models or accounts is told the
+// quotas of what it may use; off, as every key was (#1981), it is told none.
+func TestGatewayKeyQuotasCLI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := settings.Save(settings.Settings{LAN: true}); err != nil {
+		t.Fatal(err)
+	}
+	call := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		err := gatewayKeysTo(&out, append([]string{"gateway-key"}, args...))
+		return out.String(), err
+	}
+	if _, err := call("add", "Phone"); err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := access.List()
+	id := keys[0].ID
+	off, on := "Phone: told no quotas when held to a budget, models or accounts\n", "Phone: told the quotas of the providers and accounts it may use\n"
+	if got, err := call("quotas", id); err != nil || got != off {
+		t.Fatal(got, err)
+	}
+	if got, err := call("quotas", id, "on"); err != nil || got != on {
+		t.Fatal(got, err)
+	}
+	if keys, _ = access.List(); !keys[0].Quotas {
+		t.Fatal("not kept on")
+	}
+	for _, args := range [][]string{{"quotas"}, {"quotas", id, "yes"}, {"quotas", id, "on", "off"}, {"quotas", "missing", "on"}, {"quotas", "missing"}} {
+		if _, err := call(args...); err == nil {
+			t.Error("accepted", args)
+		}
+	}
+	if keys, _ = access.List(); !keys[0].Quotas {
+		t.Fatal("a refused call turned it off")
+	}
+	if got, err := call("quotas", id, "off"); err != nil || got != off {
+		t.Fatal(got, err)
+	}
+	if keys, _ = access.List(); keys[0].Quotas {
+		t.Fatal("not kept off")
 	}
 }

@@ -77,6 +77,91 @@ func TestContextOfALeanAgent(t *testing.T) {
 	}
 }
 
+// Claude Code's auto mode asks its classifier about each action under the
+// conversation's own session id: a security monitor's system prompt and
+// the transcript, no tools, 34–48K. Interleaved with turns of 60–116K, as
+// Player's glm-5.3 session on Discord was, those drops are no compaction,
+// nor are its title, quota check or a subagent's turns; the
+// conversation's line, latest request and peak are its own turns', and a
+// real compaction of them still counts.
+func TestContextSideCallsAreNoCompaction(t *testing.T) {
+	const window = 1_000_000
+	var routes []gateway.Route
+	id := int64(0)
+	turn := func(chat int) {
+		id++
+		routes = append(routes, ctxRoute(id, "claude", "cc-1", 24000, chat, window, 24000+chat*9/10))
+	}
+	// a request with no tool definitions, as the classifier, the title and
+	// the quota check send
+	side := func(system, chat int) {
+		id++
+		r := ctxRoute(id, "claude", "cc-1", 0, chat, window, 0)
+		r.Prompt.Tokens = system + chat
+		r.Prompt.Parts = []gateway.PromptPart{{Kind: gateway.PartSystem, Tokens: system}, {Kind: gateway.PartChat, Tokens: chat}}
+		routes = append(routes, r)
+	}
+	side(60, 900) // the title, before the first turn has an answer
+	side(0, 8)    // the quota check
+	chats := []int{36000, 48000, 60000, 72000, 80000, 86000, 92000}
+	for i, chat := range chats {
+		turn(chat)
+		// the classifier on the turn's actions: its transcript grows as the
+		// conversation does, well under its turns
+		side(6000, 28000+i*2000)
+		side(6000, 28000+i*2000+500)
+	}
+	// a subagent's turns, with tools of their own, under the same session
+	for _, chat := range []int{4000, 9000} {
+		id++
+		r := ctxRoute(id, "claude", "cc-1", 18000, chat, window, 0)
+		r.Sub = "agent-a1b2"
+		routes = append(routes, r)
+	}
+	turn(chats[len(chats)-1] + 4000)
+	side(6000, 42000)
+	// a real compaction: the next turn starts over from the summary
+	turn(9000)
+	side(6000, 12000)
+	turn(14000)
+	last := id
+
+	out := contextOf(routes, 7)
+	if len(out.Agents) != 1 || len(out.Sessions) != 1 {
+		t.Fatalf("agents %d sessions %d", len(out.Agents), len(out.Sessions))
+	}
+	s, a := out.Sessions[0], out.Agents[0]
+	if s.Compacts != 1 || a.Compacts != 1 {
+		t.Fatalf("compactions: session %d agent %d, want the one real one", s.Compacts, a.Compacts)
+	}
+	if want := len(chats) + 3; s.Requests != want || len(s.Points) != want {
+		t.Fatalf("session requests %d points %d, want its %d turns", s.Requests, len(s.Points), want)
+	}
+	if s.LatestID != last || s.Latest.Tokens != 24000+14000 {
+		t.Fatalf("latest %d (%d tokens), want turn %d", s.LatestID, s.Latest.Tokens, last)
+	}
+	if s.Peak != 24000+96000 {
+		t.Fatalf("peak %d", s.Peak)
+	}
+	if a.Baseline != 24000 {
+		t.Fatalf("baseline %d: side calls are no part of what its turns start with", a.Baseline)
+	}
+}
+
+// An agent that sends no tools at all keeps every request on its line.
+func TestContextToollessAgentKeepsItsTurns(t *testing.T) {
+	var routes []gateway.Route
+	for i, chat := range []int{30000, 50000, 70000, 20000} {
+		r := ctxRoute(int64(i+1), "chatbox", "c1", 0, chat, 128000, 0)
+		r.Prompt.Parts = []gateway.PromptPart{{Kind: gateway.PartChat, Tokens: chat}}
+		routes = append(routes, r)
+	}
+	s := contextOf(routes, 7).Sessions[0]
+	if s.Requests != 4 || s.Compacts != 1 {
+		t.Fatalf("requests %d compacts %d", s.Requests, s.Compacts)
+	}
+}
+
 // One that starts with most of a window of MCP tools, misses the cache,
 // compacts and fails often scores low and is told so.
 func TestContextOfAHeavyAgent(t *testing.T) {

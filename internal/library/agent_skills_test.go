@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/appdir"
 )
 
 // Every agent on the Agents page that reads skills has a place for them in
@@ -16,17 +17,29 @@ import (
 // the shared ~/.agents/skills.
 func TestAgentsSkillsFolders(t *testing.T) {
 	h := sandbox(t)
+	// Hermes's own folder: ~/.hermes, but %LOCALAPPDATA%\hermes on Windows
+	// (#2275: the test wrote ~/.hermes there, where no Hermes is)
+	hermes, err := filepath.Rel(h, appdir.HermesHome())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range []string{".kimi/config.toml", ".commandcode/settings.json", ".factory/settings.json", ".cline/data/globalState.json",
-		".hermes/config.yaml", ".grok/config.toml", ".qoder/settings.json", ".workbuddy/models.json", ".fx/settings.json", ".config/devin/config.json"} {
+		filepath.Join(hermes, "config.yaml"), ".grok/config.toml", ".qoder/settings.json", ".workbuddy/models.json", ".fx/settings.json", ".config/devin/config.json"} {
 		write(t, filepath.Join(h, f), "")
 	}
+	// hermes and Cline installed: the CLI beside the folder (the folder
+	// alone is gone, #2177, and no target — TestTargetsLeaveGoneAgentsOut)
+	holdCLI(t, h, "hermes")
+	holdCLI(t, h, "cline")
+	// and WorkBuddy's app, which is how a Mac has it
+	holdApp(t, h, "WorkBuddy.app", "com.tencent.workbuddy.mac")
 	want := map[string]string{
 		"kimi":        ".agents/skills",
 		"goose":       ".agents/skills",
 		"commandcode": ".commandcode/skills",
 		"droid":       ".factory/skills",
 		"cline":       ".cline/skills",
-		"hermes":      ".hermes/skills",
+		"hermes":      filepath.Join(hermes, "skills"),
 		"grok":        ".grok/skills",
 		"qoder":       ".qoder/skills",
 		"workbuddy":   ".workbuddy/skills",
@@ -133,7 +146,11 @@ func TestSharedSkillsWrittenOnce(t *testing.T) {
 // a word of its "own skill by that name".
 func TestImportSharedSkillForKimi(t *testing.T) {
 	h := sandbox(t)
+	// goose off: its folder and, since the sandbox puts the agents' CLIs
+	// beside them (#2177), its CLI too
 	os.RemoveAll(filepath.Join(h, ".config/goose"))
+	os.Remove(filepath.Join(h, "bin/goose"))
+	os.Remove(filepath.Join(h, "bin/goose.exe"))
 	write(t, filepath.Join(h, ".kimi/config.toml"), "")
 	shared := filepath.Join(h, ".agents/skills/orca")
 	skill(t, shared, "orca", "Orca")
@@ -290,6 +307,7 @@ func TestSiblingInstructionsMore(t *testing.T) {
 	write(t, filepath.Join(h, ".qoder", "settings.json"), "{}")
 	write(t, filepath.Join(h, ".commandcode", "settings.json"), "{}")
 	write(t, filepath.Join(h, ".codebuddy", "settings.json"), "{}")
+	holdCLI(t, h, "codebuddy") // the folder alone is gone (#2177)
 	write(t, filepath.Join(h, ".codebuddy", "CODEBUDDY.mdc"), "# Mine\n")
 	want := map[string]string{
 		"qoder":       filepath.Join(h, ".qoder", "AGENTS.md"),
@@ -375,6 +393,7 @@ func TestPiInstructionsFirstThere(t *testing.T) {
 	pi := filepath.Join(h, ".pi", "agent")
 	omo := filepath.Join(h, ".omo", "agent")
 	write(t, filepath.Join(omo, "settings.json"), "{}")
+	holdCLI(t, h, "omo") // the folder alone is gone (#2177)
 	for _, d := range []string{pi, omo} {
 		if tg := targetByID(map[string]string{pi: "pi", omo: "omo"}[d]); tg == nil ||
 			tg.Instructions != filepath.Join(d, "AGENTS.md") || tg.Override != filepath.Join(d, "AGENTS.override.md") {

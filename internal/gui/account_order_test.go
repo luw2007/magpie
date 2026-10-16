@@ -27,7 +27,7 @@ func TestAccountArrangeRouteAndEditorSave(t *testing.T) {
 	}
 	fixture, _ := provider.Find("arrange-test")
 	// fixture.Keys after normalizeKeys: [primary, second] order
-	primaryID := fixture.Keys[0].ID   // the Key runtime-selection
+	primaryID := fixture.Keys[0].ID // the Key runtime-selection
 	secondID := fixture.Keys[1].ID
 	mux := http.NewServeMux()
 	providerRoutes(mux, nil)

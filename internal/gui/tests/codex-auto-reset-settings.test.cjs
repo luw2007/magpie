@@ -2,9 +2,11 @@
 // Codex resets used by themselves (foobra12 on Discord: 自动给我使用了一张, 这个
 //设置在哪儿找呢; Avalon: only the tray's quota showed the switch). Settings ›
 // Usage lists each signed-in Codex account under "Codex: auto-use resets"
-// with Off/On: Off for every account to begin with, a pick posts
-// settings/codex-auto-reset for that account and turns the switch, and with
-// no Codex account the row isn't there. Five languages, 1100 and 420 wide,
+// with an Off/On for each of the two times it uses one, its week used up
+// and one about to expire (#2078, alanwalk): Off for every account to begin
+// with, a pick posts settings/codex-auto-reset for that account and that
+// time and turns that switch alone, and with no Codex account the row isn't
+// there. Five languages, 1100 and 420 wide,
 // both engines; the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -22,7 +24,7 @@ function server(lang, users, posts) {
     trayUsage: "", trayUsageEvery: 3, vision: "", imageGen: "", version: "0.1.900", dir: "~/.config/magpie",
     gateway: "http://127.0.0.1:3425", proxyNow: "none", proxySource: "none", visionModels: [], imageGenModels: [], lanURLs: [],
     fx: { rate: 7.2, at: new Date().toISOString(), stale: false },
-    codexUsers: users, codexAutoReset: [],
+    codexUsers: users, codexAutoReset: [], codexAutoResetOnly: {},
   };
   let cur = fixed;
   return async (route) => {
@@ -34,10 +36,15 @@ function server(lang, users, posts) {
     if (url.pathname === "/api/settings/codex-auto-reset") {
       const body = req.postDataJSON();
       posts.push(body);
-      const u = body.user.toLowerCase();
+      // as the settings keep it: on, and narrowed to one time or not
+      const u = body.user.toLowerCase(), only = { ...cur.codexAutoResetOnly };
+      const was = cur.codexAutoReset.includes(u) ? { week: only[u] !== "expiring", expiring: only[u] !== "week" } : { week: false, expiring: false };
+      const w = body.when ? { ...was, [body.when]: body.on } : { week: body.on, expiring: body.on };
       const on = cur.codexAutoReset.filter((x) => x !== u);
-      if (body.on) on.push(u);
-      cur = { ...cur, codexAutoReset: on };
+      delete only[u];
+      if (w.week || w.expiring) on.push(u);
+      if (w.week !== w.expiring) only[u] = w.week ? "week" : "expiring";
+      cur = { ...cur, codexAutoReset: on, codexAutoResetOnly: only };
       return json(cur);
     }
     if (url.pathname === "/api/settings") {
@@ -55,8 +62,8 @@ function server(lang, users, posts) {
 }
 
 const words = {
-  en: { name: "Codex: auto-use resets", off: "Off", on: "On" },
-  zh: { name: "Codex：自动使用重置卡", off: "关闭", on: "开启" },
+  en: { name: "Codex: auto-use resets", off: "Off", on: "On", week: "when its week runs out", expiring: "before one expires" },
+  zh: { name: "Codex：自动使用重置卡", off: "关闭", on: "开启", week: "周额度用完时", expiring: "重置卡到期前" },
   "zh-TW": { name: "Codex：自動使用重置卡", off: "關閉", on: "開啟" },
   ja: { name: "Codex：リセットを自動使用", off: "オフ", on: "オン" },
   de: { name: "Codex: Resets automatisch einlösen", off: "Aus", on: "An" },
@@ -89,40 +96,54 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const head = page.locator("#codexAutoResetRow");
         await head.waitFor();
         assert.equal((await head.locator(".name").textContent()).trim(), w.name);
+        const w2 = { ...w, ...(w.week ? {} : await page.evaluate((lang) => ({ week: I18N[lang]["when its week runs out"], expiring: I18N[lang]["before one expires"] }), lang)) };
+        assert(w2.week && w2.expiring, "both times are translated");
         const rows = page.locator(".ar-own");
+        const at = (i, c) => page.locator(".ar-own").nth(i).locator(`.ar-own-case[data-case="${c}"]`);
         assert.deepEqual(await rows.locator(".name").allTextContents(), users);
         for (let i = 0; i < users.length; i++) {
-          assert.deepEqual(await rows.nth(i).locator(".opt").allTextContents(), [w.off, w.on]);
-          assert.equal(await rows.nth(i).locator(".opt.on").textContent(), w.off, "off to begin with");
+          assert.deepEqual(await rows.nth(i).locator(".ar-own-say").allTextContents(), [w2.week, w2.expiring], "each time its own line");
+          for (const c of ["week", "expiring"]) {
+            assert.deepEqual(await at(i, c).locator(".opt").allTextContents(), [w.off, w.on]);
+            assert.equal(await at(i, c).locator(".opt.on").textContent(), w.off, "off to begin with");
+          }
         }
 
-        // the reader wheels down to the second account's On, past the window's foot
-        await reach(page, rows.nth(1).locator(".opt", { hasText: w.on }));
+        // the reader wheels down to the second account's before-it-expires On,
+        // past the window's foot: that time alone turns, its week kept off (#2078)
+        await reach(page, at(1, "expiring").locator(".opt", { hasText: w.on }));
         const top = await page.locator("#view-settings").evaluate((v) => v.scrollTop);
-        await rows.nth(1).locator(".opt", { hasText: w.on }).click();
-        assert.deepEqual(await posted(1), { user: users[1], on: true });
+        await at(1, "expiring").locator(".opt", { hasText: w.on }).click();
+        assert.deepEqual(await posted(1), { user: users[1], on: true, when: "expiring" });
         await page.waitForTimeout(300);
-        const after = page.locator(".ar-own");
-        assert.equal(await after.nth(1).locator(".opt.on").textContent(), w.on);
-        assert.equal(await after.nth(0).locator(".opt.on").textContent(), w.off, "only that account");
+        assert.equal(await at(1, "expiring").locator(".opt.on").textContent(), w.on);
+        assert.equal(await at(1, "week").locator(".opt.on").textContent(), w.off, "its week kept off");
+        for (const c of ["week", "expiring"]) assert.equal(await at(0, c).locator(".opt.on").textContent(), w.off, "only that account");
         assert.equal(await page.locator("#view-settings").evaluate((v) => v.scrollTop), top, "no click moved the page");
 
         // every row fits: nothing runs past the settings view
         const over = await page.evaluate(() => {
           const view = document.querySelector("#view-settings").getBoundingClientRect();
-          return [...document.querySelectorAll("#codexAutoResetRow, .ar-own, .ar-own .opt")]
+          return [...document.querySelectorAll("#codexAutoResetRow, .ar-own, .ar-own-case, .ar-own-say, .ar-own .opt")]
             .filter((e) => { const r = e.getBoundingClientRect(); return r.right > view.right + 1 || r.left < view.left - 1; })
             .map((e) => e.className + " " + e.textContent.slice(0, 30));
         });
         assert.deepEqual(over, []);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "no sideways scroll");
         assert.equal(await head.evaluate((e) => getComputedStyle(e).borderLeftWidth), "0px");
+        assert.equal(await page.locator("#view-settings select").count(), 0, "no native select");
 
-        await reach(page, after.nth(1).locator(".opt", { hasText: w.off }));
-        await after.nth(1).locator(".opt", { hasText: w.off }).click();
-        assert.deepEqual(await posted(2), { user: users[1], on: false });
+        // the week on too, then the expiring off: the week kept
+        await reach(page, at(1, "week").locator(".opt", { hasText: w.on }));
+        await at(1, "week").locator(".opt", { hasText: w.on }).click();
+        assert.deepEqual(await posted(2), { user: users[1], on: true, when: "week" });
         await page.waitForTimeout(300);
-        assert.equal(await page.locator(".ar-own").nth(1).locator(".opt.on").textContent(), w.off);
+        await reach(page, at(1, "expiring").locator(".opt", { hasText: w.off }));
+        await at(1, "expiring").locator(".opt", { hasText: w.off }).click();
+        assert.deepEqual(await posted(3), { user: users[1], on: false, when: "expiring" });
+        await page.waitForTimeout(300);
+        assert.equal(await at(1, "expiring").locator(".opt.on").textContent(), w.off);
+        assert.equal(await at(1, "week").locator(".opt.on").textContent(), w.on, "the week kept on");
         assert.deepEqual(errors, []);
       });
     }

@@ -64,16 +64,21 @@ type cRequest struct {
 	ServiceTier         string          `json:"service_tier,omitempty"`
 	PromptCacheKey      string          `json:"prompt_cache_key,omitempty"`
 	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
+	// not a Chat field: OpenCode merges a model's options into its body
+	// whichever API it speaks, and a Codex model it asks on Chat is asked
+	// on Responses (Request.AccessPrograms)
+	AccessPrograms json.RawMessage `json:"access_programs,omitempty"`
 }
 
 func parseChat(body []byte) (*Request, error) {
+	body = liftMessageTools(body) // a request handle didn't see (#2322)
 	var c cRequest
 	if err := decodeJSON(body, &c); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
 	}
 	r := &Request{Model: c.Model, MaxTokens: c.MaxCompletionTokens, Temp: c.Temperature, TopP: c.TopP,
 		Stream: c.Stream, Effort: effortOf(c.ReasoningEffort), Parallel: c.ParallelToolCalls, Fast: c.ServiceTier == "priority", Tier: c.ServiceTier,
-		CacheKey: c.PromptCacheKey, Format: openAIFormat(c.ResponseFormat)}
+		CacheKey: c.PromptCacheKey, Format: openAIFormat(c.ResponseFormat), AccessPrograms: c.AccessPrograms}
 	if r.MaxTokens == 0 {
 		r.MaxTokens = c.MaxTokens
 	}
@@ -900,6 +905,36 @@ func (d *chatDecoder) text(s string, emit func(Event)) {
 	}
 }
 
+// markedThought sends a piece of text Gemini marked as a thought
+// (extra_content.google.thought) as thinking. AI Studio's OpenAI-compatible
+// API may still wrap it in <thought> tags, and mark only the chunk with the
+// opening one: "<thought>…" marked, then "</thought>接下来我将调用 probe"
+// not (#2098). The tags are read as text's are, so that the close is
+// found in the unmarked chunk and left out of the answer; a marked chunk
+// that could be no tag's start is thinking as it is.
+func (d *chatDecoder) markedThought(s string, emit func(Event)) {
+	if s == "" {
+		return
+	}
+	tagged := d.thought || d.lead != ""
+	if lead := strings.TrimLeft(s, " \n"); !tagged && !d.past {
+		tagged = lead == ""
+		for open := range thoughtTags {
+			tagged = tagged || strings.HasPrefix(lead, open) || strings.HasPrefix(open, lead)
+		}
+	}
+	if !tagged {
+		emit(Event{Kind: KThink, Text: s})
+		return
+	}
+	d.text(s, func(ev Event) {
+		if ev.Kind == KText {
+			ev.Kind = KThink
+		}
+		emit(ev)
+	})
+}
+
 // end gives back what text was held to see whether a tag began.
 func (d *chatDecoder) end(emit func(Event)) {
 	if d.lead == "" {
@@ -992,13 +1027,12 @@ func (d *chatDecoder) decode(data string, emit func(Event)) error {
 		} else {
 			decodeJSON(c.Delta.Content, &content)
 		}
-		if c.Delta.ExtraContent.Google.Thought {
-			t, content = t+content, ""
-		}
 		if t != "" {
 			emit(Event{Kind: KThink, Text: t})
 		}
-		if content != "" {
+		if c.Delta.ExtraContent.Google.Thought {
+			d.markedThought(content, emit)
+		} else if content != "" {
 			d.text(content, emit)
 		}
 		if len(c.Delta.ToolCalls) > 0 {
@@ -1162,6 +1196,7 @@ func (e *chatEncoder) event(ev Event) {
 		if ev.Code != "" {
 			failed["code"] = ev.Code // preserve the upstream error type, including refusals
 		}
+		saidError(failed, ev.Said)
 		e.w.event("", map[string]any{"error": failed})
 	}
 	e.col.add(ev)

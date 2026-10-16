@@ -95,6 +95,9 @@ type Record struct {
 	// none for a reply that wasn't streamed (#196)
 	TTFT      int64 `json:"ttft_ms,omitempty"`
 	FirstText int64 `json:"first_text_ms,omitempty"`
+	// Compaction is Codex's explicit native marker. Nil means no matching
+	// native Codex call established whether a gateway row compacted.
+	Compaction *bool `json:"compaction,omitempty"`
 	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
 	FirstReasoning  int64 `json:"first_reasoning_ms,omitempty"`
 	ReasoningHidden bool  `json:"reasoning_hidden,omitempty"`
@@ -191,16 +194,16 @@ type Record struct {
 	// said nothing: the call is then priced at magpie's own prices, as the
 	// gateway's calls are, and priced again when those change.
 	OwnCost *float64 `json:"cost,omitempty"`
-	// OTel is transient trace context; SkipOTel avoids exporting ledger records
-	// when the gateway exports its attempts separately. Neither is persisted.
-	OTel     *OTelSpan `json:"-"`
-	SkipOTel bool      `json:"-"`
+	// Watched is a row of a request an Observer watched (observe.go): it
+	// has the request's attempts already, so it can pass the row over.
+	// Never persisted.
+	Watched bool `json:"-"`
 	// Local is true only for verified loopback gateway requests. It is used
 	// for local-session deduplication, never persisted or exported.
 	Local bool `json:"-"`
 	// BodyIn and BodyOut are the request and reply as the gateway
-	// captured them, filled only for an OTLP export with bodies on (#538)
-	// and never written to usage.jsonl.
+	// captured them, filled only while an Observer wants them (an OTLP
+	// export with bodies on, #538) and never written to usage.jsonl.
 	BodyIn  string `json:"-"`
 	BodyOut string `json:"-"`
 }
@@ -220,7 +223,7 @@ func Append(r Record) {
 	if r.Time.IsZero() {
 		r.Time = Clock()
 	}
-	offerOTel(r)
+	observeLedger(r)
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
@@ -453,7 +456,7 @@ func (t Totals) Floor() float64 {
 // over next to no time would lift everyone's; its TTFT still counts.
 // The bounds are wide of any real stream: the fastest vendors write a few
 // thousand tokens a second, and a tenth of a second is the least a
-// stream's timing tells anything by. routing.js's speedOf has the same.
+// stream's timing tells anything by. routing/client.js's speedOf has the same.
 const (
 	MinDecodeMs    = 100
 	MaxDecodeSpeed = 10000
@@ -533,7 +536,7 @@ func DecodeOf(out, reasoning int, ms, ttft, firstText, flow int64, firstReasonin
 
 // HeldShare and ThinkPace tell a reply held back and let go in a burst
 // (DecodeOf): its content came in under a quarter of its window, or its
-// answer at over 20 times the pace its reasoning came. routing.js's
+// answer at over 20 times the pace its reasoning came. routing/client.js's
 // decodeOf and app.js's ledDecode have the same.
 const (
 	HeldShare = 4
@@ -798,7 +801,7 @@ func summarizeFrom(p Period, now time.Time, first time.Time, historicalKeys map[
 	s.Since, s.Bucket, s.Series = timeline(p, now, first)
 	s.Period = p.shown()
 
-	priceOf := pricer()
+	priceOf := Pricer()
 	// the places each provider id went in the period, and goes now
 	hosts := map[string]map[string]bool{}
 	// the providers whose calls are told apart by account: those an

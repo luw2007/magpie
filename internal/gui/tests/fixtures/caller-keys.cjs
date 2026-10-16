@@ -127,20 +127,37 @@ function fixture(lang, theme, events, options = {}) {
       if (action === "on-key" || action === "off-key") k.off = action === "off-key";
       if (action === "limit-key") {
         // what a key has used is the fixture's; a new limit starts unused
-        k.limit = body.limit || undefined;
-        k.used = body.limit ? { period: body.limit.period, days: body.limit.days, start: new Date().toISOString(), reset: new Date(Date.now() + (body.limit.days || 1) * 864e5).toISOString(),
-          calls: 0, tokens: 0, cost: 0, tokenLimit: body.limit.tokens, costLimit: body.limit.cost, tokensLeft: body.limit.tokens, costLeft: body.limit.cost, spent: false } : undefined;
+        const usedOf = (l) => {
+          const span = l.period === "hours" ? l.hours * 36e5 : (l.days || 1) * 864e5;
+          return { period: l.period, days: l.days, hours: l.hours, start: new Date().toISOString(), reset: new Date(Date.now() + span).toISOString(),
+            calls: 0, tokens: 0, cost: 0, tokenLimit: l.tokens, costLimit: l.cost, tokensLeft: l.tokens, costLeft: l.cost, spent: false };
+        };
+        // one of several by its index (#2227), as access.Update keeps them;
+        // without one, the key's only limit
+        const ls = body.index === undefined ? [] : k.limit ? [k.limit, ...(k.moreLimits || [])] : [];
+        const us = body.index === undefined ? [] : k.usedAll || (k.used ? [k.used] : []);
+        const i = body.index ?? 0;
+        if (!body.limit) ls.splice(i, 1), us.splice(i, 1);
+        else ls[i] = body.limit, us[i] = usedOf(body.limit);
+        k.limit = ls[0];
+        k.moreLimits = ls.length > 1 ? ls.slice(1) : undefined;
+        k.used = us[0];
+        k.usedAll = us.length > 1 ? us : undefined;
       }
       if (action === "reset-limit-key") {
         // what it used goes back to 0, tokens and cost together (#1509);
-        // an N-day cycle starts again now, a calendar window keeps its end
-        const u = k.used, now = Date.now();
-        k.used = { ...u, start: new Date(now).toISOString(), calls: 0, tokens: 0, cost: 0, inFlight: 0, unpriced: 0, spent: false,
+        // an N-day or N-hour cycle starts again now, a calendar window keeps
+        // its end; one limit of several by its index, or every one (#2227)
+        const now = Date.now();
+        const reset = (u) => ({ ...u, start: new Date(now).toISOString(), calls: 0, tokens: 0, cost: 0, inFlight: 0, unpriced: 0, spent: false,
           tokensLeft: u.tokenLimit || 0, costLeft: u.costLimit || 0,
-          reset: u.period === "days" ? new Date(now + u.days * 864e5).toISOString() : u.reset };
+          reset: u.period === "days" ? new Date(now + u.days * 864e5).toISOString() : u.period === "hours" ? new Date(now + u.hours * 36e5).toISOString() : u.reset });
+        if (k.usedAll) k.usedAll = k.usedAll.map((u, i) => (body.index === undefined || body.index === i ? reset(u) : u)), k.used = k.usedAll[0];
+        else k.used = reset(k.used);
       }
       if (action === "models-key") k.models = body.models?.length ? body.models : undefined;
       if (action === "accounts-key") k.accounts = body.accounts?.length ? body.accounts : undefined;
+      if (action === "quotas-key") k.quotas = body.quotas || undefined;
       if (action === "copy-key") secret = k.id === lanKeyID ? lanSecret : secrets.get(k.id);
       return json({ keys, secret });
     }

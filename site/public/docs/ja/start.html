@@ -129,7 +129,7 @@
     <p>キーは <code>~/.config/magpie/providers.json</code> に保存され、あなただけが読めます。magpie はシェルの環境変数からキーを読みません。追加したものだけが使われます。</p>
 
     <h2 id="agents"><a class="anchor" href="#agents">2 · エージェントごとにモデルを選ぶ</a></h2>
-    <p><span class="ui">Agents</span> タブには、このマシンにインストールまたは設定されているエージェントごとに行があります。magpie が対応しているのは Claude Code、Codex、Gemini CLI、OpenCode、MiMo Code、DevEco Code、Pi、Goose、Cursor、Copilot CLI、Crush、DeepSeek Harness、Command Code、omp、OmO、Devin、Hermes Agent、MiniMax Code、Grok Build、ZCode、OpenHanako、Alma です。</p>
+    <p><span class="ui">Agents</span> タブには、このマシンにインストールまたは設定されているエージェントごとに行があります。magpie が対応しているのは Claude Code、Codex、Gemini CLI、OpenCode、MiMo Code、DevEco Code、Pi、Goose、Cursor CLI、Copilot CLI、Crush、DeepSeek Harness、Command Code、omp、OmO、Devin、Hermes Agent、MiniMax Code、Grok Build、ZCode、OpenHanako、Alma です。</p>
 
     <figure class="figure">
       <img class="for-light" src="/img/agents-ja-light.png" width="2080" height="1290" loading="lazy" alt="エージェントタブ：エージェントごとに使用中のモデルを示す行と、下部に保存済みのプロファイル">
@@ -194,7 +194,7 @@
       <li>サブエージェントはそれ自体が独立した会話なので、親のエージェントはそのままに、ルールでサブエージェントだけを別の送り先に送れます。</li>
       <li>インテントは、ユーザーが求めていることを数語で表したものです（「テストを書く・直す」「ちょっとした質問」など）。ターンの開始時に、グループの分類モデル（magpie にある任意のモデル。小さく高速で推論なしのものが最適です）に、一致しうるインテントのうちユーザーのメッセージがどれに当たるかを一度だけ尋ねます。送られるのはそのメッセージだけで、会話全体ではありません。分類モデルが失敗した、遅すぎた（8 秒）、または判断できなかった場合は、どのインテントも一致せず、そのターンは他のルールに従います。インテントのないルールでいずれにせよ決まる場合は問い合わせず、同じメッセージについて二度尋ねることもありません。その呼び出しは使用量に magpie 自身の呼び出しとして表示されます。何を尋ねるのか、回答がどう使われるのか、失敗したらどうなるのかの詳細は<a href="/docs/ja/intent">インテントルーティング</a>を参照してください。</li>
       <li><span class="ui">compacting</span> は、エージェントが会話を圧縮するとき（Claude Code の <code>/compact</code> と自動圧縮、Codex、OpenCode、Pi、Gemini CLI、Qwen Code、Kimi Code）に一致します。これにより、会話は元のモデルのまま、要約だけをより安く速いモデルに書かせられます。圧縮は単独で判断されます。圧縮が起きたターンとそのキャッシュは元の送り先に留まります。会話がルールのモデルが受け付けられる長さを超えている場合は、次に一致するルール、またはグループの順序で決まります。</li>
-      <li><b>時間帯と曜日。</b>ルールは、このコンピューターの時計で、特定の時間帯や曜日だけ有効にできます（ベンダーのピーク時間など）。その間のターンを別のモデルに送るルールでは、ベンダーのモデルはフォールバックとして後ろに残ります。完全に外すには、ルールの <span class="ui">送信先</span> を <span class="ui">一時停止</span> に変えます。ルールが有効な間（時間帯、曜日、エージェント）、そのモデルはグループから外れ、先頭にもフォールバックにもならず、会話の継続でも使われません。時間帯が終われば戻ります。一時停止は時間帯、曜日、エージェントだけで判断し、グループのモデルがすべて一時停止中ならエージェントにそう伝えます。</li>
+      <li><b>時間帯と曜日。</b>ルールは、このコンピューターの時計で、特定の時間帯や曜日だけ有効にできます（ベンダーのピーク時間など）。その間のターンを別のモデルに送るルールでは、ベンダーのモデルはフォールバックとして後ろに残ります。完全に外すには、ルールの <span class="ui">⋯</span> メニューから <span class="ui">代わりにモデルを一時停止</span> を選びます。ルールが有効な間（時間帯、曜日、エージェント）、そのモデルはグループから外れ、先頭にもフォールバックにもならず、会話の継続でも使われません。時間帯が終われば戻ります。一時停止は時間帯、曜日、エージェントだけで判断し、グループのモデルがすべて一時停止中ならエージェントにそう伝えます。</li>
       <li><b>フォルダ。</b><span class="ui">フォルダ</span> は、エージェントの作業フォルダが指定したフォルダのどれか、またはその中にあるときに一致します。<code>~/work/acme</code> は <code>~/work/acme/web</code> を含み、<code>~/work/acme-old</code> は含みません。フォルダはエージェントがリクエストでモデルに伝えるもの（Claude Code、Codex、OpenCode、Pi が伝えます）なので、伝えないエージェントはフォルダのルールに一致しません。<code>~</code> はホームフォルダ、<code>C:\work</code> は WSL の <code>/mnt/c/work</code> と同じで、macOS と Windows では大文字小文字を区別しません。</li>
       <li>ルーティングタブには、各ターンをどのルールがどこへ送ったか、分類モデルが何と答えたか、エージェントが伝えた作業フォルダが表示されます。</li>
     </ul>
@@ -267,7 +267,7 @@ magpie claude group/opus-anywhere    <span class="c"># これを使う</span></p
     <h3><code>OPENAI_BASE_URL</code> や <code>ANTHROPIC_BASE_URL</code> を export する必要はありますか？</h3>
     <p>いいえ。magpie が一覧に表示するエージェントについては、ゲートウェイのアドレスとトークンをエージェント自身の設定ファイルに書き込みます。これらの変数は、ベース URL を設定できる他のツール向けです。<span class="ui">Gateway</span> タブの <span class="ui">Connect</span> セクションに、コピーボタンとスニペットとして用意されています。</p>
     <h3>magpie は起動しておく必要がありますか？</h3>
-    <p>magpie 経由のモデルを使うなら必要です。ゲートウェイはアプリと一緒に動きます。ウィンドウを閉じてもメニューバーやトレイで動き続けます。<code>magpie tray</code> はアイコンだけで起動し（ログイン項目に入れておくと便利です）、<code>magpie serve</code> はゲートウェイだけを動かし、<code>magpie daemon install</code> はそれをサービス（Linux は systemd、Mac は launchd）として登録し、ログインや起動時からウィンドウなしで動かし続けます。エージェント自身のモデルと自身のサインインで動くエージェントは、magpie を通りません。</p>
+    <p>magpie 経由のモデルを使うなら必要です。ゲートウェイはアプリと一緒に動きます。ウィンドウを閉じてもメニューバーやトレイで動き続けます。<code>magpie tray</code> はアイコンだけで起動し（ログイン項目に入れておくと便利です）、<code>magpie serve</code> はゲートウェイだけを動かし、<code>magpie daemon install</code> はそれをサービス（Linux は systemd、Mac は launchd）として登録し、ログインや起動時からウィンドウなしで動かし続けます。<code>magpie daemon install --web</code> ならブラウザのページも同じサービスが提供し、<code>magpie daemon status</code> がページのリンクを表示します。エージェント自身のモデルと自身のサインインで動くエージェントは、magpie を通りません。</p>
     <h3>エージェントを元の状態に戻すには？</h3>
     <p>ピッカーでエージェント自身のモデルを選ぶか、<code>magpie &lt;agent&gt; default</code> を実行します。magpie は自分が書き込んだものを取り除き、以前に設定していた <code>ANTHROPIC_BASE_URL</code> など、置き換えた値を元に戻します。</p>
     <h3>モデルを切り替えたのに、エージェントが古いモデルを使い続けます。</h3>

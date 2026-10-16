@@ -38,6 +38,10 @@ func copyText(_ *application.App, text string) bool {
 	var out *C.char
 	var n C.size_t
 	got := C.magpie_clipboard_read(display, seat, 2000, &out, &n)
+	if got == -2 {
+		// a compositor too old to read back from without harm (#2039)
+		return true
+	}
 	var held string
 	if out != nil {
 		held = C.GoStringN(out, C.int(n))

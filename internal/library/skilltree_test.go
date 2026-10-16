@@ -186,8 +186,58 @@ func TestTooBigRepositoryChecksWhatArrives(t *testing.T) {
 		t.Fatalf("a file that isn't the listed one: %v", err)
 	}
 	delete(g.serve, "skills/hindsight-docs/references/best-practices.md")
-	g.files["skills/hindsight-local/model.bin"] = strings.Repeat("x", 200<<10)
+	for p := range g.files {
+		if strings.HasSuffix(p, "SKILL.md") {
+			g.files[slash.Dir(p)+"/model.bin"] = strings.Repeat("x", 200<<10)
+		}
+	}
 	if _, err := ProbeSkills("vectorize-io/hindsight"); err == nil || !strings.Contains(err.Error(), "skills in vectorize-io/hindsight are too big") {
 		t.Fatalf("skills too big themselves: %v", err)
+	}
+}
+
+// #2062 (liangxyz): mikubaka88/CCFA-Skills has 17 skills, one of them
+// (ccf-paper-writer, its exemplar papers' PDFs) 297 MB and the others 1.5
+// MB together. The one over the limit is left out and named; the others
+// are listed and install, and raw is never asked for its files.
+func TestOneSkillTooBigLeavesTheOthers(t *testing.T) {
+	sandbox(t)
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	g := newFakeBigRepo(t)
+	big := strings.Repeat("%PDF-1.5 ", 15<<10) // 135 KB, past the test's limit of 100 KB
+	g.files["skills/hindsight-local/references/papers/llava-4d.pdf"] = big
+	g.files["skills/hindsight-local/references/papers/2212.09748.pdf"] = big
+
+	p, err := ProbeSkills("vectorize-io/hindsight")
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	var names []string
+	for _, c := range p.Candidates {
+		names = append(names, c.Path)
+	}
+	if want := []string{"skills/hindsight-docs", "hindsight-integrations/cursor/skills/hindsight-recall", ".claude/skills/ship-it"}; strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Fatalf("candidates %v, want %v", names, want)
+	}
+	if len(p.Left) != 1 || p.Left[0].Path != "skills/hindsight-local" || p.Left[0].Size < int64(2*len(big)) {
+		t.Fatalf("left out %+v, want skills/hindsight-local with its size", p.Left)
+	}
+	ok(t)(InstallSkills("vectorize-io/hindsight", []string{"skills/hindsight-docs"}, []string{"claude"}))
+	if _, err := os.Stat(filepath.Join(skillDir("hindsight-docs"), "SKILL.md")); err != nil {
+		t.Fatalf("hindsight-docs wasn't installed: %v", err)
+	}
+	g.mu.Lock()
+	for _, r := range g.raw {
+		if strings.HasPrefix(r, "skills/hindsight-local/") {
+			t.Errorf("raw was asked for %s, of the skill left out", r)
+		}
+	}
+	g.mu.Unlock()
+
+	// a link to the big skill's own folder: nothing to list, and it named
+	p, err = ProbeSkills("https://github.com/vectorize-io/hindsight/tree/HEAD/skills/hindsight-local")
+	if err != nil || len(p.Candidates) != 0 || len(p.Left) != 1 {
+		t.Fatalf("the big skill's folder: %+v, %v", p, err)
 	}
 }

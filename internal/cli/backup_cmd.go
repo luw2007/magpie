@@ -119,7 +119,7 @@ func restoreCmd(args []string) error {
 		fmt.Println(muted.Render("Needs a key (magpie provider key <id>): " + strings.Join(r.NeedKey, ", ")))
 	}
 	if len(r.SignIn) > 0 {
-		fmt.Println(muted.Render("Not signed in on this computer (a backup carries no sign-in; magpie accounts add <id>): " + strings.Join(r.SignIn, ", ")))
+		fmt.Println(muted.Render("The backup's settings use these, not signed in on this computer (a backup carries settings, not sign-ins; to use one here: magpie accounts add <id>): " + strings.Join(r.SignIn, ", ")))
 	}
 	if len(r.Plugins) > 0 {
 		fmt.Println(muted.Render("Plugins added: " + strings.Join(r.Plugins, ", ")))

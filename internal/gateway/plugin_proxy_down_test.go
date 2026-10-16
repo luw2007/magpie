@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -30,12 +29,6 @@ func TestPluginProxyDownDoesNotRest(t *testing.T) {
 			}
 			t.Setenv("MAGPIE_BUN", bun)
 			t.Cleanup(plugin.Settle)
-			l, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			down := l.Addr().String()
-			l.Close()
 			// the proxy b goes through, which answers as the vendor
 			good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				io.ReadAll(r.Body)
@@ -45,6 +38,7 @@ func TestPluginProxyDownDoesNotRest(t *testing.T) {
 				fmt.Fprint(w, `data: {"id":"c","object":"chat.completion.chunk","model":"fake-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 			}))
 			defer good.Close()
+			down := deadAddr(t, good.Listener.Addr().String())
 			t.Setenv("FAKE_BASE", "http://vendor.invalid/v1")
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

@@ -146,3 +146,49 @@ func TestOrderKeepsAPluginsPlaceByEitherID(t *testing.T) {
 		t.Fatalf("custom: %v, want %v", got, want)
 	}
 }
+
+// #1940 (Sun1090), on v0.1.1225: WorkBuddy AI is moved onto its plugin on
+// one computer (workbuddy-ai) and signed in to the plugin under its own id
+// on the other (workbuddy-ai-plugin), and put first there. The order sync
+// brings names workbuddy-ai-plugin first, and MirrorOrder puts this
+// computer's own workbuddy-ai, which it doesn't name, after the rest: the
+// order names both, and its place is the earlier one, not its own id's.
+// Nor is it among those sync says aren't signed in here.
+func TestSyncedOrderKeepsAPluginsPlaceNamedBoth(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	plug := WorkBuddyAIID + "-plugin"
+	// this computer's order, as it had it: WorkBuddy AI last
+	if err := MirrorOrder([]string{"zhipu", "deepseek", WorkBuddyAIID}); err != nil {
+		t.Fatal(err)
+	}
+	// the other computer put it first, under its plugin's id
+	if err := MirrorOrder([]string{plug, "zhipu", "deepseek"}); err != nil {
+		t.Fatal(err)
+	}
+	order, _ := StoredOrder()
+	if want := []string{plug, "zhipu", "deepseek", WorkBuddyAIID}; !slices.Equal(order, want) {
+		t.Fatalf("mirrored: %v, want %v", order, want)
+	}
+	var got []string
+	for _, p := range ordered([]Provider{{ID: "zhipu"}, {ID: "deepseek"}, {ID: WorkBuddyAIID}}, order) {
+		got = append(got, p.ID)
+	}
+	if want := []string{WorkBuddyAIID, "zhipu", "deepseek"}; !slices.Equal(got, want) {
+		t.Fatalf("listed: %v, want %v", got, want)
+	}
+	// where both are providers here, each keeps its own place
+	got = nil
+	for _, p := range ordered([]Provider{{ID: "zhipu"}, {ID: "deepseek"}, {ID: WorkBuddyAIID}, {ID: plug}}, order) {
+		got = append(got, p.ID)
+	}
+	if want := []string{plug, "zhipu", "deepseek", WorkBuddyAIID}; !slices.Equal(got, want) {
+		t.Fatalf("both here: %v, want %v", got, want)
+	}
+	synced := []Provider{{ID: plug, Models: []string{"m"}}, {ID: "commandcode-plan-plugin", Models: []string{"m"}}}
+	if left := notSignedIn(synced, map[string]bool{WorkBuddyAIID: true}); !slices.Equal(left, []string{"commandcode-plan-plugin"}) {
+		t.Fatalf("not signed in here: %v, want only commandcode-plan-plugin", left)
+	}
+}

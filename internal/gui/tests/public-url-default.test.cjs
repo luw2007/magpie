@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { fixture } = require("./fixtures/caller-keys.cjs");
+const { openPart } = require("./reader.cjs");
 
 // #1551 (everpcpc): magpie web in Docker behind a reverse proxy, with
 // MAGPIE_PUBLIC_URL=https://magpie.example.com. The page is opened from
@@ -36,7 +37,7 @@ async function setup(t, engine, lang, width, options) {
   const shown = (sel) => page.locator(sel).textContent();
   const settingsTab = async (tab) => {
     if (!(await page.locator("#view-settings").isVisible())) await page.locator("#prefs").click();
-    await page.locator(`:is(#setTab-${tab}, .nav-s[data-of=setTab-${tab}]):visible`).click();
+    await openPart(page, tab);
   };
   const fits = async (where) => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, where + " wider than the window");
   return { page, errors, open, shown, settingsTab, fits };

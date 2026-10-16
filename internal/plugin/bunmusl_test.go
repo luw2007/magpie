@@ -36,13 +36,14 @@ func TestBunTargetForMusl(t *testing.T) {
 		{"linux", "arm64", false, "bun-linux-aarch64"},
 		{"darwin", "arm64", true, "bun-darwin-aarch64"},
 		{"windows", "amd64", true, "bun-windows-x64-baseline"},
+		{"windows", "arm64", false, "bun-windows-aarch64"},
 		{"android", "arm64", true, "bun-linux-aarch64-android"},
 	} {
 		got, err := bunTargetFor(c.goos, c.goarch, c.musl)
 		if err != nil || got != c.want {
 			t.Errorf("bunTargetFor(%s, %s, musl %v) = %q, %v; want %q", c.goos, c.goarch, c.musl, got, err, c.want)
 		}
-		if c.goos == "linux" && bunChecksum(BunVersion, got) == "" {
+		if bunChecksum(BunVersion, got) == "" {
 			t.Errorf("no checksum for %s", got)
 		}
 	}

@@ -7,6 +7,7 @@
 // #1453 (wlj521: Cockpit Tools' exports): the box names Cockpit Tools and
 // Sub2API, says the source tool is signed out, and a pasted text that held
 // no account is listed by name rather than passed over; at 380px too.
+// #2131: after the results, Import more… opens the next batch.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -145,6 +146,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.setViewportSize({ width: 900, height: 760 });
       // the new account is listed
       await page.locator(".editor .accts .acc .n", { hasText: "cpa@example.com" }).waitFor();
+      // #2131 (ump45nose): the next batch is one click away from the
+      // results, not behind Done; it starts empty and is posted on its own
+      const more = page.locator(".signing.import > button.primary");
+      assert.equal(await more.count(), 1, "no way to import again beside the results, only Done");
+      assert.equal(await more.textContent(), lang === "en" ? "Import more…" : await T("Import more…"));
+      if (lang === "zh") assert.equal(await more.textContent(), "继续导入…");
+      await more.click();
+      await area.waitFor();
+      assert.equal(await area.inputValue(), "");
+      assert.equal(await page.locator(".signing.import .results").count(), 0);
+      await area.fill(cpa);
+      await page.locator(".signing.import button.primary").click();
+      await page.locator(".signing.import .results").waitFor();
+      assert.deepEqual(posted, [{ agent: "codex", files: [cpa] }, { agent: "codex", files: [cpa] }]);
+      // Done still closes the results
+      await page.locator(".signing.import > button.text:not(.primary)").click();
+      await page.locator(".signing.import").waitFor({ state: "detached" });
       assert.deepEqual(errors, []);
     });
   }

@@ -78,7 +78,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     assert.equal(await page.locator(".editor .bal-url").inputValue(), "https://relay.example.com/api/user/self");
     assert.equal(await page.locator(".editor .bal-path").inputValue(), "$data.quota / 500000", "usage/token's field gives way to the quota");
-    assert(await page.locator(".editor details.more").evaluate((d) => d.open), "what changed is in view");
+    assert(await page.locator(".editor .bal-url").isVisible(), "what changed is in view");
     assert(!(await fix.evaluate((e) => e.classList.contains("warn"))));
     assert.match(await fix.textContent(), /New-Api-User = your user ID/, "the header /api/user/self wants is asked for");
 
@@ -171,12 +171,49 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.locator(".editor input[type=url]").first().fill("https://relay.example.com/v1");
     const fix = page.locator(".editor .bal-fix");
     assert.equal(await fix.textContent(), "", "no token, no hint");
+    // the account's token is under Advanced
+    await page.locator(".editor details.advanced > summary").click();
     await tok.fill("access-token");
     assert.match(await fix.textContent(), /The token needs a Balance URL/);
     await fix.getByRole("button", { name: "Use https://relay.example.com/api/user/self" }).click();
     assert.equal(await page.locator(".editor .bal-url").inputValue(), "https://relay.example.com/api/user/self");
     assert.equal(await page.locator(".editor .bal-path").inputValue(), "$data.quota / 500000");
     assert.equal(await page.locator(".editor .bal-res").count(), 0, "a provider not yet added has nothing to check with");
+    assert.deepEqual(errors, []);
+  });
+
+  // sub2api's /v1/usage takes the key alone too (#2217): a login token
+  // beside it is said, with the panel's profile the one way offered, and
+  // a saved "$remaining" gives way to its field
+  test(engine + ": a login token on sub2api's /v1/usage is moved to /api/v1/user/profile", async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    const context = await browser.newContext({ viewport: { width: 440, height: 760 }, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    const errors = [], posted = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.route("**/*", server(posted, { provider: { ...relay, balanceURL: "https://relay.example.com/v1/usage", balancePath: "$remaining" } }));
+    t.after(() => browser.close());
+
+    await page.goto("http://magpie.test/?view=providers");
+    await page.locator(".row.provider", { hasText: "Relay" }).click();
+    const fix = page.locator(".editor .bal-fix");
+    await fix.waitFor();
+    assert(await fix.evaluate((e) => e.classList.contains("warn")), "the saved token beside /v1/usage is a warning");
+    assert.match(await fix.textContent(), /…\/v1\/usage takes the API key, not this token/);
+    assert.equal(await fix.getByRole("button").count(), 1, "only sub2api's account query is offered");
+    await fix.getByRole("button", { name: "Use https://relay.example.com/api/v1/user/profile", exact: true }).click();
+    assert.equal(await page.locator(".editor .bal-url").inputValue(), "https://relay.example.com/api/v1/user/profile");
+    assert.equal(await page.locator(".editor .bal-path").inputValue(), "$data.balance", "the key query's field gives way");
+    assert.equal(await fix.textContent(), "");
+
+    const said = await page.evaluate(() => quotaError("the Balance URL https://relay.example.com/v1/usage takes the API key, not the login token: set it to https://relay.example.com/api/v1/user/profile (Balance field $data.balance) for the account's balance, or remove the token for the key's own"));
+    assert.equal(said, "The Balance URL …/v1/usage takes the API key, not the login token — set it to …/api/v1/user/profile in the provider's settings");
+    const missing = await page.evaluate(() => [
+      "…/v1/usage takes the API key, not this token: for the account's balance, a sub2api panel uses /api/v1/user/profile.",
+      "The Balance URL …/v1/usage takes the API key, not the login token — set it to …/api/v1/user/profile in the provider's settings",
+    ].filter((k) => !I18N.zh[k] || !I18N["zh-TW"][k] || !I18N.ja[k] || !I18N.de[k]));
+    assert.deepEqual(missing, [], "every new string has its translations");
     assert.deepEqual(errors, []);
   });
 
@@ -207,6 +244,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               await page.getByPlaceholder(namePlaceholder, { exact: true }).fill("Sub2API");
               await page.locator(".editor input[type=url]").first().fill("https://relay.example.com/v1");
               assert.equal(await page.locator(".editor .bal-fix").textContent(), "", "no token, no warning");
+              // the account's token is under Advanced
+              await page.locator(".editor details.advanced > summary").click();
               await page.locator(".editor input[type=password]").nth(1).fill("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln");
             } else {
               await page.locator(".row.provider", { hasText: "Relay" }).click();
@@ -237,7 +276,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             await use.click();
             assert.equal(await page.locator(".editor .bal-url").inputValue(), to);
             assert.equal(await page.locator(".editor .bal-path").inputValue(), "$data.balance");
-            assert(await page.locator(".editor details.more").evaluate((d) => d.open));
+            assert(await page.locator(".editor .bal-url").isVisible(), "what changed is in view");
             assert.equal(await fix.textContent(), "", "the warning clears without asking for New-Api-User");
             assert.equal(posted.length, 0, "the shortcut changes only the draft");
 
@@ -280,7 +319,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.route("**/*", server(posted));
           await page.goto("http://magpie.test/?view=providers");
           await page.locator(".row.provider", { hasText: "Relay" }).click();
-          await page.locator(".editor details.more summary").click();
+          await page.locator(".editor details.more:not(.advanced) > summary").click();
           await page.locator(".editor .bal-path").fill(typed);
           const to = "https://relay.example.com" + endpoint;
           await page.locator(".editor .bal-fix").getByRole("button", { name: "Use " + to, exact: true }).click();

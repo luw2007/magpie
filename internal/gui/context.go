@@ -165,6 +165,36 @@ func sessionOfRoute(r gateway.Route) string {
 // of a prompt of some size.
 func compacted(prev, next int) bool { return prev >= 20000 && next < prev*6/10 }
 
+// ctxKey is the agent's session a route is in, "" when it names none.
+func ctxKey(r gateway.Route) string {
+	if key := sessionOfRoute(r); key != "" {
+		return r.Agent + "\x00" + key
+	}
+	return ""
+}
+
+// withTools says a prompt carries tool definitions.
+func withTools(p *gateway.Prompt) bool { return partTokens(p, gateway.PartTools) > 0 }
+
+// toolSessions are the sessions whose own turns carry tool definitions.
+// In one of them a request without any is a call the agent makes on the
+// side under the conversation's session id — Claude Code's auto mode
+// classifier ("You are a security monitor…", a transcript and no tools),
+// its title and its quota check — not a turn of the conversation, whose
+// prompt can't stand for it: a classifier's 40K after a 100K turn is no
+// compaction (Player on Discord: 45 in a session that never compacted).
+func toolSessions(routes []gateway.Route) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range routes {
+		if r.Kind == "" && r.Sub == "" && r.Prompt != nil && withTools(r.Prompt) {
+			if sk := ctxKey(r); sk != "" {
+				out[sk] = true
+			}
+		}
+	}
+	return out
+}
+
 // contextOf works the agents and their sessions out of their routes.
 func contextOf(routes []gateway.Route, days int) ctxJSON {
 	sort.SliceStable(routes, func(i, j int) bool { return routes[i].Time.Before(routes[j].Time) })
@@ -181,6 +211,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 	}
 	agents := map[string]*agentAcc{}
 	sess := map[string]*ctxSession{}
+	tooled := toolSessions(routes)
 	var order []string
 	for _, r := range routes {
 		if !r.Done || r.Agent == "" {
@@ -197,7 +228,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 			continue
 		}
 		p := r.Prompt
-		if p == nil || p.Tokens <= 0 || r.Kind != "" {
+		if p == nil || p.Tokens <= 0 || r.Kind != "" || !withTools(p) && tooled[ctxKey(r)] {
 			// a title or another side call is neither the conversation's
 			// nor what the agent's prompts are like
 			continue
@@ -223,7 +254,9 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		}
 		acc.a.Window = max(acc.a.Window, window)
 		key := sessionOfRoute(r)
-		if key == "" {
+		if key == "" || r.Sub != "" {
+			// a subagent's prompt is its own conversation's, not the
+			// one whose session id it goes under
 			continue
 		}
 		acc.sessions[key] = true

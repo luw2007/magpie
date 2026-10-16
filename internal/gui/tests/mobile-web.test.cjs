@@ -357,6 +357,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
                 await current.locator("#view-plugins .lib-tabs .opt").first().evaluate((b) => b.remove());
                 await current.waitForTimeout(350);
               }
+              // Usage's lists fold under their headings and the tokens tile's
+              // label is a pop-up (#2378): until BASE_REF has them, each is
+              // put back to the plain label it was, and the rest of the page
+              // is compared as ever; usage-overview-fold.test.cjs covers them.
+              if (view === "usage" && !baselineFile("plugins/usage/page.js").toString().includes("function mountUsageFolds")) {
+                await current.evaluate(() => {
+                  for (const b of document.querySelectorAll("#usagePane .row-head .fold, #stats .kpi-pick")) b.replaceWith(b.querySelector(".label, span"));
+                });
+                await current.waitForTimeout(350);
+              }
               const before = PNG.sync.read(await still(original));
               const after = PNG.sync.read(await still(current));
               const sameSize = before.width === after.width && before.height === after.height;

@@ -171,6 +171,9 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-ring.good, .ctx-grade-word.good { --tone: var(--c2); color: var(--c2); }
 .ctx-ring.fair, .ctx-grade-word.fair { --tone: var(--amber); color: var(--amber); }
 .ctx-ring.poor, .ctx-grade-word.poor { --tone: var(--red); color: var(--red); }
+/* colorblind mode turns --c2 amber, as fair's; good keeps a blue, its
+   palette's --c1 (#2073) */
+:root[data-colorblind="1"] :is(.ctx-ring, .ctx-grade-word).good { --tone: var(--c1); color: var(--c1); }
 .ctx-ring b { color: var(--fg); }
 .ctx-scores { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
 .ctx-score { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; font-size: 11.5px; color: var(--fg-2); cursor: default; }

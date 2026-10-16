@@ -51,6 +51,7 @@ static int magpie_clipboard_wayland(void **display, void **seat) {
 
 typedef struct {
 	struct wl_data_device_manager *manager;
+	uint32_t version;
 	struct wl_data_offer *offers[MAGPIE_PROBE_OFFERS];
 	int text[MAGPIE_PROBE_OFFERS]; // 1 utf-8, 2 UTF8_STRING, 3 text/plain
 	int n;
@@ -111,8 +112,10 @@ static const struct wl_data_device_listener magpie_device_listener = {
 
 static void magpie_registry_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version) {
 	magpie_probe *p = data;
-	if (!p->manager && strcmp(iface, "wl_data_device_manager") == 0)
-		p->manager = wl_registry_bind(r, name, &wl_data_device_manager_interface, version < 3 ? version : 3);
+	if (!p->manager && strcmp(iface, "wl_data_device_manager") == 0) {
+		p->version = version < 3 ? version : 3;
+		p->manager = wl_registry_bind(r, name, &wl_data_device_manager_interface, p->version);
+	}
 }
 static void magpie_registry_remove(void *data, struct wl_registry *r, uint32_t name) {}
 static const struct wl_registry_listener magpie_registry_listener = {
@@ -133,7 +136,16 @@ static long magpie_ms_since(struct timespec *t0) {
 // text in *out (free it), 0 when the clipboard holds something else or
 // nothing could be read from it, and -1 when it can't tell: no Wayland,
 // or the compositor sent no selection (it sends one only to the focused
-// client).
+// client), and -2 when the compositor's data devices can't be released
+// (wl_data_device_manager version 1), so nothing was read.
+//
+// The data device is released, not just forgotten (#2039). A device
+// dropped with wl_data_device_destroy stays alive in the compositor, which
+// goes on sending it a new wl_data_offer for every later clipboard change.
+// libwayland drops those events unread without taking the offer's object
+// id, the next object the compositor creates is then out of sequence, and
+// the display connection fails with EINVAL: GTK prints "Error reading
+// events from display: Invalid argument" and the app exits.
 static int magpie_clipboard_read(void *display, void *seat, int timeout_ms, char **out, size_t *len) {
 	*out = NULL;
 	*len = 0;
@@ -156,6 +168,10 @@ static int magpie_clipboard_read(void *display, void *seat, int timeout_ms, char
 	wl_registry_add_listener(reg, &magpie_registry_listener, &p);
 	if (wl_display_roundtrip_queue(d, q) < 0 || !p.manager)
 		goto done;
+	if (p.version < WL_DATA_DEVICE_RELEASE_SINCE_VERSION) {
+		ret = -2;
+		goto done;
+	}
 	dev = wl_data_device_manager_get_data_device(p.manager, seat);
 	wl_data_device_add_listener(dev, &magpie_device_listener, &p);
 	if (wl_display_roundtrip_queue(d, q) < 0)
@@ -224,7 +240,7 @@ done:
 	for (int j = 0; j < p.n; j++)
 		wl_data_offer_destroy(p.offers[j]);
 	if (dev)
-		wl_data_device_destroy(dev);
+		wl_data_device_release(dev);
 	if (p.manager)
 		wl_data_device_manager_destroy(p.manager);
 	wl_registry_destroy(reg);

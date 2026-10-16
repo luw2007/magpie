@@ -12,10 +12,11 @@ import (
 
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/usage"
 )
 
-// watchTrayUsage keeps the tray's cards up to date, and plain "magpie" in
-// the tooltip while there are none.
+// watchTrayUsage keeps the tray's cards up to date, and magpie's name over
+// today's total in the tooltip while there are none (trayIdleTip).
 func (h *host) watchTrayUsage() {
 	wake := make(chan struct{}, 1)
 	onTrayUsage = func() {
@@ -40,13 +41,14 @@ func (h *host) watchTrayUsage() {
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			s := settings.Load()
-			cells, label, tip := trayUsageView(trayUsageCards(ctx, s.TrayUsages), time.Now(), s.QuotaLeft)
+			cells, label, tip := trayUsageView(trayUsageCards(ctx, s.TrayUsages), time.Now(), s.QuotaLeft, s.TrayPace)
 			cancel()
 			if s.TrayNoLogos {
 				cells = trayPlain(cells)
 			}
 			if tip == "" {
-				tip = "magpie"
+				currency, rate := trayCurrency()
+				tip = trayIdleTip(trayMoney(trayTotalSum(usage.Today), s.TrayNoCost), currency, rate)
 			}
 			if runtime.GOOS != "darwin" {
 				cells = nil

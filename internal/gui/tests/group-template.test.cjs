@@ -6,7 +6,9 @@
 // and has no buttons. Add posts groups/template with the kind and its name
 // in the reader's language; once the user has a group, the cards give way
 // to a Templates menu by New group. Edit first opens the editor with the
-// template in it. At 420px, in every language, Chromium and WebKit.
+// template in it. 10-14: a pick from the menu does the same, filled in and
+// brought into view, not a group added out of sight. At 420px, in every
+// language, Chromium and WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -41,9 +43,10 @@ const KEYS = ["Hard to strong, easy to cheap", "A hard task goes to the stronges
   "The strongest model of each provider, each behind the other: one down doesn't stop the agent", "Needs models from two providers: {name} is the only one",
   "Needs a model cheap beside {name}", "Add a provider first", "Added {name}", "Start from a template: made of your own models, added in a click", "Edit first", "Templates"];
 
-function serve(lang, posts) {
+function serve(lang, posts, mine = 0) {
   // a group magpie found is no group of the user's: the cards still show
-  let list = [{ id: "auto-big", name: "Big", members: ["a/big"], ready: true, auto: true, memberInfo: info(["a/big"]) }];
+  let list = [{ id: "auto-big", name: "Big", members: ["a/big"], ready: true, auto: true, memberInfo: info(["a/big"]) },
+    ...Array.from({ length: mine }, (_, i) => ({ id: `mine-${i}`, name: `Mine ${i}`, members: ["a/big", "a/mini"], routing: "order", ready: true, memberInfo: info(["a/big", "a/mini"]) }))];
   const groups = () => ({ models, pools: [], deciders: [], found: true, groups: list, templates });
   const state = { agents: [{ id: "claude", name: "Claude Code", path: "/test/claude", fields: [] }], profiles: [], settings: { lang, theme: "light" } };
   return async (r) => {
@@ -117,6 +120,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(posts, [{ kind: "smart", name: w.smart }]);
       await page.locator(".rt-group[data-id=smart-split]").waitFor();
       assert.equal(await page.locator(".rt-gedit").count(), 0, "adding opened the editor");
+      assert.equal(await at(), before, "a click moved the page");
       // the user has a group now: a menu by New group, not the cards
       assert.equal(await cards.count(), 0);
       const btn = page.locator(".rt-gtplbtn");
@@ -129,14 +133,48 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(box.x >= 0 && box.x + box.width <= 420, `menu off the window: ${JSON.stringify(box)}`);
       assert.equal(await menu.getByRole("menuitem").nth(2).isDisabled(), true, "steady can't be made");
       await menu.getByRole("menuitem", { name: w.thrifty }).click();
-      await page.locator(".rt-group[data-id=cheap-first]").waitFor();
-      assert.deepEqual(posts[1], { kind: "thrifty", name: w.thrifty });
-      assert.equal(await at(), before, "a click moved the page");
+      const ed = page.locator(".rt-gedit");
+      await ed.waitFor();
+      assert.equal(await ed.locator("input").first().inputValue(), w.thrifty);
+      assert.equal(posts.length, 1, "picking a template added it unseen");
 
       if (lang !== "en") {
         const missing = await page.evaluate(([l, ks]) => ks.filter((k) => !I18N[l][k]), [lang, KEYS]);
         assert.deepEqual(missing, [], `every string has its ${lang}`);
       }
+      assert.deepEqual(errors, []);
+    });
+
+    test(`${engine} ${lang}: a template picked from the menu opens filled in, in view`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+      const page = await (await browser.newContext({ viewport: { width: 420, height: 900 }, reducedMotion: "reduce" })).newPage();
+      t.after(async () => {
+        if (process.env.ARTIFACT_DIR) await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-group-template-menu.png`) });
+        await browser.close();
+      });
+      page.setDefaultTimeout(5000);
+      const errors = [], posts = [];
+      // WebKit's notice when a layout outruns its observers, not a fault
+      page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
+      // enough groups of the user's that the editor, last in the list,
+      // opens below the window
+      await page.route("**/*", serve(lang, posts, 12));
+      await page.goto("http://magpie.test/?view=routing");
+      const btn = page.locator(".rt-gtplbtn");
+      await btn.waitFor();
+      await page.waitForTimeout(500);
+      await page.mouse.move(1, 1);
+      await btn.click();
+      await page.locator(".row-menu").getByRole("menuitem", { name: w.thrifty }).click();
+      const ed = page.locator(".rt-gedit");
+      await ed.waitFor();
+      assert.equal(await ed.locator("input").first().inputValue(), w.thrifty);
+      assert.deepEqual(posts, [], "picking a template added it unseen");
+      await page.waitForFunction(() => {
+        const r = document.querySelector(".rt-gedit").getBoundingClientRect();
+        return r.top >= 0 && r.top < innerHeight - 60;
+      }, null, { timeout: 3000 }).catch(() => assert.fail("the editor the pick opened is out of sight"));
+      assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".rt-gedit input")), true, "the template's name isn't focused");
       assert.deepEqual(errors, []);
     });
 

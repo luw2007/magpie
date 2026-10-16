@@ -84,7 +84,9 @@
     <a href="#test">测试</a>
     <a href="#publish">发布与上架</a>
     <a href="#middleware">网关中间件</a>
+    <a href="#tools">给每个智能体的工具</a>
     <a href="#agents">Agent 插件</a>
+    <a href="#pages">窗口里的页面</a>
     <a href="#pi">pi 扩展包</a>
     <a href="#protocol">宿主协议</a>
     <a href="#faq">答疑</a>
@@ -288,6 +290,9 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     </div>
     <p>模型还可以写 <code>provider: { npm, api }</code>，使用和供应商不同的 API 或地址；也可以写 <code>headers</code>、<code>options</code>，以及用 <code>disabled: true</code> 隐藏它。</p>
 
+        <h3 id="searches">自己能联网搜索的上游</h3>
+    <p>如果插件转发的是 Anthropic 或 OpenAI 官方 API（它们自己执行托管的联网搜索工具），在 <code>config</code> 钩子里给提供商设 <code>searches: true</code>。之后客户端的联网搜索（Claude Code 的 WebSearch、Codex 的 <code>web_search</code>）会原样发到你的 <code>fetch</code>，只作用于该提供商走 Anthropic 或 Responses 的模型，不再经过 magpie 自己的代搜；Chat 模型不受影响。magpie 不会自动用它替其他模型搜索，但可以在设置里手动指定它为搜索模型。</p>
+
         <h3 id="decide">决策 API（System One）</h3>
     <p>插件可以为自己的提供商提供 TypeSafe 的 System One API，这样它的模型就能当<a href="/docs/zh/intent">路由组的分类器</a>。在 <code>config</code> 钩子里给提供商设 <code>decide: true</code>，并给每个只回答问题、不用来对话的模型设 <code>decides: true</code>（写在 <code>config</code> 钩子里或 <code>models</code> 钩子的列表上都行）。之后 magpie 会把每个问题以 <code>POST {baseURL}/systemone</code> 发给 loader 的 <code>fetch</code>，带上账号的登录信息，和其他请求一样。请求体是 <code>{"model", "questions", "state"}</code>；回答 <code>{"model", "answers": {"&lt;问题&gt;": {"choice", "score", "confidence"}}}</code>。</p>
     <p>标了 <code>decides</code> 的模型，以及名为 <code>jev-*</code> 的模型，会作为分类器提供，并对智能体隐藏：发给它的对话请求会被拒绝。提供商没有 <code>decide: true</code> 时，<code>decides</code> 不起作用，所有模型照常用于对话。</p>
@@ -343,6 +348,7 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
           <li><code>rateWas</code>：当前优惠之前的倍率。</li>
         </ul>
         模型选择器会显示它们。</li>
+      <li><code>serviceTiers</code>（在 <code>models</code> 钩子返回的模型上）：厂商为该模型提供的服务档位，写成 id，例如 <code>["priority", "ultrafast"]</code>。magpie 会把它们写进 Codex 的模型列表（<code>priority</code> 显示为 Fast）；Chat 或 Responses 请求选了其中一档时，会带着 <code>service_tier</code> 到达你的 <code>fetch</code>。在 magpie 转换协议的请求里，模型没列出的档位不会发出。</li>
       <li>模型支持推理时，<code>variants</code> 的键会成为它的推理档位。</li>
     </ul>
     <h3>连不上厂商时</h3>
@@ -519,9 +525,11 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     resetsAt: <span class="s">"2026-10-03T18:00:00Z"</span>, <span class="c">// 或 resetSecs: 3600</span>
     span: 18000,                <span class="c">// 窗口长度，单位秒</span>
     display: <span class="s">"370 / 1000 credits"</span>,
+    amount: 370, limit: 1000, unit: <span class="s">"credits"</span>, <span class="c">// 按数量计时，窗口自己的用量</span>
     model: <span class="s">"opus"</span>,              <span class="c">// 只统计 id 含这个词的模型</span>
     models: [], notModels: [],  <span class="c">// 或恰好这些 id，或除这些外的全部</span>
     aside: false,               <span class="c">// true：用完也不影响账号使用</span>
+    runsOutAt: <span class="s">"2026-10-05T00:00:00Z"</span>, runsOut: 120, <span class="c">// 剩余额度中最早作废的一笔何时作废、作废多少</span>
   }],
   resets: { count: 2, until: <span class="s">"…"</span>, byWindow: false, fiveHour: 1, weekly: 1 }, <span class="c">// 账号可用的重置次数</span>
   signIn: <span class="s">"kept"</span>,               <span class="c">// 同 X-Magpie-Sign-In</span>
@@ -591,11 +599,11 @@ m plugin logout acme</pre>
   <span class="s">"providers"</span>: [<span class="s">"acme"</span>],
   <span class="s">"summary"</span>: { <span class="s">"en"</span>: <span class="s">"Your Acme Coding Plan."</span>, <span class="s">"zh"</span>: <span class="s">"使用你的 Acme Coding Plan。"</span> } }</pre>
         </div>
-        中间件的条目写 <code>"kind": "middleware"</code>，不写 <code>providers</code>，列在<span class="ui">网关中间件</span>下。<code>MAGPIE_PLUGIN_MARKET=&lt;url&gt;</code> 让 magpie 改用另一份列表，可以用来检查你的条目；设为 <code>off</code> 则只用内置副本。</li>
+        中间件的条目写 <code>"kind": "middleware"</code>，不写 <code>providers</code>，列在<span class="ui">网关中间件</span>下。其他类型也一样：<code>"kind": "tools"</code> 列在<span class="ui">给 Agent 的工具</span>下，<code>"kind": "page"</code> 列在<span class="ui">页面</span>下，<code>"kind": "agent"</code> 列在 <span class="ui">Agent</span> 下。<code>MAGPIE_PLUGIN_MARKET=&lt;url&gt;</code> 让 magpie 改用另一份列表，可以用来检查你的条目；设为 <code>off</code> 则只用内置副本。</li>
       <li><b>GitHub 标签。</b>在 GitHub 上打了 <code>magpie-plugin</code> topic 的仓库，会显示在 <span class="ui">插件 → 发现 → 非官方插件 · GitHub</span> 里，Star 多的在前，并标明没有人审阅过。<code>package.json</code> 要放在仓库根目录。发布到 npm 且 <code>repository</code> 指向这个仓库的，从 npm 安装；否则按仓库当前的代码安装，所以它加载的文件必须提交进仓库：<code>dist</code> 只在发布时才构建的仓库不会显示。fork、已归档的仓库和 magpie-community 自己的仓库也不显示。magpie 最多每十分钟问一次 GitHub，仓库打上标签后几分钟内就会出现。卡片显示 <code>package.json</code> 里 <code>"magpie": { "icon": "…" }</code> 给的图标，没有就显示拼图图标。</li>
       <li><b>社区包。</b>想把插件贡献到 <a href="https://github.com/magpie-community/plugins">magpie-community/plugins</a>：
         <ul>
-          <li>放在 <code>packages/&lt;name&gt;</code> 下，包名为 <code>@magpie-community/opencode-&lt;name&gt;-auth</code>（供应商）或 <code>@magpie-community/middleware-&lt;name&gt;</code>（中间件），除非确实需要，不要有运行时依赖。</li>
+          <li>放在 <code>packages/&lt;name&gt;</code> 下，包名为 <code>@magpie-community/opencode-&lt;name&gt;-auth</code>（供应商）、<code>@magpie-community/middleware-&lt;name&gt;</code>（中间件或路由策略）、<code>@magpie-community/tools-&lt;name&gt;</code>（工具）、<code>@magpie-community/page-&lt;name&gt;</code>（页面）或 <code>@magpie-community/agent-&lt;name&gt;</code>（Agent），除非确实需要，不要有运行时依赖。</li>
           <li>把版本号的改动推到 <code>main</code> 就会发布。</li>
           <li>这些包在每个 magpie 里都会自动更新。</li>
         </ul></li>
@@ -665,6 +673,67 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
     <h3>钩子出错时</h3>
     <p>处理请求或完整回复时，钩子有 250 毫秒；处理一个事件时有 50 毫秒；加载有 1 秒。钩子抛出异常、超时或返回了别的东西，都当作它不存在：请求或事件按原样发送。设置 → 插件会显示每个中间件的钩子、调用次数、平均每次耗时和失败次数，以及最近一次错误。钩子看到的是 agent 发出和收到的原始内容：发出时在 magpie 脱敏之前，返回时在还原之后。magpie 自己的请求（会话标题、路由分类器）不经过中间件。</p>
 
+    <h3 id="gateway-points"><a class="anchor" href="#gateway-points">路由与用量记录</a></h3>
+    <p>同一个模块还可以导出 <code>strategies</code> 和 <code>onUsage</code>。这样的文件可以命名为 <code>*.gateway.js</code>，包里也可以写 <code>"magpie": { "gateway": "./gw.js" }</code>。</p>
+    <ul>
+      <li><b>路由。</b>每个 <code>strategies[name]</code> 是一个名为 <code>&lt;插件&gt;/&lt;name&gt;</code> 的路由（插件包的短名，或去掉 <code>.gateway.js</code> 的文件名），插件开着时，供应商、号池和分组的路由选择里都会列出它。它是函数 <code>(pool, seats, options)</code>，或带 <code>order</code> 的对象，返回尝试各个座位的顺序（下标）。每个座位有 <code>key</code>、<code>account</code>、<code>known</code>、<code>learns</code>、<code>used</code>、<code>soon</code>（额度窗口何时刷新，毫秒）、<code>pace</code>、<code>weight</code>、<code>resting</code> 和 <code>tokens</code>（最近发给它的量）。它有 20 ms；出错、超时或返回别的东西时，按列表顺序尝试。插件关掉后，用它的供应商或分组也按列表顺序。</li>
+      <li><b>用量。</b><code>onUsage(row, options)</code> 在每个请求结束后拿到它的用量记录：供应商、账号和密钥、模型、token、<code>ms</code>、<code>ttftMs</code>、状态、错误类型和费用，不含请求体、提示词或错误文本。它单独运行，请求从不等它；它忙到队列满时到来的记录会被丢弃并计数。它有 250 ms。</li>
+    </ul>
+    <div class="code">
+      <span class="lang">spread.gateway.js</span>
+      <button class="copy" data-copy="gp-ex">复制</button>
+      <pre id="gp-ex"><span class="c">// spread.gateway.js</span>
+<span class="k">export const</span> strategies = {
+  <span class="s">"fewest-tokens"</span>: (pool, seats) =&gt;
+    seats.map((_, i) =&gt; i).sort((a, b) =&gt;
+      (seats[a].resting - seats[b].resting) || (seats[a].tokens - seats[b].tokens)),
+}
+
+<span class="k">let</span> slow = 0
+
+<span class="k">export function</span> onUsage(row, options) {
+  <span class="k">if</span> (row.ms &gt; (options.slowMs ?? 30000)) {
+    slow++
+    console.log(`slow: ${row.provider} ${row.model} ${row.ms} ms (${slow} so far)`)
+  }
+}</pre>
+    </div>
+    <div class="code">
+      <span class="lang">shell</span>
+      <button class="copy" data-copy="gp-cli">复制</button>
+      <pre id="gp-cli">magpie plugin add ./spread.gateway.js
+magpie group set fast routing=spread/fewest-tokens</pre>
+    </div>
+
+    <h2 id="tools"><a class="anchor" href="#tools">给每个智能体的工具</a></h2>
+    <p>插件可以用 OpenCode 的 <code>tool</code> 钩子提供工具，magpie 把它们提供给每个智能体，不只是 OpenCode：它们组成 magpie 自己的一个 MCP 服务器，地址是 <code>/mcp/magpie/tools</code>（Streamable HTTP）。把这个地址加到任何支持 MCP 服务器的智能体里，它的模型就能调用你已开启的插件提供的每个工具。每个工具名为 <code>&lt;插件&gt;_&lt;工具&gt;</code>，插件的短名在前，例如下面的 <code>weather-tools_now</code>。</p>
+    <div class="code">
+      <span class="lang">index.js</span>
+      <button class="copy" data-copy="tools-ex">复制</button>
+      <pre id="tools-ex"><span class="k">import</span> { tool } <span class="k">from</span> <span class="s">"@opencode-ai/plugin"</span>
+
+<span class="k">export const</span> WeatherTools = <span class="k">async</span> () =&gt; ({
+  tool: {
+    now: tool({
+      description: <span class="s">"某个城市现在的天气。"</span>,
+      args: { city: tool.schema.string().describe(<span class="s">"城市，例如 Berlin"</span>) },
+      <span class="k">async</span> execute({ city }, ctx) {
+        <span class="k">const</span> r = <span class="k">await</span> fetch(<span class="s">`https://wttr.in/${encodeURIComponent(city)}?format=3`</span>, { signal: ctx.abort })
+        <span class="k">return</span> <span class="k">await</span> r.text()  <span class="c">// 文本；对象会以 JSON 发回</span>
+      },
+    }),
+  },
+})</pre>
+    </div>
+    <div class="code">
+      <span class="lang">shell</span>
+      <button class="copy" data-copy="tools-cli">复制</button>
+      <pre id="tools-cli">magpie plugin add ./weather-tools
+claude mcp add --transport http magpie-tools http://127.0.0.1:3425/mcp/magpie/tools   <span class="c"># Claude Code；其他智能体填同一个地址</span></pre>
+    </div>
+    <p>设置 → 插件里会按这些名字列出每个插件的工具，并能复制服务器地址。<code>args</code> 可以是 zod 字段表（<code>tool.schema</code> 就是 zod）、zod 对象或 JSON Schema 对象。智能体会看到它，magpie 在 <code>execute</code> 运行前按它检查调用的参数；参数不对时回一个写明是哪个参数的错误。<code>ctx</code> 与 OpenCode 的相同，<code>agent</code> 是发起调用的智能体。每个工具最多运行 55 秒，到时 <code>ctx.abort</code> 触发。</p>
+    <p>这个服务器由内置插件 <span class="ui">插件工具</span> 提供。只要有已开启的插件提供工具，它就保持开启；关闭时不列出任何工具，调用会说明它已关闭。用网关密钥发起的调用计入该密钥的限额。工具和提供方插件一样，以你的权限在插件宿主里运行，结果只回给调用它的智能体。</p>
+
     <h2 id="agents"><a class="anchor" href="#agents">Agent 插件</a></h2>
     <p>插件还可以添加一个 <em>Agent</em>：magpie 没有内置接入的那种。它说明这个 Agent 把模型写在哪里，以及还要写些什么才能让 Agent 走 magpie 的网关。这样它就和 magpie 内置的 Agent 一样出现在 <span class="ui">Agent</span> 页：在它那一行选一个 magpie 的模型，magpie 就把模型连同网关地址和这个 Agent 自己的 key 写进它的配置；关掉开关，一切恢复成用户原来的样子。下面的例子添加 <a href="https://aider.chat">Aider</a>。</p>
     <div class="code">
@@ -700,7 +769,7 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
       <tr><td><code>name</code></td><td>页面上显示的名字。不写就用 id。</td></tr>
       <tr><td><code>config</code></td><td>magpie 修改的文件。会展开 <code>~</code> 和 <code>$VAR</code>。文件不存在时会新建。</td></tr>
       <tr><td><code>format</code></td><td><code>json</code>、<code>yaml</code> 或 <code>env</code>，文件名看不出格式时才需要写（<code>.json</code>/<code>.jsonc</code>、<code>.yaml</code>/<code>.yml</code>、<code>.env</code>）。暂不支持 TOML。</td></tr>
-      <tr><td><code>model</code></td><td>文件里模型的键，JSON 和 YAML 用点分路径（<code>llm.model</code>）。</td></tr>
+      <tr><td><code>model</code></td><td>文件里模型的键，JSON 和 YAML 用点分路径（<code>llm.model</code>）。模型在 Agent 自己里面选（从 <code>connect</code> 写入的模型里挑，比如 Raycast）时不写它：这一行就只有连接开关、没有模型选择器，而 <code>connect</code>（这种插件必须有）调用时不带 <code>model</code>。</td></tr>
       <tr><td><code>prefix</code></td><td>写在 magpie 模型 id 前面的内容：通过 LiteLLM 访问 OpenAI 兼容接口的 Agent 用 <code>openai/</code>。id 本身是网关接受的 <code>&lt;供应商&gt;/&lt;模型&gt;</code>。</td></tr>
       <tr><td><code>bin</code>、<code>dir</code></td><td><code>PATH</code> 上的命令和配置目录，用来判断 Agent 是否已安装。</td></tr>
       <tr><td><code>ua</code></td><td>Agent 的 User-Agent 里的词，请求没带它的 key 时，用来在用量里认出它。</td></tr>
@@ -709,7 +778,7 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
       <tr><td><code>library</code></td><td>Agent 从哪里读<span class="ui">资源库</span>给它的东西：<code>instructions</code>（每次对话前读的 Markdown 文件）、<code>mcp</code>（它的 MCP 服务器文件）和 <code>mcpFormat</code>（这个文件的写法跟哪个 Agent 的一样：<code>alma</code>, <code>antigravity</code>, <code>claude</code>, <code>cline</code>, <code>codex</code>, <code>commandcode</code>, <code>copilot</code>, <code>crush</code>, <code>cursor</code>, <code>devin</code>, <code>gemini</code>, <code>goose</code>, <code>grok</code>, <code>hermes</code>, <code>kimi</code>, <code>omp</code>, <code>opencode</code>, <code>zed</code>；<code>claude</code> 即 <code>{"mcpServers": {…}}</code>），以及 <code>skills</code>（放 <code>SKILL.md</code> 文件夹的目录）。每项都可省略，<code>~</code> 和 <code>$VAR</code> 会展开：<code>library: { instructions: "~/.toy/AGENTS.md", mcp: "~/.toy/mcp.json", mcpFormat: "claude", skills: "~/.toy/skills" }</code>。不写的话，资源库不会给它任何东西，给它某一项时会被拒绝，并说明插件该写哪个键。</td></tr>
     </table></div>
     <h3>connect</h3>
-    <p><code>connect(input)</code> 返回要在模型旁边一起写入的其他键，按键路径给出各自的值；可以是 <code>async</code>。它拿到 <code>gateway</code>（<code>url</code>、<code>v1</code>——以 <code>/v1</code> 结尾的地址——和 <code>key</code>，即这个 Agent 自己的 key，请求会按它的 id 计入用量）、<code>model</code>（<code>id</code>、<code>name</code>、<code>context</code>、<code>output</code>、<code>images</code>、<code>efforts</code>）、<code>models</code>（magpie 给这个 Agent 的所有模型，格式相同）和 <code>agent</code>（<code>id</code>、<code>config</code>）。没有 <code>connect</code> 的插件只写模型。</p>
+    <p><code>connect(input)</code> 返回要在模型旁边一起写入的其他键，按键路径给出各自的值；可以是 <code>async</code>。它拿到 <code>gateway</code>（<code>url</code>、<code>v1</code>——以 <code>/v1</code> 结尾的地址——和 <code>key</code>，即这个 Agent 自己的 key，请求会按它的 id 计入用量）、<code>model</code>（<code>id</code>、<code>name</code>、<code>context</code>、<code>output</code>、<code>images</code>、<code>efforts</code>）、<code>models</code>（magpie 给这个 Agent 的所有模型，格式相同）和 <code>agent</code>（<code>id</code>、<code>config</code>）。没有 <code>connect</code> 的插件只写模型。magpie 的模型有变化时会再调用一次 <code>connect</code>，它写的模型列表因此保持最新。</p>
     <h3>magpie 怎么用它</h3>
     <ul>
       <li><b>写入。</b>每个键原地修改，用户的注释和其他键都保留。第一次写之前，每个键原来的值会按原类型存起来（数字仍是数字）。</li>
@@ -718,6 +787,56 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
       <li><b>运行方式。</b>和<a href="#middleware">中间件</a>一样：在 magpie 自己的进程里用 moejs 运行，只能导入插件内的文件，没有 Node API，<code>console.log</code> 进 magpie 的日志。加载和 <code>connect</code> 各有一秒。模块加载失败或 <code>connect</code> 抛错的插件，会在插件页它那一行写明原因，并且什么都不写入。</li>
       <li><b>资源库。</b>写了 <code>library</code>，这个 Agent 就和内置 Agent 一样拿到资源库的内容：指令写在文件里 magpie 的两行标记之间，MCP 服务器和用户自己的写在同一个文件里（用户自己加的字段保留），技能以链接或副本放进文件夹。取消时只拿走 magpie 写的部分，文件原来的内容留在 magpie 的备份里。<code>mcpFormat</code> 不在列表中，或写了 <code>mcp</code> 却没写 <code>mcpFormat</code>，插件不会加载。</li>
       <li><b>声明方式。</b><code>package.json</code> 里写 <code>"magpie": { "agent": "./agent.js" }</code>，或者一个名为 <code>*.agent.js</code>（或 <code>.mjs</code>）的单文件。一个包可以同时是供应商、中间件和 Agent。插件市场里 Agent 条目写 <code>"kind": "agent"</code>，列在 <span class="ui">Agent</span> 下；社区包命名为 <code>@magpie-community/agent-&lt;name&gt;</code>。</li>
+    </ul>
+
+    <h2 id="pages"><a class="anchor" href="#pages">窗口里的页面</a></h2>
+    <p>插件可以在 magpie 的窗口里加一个自己的页面。插件打开后，侧边栏的<span class="ui">插件</span>分组里会出现它的标签，排在 magpie 自带页面的后面。页面就是插件文件夹里的 HTML、CSS 和 JavaScript，不需要 Bun，也不用构建。下面的例子显示今天的用量。</p>
+    <div class="code">
+      <span class="lang">package.json</span>
+      <button class="copy" data-copy="pg-pkg">复制</button>
+      <pre id="pg-pkg">{
+  <span class="s">"name"</span>: <span class="s">"magpie-usage-glance"</span>,
+  <span class="s">"version"</span>: <span class="s">"0.1.0"</span>,
+  <span class="s">"magpie"</span>: {
+    <span class="s">"page"</span>: { <span class="s">"title"</span>: <span class="s">"Usage glance"</span>, <span class="s">"file"</span>: <span class="s">"page/index.html"</span>, <span class="s">"icon"</span>: <span class="s">"page/icon.svg"</span> },
+    <span class="s">"permissions"</span>: [<span class="s">"usage:summary"</span>]
+  }
+}</pre>
+    </div>
+    <div class="code">
+      <span class="lang">page/index.html</span>
+      <button class="copy" data-copy="pg-html">复制</button>
+      <pre id="pg-html">&lt;!doctype html&gt;
+&lt;link rel="stylesheet" href="style.css"&gt;
+&lt;script src="_magpie/bridge.js"&gt;&lt;/script&gt;   <span class="c">&lt;!-- served beside every page --&gt;</span>
+&lt;script src="app.js" defer&gt;&lt;/script&gt;
+&lt;p id="calls"&gt;…&lt;/p&gt;</pre>
+    </div>
+    <div class="code">
+      <span class="lang">page/app.js</span>
+      <button class="copy" data-copy="pg-js">复制</button>
+      <pre id="pg-js"><span class="k">await</span> magpie.ready                                  <span class="c">// the window's theme, painted</span>
+<span class="k">const</span> s = <span class="k">await</span> magpie.read(<span class="s">"usage:summary"</span>, { period: <span class="s">"today"</span> })
+document.getElementById(<span class="s">"calls"</span>).textContent = `${s.calls} calls`
+<span class="k">const</span> opts = <span class="k">await</span> magpie.options.get()            <span class="c">// this plugin's own options</span>
+<span class="k">await</span> magpie.options.set({ ...opts, hideCost: <span class="k">true</span> })</pre>
+    </div>
+    <p>插件打开之前，插件页面就会在它的那一行显示这个页面和它能读什么。<code>page.file</code> 和 <code>page.icon</code> 是插件里面的路径；页面的文件就是 <code>file</code> 所在文件夹里的文件，指向外面的路径或链接不会被提供。一个包可以同时是页面、供应商、中间件或 agent。只有页面的插件不会启动插件宿主。</p>
+    <h3>页面能请求什么</h3>
+    <div class="table-wrap"><table>
+      <tr><th>字段 / 调用</th><th>给出什么</th></tr>
+      <tr><td><code>magpie.ready</code></td><td>窗口回应后得到窗口的主题。在那之前页面还没和 magpie 说过话；10 秒内没说的页面会显示为没有回应。</td></tr>
+      <tr><td><code>magpie.theme, magpie.onTheme(fn)</code></td><td><code>{ dark, lang, tokens }</code>。bridge 也会在 <code>&lt;html&gt;</code> 上设置 <code>data-theme</code>、<code>lang</code>、<code>color-scheme</code> 以及 <code>--magpie-bg</code>、<code>--magpie-fg</code>、<code>--magpie-accent</code> 等，每次变化都会再设一次。</td></tr>
+      <tr><td><code>magpie.options.get(), .set(o)</code></td><td>插件自己在 plugins.json 里的选项，不能是别的插件的。<code>set</code> 接受一个对象，返回保存后的选项，每秒最多一次。</td></tr>
+      <tr><td><code>magpie.read(name, params)</code></td><td><code>magpie.permissions</code> 声明过的读取。其他的一律拒绝，窗口拒绝一次，magpie 再拒绝一次。<code>usage:summary</code>（<code>period</code>：<code>today</code>、<code>7d</code> 或 <code>30d</code>）给出调用数、错误数、token 和费用，以及前 20 个模型；<code>providers:list</code> 给出每个供应商的 id 和名字。没有任何读取会给出密钥、账号、登录信息或请求内容。</td></tr>
+    </table></div>
+    <h3>页面不能做什么</h3>
+    <ul>
+      <li>页面运行在只允许脚本的沙盒框架里（<code>sandbox="allow-scripts"</code>，它的 <code>Content-Security-Policy</code> 里也一样），有自己独立的 origin。它碰不到窗口、magpie 的 cookie 和窗口的存储。</li>
+      <li>它的策略只允许加载自己的文件：<code>connect-src 'none'</code>，所以没有 <code>fetch</code>、WebSocket 或 beacon，也没有表单和框架。脚本必须是文件（<code>&lt;script src&gt;</code>），不能内联；内联样式和 <code>data:</code> 图片可以。</li>
+      <li>这种框架能发出的请求（<code>Origin: null</code>、框架请求、别的网站的请求），magpie 的 API 都会拒绝，所以就算没有策略，页面也进不了 API。它的文件从 <code>/_magpie/plugin/&lt;token&gt;/</code> 提供，token 每次 magpie 启动都会变。</li>
+      <li>页面仍然可以把自己跳转到别的网站，那个网站就接管了它的框架。所以读取只给不机密的东西：把页面能读到的都当作公开的。</li>
+      <li>页面没接住的错误会在它的位置显示<span class="ui">此页面已停止工作</span>和<span class="ui">重试</span>。它自己脚本的错误在页面里只显示为“Script error.”，详细内容看窗口的控制台。</li>
     </ul>
 
     <h2 id="pi"><a class="anchor" href="#pi">pi 扩展包</a></h2>

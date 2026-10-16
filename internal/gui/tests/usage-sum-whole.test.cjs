@@ -69,15 +69,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.setViewportSize({ width: w, height: 600 });
         const look = () => {
           const cost = document.querySelector("#usageCost"), b = cost.querySelector("b");
+          if (!b) return JSON.stringify({ text: cost.textContent }); // redrawn: not a sum yet
           const c = cost.getBoundingClientRect(), s = b.getBoundingClientRect();
           const got = { head: cost.parentElement.className, text: b.textContent, sum: [s.left, s.right], box: [c.left, c.right], wide: document.documentElement.scrollWidth, inner: innerWidth };
           const whole = got.text === "≈$0.001" && got.sum[1] <= got.box[1] + 0.5 && got.sum[0] >= got.box[0] - 0.5 && got.sum[1] <= got.inner && got.wide <= got.inner;
           return whole ? "" : JSON.stringify(got);
         };
         // the head is fitted a frame or two after a resize: given a few
-        // seconds to come whole, where a cut sum never does
+        // seconds to come whole, where a cut sum never does. A busy machine
+        // can hold the page's frames past that wait (#2142: "1220px: ",
+        // whole once looked at again), so what counts is how it is then.
         const whole = await page.waitForFunction(`!(${look})()`, null, { polling: "raf", timeout: 3000 }).then(() => true, () => false);
-        if (!whole) cut.push(`${w}px: ${await page.evaluate(look)}`);
+        const now = whole ? "" : await page.evaluate(look);
+        if (now) cut.push(`${w}px: ${now}`);
       }
       assert.deepEqual(cut, [], "the sum is cut, or the page scrolls sideways");
       assert.deepEqual(errors, []);

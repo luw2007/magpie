@@ -81,7 +81,7 @@ func TestSystemdInstallAndUninstall(t *testing.T) {
 	log, _ := fakes(t, "linux")
 	t.Setenv("HTTPS_PROXY", "http://me:p%ss@proxy:8080")
 	t.Setenv("CODEX_HOME", "/srv/codex")
-	if err := Install(); err != nil {
+	if err := Install(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "systemd", "user", "magpie.service")
@@ -107,14 +107,14 @@ func TestSystemdInstallAndUninstall(t *testing.T) {
 	}
 	// one left readable by others, written over, is the user's alone too
 	os.Chmod(file, 0o644)
-	if err := Install(); err != nil {
+	if err := Install(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := os.Stat(file); st.Mode().Perm() != 0o600 {
 		t.Errorf("the unit written again is %v", st.Mode().Perm())
 	}
 	os.Remove(log)
-	if err := Install(); err != nil {
+	if err := Install(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	got := strings.Join(calls(t, log), "\n")
@@ -171,7 +171,7 @@ func TestNotInstalled(t *testing.T) {
 // service stops at logout and how to keep it from boot.
 func TestSystemdStatus(t *testing.T) {
 	_, dir := fakes(t, "linux")
-	if err := Install(); err != nil {
+	if err := Install(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, "systemctl.show.out"), "ActiveState=active\nSubState=running\nMainPID=4242\nUnitFileState=enabled\nExecMainStatus=0\n")
@@ -207,7 +207,7 @@ func TestSystemdStatus(t *testing.T) {
 func TestSystemdUnreachable(t *testing.T) {
 	_, dir := fakes(t, "linux")
 	write(t, filepath.Join(dir, "systemctl.fail"), "Failed to connect to bus: No medium found")
-	err := Install()
+	err := Install(Options{})
 	if err == nil || !strings.Contains(err.Error(), "XDG_RUNTIME_DIR") {
 		t.Errorf("got %v, want the bus advice", err)
 	}
@@ -215,7 +215,7 @@ func TestSystemdUnreachable(t *testing.T) {
 		t.Errorf("a unit was written: %v", err)
 	}
 	t.Setenv("PATH", t.TempDir())
-	if err := Install(); err == nil || !strings.Contains(err.Error(), "no systemd") {
+	if err := Install(Options{}); err == nil || !strings.Contains(err.Error(), "no systemd") {
 		t.Errorf("got %v, want no systemd", err)
 	}
 }
@@ -227,7 +227,7 @@ func TestRefusedBesideAutostart(t *testing.T) {
 		t.Run(os_, func(t *testing.T) {
 			log, _ := fakes(t, os_)
 			autostartEnabled = func() bool { return true }
-			if err := Install(); err == nil || !strings.Contains(err.Error(), "magpie autostart off") {
+			if err := Install(Options{}); err == nil || !strings.Contains(err.Error(), "magpie autostart off") {
 				t.Errorf("got %v", err)
 			}
 			if c := calls(t, log); c[0] != "" {
@@ -245,7 +245,7 @@ func TestLaunchdInstall(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://a&b<c>@proxy")
 	// not loaded yet
 	write(t, filepath.Join(dir, "launchctl.print.fail"), "Could not find service")
-	if err := Install(); err != nil {
+	if err := Install(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", "com.yetone.magpie.serve.plist")
@@ -284,7 +284,7 @@ func TestLaunchdInstall(t *testing.T) {
 	os.Remove(filepath.Join(dir, "launchctl.print.fail"))
 	write(t, filepath.Join(dir, "launchctl.print.out"), "gui/501/com.yetone.magpie.serve = {\n\tactive count = 1\n\tstate = running\n\tprogram = /opt/magpie\n\tpid = 777\n\tlast exit code = (never exited)\n\tendpoints = {\n\t\tstate = active\n\t}\n}\n")
 	os.Remove(log)
-	if err := Install(); err != nil {
+	if err := Install(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Restart(); err != nil {
@@ -323,7 +323,7 @@ func TestUnsupported(t *testing.T) {
 	t.Cleanup(func() { goos = prev })
 	for os_, want := range map[string]string{"windows": "magpie autostart on", "android": "Termux:Boot"} {
 		goos = os_
-		if err := Install(); !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), want) {
+		if err := Install(Options{}); !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v", os_, err)
 		}
 	}
@@ -401,7 +401,7 @@ func TestInstallFindsNvmNode(t *testing.T) {
 	if Node() != "" {
 		t.Fatal("the test's PATH has a node already")
 	}
-	if err := Install(); err != nil {
+	if err := Install(Options{}); err != nil {
 		t.Fatal(err, calls(t, log))
 	}
 	b, err := os.ReadFile(systemd{}.file())
@@ -427,3 +427,115 @@ func TestInstallFindsNvmNode(t *testing.T) {
 }
 
 var realWiden = widenPath
+
+// Installed with the page, the service runs `magpie serve --web=<addr>`
+// with the page's key in its environment, on both systems, and Web reads
+// both back from the service's own file: the key stays the same across
+// restarts and is what `magpie daemon status` prints the link with
+// (HuanCheng on Discord). Installed again without, both are gone, and a
+// MAGPIE_WEB_KEY in the shell is never carried into a service with no page.
+func TestInstallWithWeb(t *testing.T) {
+	const key = "0123456789abcdef0123456789abcdef"
+	for _, c := range []struct {
+		goos       string
+		file       func() string
+		arg, keyIn string
+	}{
+		{"linux", func() string {
+			return filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "systemd", "user", "magpie.service")
+		}, "ExecStart=\"/opt/my magpie/magpie%%1\" serve \"--web=0.0.0.0:3430\"\n", "Environment=\"MAGPIE_WEB_KEY=" + key + "\"\n"},
+		{"darwin", func() string {
+			return filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", "com.yetone.magpie.serve.plist")
+		}, "<array><string>/opt/my magpie/magpie%1</string><string>serve</string><string>--web=0.0.0.0:3430</string></array>", "<key>MAGPIE_WEB_KEY</key><string>" + key + "</string>"},
+	} {
+		t.Run(c.goos, func(t *testing.T) {
+			fakes(t, c.goos)
+			t.Setenv("MAGPIE_WEB_KEY", "from-the-shell-0123456789")
+			if err := Install(Options{Web: "0.0.0.0:3430", Key: key}); err != nil {
+				t.Fatal(err)
+			}
+			b, err := os.ReadFile(c.file())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{c.arg, c.keyIn} {
+				if !strings.Contains(string(b), want) {
+					t.Errorf("the service has no %q:\n%s", want, b)
+				}
+			}
+			if strings.Contains(string(b), "from-the-shell") {
+				t.Errorf("the shell's key was carried beside the page's:\n%s", b)
+			}
+			if c.goos == "darwin" && runtime.GOOS == "darwin" {
+				if out, err := exec.Command("/usr/bin/plutil", "-lint", c.file()).CombinedOutput(); err != nil {
+					t.Errorf("plutil: %s", out)
+				}
+			}
+			if a, k := Web(); a != "0.0.0.0:3430" || k != key {
+				t.Errorf("Web: %q %q", a, k)
+			}
+			if err := Install(Options{}); err != nil {
+				t.Fatal(err)
+			}
+			b, _ = os.ReadFile(c.file())
+			if strings.Contains(string(b), "--web") || strings.Contains(string(b), "MAGPIE_WEB_KEY") {
+				t.Errorf("installed without the page, the service still has it:\n%s", b)
+			}
+			if a, k := Web(); a != "" || k != "" {
+				t.Errorf("Web without the page: %q %q", a, k)
+			}
+			if err := Install(Options{Web: "127.0.0.1:3430"}); err == nil {
+				t.Error("a page with no key was installed")
+			}
+		})
+	}
+}
+
+// Web is "" with no service installed.
+func TestWebNotInstalled(t *testing.T) {
+	fakes(t, "linux")
+	if a, k := Web(); a != "" || k != "" {
+		t.Errorf("%q %q", a, k)
+	}
+}
+
+// install --tls-cert … --tls-key … writes the pair into the service, and
+// TLS reads it back through the unit's and the plist's quoting, so the
+// service installed again keeps it (paths with a space, % and & here).
+func TestInstallCarriesTLS(t *testing.T) {
+	const cert, key = `/etc/my certs/full%chain&"1".pem`, "/etc/my certs/priv%key.pem"
+	for _, c := range []struct {
+		goos string
+		in   string
+	}{
+		{"linux", `Environment="MAGPIE_TLS_CERT=/etc/my certs/full%%chain&\"1\".pem"`},
+		{"darwin", "<key>MAGPIE_TLS_CERT</key><string>/etc/my certs/full%chain&amp;&#34;1&#34;.pem</string>"},
+	} {
+		t.Run(c.goos, func(t *testing.T) {
+			fakes(t, c.goos)
+			if a, b := TLS(); a != "" || b != "" {
+				t.Errorf("TLS with no service: %q %q", a, b)
+			}
+			t.Setenv("MAGPIE_TLS_CERT", cert)
+			t.Setenv("MAGPIE_TLS_KEY", key)
+			if err := Install(Options{}); err != nil {
+				t.Fatal(err)
+			}
+			st, _ := Get()
+			b, _ := os.ReadFile(st.File)
+			if !strings.Contains(string(b), c.in) {
+				t.Errorf("the service has no %q:\n%s", c.in, b)
+			}
+			if a, k := TLS(); a != cert || k != key {
+				t.Errorf("TLS: %q %q", a, k)
+			}
+			t.Setenv("MAGPIE_TLS_KEY", "")
+			if err := Install(Options{}); err != nil {
+				t.Fatal(err)
+			}
+			if a, k := TLS(); a != "" || k != "" {
+				t.Errorf("half a pair read back: %q %q", a, k)
+			}
+		})
+	}
+}

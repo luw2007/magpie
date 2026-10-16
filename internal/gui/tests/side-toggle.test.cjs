@@ -163,9 +163,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.ok(p.anims.includes("::view-transition-old(side)"), `the sidebar slides away: ${p.anims}`);
       assert.ok(p.anims.includes("::view-transition-group(nav-usage)"), "each tab flies to the header");
       assert.ok(p.anims.includes("::view-transition-group(page)"), "the page moves over");
-      // on the sidebar's spring
-      const ease = await page.evaluate(() => getComputedStyle(document.documentElement, "::view-transition-group(page)").animationTimingFunction);
-      assert.match(ease, /cubic-bezier\(0?\.32, 0?\.72, 0, 1\)/);
+      // off from rest and settling, in a third of a second, as a Mac's
+      // sidebar: a curve leaving at speed made a frame the webview drops at
+      // the start a visible jerk (wangye1644294 on X), and every piece, the
+      // sidebar's own slide too, keeps to the one timing
+      const timing = await page.evaluate(() => document.getAnimations()
+        .filter((a) => /^::view-transition-(group\((page|nav-usage)\)|old\(side\))$/.test(a.effect?.pseudoElement || ""))
+        .map((a) => { const t = a.effect.getComputedTiming(); return { el: a.effect.pseudoElement, duration: t.duration, easing: t.easing }; }));
+      assert.equal(timing.length, 3, JSON.stringify(timing));
+      for (const { el, duration, easing } of timing) {
+        assert.ok(duration >= 250 && duration <= 350, `${el} lasts ${duration}ms`);
+        const k = await page.evaluate((el) => getComputedStyle(document.documentElement, el).animationTimingFunction, el);
+        const [x1, y1] = (k.match(/cubic-bezier\(([^)]*)\)/)?.[1] || "").split(",").map(Number);
+        assert.ok(x1 > 0 && y1 === 0, `${el} sets off from rest: ${k} (${easing})`);
+      }
       await page.waitForFunction(() => !document.documentElement.classList.contains("nav-morph"));
       assert.equal(await side(page), false);
       await headerFits(page);

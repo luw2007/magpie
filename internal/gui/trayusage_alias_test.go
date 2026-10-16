@@ -16,11 +16,11 @@ func TestTrayNamesTheAccountByItsAlias(t *testing.T) {
 	at := now.Add(2 * time.Hour)
 	q := provider.SubscriptionQuota{Provider: "zcode-plugin", Name: "ZCode", User: "31****36@qq.com", Alias: "某某·GLM高级版",
 		Windows: []provider.QuotaWindow{{Name: "5 hours", Used: 12, ResetsAt: &at, Span: 5 * time.Hour}}}
-	if _, tip := trayUsageText(q, now, false); !strings.HasPrefix(tip, "ZCode · 某某·GLM高级版\n") {
+	if _, tip := trayUsageText(q, now, false, false); !strings.HasPrefix(tip, "ZCode · 某某·GLM高级版\n") {
 		t.Fatalf("tip %q", tip)
 	}
 	q.Error = "BigModel API keys: not JSON"
-	if _, tip := trayUsageText(q, now, false); !strings.HasPrefix(tip, "ZCode · 某某·GLM高级版: ") {
+	if _, tip := trayUsageText(q, now, false, false); !strings.HasPrefix(tip, "ZCode · 某某·GLM高级版: ") {
 		t.Fatalf("error tip %q", tip)
 	}
 	other := q
@@ -31,7 +31,7 @@ func TestTrayNamesTheAccountByItsAlias(t *testing.T) {
 	if !ok {
 		t.Fatal("no card")
 	}
-	if _, tip := trayUsageText(c, now, false); !strings.HasPrefix(tip, "ZCode · 某某·GLM高级版: ") {
+	if _, tip := trayUsageText(c, now, false, false); !strings.HasPrefix(tip, "ZCode · 某某·GLM高级版: ") {
 		t.Fatalf("in use tip %q", tip)
 	}
 }

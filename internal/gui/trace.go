@@ -178,7 +178,9 @@ func argView(s string) string { return url.QueryEscape(s) }
 func quotaView(id string) string {
 	view := "usage&tab=usage"
 	if p, ok := trayTotalPeriod(id); ok {
-		return view + "&period=" + string(p) // magpie's own total: the Overview at its period
+		// magpie's own total: the Requests tab at its period, which sums
+		// what the total does (trayTotalSum)
+		return "usage&tab=requests&period=" + string(p)
 	}
 	provider, _, hasAccount := strings.Cut(id, "|")
 	if mainName.MatchString(provider) {

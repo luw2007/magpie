@@ -9,6 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -94,7 +95,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // Settings: the currency row, its rate in the tooltip
         await page.locator("#prefs").click();
-        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
+        await openPart(page, "usage");
         await page.locator("#currencySegs .opt").first().waitFor();
         const segs = page.locator("#currencySegs .opt");
         assert.equal(await segs.count(), 2);
@@ -141,7 +142,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // and back to Settings, ¥ CNY is still picked after a reload
         await page.reload();
         await page.locator("#prefs").click();
-        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
+        await openPart(page, "usage");
         await page.locator("#currencySegs .opt").first().waitFor();
         assert.equal(await page.locator('#currencySegs .opt', { hasText: cny }).evaluate((b) => b.classList.contains("on")), true);
 
@@ -190,7 +191,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // Settings agrees
         await page.locator("#prefs").click();
-        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
+        await openPart(page, "usage");
         await page.locator("#currencySegs .opt").first().waitFor();
         assert.equal(await page.locator("#currencySegs .opt", { hasText: cny }).evaluate((b) => b.classList.contains("on")), true);
 

@@ -1397,7 +1397,7 @@ func TestVertexSignOnlyAtItsAddress(t *testing.T) {
 
 // A Vertex AI provider's test asks generateContent at its project, whole
 // rather than streamed, for 16 tokens after as little thinking as the
-// model takes: Gemini 3 at low, 2.5 Pro its least, 128 tokens, and 2.5's
+// model takes: Gemini 3 and later at low (#2155: Gemini 4 Argon), 2.5 Pro its least, 128 tokens, and 2.5's
 // Flash models none. Each of its models can be tested, and both tests reach
 // Vertex AI signed with the minted token.
 func TestVertexTestRequest(t *testing.T) {
@@ -1411,12 +1411,14 @@ func TestVertexTestRequest(t *testing.T) {
 	for model, think := range map[string]map[string]any{
 		"gemini-3.5-flash":       low,
 		"gemini-3.1-pro-preview": low,
+		"gemini-4-argon":         low,
 		"gemini-3-flash-preview": low,
 		"gemini-2.5-pro":         budget(128),
 		"Gemini-2.5-Pro":         budget(128),
 		"gemini-2.5-flash":       budget(0),
 		"gemini-2.5-flash-lite":  budget(0),
 		"gemini-2.0-flash-001":   nil,
+		"gemini-flash-latest":    nil,
 	} {
 		u, body := vertexTest(q, model)
 		if u != base+"/publishers/google/models/"+model+":generateContent" {

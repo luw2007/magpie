@@ -1,6 +1,7 @@
 package pluginrt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -8,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -328,6 +331,43 @@ func Refresh() ([]Composed, error) {
 	}
 	def.Reconcile(on, config)
 	return cs, nil
+}
+
+// KeepFresh refreshes the process's runtime (Refresh) as it starts and
+// whenever plugins.yml, or one of also (a file an InUse reads), changes,
+// until ctx ends. The process serving the gateway runs it: the window or
+// `magpie plugin builtin` in another process may turn a plugin on or off,
+// and what a plugin registers with the gateway (an observer) follows
+// without a restart.
+func KeepFresh(ctx context.Context, every time.Duration, also ...string) {
+	files := append([]string{Path()}, also...)
+	stamp := func() string {
+		var b strings.Builder
+		for _, p := range files {
+			if fi, err := os.Stat(p); err == nil {
+				fmt.Fprintf(&b, "%d/%d;", fi.ModTime().UnixNano(), fi.Size())
+			} else {
+				b.WriteString("-;")
+			}
+		}
+		return b.String()
+	}
+	last := ""
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		if now := stamp(); now != last {
+			last = now
+			if _, err := Refresh(); err != nil {
+				log.Printf("plugins: %v", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func allOn(ms []Manifest) map[string]bool {

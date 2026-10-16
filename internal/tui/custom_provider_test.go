@@ -106,3 +106,70 @@ func TestTUIAddsACustomProvider(t *testing.T) {
 		}
 	}
 }
+
+// w on a provider of the user's own asks each base URL it has, the one
+// now typed in, as magpie provider set <id> url=… changes it
+// (luluxiu_1_4392 on Discord: on Linux, the TUI had no way to): enter
+// alone keeps one, a URL that isn't one is refused, and the others stay.
+func TestTUIEditsACustomProvidersBaseURL(t *testing.T) {
+	home(t)
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Key: "sk-r", Models: []string{"m"},
+		Chat: "https://old.example.com/v1", Anthropic: "https://old.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	m := press(t, model{w: 140, h: 40}, "2")
+	at := func(m model, id string) model {
+		t.Helper()
+		m.reloadProviders()
+		i := slices.IndexFunc(m.provs, func(p provider.Provider) bool { return p.ID == id })
+		if i < 0 {
+			t.Fatalf("no provider %s", id)
+		}
+		m.prow = i
+		return m
+	}
+
+	// one base URL: asked, typed in as it is now, and changed
+	m = at(m, "a")
+	m = press(t, m, "w")
+	if m.mode != modeAsk || m.ask.input.Value() != "http://127.0.0.1:1/v1" {
+		t.Fatalf("w opened %q (mode %v), not the base URL now", m.ask.input.Value(), m.mode)
+	}
+	m = press(t, m, "ctrl+u")
+	m = typeIn(m, "https://new.example.com/v1/")
+	m = press(t, m, "enter")
+	wantFlash(t, m, true, "A base URL https://new.example.com/v1")
+	if p, _ := provider.Find("a"); p.Chat != "https://new.example.com/v1" || p.Key != "ka" || len(p.Models) != 2 {
+		t.Fatalf("a after w: %+v", p)
+	}
+
+	// not an address: refused, nothing saved
+	m = press(t, m, "w", "ctrl+u")
+	m = typeIn(m, "new.example.com")
+	m = press(t, m, "enter")
+	wantFlash(t, m, false, "http:// or https://")
+	if p, _ := provider.Find("a"); p.Chat != "https://new.example.com/v1" {
+		t.Fatalf("a refused URL left %q", p.Chat)
+	}
+
+	// two: each asked in turn, the one kept as it was left alone
+	m = at(m, "relay")
+	m = press(t, m, "w")
+	if m.ask.input.Value() != "https://old.example.com/v1" || !strings.Contains(m.ask.hint, "Chat Completions") {
+		t.Fatalf("first asked %q (%s)", m.ask.input.Value(), m.ask.hint)
+	}
+	m = press(t, m, "enter")
+	if m.mode != modeAsk || m.ask.input.Value() != "https://old.example.com" || !strings.Contains(m.ask.hint, "Anthropic") {
+		t.Fatalf("second asked %q (mode %v, %s)", m.ask.input.Value(), m.mode, m.ask.hint)
+	}
+	m = press(t, m, "ctrl+u")
+	m = typeIn(m, "https://claude.example.com")
+	m = press(t, m, "enter")
+	wantFlash(t, m, true, "Relay base URL https://claude.example.com")
+	if p, _ := provider.Find("relay"); p.Chat != "https://old.example.com/v1" || p.Anthropic != "https://claude.example.com" || p.Responses != "" {
+		t.Fatalf("relay after w: chat %q anthropic %q responses %q", p.Chat, p.Anthropic, p.Responses)
+	}
+	// both left as they are
+	m = press(t, m, "w", "enter", "enter")
+	wantFlash(t, m, true, "Relay base URL unchanged")
+}

@@ -39,7 +39,10 @@ import (
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/library"
+	"github.com/yetone/magpie/internal/mcpauth"
+	"github.com/yetone/magpie/internal/middleware"
 	"github.com/yetone/magpie/internal/netproxy"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/profile"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/redact"
@@ -145,8 +148,9 @@ type Windows interface {
 	// ShowMain brings the window up, on the named tab when view is set.
 	ShowMain(view string)
 	Quit()
-	// OpenURL hands a link to the system browser.
-	OpenURL(url string)
+	// OpenURL hands a link to the system browser. The error is the browser's
+	// not starting, which a sign-in shows with its link (#2043).
+	OpenURL(url string) error
 	// OpenFolder shows a folder in the system file manager.
 	OpenFolder(path string) error
 	// ChooseFolder asks for a folder in the system's picker: "" when the
@@ -187,9 +191,9 @@ type agentJSON struct {
 	// Wired: magpie is in its config, which its menu's Disconnect takes out
 	Wired bool `json:"wired,omitempty"`
 	// Import: an app that takes magpie by its own link (Cindy), and
-	// whether it has magpie already
+	// whether it has magpie already; omitted when the app has no status reader
 	Import string `json:"import,omitempty"`
-	Added  bool   `json:"added,omitempty"`
+	Added  *bool  `json:"added,omitempty"`
 	// Launch: the command that starts an agent taking the gateway only
 	// from its environment (agy) on magpie, to copy
 	Launch string `json:"launch,omitempty"`
@@ -217,7 +221,8 @@ type agentJSON struct {
 	// account failover alone (agent.Agent.FailingOver, #1385)
 	Failover bool `json:"failover,omitempty"`
 	// CLIMissing: its settings are here, its CLI isn't (#843), which
-	// the row says, and Install another agent offers it again
+	// the row says with none of its settings offered (#2177), and Install
+	// another agent offers it again where magpie knows how
 	CLIMissing bool               `json:"cliMissing,omitempty"`
 	Native     *agent.NativeState `json:"native,omitempty"`
 }
@@ -346,6 +351,9 @@ type settingsJSON struct {
 	// Builtins are the built-in plugins: each one's switch, whether it
 	// runs and what of it is in use (builtins.go)
 	Builtins []builtinJSON `json:"builtins"`
+	// JSRoutings are the routings JS gateway plugins serve now
+	// ("<plugin>/<name>"), for the routing pickers
+	JSRoutings []middleware.Routing `json:"jsRoutings"`
 	// PublicURL is MAGPIE_PUBLIC_URL while other machines are let in
 	// (shared, or MAGPIE_ADDR on the network): where they reach the
 	// gateway, shown beside the local address agents here are pointed at
@@ -487,6 +495,14 @@ type searchAPIJSON struct {
 	Key    string `json:"key,omitempty"` // masked
 	URL    string `json:"url,omitempty"`
 	Ready  bool   `json:"ready"`
+	// Keys is how many keys it has, Pick how a search picks among them
+	// (provider.SearchPick*), and Quota whether what each has left can be
+	// read (gateway.SearchQuotas)
+	Keys  int    `json:"keys,omitempty"`
+	Pick  string `json:"pick,omitempty"`
+	Quota bool   `json:"quota,omitempty"`
+	// Off: switched off, kept but never asked (#2286)
+	Off bool `json:"off,omitempty"`
 }
 
 // searchChoiceJSON is a provider that can search for a model that can't,
@@ -523,7 +539,7 @@ func searchState(s *settingsJSON) {
 	}
 	s.SearchAPIs, s.SearchVendors = []searchAPIJSON{}, []searchVendorJSON{}
 	for _, a := range provider.StoredSearchAPIs() {
-		j := searchAPIJSON{Vendor: a.Vendor, Name: a.Name(), URL: a.URL, Ready: a.Ready()}
+		j := searchAPIJSON{Vendor: a.Vendor, Name: a.Name(), URL: a.URL, Ready: a.Ready(), Keys: len(a.Keys()), Pick: a.Pick, Quota: gateway.CanReadSearchQuota(a), Off: a.Off}
 		if a.Key != "" {
 			j.Key = a.MaskedKey()
 		}
@@ -571,6 +587,7 @@ func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
 	s.Builtins = builtinsState()
+	s.JSRoutings = middleware.Routings()
 	s.OnNetwork = gateway.OnNetwork()
 	if list, env := gateway.AllowIPs(); env {
 		s.AllowIPsEnv, s.AllowIPsFromEnv = os.Getenv(gateway.AllowIPsEnv), list
@@ -779,6 +796,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", devPage(revalidated(http.FileServer(http.FS(staticFS())))))
 	devRoutes(mux)
+	pluginPageRoutes(mux)
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -786,6 +804,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// and the text size, which the Mac's header measures against the
 		// traffic lights
 		boot := map[string]any{"lang": s.Lang, "theme": s.Theme, "textSize": s.TextSize, "pageWidth": s.PageWidth, "web": isWeb(w)}
+		if s.Colorblind {
+			boot["colorblind"] = true
+		}
 		if !isWeb(w) {
 			boot["uiFont"], boot["codeFont"] = s.UIFont, s.CodeFont
 		}
@@ -855,12 +876,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			http.Error(rw, "unknown field", http.StatusBadRequest)
 			return
 		}
+		wired := a.Wired()
 		if err := a.Pick(f.Key, strings.TrimSpace(in.Value)); err != nil {
 			fail(rw, err)
 			return
 		}
 		s := state()
-		if a.Notice != nil {
+		if a.Notice != nil && (!f.Live || !wired && a.Wired()) {
 			s.Notice = a.Notice()
 		}
 		writeJSON(rw, s)
@@ -1146,6 +1168,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if _, sent := fields["refusalRetries"]; !sent {
 			in.RefusalRetries = cur.RefusalRetries
 		}
+		// nor whether updates download by themselves (#2296)
+		if _, sent := fields["noAutoDownload"]; !sent {
+			in.NoAutoDownload = cur.NoAutoDownload
+		}
 		in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
 		in.Window, in.WindowMaximised = cur.Window, cur.WindowMaximised // the window's own, as it was last resized
 		// and what other pages keep here: which models an agent is shown, and
@@ -1162,6 +1188,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.FastPicks = cur.FastPicks             // switched in the agents' pickers (#954)
 		in.AgentEfforts = cur.AgentEfforts       // picked in an agent's row (#1003)
 		in.PluginCheckins = cur.PluginCheckins   // set on its own (plugin-checkin below)
+		in.PluginOptions = cur.PluginOptions     // set on its own (plugin-option below)
 		in.CheckinOff = cur.CheckinOff           // set on its own (checkin-account below)
 		settings.CarryPerModel(&in, &cur)
 		in.LAN, in.LANKey = cur.LAN, cur.LANKey
@@ -1201,11 +1228,15 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.CodexPredictions = cur.CodexPredictions   // and codex-predictions
 		// and so is the model Codex's auto-review runs on (codex-auto-review)
 		in.CodexAutoReview = cur.CodexAutoReview
-		// and the model Codex's subagents are put on, set in Codex's row
+		// and the models Codex's and Desktop's subagents are put on, set
+		// in their Agents rows
 		in.CodexSubagentModel = cur.CodexSubagentModel
+		in.DesktopSubagentModel = cur.DesktopSubagentModel
+		in.DesktopSubagentEffort = cur.DesktopSubagentEffort
 		in.ChinaMirror = cur.ChinaMirror // the Plugins page's, set on its own
 		// which Codex accounts spend a reset by themselves, set on the Usage card
 		in.CodexAutoReset = cur.CodexAutoReset
+		in.CodexAutoResetOnly = cur.CodexAutoResetOnly // and at which of the two times
 		// and which of them spend their credits, set there too
 		in.CodexNoCredits = cur.CodexNoCredits
 		// and each Codex account's own daily warm-up (codex-warm-at below)
@@ -1255,9 +1286,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			onDock(in)
 		}
 		// the cards the menu bar shows, any of them (TrayUsage is only the first),
-		// how often, with their logos or not, and beside the bird or not
+		// how often, with their logos or not, beside the bird or not, and
+		// with their Pace numbers or not, with magpie's totals' cost or not
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
-			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird) && onTrayUsage != nil {
+			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayPace != cur.TrayPace ||
+			in.TrayNoCost != cur.TrayNoCost) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1527,6 +1560,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// Settings › Proxy's Test (#2076): the address Cloudflare sees a request
+	// from through the proxy in force, and without it
+	mux.HandleFunc("POST /api/proxy/check", handleProxyCheck)
 	mux.HandleFunc("POST /api/settings/codex-titles", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Model string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -1588,10 +1624,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// a Codex account's auto-use of its resets: at both times, or with When
+	// ("week" or "expiring") at that one alone, the other kept (#2078)
 	mux.HandleFunc("POST /api/settings/codex-auto-reset", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			User string
 			On   bool
+			When string
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -1601,7 +1640,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, fmt.Errorf("which Codex account?"))
 			return
 		}
-		if err := provider.SetCodexAutoReset(in.User, in.On); err != nil {
+		set := func() error { return provider.SetCodexAutoReset(in.User, in.On) }
+		if in.When != "" {
+			set = func() error { return provider.SetCodexAutoResetCase(in.User, in.When, in.On) }
+		}
+		if err := set(); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1713,6 +1756,43 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		writeJSON(rw, settingsState())
+	})
+	// and a switch a plugin declares for its provider (auth.options, #2038),
+	// by the plugin's own provider id, handed to the running host at once
+	mux.HandleFunc("POST /api/settings/plugin-option", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Provider string
+			Key      string
+			On       bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if in.Provider == "" || !pluginOptionKey.MatchString(in.Key) {
+			fail(rw, errors.New("no provider or no such option"))
+			return
+		}
+		s := settings.Load()
+		s.PluginOptions = maps.Clone(s.PluginOptions)
+		if s.PluginOptions == nil {
+			s.PluginOptions = map[string]map[string]bool{}
+		}
+		own := maps.Clone(s.PluginOptions[in.Provider])
+		if own == nil {
+			own = map[string]bool{}
+		}
+		own[in.Key] = in.On
+		s.PluginOptions[in.Provider] = own
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		// best effort: a host that misses it reads them when it next starts
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		_ = plugin.SetProviderOptions(ctx)
+		cancel()
 		writeJSON(rw, settingsState())
 	})
 	// and one account's daily check-in, whichever vendor's (#1902): off
@@ -2039,21 +2119,29 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
-	// a web search API added, given a new key or address, or taken away
+	// a web search API added, given a new key or address, switched on or
+	// off, or taken away; or the APIs put in a new order (#2286)
 	mux.HandleFunc("POST /api/settings/search-api", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Vendor, Key, URL string
-			Remove           bool
+			Vendor, Key, URL, Pick string
+			Remove                 bool
+			On                     *bool
+			Arrange                []string
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
 		var err error
-		if in.Remove {
+		switch {
+		case in.Arrange != nil:
+			err = provider.ArrangeSearchAPIs(in.Arrange)
+		case in.Remove:
 			err = provider.RemoveSearchAPI(in.Vendor)
-		} else {
-			err = provider.SetSearchAPI(provider.SearchAPI{Vendor: in.Vendor, Key: in.Key, URL: in.URL})
+		case in.On != nil:
+			err = provider.SwitchSearchAPI(in.Vendor, *in.On)
+		default:
+			err = provider.SetSearchAPI(provider.SearchAPI{Vendor: in.Vendor, Key: in.Key, URL: in.URL, Pick: in.Pick})
 		}
 		if err != nil {
 			fail(rw, err)
@@ -2072,6 +2160,29 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		for _, a := range provider.StoredSearchAPIs() {
 			if a.Vendor == in.Vendor {
 				writeJSON(rw, map[string]string{"key": a.Key})
+				return
+			}
+		}
+		fail(rw, fmt.Errorf("no search API %q", in.Vendor))
+	})
+	// what each of a search API's keys has used of its limit (SlouchyQuill
+	// on Discord), the keys masked; fresh reads again what was read lately
+	mux.HandleFunc("POST /api/settings/search-quota", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Vendor string
+			Fresh  bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		for _, a := range provider.StoredSearchAPIs() {
+			if a.Vendor == in.Vendor {
+				qs := gateway.SearchQuotas(r.Context(), a, in.Fresh)
+				if qs == nil {
+					qs = []gateway.SearchKeyQuota{}
+				}
+				writeJSON(rw, map[string]any{"keys": qs})
 				return
 			}
 		}
@@ -2112,7 +2223,19 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	})
 	agentModelsAPI(mux)
 	devListen(mux)
-	return held(mux)
+	return noFramedAPI(held(mux))
+}
+
+// noFramedAPI turns away a request for /api that no page of the window's
+// own makes (apiFramed): a plugin's page in its frame among them.
+func noFramedAPI(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if apiFramed(r) {
+			http.Error(rw, "magpie's API answers magpie's own window only", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(rw, r)
+	})
 }
 
 // held has a page's reads share one build of the catalog, which every row
@@ -2185,7 +2308,11 @@ func state() stateJSON {
 			aj.Failover = a.FailingOver != nil && a.FailingOver()
 		}
 		if a.Import != nil {
-			aj.Import, aj.Added = a.Import(), a.Added != nil && a.Added()
+			aj.Import = a.Import()
+			if a.Added != nil {
+				added := a.Added()
+				aj.Added = &added
+			}
 		}
 		if a.Launch != nil {
 			aj.Launch = a.Launch()
@@ -2211,6 +2338,32 @@ func state() stateJSON {
 	return s
 }
 
+// signInOpened is a sign-in as it starts, with why its page didn't open in
+// the browser: the window then shows the link to open by hand, instead of
+// waiting on a page that never opened until the sign-in times out (#2043).
+type signInOpened struct {
+	provider.SignInState
+	OpenError string `json:"openError,omitempty"`
+}
+
+// mcpSignInOpened is signInOpened for a sign-in to an MCP server.
+type mcpSignInOpened struct {
+	mcpauth.State
+	OpenError string `json:"openError,omitempty"`
+}
+
+// openError opens url in the browser, and says why it didn't open: "" when
+// it did, or when there is no url.
+func openError(w Windows, url string) string {
+	if url == "" {
+		return ""
+	}
+	if err := w.OpenURL(url); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 func writeJSON(rw http.ResponseWriter, v any) {
 	rw.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(rw).Encode(v)
@@ -2229,6 +2382,12 @@ func fail(rw http.ResponseWriter, err error) {
 	if errors.As(err, &noModels) {
 		out["code"] = "no_models"
 		out["agent"] = noModels.Agent
+	}
+	// magpie has models, and none is left in the agent's lists (#1989)
+	var allHidden *agent.AllHiddenError
+	if errors.As(err, &allHidden) {
+		out["code"] = "all_hidden"
+		out["agent"] = allHidden.Agent
 	}
 	var signedIn *provider.SignedInError
 	if errors.As(err, &signedIn) {

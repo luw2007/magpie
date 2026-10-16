@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -93,7 +94,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         await page.goto("http://magpie.test/?view=usage");
         await page.locator("#prefs").click();
-        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
+        await openPart(page, "usage");
         const pill = page.locator("#trayUsagePick button");
         await pill.waitFor();
         await page.waitForFunction(() => document.querySelector("#trayUsagePick button").textContent.trim() === "Copilot");
@@ -204,7 +205,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       await page.goto("http://magpie.test/?view=usage");
       await page.locator("#prefs").click();
-      await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
+      await openPart(page, "usage");
       const pill = page.locator("#trayUsagePick button");
       await pill.waitFor();
       await pill.evaluate((b) => b.click());

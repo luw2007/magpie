@@ -277,6 +277,9 @@ let userConfig = {}
 // prefer is the plugin the user picked for a provider id more than one
 // plugin signs in to: id → its spec (plugins.json's prefer)
 let prefer = {}
+// chosen are the user's own values of the plugins' options (auth.options),
+// provider id → key → true/false (settings.json's pluginOptions, #2038)
+let chosen = {}
 const hooks = [] // {spec, hooks}
 const loaded = [] // {spec, id, error}
 const loaders = new Map() // account → options the auth loader returned
@@ -1135,6 +1138,10 @@ async function loadPlugins(list) {
     experimental_workspace: { register() {} },
     serverUrl: new URL("http://127.0.0.1:4096"),
     $: Bun.$,
+    // magpie's own (OpenCode has none): the plugin's options as the user
+    // set them in magpie, read when wanted, so a change reaches the
+    // plugin without a restart (#2038)
+    magpie: { option: optionValue, options: optionValues },
   }
   // pi's packages and extensions are loaded as pi loads them (pi.js)
   let pi
@@ -1200,13 +1207,172 @@ const signsIn = (spec) => [...new Set(hooks.filter((h) => h.spec === spec && h.h
 // withProviders is a loaded plugin as init tells magpie of it: the provider
 // ids it signs in to, and for each one another plugin serves (two plugins
 // naming one id: the host runs one), the plugin that does. magpie says so
-// on the plugin's row rather than leave its provider missing.
+// on the plugin's row rather than leave its provider missing. And the
+// tools it gives (toolList).
 function withProviders(l) {
+  const tools = l.error ? [] : toolList(l.spec)
+  if (tools.length) l = { ...l, tools }
   const ids = l.error ? [] : signsIn(l.spec)
   if (!ids.length) return l
   const a = auths()
   const servedBy = Object.fromEntries(ids.filter((id) => a.get(id) && a.get(id).spec !== l.spec).map((id) => [id, a.get(id).spec]))
   return { ...l, provides: ids, ...(Object.keys(servedBy).length ? { servedBy } : {}) }
+}
+
+// ---- tools ----------------------------------------------------------------
+//
+// A plugin's tools are OpenCode's tool hook: {tool: {name: {description,
+// args, execute(args, ctx)}}}, args a zod shape (OpenCode's tool.schema is
+// zod) or a JSON Schema. magpie offers them to every agent through its
+// plugin tools MCP server (internal/gateway/tools_mcp.go), so each is told
+// to magpie by its name, description and a JSON Schema of its arguments.
+
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,48}$/
+
+// toolsOf are the tools the plugin spec's hooks give, the last of a name
+// winning, as in OpenCode.
+function toolsOf(spec) {
+  const m = new Map()
+  for (const h of hooks) {
+    if (h.spec !== spec) continue
+    const t = h.hooks.tool
+    if (!t || typeof t !== "object") continue
+    for (const [name, def] of Object.entries(t)) {
+      if (TOOL_NAME.test(name) && def && typeof def.execute === "function") m.set(name, def)
+    }
+  }
+  return m
+}
+
+// jsonSchema is a zod schema (v3 or v4) as JSON Schema, or a JSON Schema
+// as it is. What it can't read is {}: any value.
+function jsonSchema(z, depth = 0) {
+  if (!z || typeof z !== "object" || depth > 16) return {}
+  const desc = (o) => {
+    const d = typeof z.description === "string" ? z.description : z._def?.description
+    if (d) o.description = d
+    return o
+  }
+  const v4 = z._zod?.def
+  const v3 = z._def
+  if (!v4 && !v3) return z
+  const d = v4 ?? v3
+  const kind = v4 ? d.type : String(d.typeName ?? "").replace(/^Zod/, "").toLowerCase()
+  const inner = (x) => jsonSchema(x, depth + 1)
+  switch (kind) {
+    case "string": return desc({ type: "string" })
+    case "number": return desc({ type: d.format === "safeint" || d.checks?.some?.((c) => c.kind === "int" || c._zod?.def?.format === "safeint") ? "integer" : "number" })
+    case "int": case "bigint": return desc({ type: "integer" })
+    case "boolean": return desc({ type: "boolean" })
+    case "null": return desc({ type: "null" })
+    case "enum": return desc({ type: "string", enum: v4 ? Object.values(d.entries ?? {}) : [...(d.values ?? [])] })
+    case "literal": {
+      const vals = v4 ? d.values ?? [] : [d.value]
+      return desc(vals.length === 1 ? { const: vals[0] } : { enum: vals })
+    }
+    case "array": return desc({ type: "array", items: inner(v4 ? d.element : d.type) })
+    case "object": return desc(objectSchema(typeof d.shape === "function" ? d.shape() : d.shape, depth + 1))
+    case "optional": case "nullable": case "default": case "readonly": case "catch": case "prefault": {
+      const o = { ...inner(d.innerType), ...desc({}) }
+      if (kind === "default") try { o.default = typeof d.defaultValue === "function" ? d.defaultValue() : d.defaultValue } catch {}
+      return o
+    }
+    case "union": return desc({ anyOf: (d.options ?? []).map(inner) })
+    case "record": return desc({ type: "object", additionalProperties: inner(d.valueType) })
+    default: return desc({})
+  }
+}
+
+// optionalIn is whether a zod field may be left out.
+function optionalIn(z) {
+  const t = z?._zod?.def?.type ?? String(z?._def?.typeName ?? "").replace(/^Zod/, "").toLowerCase()
+  if (z?._zod?.optin === "optional") return true
+  return t === "optional" || t === "default"
+}
+
+function objectSchema(shape, depth = 0) {
+  const properties = {}
+  const required = []
+  for (const [k, v] of Object.entries(shape ?? {})) {
+    properties[k] = jsonSchema(v, depth)
+    if (!optionalIn(v)) required.push(k)
+  }
+  return { type: "object", properties, ...(required.length ? { required } : {}) }
+}
+
+// argsSchema is a tool's arguments as JSON Schema: its args a zod shape, a
+// zod object, or a JSON Schema object.
+function argsSchema(args) {
+  if (!args || typeof args !== "object") return { type: "object", properties: {} }
+  if (args._zod || args._def) return jsonSchema(args)
+  if (typeof args.type === "string" || args.properties) return args
+  return objectSchema(args)
+}
+
+function toolList(spec) {
+  const out = []
+  for (const [name, def] of toolsOf(spec)) {
+    let schema
+    try {
+      schema = argsSchema(def.args)
+    } catch {
+      schema = { type: "object", properties: {} }
+    }
+    out.push({ name, description: shown(def.description, 2000), schema })
+  }
+  return out
+}
+
+// parsedArgs are args as the tool's zod schema parses them, as OpenCode
+// does before execute: defaults filled in, a wrong argument refused. A
+// JSON Schema is the tool's own to check.
+function parsedArgs(name, schema, args) {
+  args = args && typeof args === "object" && !Array.isArray(args) ? args : {}
+  const fail = (r) => {
+    const issues = r.error?.issues ?? []
+    const why = issues.map((i) => `${(i.path ?? []).join(".") || "arguments"}: ${i.message}`).join("; ")
+    throw new Error(`${name}'s arguments are wrong: ${why || r.error?.message || "refused"}`)
+  }
+  if (!schema || typeof schema !== "object") return args
+  if (typeof schema.safeParse === "function") {
+    const r = schema.safeParse(args)
+    if (!r.success) fail(r)
+    return r.data
+  }
+  if (schema._zod || schema._def || typeof schema.type === "string" || schema.properties) return args
+  const out = { ...args }
+  for (const [k, z] of Object.entries(schema)) {
+    if (typeof z?.safeParse !== "function") continue
+    const r = z.safeParse(args[k])
+    if (!r.success) fail({ error: { issues: (r.error?.issues ?? [{ message: r.error?.message }]).map((i) => ({ ...i, path: [k, ...(i.path ?? [])] })) } })
+    if (r.data === undefined) delete out[k]
+    else out[k] = r.data
+  }
+  return out
+}
+
+// runTool runs the plugin spec's tool name with args, within ms: its
+// answer as text (a string as it is, else JSON).
+// took is ms as Go prints a duration: 300ms, 55s.
+const took = (ms) => (ms % 1000 ? `${ms}ms` : `${ms / 1000}s`)
+
+async function runTool({ spec, name, args, ms, agent }) {
+  const def = toolsOf(spec).get(name)
+  if (!def) throw new Error(`${spec} has no tool ${name}`)
+  args = parsedArgs(name, def.args, args)
+  const abort = AbortSignal.timeout(ms > 0 ? ms : 60_000)
+  const ctx = {
+    sessionID: "", messageID: "", callID: "", agent: agent ?? "",
+    directory, worktree: directory, abort,
+    metadata() {},
+  }
+  const out = await Promise.race([
+    Promise.resolve().then(() => def.execute(args, ctx)),
+    new Promise((_, reject) => abort.addEventListener("abort", () => reject(new Error(`${name} took longer than ${took(ms || 60_000)}`)), { once: true })),
+  ])
+  if (typeof out === "string") return { text: out }
+  if (out && typeof out === "object" && typeof out.output === "string") return { text: out.output }
+  return { text: out === undefined ? "" : JSON.stringify(out) }
 }
 
 function authOf(provider) {
@@ -1218,8 +1384,28 @@ function authOf(provider) {
 // ---- providers and models ----------------------------------------------------
 
 let modelsDev
+let modelsDevMtime = 0
 function mdev() {
-  if (modelsDev === undefined) modelsDev = (modelsDevPath && readJSON(modelsDevPath)) || {}
+  if (modelsDevPath) {
+    try {
+      const st = fs.statSync(modelsDevPath, { throwIfNoEntry: false })
+      const mtime = st ? st.mtimeMs : 0
+      if (modelsDev === undefined || (mtime > 0 && mtime !== modelsDevMtime) || (Object.keys(modelsDev).length === 0 && mtime > 0)) {
+        // a file caught half written (catalog.Sync writes it in place)
+        // reads as unknown: keep what was read before, rather than list the
+        // providers without models.dev, and read it again next time
+        const md = readJSON(modelsDevPath)
+        if (md) {
+          modelsDev = md
+          modelsDevMtime = mtime
+        } else if (modelsDev === undefined) modelsDev = {}
+      }
+    } catch {
+      if (modelsDev === undefined) modelsDev = {}
+    }
+  } else if (modelsDev === undefined) {
+    modelsDev = {}
+  }
   return modelsDev
 }
 
@@ -1294,6 +1480,10 @@ async function info(id, key, strict) {
     // magpie's own field: the plugin serves a decision API (System One)
     // for this provider, asked at its base /systemone through its fetch
     decide: cfg?.decide === true,
+    // magpie's own field: the provider's upstream answers a web search
+    // tool offered on its Anthropic or Responses API by itself, so a
+    // client's web_search goes to it as sent (#2027)
+    searches: cfg?.searches === true,
     models: {},
   }
   if (md) for (const m of Object.values(md.models ?? {})) out.models[m.id] = fromModelsDev(md, m)
@@ -1373,6 +1563,51 @@ async function info(id, key, strict) {
 // characters, "" for anything else.
 const shown = (v, n) => (typeof v === "string" ? v.trim().slice(0, n) : "")
 
+// optionsOf are the switches a plugin declares for its provider, magpie's
+// own field (#2038, Vocllum): auth.options, each {key, label, description?,
+// default?, confirm?}. magpie shows each as an Off/On switch in the
+// provider's editor and keeps what the user sets; the plugin reads it with
+// input.magpie.option(provider, key). A switch is only kept and handed
+// over, nothing is run when it changes. Keys are [a-z0-9_-], 1–40 long,
+// the first of a key kept; at most MAX_OPTIONS; one without a key or a
+// label is left out.
+const MAX_OPTIONS = 16
+const OPTION_KEY = /^[a-z0-9_-]{1,40}$/
+function optionsOf(auth) {
+  const out = []
+  if (!Array.isArray(auth?.options)) return out
+  for (const o of auth.options) {
+    if (out.length >= MAX_OPTIONS) break
+    if (!o || typeof o !== "object" || typeof o.key !== "string" || !OPTION_KEY.test(o.key)) continue
+    if (out.some((x) => x.key === o.key)) continue
+    const label = shown(o.label, 60)
+    if (!label) continue
+    out.push({
+      key: o.key,
+      label,
+      description: shown(o.description, 300),
+      default: o.default === true,
+      confirm: shown(o.confirm, 300),
+    })
+  }
+  return out
+}
+
+// optionValues are provider's options as they stand: the user's value,
+// else the plugin's default, for each key its plugin declares.
+function optionValues(provider) {
+  const own = chosen?.[provider] ?? {}
+  const out = {}
+  for (const o of optionsOf(auths().get(provider)?.auth)) out[o.key] = typeof own[o.key] === "boolean" ? own[o.key] : o.default
+  return out
+}
+
+// optionValue is one of provider's options as it stands; false for a key
+// its plugin doesn't declare.
+function optionValue(provider, key) {
+  return optionValues(provider)[key] === true
+}
+
 // methods are the auth hook's ways to sign in. An "api" one may say what
 // its key looks like (placeholder, magpie's own: OpenCode's dialog says
 // "API key"); its label titles the key's field, as OpenCode's does.
@@ -1420,6 +1655,19 @@ function rateOf(v) {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0
 }
 
+// tiersOf reads the service tiers a plugin says a model serves
+// (m.serviceTiers): ids ("priority", "ultrafast"), or objects with an id as
+// Codex's catalog writes them; anything else is dropped
+function tiersOf(v) {
+  if (!Array.isArray(v)) return []
+  const out = []
+  for (const t of v) {
+    const id = typeof t === "string" ? t.trim() : typeof t?.id === "string" ? t.id.trim() : ""
+    if (id && !out.includes(id)) out.push(id)
+  }
+  return out
+}
+
 // providers lists each provider and its accounts' models, each asked
 // through its proxy (proxies[provider][key], "" the provider's own), as a
 // built-in fetches each account's list through the account's.
@@ -1449,7 +1697,9 @@ async function providers({ proxies } = {}) {
       icon: iconOf(a),
       usage: typeof a.auth.usage === "function",
       checkin: typeof a.auth.checkin === "function",
+      options: optionsOf(a.auth),
       decide: p.decide === true,
+      searches: p.searches === true,
       maxConcurrency: concurrencyOf(a),
       signedIn: keys.length > 0,
       authType: first?.type ?? "",
@@ -1492,6 +1742,9 @@ async function providers({ proxies } = {}) {
           rateWas: rateOf(m.rateWas),
           // run fast when the request's service_tier is priority (Cursor's)
           fast: m.fast === true,
+          // the service tiers the vendor serves it at (service_tier
+          // "priority", "ultrafast"), which Codex then offers (#2514)
+          serviceTiers: tiersOf(m.serviceTiers),
           // a decision model (System One's), hidden from agents and
           // offered as a routing group's classifier
           decides: m.decides === true,
@@ -1755,7 +2008,9 @@ async function load({ provider, account, proxy }) {
 //       word in the ids of the only models it counts), models? / notModels?
 //       (the ids it counts, or all but these; a bare id and its id@size
 //       count as one), aside? (using it up doesn't
-//       stop the account) }],
+//       stop the account), runsOutAt? (ISO or ms: when the soonest
+//       credits left in it are lost, apart from its reset, as WorkBuddy's
+//       packages end) / runsOut? (how many are lost then) }],
 //     signIn?: "expired" | "kept" | "renewed" (what the read means for the
 //       account's sign-in, as a model request's X-Magpie-Sign-In says;
 //       without it an error saying to sign in again marks the account and
@@ -1808,6 +2063,8 @@ async function usageOf(provider, account) {
       models: ids(w?.models),
       notModels: ids(w?.notModels),
       aside: !!w?.aside,
+      runsOutAt: when(w?.runsOutAt),
+      runsOut: Math.max(0, num(w?.runsOut)),
     })),
   }
 }
@@ -1978,6 +2235,7 @@ const handlers = {
     directory = p.directory ?? directory
     userConfig = p.config ?? {}
     prefer = p.prefer ?? {}
+    chosen = p.options ?? {}
     await loadPlugins(p.plugins ?? [])
     return { plugins: loaded.map(withProviders) }
   },
@@ -1986,10 +2244,17 @@ const handlers = {
   validate: (p) => ({ error: validate(p.provider, p.method, p.key, p.value) }),
   authorize,
   callback,
+  tool: runTool,
   apiKey,
   load,
   usage,
   checkin,
+  // setOptions takes the user's option values over, as init did: the
+  // plugin reads them when it next asks (#2038)
+  setProviderOptions(p) {
+    chosen = p?.options ?? {}
+    return null
+  },
   // check tries one account as a request would: its loader, then its
   // models as the plugin lists them for it, then its usage, which asks the
   // vendor of the account itself. refused is the models hook saying the

@@ -114,6 +114,24 @@ func TestRemoteMagpieKeyLimitCards(t *testing.T) {
 	if l := cards()["laptop"]; l.GatewayKey == nil || l.GatewayKey.Limited || len(l.Windows) != 1 || !l.Windows[0].Unlimited {
 		t.Errorf("laptop with no limit: %+v", l)
 	}
+	// every 5 hours (#2102): the card names the cycle's length
+	setLimit(t, keys[0].ID, &access.Limit{Period: "hours", Hours: 5, Tokens: 1000})
+	provider.RefreshUsage(ctx, "office/~keys", "laptop")
+	if l := cards()["laptop"]; tokens(l) != 0 || l.GatewayKey.Period != "hours" || l.GatewayKey.Hours != 5 || l.GatewayKey.Days != 0 ||
+		l.Windows[0].Name != "Tokens this cycle" || !l.GatewayKey.Reset.Equal(l.GatewayKey.Start.Add(5*time.Hour)) {
+		t.Errorf("laptop every 5 hours: %+v %+v", l, l.GatewayKey)
+	}
+	// and a week beside it (#2227): a window for each, the key told of the
+	// one holding it most
+	n := 1
+	if _, err := access.Update("limit-key", access.Change{Key: keys[0].ID, Limit: &access.Limit{Period: "week", Tokens: 300}, Index: &n}); err != nil {
+		t.Fatal(err)
+	}
+	provider.RefreshUsage(ctx, "office/~keys", "laptop")
+	if l := cards()["laptop"]; len(l.Windows) != 2 || l.Windows[0].Name != "Tokens this cycle" || l.Windows[1].Name != "Tokens this week" ||
+		l.Windows[1].Amount != 350 || l.Windows[1].Limit != 300 || l.GatewayKey.Period != "week" || !l.GatewayKey.Spent {
+		t.Errorf("laptop with two limits: %+v %+v", l, l.GatewayKey)
+	}
 }
 
 // A key asking after its limit is told its own, whatever the request

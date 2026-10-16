@@ -134,7 +134,7 @@ func TestClaudeDesktopDefault(t *testing.T) {
 	if got := desktopDefault("fake/m1"); got != "" {
 		t.Fatalf("default for the first model itself = %q", got)
 	}
-	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/m1" {
+	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/m1" {
 		t.Fatalf("title = %q", got)
 	}
 	StandIn = func(agent, model string) string {
@@ -144,11 +144,11 @@ func TestClaudeDesktopDefault(t *testing.T) {
 		return ""
 	}
 	t.Cleanup(func() { StandIn = nil })
-	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/claude-opus-4-8" {
+	if got := desktopTurn("claude-haiku-4-5", title, false, false); got != "fake/claude-opus-4-8" {
 		t.Fatalf("title with a stand-in = %q", got)
 	}
 	// a session on a real Claude model magpie serves keeps it
-	if got := desktopTurn("fake/claude-opus-4-8", turn, false); got != "fake/claude-opus-4-8" {
+	if got := desktopTurn("fake/claude-opus-4-8", turn, false, false); got != "fake/claude-opus-4-8" {
 		t.Fatalf("turn = %q", got)
 	}
 }
@@ -228,5 +228,78 @@ func TestDesktopTitle(t *testing.T) {
 		if desktopTitle([]byte(body)) != want {
 			t.Errorf("desktopTitle(%s) = %v", body, !want)
 		}
+	}
+}
+
+// A subagent on another served model must not replace the lead's pick,
+// even when no subagent model is set. A later lead turn still records.
+func TestDesktopSubagentTurnKeepsSessionPick(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: "http://127.0.0.1:1", Models: []string{"m1", "m2"}}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"tools":[{"name":"Bash"}],"messages":[{"role":"user","content":"hi"}]}`)
+	for _, turn := range []struct {
+		model  string
+		sub    bool
+		picked string
+	}{
+		{"fake/m1", false, "fake/m1"},
+		{"fake/m2", true, "fake/m1"},
+		{"fake/m2", false, "fake/m2"},
+	} {
+		if got := desktopTurn(turn.model, body, true, turn.sub); got != turn.model {
+			t.Fatalf("turn sent %q, want %q", got, turn.model)
+		}
+		if b, err := os.ReadFile(desktopPickedPath()); err != nil || strings.TrimSpace(string(b)) != turn.picked {
+			t.Fatalf("subagent %v: picked %q, want %q (%v)", turn.sub, b, turn.picked, err)
+		}
+	}
+	if got := desktopTurn("claude-haiku-unserved", body, true, true); got != "fake/m2" {
+		t.Fatalf("unserved subagent sent %q, want the session's model", got)
+	}
+}
+
+// Through the server: a subagent of Desktop's Code tab on another model
+// (its tier's) leaves the session on the lead's model, so the title
+// Desktop asks for next goes there, not to the subagent's model.
+func TestDesktopSubagentTurnLeavesTitleOnLead(t *testing.T) {
+	f := &fake{reply: sse(
+		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m1","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
+	up := setup(t, provider.Anthropic, f)
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: up.URL,
+		Models: []string{"m1", "m2", "claude-sonnet-5-thinking"}}); err != nil {
+		t.Fatal(err)
+	}
+	send := func(model, sub string, tools bool) string {
+		t.Helper()
+		body := `{"model":"` + model + `","max_tokens":200,"stream":true,"system":"You write short session titles.","messages":[{"role":"user","content":"hi"}]}`
+		if tools {
+			body = `{"model":"` + model + `","max_tokens":32000,"stream":true,"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`
+		}
+		f.got = nil
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("x-api-key", Token+"-claude-desktop")
+		if tools {
+			req.Header.Set("User-Agent", "claude-cli/2.1.295 (external, claude-desktop-3p, agent-sdk/0.3.295)")
+		}
+		if sub != "" {
+			req.Header.Set("x-claude-code-agent-id", sub)
+		}
+		rec := httptest.NewRecorder()
+		New().Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", model, rec.Code, rec.Body)
+		}
+		return modelOf(f.got)
+	}
+	send("fake/m1", "", true)
+	if got := send("fake/m2", "worker", true); got != "m2" {
+		t.Fatalf("subagent sent %q, want m2", got)
+	}
+	if got := send("claude-sonnet-5-thinking", "", false); got != "m1" {
+		t.Fatalf("title after a subagent's turn: sent %q, want the lead's m1", got)
 	}
 }

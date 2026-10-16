@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,13 +41,16 @@ func loadCostCurrency() {
 // usageCmd: `magpie usage [today|7d|30d|all]` — tokens and cost per agent,
 // model, subscription account and session; with --csv, every request of the
 // period as CSV, one row each, to set beside a vendor's bill, and with
-// --account <name> too, only the calls that account answered (#557)
+// --account <name> too, only the calls that account answered (#557). With
+// --days or --last, a rolling window ending now rather than a preset's
+// calendar boundary (#2075), as magpie sessions and magpie quota history
+// take --days.
 func usageCmd(args []string) error {
 	return usageTo(os.Stdout, args)
 }
 
 func usageTo(out io.Writer, args []string) error {
-	const how = "usage: magpie usage [--csv [--account <name>]] [today|7d|30d|all]"
+	const how = "usage: magpie usage [--csv [--account <name>]] [--days <n>|--last <dur>] [today|7d|30d|all]"
 	asCSV := false
 	if i := slices.Index(args, "--csv"); i > 0 {
 		asCSV, args = true, slices.Delete(slices.Clone(args), i, i+1)
@@ -57,11 +62,64 @@ func usageTo(out io.Writer, args []string) error {
 		}
 		f.Account, args = args[i+1], slices.Delete(slices.Clone(args), i, i+2)
 	}
+	// a rolling window: --days takes a number of days (1, 7, even 1.5, as
+	// magpie quota history's does) and --last a duration (24h, 90m), both
+	// ending now, where the presets begin at a local midnight (#2075)
+	var last time.Duration
+	take := func(flag string, parse func(string) (time.Duration, error)) (bool, error) {
+		v := ""
+		for i := 0; i < len(args); i++ {
+			switch a := args[i]; {
+			case a == flag && i+1 < len(args):
+				v, args = args[i+1], slices.Delete(slices.Clone(args), i, i+2)
+				i--
+			case strings.HasPrefix(a, flag+"="):
+				v, args = strings.TrimPrefix(a, flag+"="), slices.Delete(slices.Clone(args), i, i+1)
+				i--
+			case a == flag || strings.HasPrefix(a, flag+"="):
+				return true, fmt.Errorf("%s takes a value\n%s", flag, how)
+			}
+		}
+		if v == "" {
+			return false, nil
+		}
+		d, err := parse(v)
+		if err != nil || d <= 0 {
+			return true, fmt.Errorf("%s takes a %s greater than zero, not %q\n%s", flag, strings.TrimPrefix(flag, "--"), v, how)
+		}
+		last = d
+		return true, nil
+	}
+	daysTaken, err := take("--days", func(v string) (time.Duration, error) {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || math.IsNaN(n) || n > 100*365 {
+			return 0, fmt.Errorf("not a number of days: %q", v)
+		}
+		return time.Duration(n * 24 * float64(time.Hour)), nil
+	})
+	if err != nil {
+		return err
+	}
+	if lastTaken, err := take("--last", time.ParseDuration); err != nil {
+		return err
+	} else if daysTaken && lastTaken {
+		return fmt.Errorf("take --days or --last, not both\n%s", how)
+	}
 	if len(args) > 2 {
 		return fmt.Errorf("%s", how)
 	}
 	period := stats.Month
-	if len(args) > 1 {
+	if last > 0 {
+		if len(args) > 1 {
+			// a preset beside the window: which one was meant can't be told
+			return fmt.Errorf("take --days/--last or a period (%s), not both\n%s", args[1], how)
+		}
+		p, ok := stats.LastOf(last)
+		if !ok {
+			return fmt.Errorf("%s", how)
+		}
+		period = p
+	} else if len(args) > 1 {
 		switch strings.ToLower(args[1]) {
 		case "today", "day":
 			period = stats.Today
@@ -86,6 +144,9 @@ func usageTo(out io.Writer, args []string) error {
 	// midnight falls while they are read.
 	s, d := stats.Summaries(period)
 	title := map[stats.Period]string{stats.Today: "today", stats.Week: "last 7 days", stats.Month: "last 30 days", stats.All: "all time"}[s.Period]
+	if dur := s.Period.Last(); dur > 0 {
+		title = "last " + humanWindow(dur)
+	}
 	if s.Calls == 0 && d.Calls == 0 {
 		fmt.Fprintln(out, muted.Render("no calls "+title+" ·"), "route an agent through magpie and its usage shows up here")
 		fmt.Fprintln(out, faint.Render("  "+stats.Path()))
@@ -107,6 +168,26 @@ func usageTo(out io.Writer, args []string) error {
 	}
 	fmt.Fprintln(out, faint.Render("  "+stats.Path()))
 	return nil
+}
+
+// humanWindow says a rolling window's length the way a title reads it:
+// whole days as days, whole hours as hours, the rest in minutes.
+func humanWindow(d time.Duration) string {
+	switch {
+	case d%(24*time.Hour) == 0:
+		return plural(int(d/(24*time.Hour)), "day")
+	case d%time.Hour == 0:
+		return plural(int(d/time.Hour), "hour")
+	default:
+		return plural(int(d/time.Minute)+boolToInt(d%time.Minute > 0), "minute")
+	}
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // printUsage is a summary's totals and its tables: agents, models,

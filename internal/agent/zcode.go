@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
@@ -130,7 +131,7 @@ func zcodeProviderJSON(path string, keep bool) any {
 		}
 		limit := map[string]any{"context": window}
 		// without it ZCode caps every reply at 32000 tokens
-		if out := zcodeOutput(maxTokens(m)); out > 0 {
+		if out := outputOr(m, zcodeOutput(maxTokens(m))); out > 0 {
 			limit["output"] = out
 		}
 		e := map[string]any{"name": m.Name, "limit": limit,
@@ -434,7 +435,7 @@ func zcodeRules(path string, on, keep bool) error {
 			// ZCode's own rules give a model it doesn't know 32000 tokens
 			// out and thinking only on or off
 			specs := map[string]any{}
-			if out := zcodeOutput(maxTokens(m)); out > 0 {
+			if out := outputOr(m, zcodeOutput(maxTokens(m))); out > 0 {
 				specs["maxOutputTokens"] = map[string]any{"max": out}
 			}
 			if levels := zcodeLevels(m.Efforts); levels != nil {
@@ -462,6 +463,20 @@ func zcodeRules(path string, on, keep bool) error {
 		// turned off in ZCode, it stays off
 		if e, ok := old["enabled"].(bool); ok {
 			rule["enabled"] = e
+		}
+		// What the user set on it in ZCode stays (#2030): its name, logo,
+		// visibility, a header or the key's management link
+		// (packages/provider/src/config/provider-data-schema.ts). ZCode
+		// checks the file strictly, so only keys it already took are kept;
+		// the address, key, format and model lists are magpie's.
+		if old != nil {
+			if name, _ := old["providerName"].(string); strings.TrimSpace(name) != "" {
+				rule["providerName"] = name
+			}
+			if oc, _ := old["config"].(map[string]any); oc != nil {
+				rule["config"] = mergeKept(oc, rule["config"].(map[string]any), []string{"group", "personalModelIds", "modelOrder"})
+			}
+			rule = mergeKept(old, rule, nil)
 		}
 		if at >= 0 {
 			providers = slices.Insert(providers, at, any(rule))

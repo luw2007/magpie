@@ -58,10 +58,10 @@ async function redsOf() {
 
 test("no colour an agent can be marked with reads as the failure red", async () => {
   const reds = await redsOf();
-  const js = await fs.readFile(path.join(assets, "routing.js"), "utf8");
+  const js = await fs.readFile(path.join(assets, "plugins/routing/client.js"), "utf8");
   const hues = js.match(/const HUES = \{([\s\S]*?)\};/);
   const spare = js.match(/const SPARE = \[([^\]]*)\]/);
-  assert(hues && spare, "hueOf's palette not found in routing.js");
+  assert(hues && spare, "hueOf's palette not found in routing/client.js");
   const all = [...hues[1].matchAll(/(\w+):\s*"(#[0-9a-f]{6})"/gi)].map((m) => [m[1], m[2]])
     .concat([...spare[1].matchAll(/"(#[0-9a-f]{6})"/gi)].map((m) => ["spare", m[1]]));
   assert(all.length > 10, "palette too small: " + JSON.stringify(all));

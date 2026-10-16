@@ -3,7 +3,6 @@ package usage
 import (
 	"testing"
 	"time"
-
 )
 
 // The Requests page packs rows into its cache and filters the rows it reads

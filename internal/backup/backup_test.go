@@ -74,7 +74,8 @@ func setUp(t *testing.T) {
 			BalanceToken: "balance-acme", AccessKeyID: "AK-acme", SecretAccessKey: "SK-acme",
 			Keys:    []provider.KeyAccount{{Name: "second", Key: "sk-acme-2"}},
 			Headers: map[string]string{"X-Team": "a", "X-Api-Key": "hdr-secret"}},
-		{ID: "beta", Name: "Beta", Chat: "https://beta.example.com/v1", Key: "sk-beta", BalanceToken: "balance-beta"},
+		// one of the user's whose certificate isn't checked (#2383)
+		{ID: "beta", Name: "Beta", Chat: "https://beta.example.com/v1", Key: "sk-beta", BalanceToken: "balance-beta", InsecureTLS: true},
 	} {
 		if err := provider.Save(p); err != nil {
 			t.Fatal(err)
@@ -133,6 +134,9 @@ func TestRoundTrip(t *testing.T) {
 		return a.ID == b.ID && a.Key == b.Key && a.Name == b.Name && a.Protocol == b.Protocol && a.Off == b.Off
 	}) || p.KeyID != original.KeyID {
 		t.Fatalf("credential identity, order or selection changed: before %+v, after %+v", original.Keys, p.Keys)
+	}
+	if b, err := provider.Find("beta"); err != nil || !b.InsecureTLS {
+		t.Fatalf("beta's unchecked certificate not restored: %+v %v", b, err)
 	}
 	name, _ := strings.CutPrefix(p.Icon, "file:")
 	if _, err := os.Stat(provider.IconFile(name)); err != nil {

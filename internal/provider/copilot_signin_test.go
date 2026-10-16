@@ -127,3 +127,16 @@ func TestCopilotSignInUserHangs(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+// A vendor that gives an interval of 0, or none, is still asked at most
+// once a second; the tests lower only the floor (#2051).
+func TestDevicePollKeepsItsFloor(t *testing.T) {
+	old := devicePollFloor
+	devicePollFloor = time.Second
+	defer func() { devicePollFloor = old }()
+	for in, want := range map[int]time.Duration{0: time.Second, -1: time.Second, 1: time.Second, 5: 5 * time.Second} {
+		if got := devicePoll(in); got != want {
+			t.Errorf("interval %d: %s, want %s", in, got, want)
+		}
+	}
+}

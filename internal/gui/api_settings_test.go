@@ -200,3 +200,44 @@ func TestSettingsRefusalRetries(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsColorblindMode(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	handler := Handler(nil, nil)
+
+	getBoot := func() string {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/boot.js", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /boot.js: %d %s", rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	if boot := getBoot(); strings.Contains(boot, `"colorblind":true`) {
+		t.Fatalf("colorblind off by default, got boot.js: %s", boot)
+	}
+
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"theme":"dark","colorblind":true}`, true},
+		{`{"theme":"dark","colorblind":false}`, false},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(tc.body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", tc.body, rec.Code, rec.Body)
+		}
+		if got := settings.Load().Colorblind; got != tc.want {
+			t.Fatalf("%s: Colorblind = %v, want %v", tc.body, got, tc.want)
+		}
+		if boot := getBoot(); strings.Contains(boot, `"colorblind":true`) != tc.want {
+			t.Fatalf("%s: boot.js = %s, want colorblind=%v", tc.body, boot, tc.want)
+		}
+	}
+}

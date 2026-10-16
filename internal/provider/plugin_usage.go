@@ -136,6 +136,7 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 		q.User = u.User
 	}
 	q.Balance, q.Renew, q.Error = u.Balance, u.Renew, u.Error
+	q.PluginError = u.Error != ""
 	if t, err := time.Parse(time.RFC3339, u.Until); err == nil {
 		q.Until = &t
 	}

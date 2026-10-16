@@ -106,7 +106,9 @@ const groupUsage = `usage:
            auto    as a turn begins, the group's classifier — Jev, from a TypeSafe provider
                    (magpie provider add typesafe key=…), or any model, as Jev Router on OpenRouter,
                    asked in words — rates how hard it is, and the turn's requests
-                   reason at low, medium, high or xhigh; only those the agent asked to reason
+                   reason at low, medium, high or xhigh in place of the agent's level; only those
+                   the agent asked to reason, never one it turned off (none). A route's effort
+                   is what the agent asked, each try's what its model was sent
 
   e.g. magpie group add "Opus anywhere" models=claude/claude-opus-5-5,copilot/claude-opus-5.5 routing=order
        magpie group set opus-anywhere stays=session models+=openrouter/anthropic/claude-opus-5.5
@@ -148,7 +150,11 @@ var staysNames = []struct {
 }
 
 func parseRouting(v string) (string, error) {
-	v = strings.ToLower(strings.TrimSpace(v))
+	v = strings.TrimSpace(v)
+	if provider.PluginRouting(v) { // a gateway plugin's
+		return v, nil
+	}
+	v = strings.ToLower(v)
 	var names []string
 	for _, r := range routingNames {
 		if v == r.value || v == r.name || slices.Contains(r.also, v) {
@@ -156,7 +162,7 @@ func parseRouting(v string) (string, error) {
 		}
 		names = append(names, r.name)
 	}
-	return "", fmt.Errorf("routing %q is not one magpie has: %s", v, strings.Join(names, ", "))
+	return "", fmt.Errorf("routing %q is not one magpie has: %s, or <plugin>/<name> for a gateway plugin's", v, strings.Join(names, ", "))
 }
 
 func parseStays(v string) (string, error) {
@@ -171,13 +177,15 @@ func parseStays(v string) (string, error) {
 	return "", fmt.Errorf("stays %q is not one magpie has: %s", v, strings.Join(names, ", "))
 }
 
+// routingName is what the CLI calls routing v: a plugin's, or one it
+// doesn't know, as it is.
 func routingName(v string) string {
 	for _, r := range routingNames {
 		if r.value == v {
 			return r.name
 		}
 	}
-	return "smart"
+	return v
 }
 
 func staysName(v string) string {

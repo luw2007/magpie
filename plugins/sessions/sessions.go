@@ -24,6 +24,7 @@ func init() {
 			}
 			return 0, nil
 		},
-		Parts: []pluginrt.Part{{Slot: "nav.page", Key: "sessions"}},
+		Parts:  []pluginrt.Part{{Slot: "nav.page", Key: "sessions"}},
+		Client: []string{"i18n.js", "sessions.css", "client.js"},
 	})
 }

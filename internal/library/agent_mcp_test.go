@@ -106,6 +106,8 @@ func TestAgentMCPFiles(t *testing.T) {
 			fs:   entry{"type": "stdio", "command": "npx", "args": []any{"-y", "@mcp/fs"}, "env": entry{"K": "V"}},
 			web:  entry{"type": "http", "url": "https://example.com/mcp", "headers": entry{"Authorization": "Bearer x"}},
 			sse:  entry{"type": "sse", "url": "https://example.com/sse"},
+			// on a Mac WorkBuddy is there by its app, not its folder
+			pre: func(t *testing.T, h string) { holdApp(t, h, "WorkBuddy.app", "com.tencent.workbuddy.mac") },
 		},
 		{
 			// CodeBuddy Code reads the first of .mcp.json, mcp.json and
@@ -175,6 +177,9 @@ func TestAgentMCPFiles(t *testing.T) {
 			}
 			p := filepath.Join(h, c.file)
 			write(t, p, c.user)
+			// omp, Cline and CodeBuddy have an install command, so with the
+			// MCP file alone each is gone (#2177): its CLI beside the folder
+			holdCLI(t, h, map[string]string{"omp": "omp", "cline": "cline", "codebuddy": "codebuddy"}[c.id])
 			parse := func() map[string]entry {
 				t.Helper()
 				var doc map[string]any
@@ -294,6 +299,7 @@ func TestAgentMCPFiles(t *testing.T) {
 func TestCodeBuddyMCPFile(t *testing.T) {
 	h := sandbox(t)
 	write(t, filepath.Join(h, ".codebuddy/models.json"), "")
+	holdCLI(t, h, "codebuddy") // the folder alone is gone (#2177)
 	tg := targetByID("codebuddy")
 	if tg == nil || tg.MCP == nil || tg.MCP.Path != filepath.Join(h, ".codebuddy/.mcp.json") {
 		t.Fatalf("with no file: %+v", tg)

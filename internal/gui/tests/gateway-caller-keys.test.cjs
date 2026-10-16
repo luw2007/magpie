@@ -4,6 +4,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { fixture, confirmKeyAction } = require("./fixtures/caller-keys.cjs");
+const { openPart } = require("./reader.cjs");
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
@@ -71,7 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(events.some((e) => e.action === "export" && e.query.includes("callerKey=laptop") && !e.query.includes("key=") && !e.query.includes("user=")));
       await page.reload();
       await page.locator("#prefs").click();
-      await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
+      await openPart(page, "network");
       const share = page.locator("#lanList").getByRole("button", { name: lang === "zh" ? "开启" : "On", exact: true });
       await share.waitFor();
       // Real wheel input lets the page remember the reader's scroll position.
@@ -117,7 +118,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.mouse.move(500, 400);
       await page.mouse.wheel(0, -2000);
       await page.waitForFunction(() => document.querySelector("#view-settings").scrollTop === 0);
-      await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
+      await openPart(page, "network");
       await page.locator("#lanList .lan-address-row").waitFor();
       await page.locator("#lanList").getByRole("button", { name: lang === "zh" ? "关闭" : "Off", exact: true }).click();
       await page.locator("#lanList .lan-address-row").waitFor({ state: "detached" });

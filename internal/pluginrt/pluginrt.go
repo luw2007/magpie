@@ -63,8 +63,9 @@ type Manifest struct {
 	// (schema.go): the window draws their form, and SetConfig takes only
 	// what it allows. Register adds them to Defaults.
 	Settings any
-	// Client are its scripts in the window, under assets/plugins/<id>/:
-	// they register its parts with the window's kernel (kernel.js).
+	// Client are its files in the window, under assets/plugins/<id>/: its
+	// scripts register its parts with the window's kernel (kernel.js), its
+	// i18n.js says its words in each language, and a .css is its styles.
 	// TestBuiltinClientsLoaded holds the page to loading each.
 	Client []string
 	schema *Schema

@@ -89,6 +89,21 @@ func TestPIDesktopTitlesNameGatewaySessions(t *testing.T) {
 	if got := PIDesktopTitles([]string{id})[id]; got != "改过的名字" {
 		t.Errorf("after the rename %q", got)
 	}
+
+	// The Routing page asks Titles for agent:id keys (#1293); PI-Desktop's
+	// name has to reach pi-desktop:id and pi:id, and nothing else (#1967).
+	keys := []string{"pi-desktop:" + id, "pi:" + id, "claude:" + id, "pi:gone-0001", "pi:blank-0001", "codex:" + id}
+	titles := Titles(keys)
+	for _, k := range []string{"pi-desktop:" + id, "pi:" + id} {
+		if titles[k] != "改过的名字" {
+			t.Errorf("Titles[%q] = %q, want the PI-Desktop name", k, titles[k])
+		}
+	}
+	for _, k := range []string{"claude:" + id, "pi:gone-0001", "pi:blank-0001", "codex:" + id} {
+		if v, ok := titles[k]; ok {
+			t.Errorf("Titles[%q] = %q, want no PI-Desktop name", k, v)
+		}
+	}
 }
 
 // folderState is each file of dir with its size and time.

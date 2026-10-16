@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
@@ -280,7 +279,7 @@ func accountsCmd(args []string) error {
 			line += "  " + balanceCell(r.Balance, r.Agent, r.User)
 		}
 		if r.Resets != nil {
-			line += "  " + resetsCell(r.Resets, provider.AutoResets(r.Agent, r.User))
+			line += "  " + resetsCell(r.Resets, r.Agent, r.User)
 		}
 		if r.Lapsed != "" {
 			line += "  " + muted.Render(r.Lapsed)
@@ -664,18 +663,10 @@ func importAccounts(args []string) error {
 var openInBrowser = openURLInBrowser
 
 func openURLInBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = proc.Command("open", url)
-	case "windows":
-		cmd = proc.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	case "android":
-		cmd = proc.Command("termux-open-url", url)
-	default:
-		cmd = proc.Command("xdg-open", url)
+	// the link is printed beside it, to open by hand when this fails (#2043)
+	if err := proc.OpenBrowser(url); err != nil {
+		fmt.Fprintln(os.Stderr, "magpie couldn't open the browser:", err)
 	}
-	_ = cmd.Start()
 }
 
 // refreshAccounts: `magpie accounts refresh` renews the sign-in of every
@@ -784,13 +775,14 @@ func checkinWorkBuddy(asJSON bool) error {
 		case provider.CheckinCaptcha:
 			fmt.Println(muted.Render("·"), r.User, muted.Render(strings.TrimSpace("asks for a captcha: check in in its own app "+r.Msg)))
 		case provider.CheckinOwnApp:
-			// Trae CN's 9074 (#808): it pays only its own app; WorkBuddy's
-			// check-in answered 401 while the sign-in works
+			// Trae CN's 9074 (#808): Trae CN refused the claim (#1920);
+			// WorkBuddy's check-in answered 401 while the sign-in works
+			if r.By == "trae" {
+				fmt.Println(muted.Render("·"), r.User, muted.Render(provider.TraeRefusedWords))
+				break
+			}
 			name := r.Vendor
-			switch r.By {
-			case "trae":
-				name = "Trae CN"
-			case "":
+			if r.By == "" {
 				name = "WorkBuddy"
 			}
 			fmt.Println(muted.Render("·"), r.User, muted.Render(name+" only gives check-in credits to its own app; check in in the "+name+" app"))

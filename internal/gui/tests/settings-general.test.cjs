@@ -23,7 +23,7 @@ const names = { en: "English", zh: "简体中文", "zh-TW": "繁體中文", ja: 
 const appearance = { en: "Appearance", zh: "外观", "zh-TW": "外觀", ja: "外観", de: "Darstellung" };
 const system = { en: "System", zh: "跟随系统", "zh-TW": "跟隨系統", ja: "システム", de: "System" };
 // the rows whose name says enough, found by the control they hold
-const bare = ["#themeSegs", "#langPick", "#textSizeSegs", "#traySegs", "#plainNamesSegs", "#codexTitlesPick", "#codexAutoReviewPick", "#loginSegs", "#dockSegs"];
+const bare = ["#themeSegs", "#colorblindSegs", "#langPick", "#textSizeSegs", "#traySegs", "#plainNamesSegs", "#codexTitlesPick", "#codexAutoReviewPick", "#loginSegs", "#dockSegs"];
 // the rows that keep a line, one each
 const kept = ["#fullContextSegs", "#lightweightSegs", "#keepAwakeSegs", "#sessionTerminalRow .sess-pick"];
 

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // The standalone CLI's sign-in: who in a JSONC config.json, the token in
@@ -79,29 +81,38 @@ func TestCopilotCLILogin(t *testing.T) {
 // On Linux the CLI 1.0's keyring store keys its token by service and
 // username, not keytar's account (#723); a keyring that never answers
 // doesn't hold the caller.
+//
+// The fakes are testenv.Programs: macOS checks a newly written program
+// before its first exec, which under a loaded go test ./... took longer
+// than copilotSecretWait, so both lookups ran out and the token read as ""
+// (#1627). Which attribute is asked is no question of time, so the lookups
+// that answer get a wait no loaded runner reaches; only the keyring that
+// never answers is held to a short one.
 func TestCopilotSecretToolUsername(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script stands in for secret-tool")
 	}
+	old := copilotSecretWait
+	defer func() { copilotSecretWait = old }()
+	copilotSecretWait = 10 * time.Minute
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "secret-tool")
-	os.WriteFile(tool, []byte(`#!/bin/sh
+	testenv.Program(t, tool, `#!/bin/sh
 [ "$*" = "lookup service copilot-cli username https://github.com:octocat" ] && { echo gho_keyring; exit 0; }
 exit 1
-`), 0o755)
+`)
 	if got := copilotSecretTool(tool, "https://github.com:octocat"); got != "gho_keyring" {
 		t.Fatalf("token %q, want the one under username", got)
 	}
 	if got := copilotSecretTool(tool, "https://github.com:hubot"); got != "" {
 		t.Fatalf("another account's token: %q", got)
 	}
-	old := copilotSecretWait
 	copilotSecretWait = 200 * time.Millisecond
-	defer func() { copilotSecretWait = old }()
 	hang := filepath.Join(dir, "secret-tool-hang")
-	os.WriteFile(hang, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755)
+	testenv.Program(t, hang, "#!/bin/sh\nexec sleep 30\n")
 	start := time.Now()
-	if got := copilotSecretTool(hang, "https://github.com:octocat"); got != "" || time.Since(start) > 10*time.Second {
+	// unbounded, the two lookups take 60s; bounded, 2.4s at most unloaded
+	if got := copilotSecretTool(hang, "https://github.com:octocat"); got != "" || time.Since(start) > 30*time.Second {
 		t.Fatalf("a keyring that never answers: %q after %v", got, time.Since(start))
 	}
 }

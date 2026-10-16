@@ -91,6 +91,8 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 			e.Spans = append(e.Spans, lastWindow{w.Span, w.Model, w.Aside})
 		}
 		e.Q.Error = ""
+		e.Q.AsOf = nil
+		e.Q.ReadDeferred = false
 		if c.m == nil {
 			c.m = map[string]lastQuota{}
 		}
@@ -116,6 +118,7 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 	if !ok {
 		return q
 	}
+	out.ReadDeferred = readDeferred(q.Error)
 	out.Name, out.Icon, out.User = q.Name, q.Icon, q.User
 	if out.PoolRef != "" {
 		out.Status = "stale"
@@ -124,6 +127,20 @@ func keepLast(q SubscriptionQuota, user string) SubscriptionQuota {
 		out.Name, out.Icon = c.m[key].Q.Name, c.m[key].Q.Icon
 	}
 	return out
+}
+
+// readDeferred is whether err says no read was made this time (allowances
+// read only when asked, a Claude account's /usage not run) rather than a
+// read that failed. A read held back by holdUnasked fails inside the
+// vendor's HTTP call, so its error carries errNotAsked wrapped: "Get
+// \"https://…\": not read yet: …".
+func readDeferred(err string) bool {
+	for _, e := range []error{errNotAsked, errClaudeNotAsked, errClaudeSaved} {
+		if strings.Contains(err, e.Error()) {
+			return true
+		}
+	}
+	return false
 }
 
 // load reads the last readings from disk, the first time. Called with c

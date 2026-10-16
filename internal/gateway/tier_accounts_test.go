@@ -194,6 +194,55 @@ func TestFastPickKeepsTheClientsUltrafast(t *testing.T) {
 	}
 }
 
+// Codex's Fast for another agent (莫 on Discord: "gpt在自己里面有1.5倍速，
+// 现在接入后别人agent怎么用1.5倍速呢"): a ChatGPT account's GPT switched
+// fast in Claude Code's or OpenCode's picker (#954) goes to the ChatGPT
+// backend at service_tier "priority", as Codex's own /fast sends it,
+// whatever API the agent spoke; Claude Code's own speed "fast" asks it too.
+// Not switched, and not asked, it goes at the default tier.
+func TestCodexFastForOtherAgents(t *testing.T) {
+	tried := tierAccounts(t, nil, nil)
+	to, _ := url.Parse(provider.CodexBase)
+	provider.CodexBase = "https://chatgpt.com/backend-api/codex"
+	s := New()
+	s.client = &http.Client{Transport: qoderRoundTrip(func(r *http.Request) (*http.Response, error) {
+		r.URL.Scheme, r.URL.Host = to.Scheme, to.Host
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+	asks := []struct{ agent, path, body string }{
+		{"claude", "/v1/messages", `{"model":"codex/gpt-6-luna","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`},
+		{"opencode", "/v1/chat/completions", `{"model":"codex/gpt-6-luna","messages":[{"role":"user","content":"ping"}]}`},
+	}
+	last := func() string {
+		got := tried()
+		if len(got) == 0 {
+			return ""
+		}
+		return got[len(got)-1]
+	}
+	for _, a := range asks {
+		postFrom(t, s, a.agent, a.path, a.body)
+		if got := last(); !strings.HasSuffix(got, ":") {
+			t.Errorf("%s not switched: went at %q, want no tier", a.agent, got)
+		}
+		if err := provider.SetFastPick(a.agent, "codex/gpt-6-luna", true); err != nil {
+			t.Fatal(err)
+		}
+		r := postFrom(t, s, a.agent, a.path, a.body)
+		if got := last(); !strings.HasSuffix(got, ":priority") {
+			t.Errorf("%s switched fast: went at %q, want priority", a.agent, got)
+		}
+		if len(r.Tries) == 0 || !r.Tries[0].Fast {
+			t.Errorf("%s: not traced as sent fast: %+v", a.agent, r.Tries)
+		}
+	}
+	// Claude Code's own fast mode, not switched in the picker
+	postFrom(t, s, "claude-desktop", "/v1/messages", `{"model":"codex/gpt-6-luna","max_tokens":64,"speed":"fast","messages":[{"role":"user","content":"ping"}]}`)
+	if got := last(); !strings.HasSuffix(got, ":priority") {
+		t.Errorf("speed fast: went at %q, want priority", got)
+	}
+}
+
 // #1784: the service tier the client asked for, the one each try went out
 // at and the one the reply said it ran at are in the route, the usage log
 // and its CSV, and the served one only when the reply said one.

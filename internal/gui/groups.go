@@ -224,7 +224,17 @@ func groupsState() groupsJSON {
 			out.Templates[i].Group.Members = []string{} // one that can't be made has none
 		}
 	}
-	for _, e := range provider.Deciders() {
+	// the decision models a group's pickers offer: a provider's picks, and
+	// any a group names already, whatever the picks, so its card still
+	// reads it as a decision model
+	named, all := map[string]bool{}, provider.Groups()
+	for _, g := range all {
+		for _, m := range g.Members {
+			named[m] = true
+		}
+		named[g.Classifier] = true
+	}
+	for _, e := range provider.OfferedDeciders(func(id string) bool { return named[id] }) {
 		out.Deciders = append(out.Deciders, modelRef{ID: e.ID, Name: e.Name, Provider: e.Provider.ID, PName: e.Provider.Name, Icon: e.Provider.Icon, Sub: e.Provider.Account != nil})
 	}
 	served := provider.Served()
@@ -236,7 +246,7 @@ func groupsState() groupsJSON {
 	// every provider's models read once for the groups, not once a group
 	// (#1762)
 	find := provider.GroupFinder()
-	for _, g := range provider.Groups() {
+	for _, g := range all {
 		gj := groupJSON{Group: g, Info: []memberJSON{}, Holds: []string{}, Offers: []string{}, Shared: []string{}, Patterns: []provider.PatternHit{}}
 		if gj.Members == nil {
 			// a group of patterns that match nothing now — a plugin's

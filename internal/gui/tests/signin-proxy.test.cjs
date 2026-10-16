@@ -139,7 +139,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(seen.canceled, ["s1"]);
         assert.equal((await via.textContent()).trim(), w.via.replace("{p}", SHOWN));
 
-        // Custom…: its address asked in place, then signed in through
+        // Custom…: its address asked in place, then signed in through. The
+        // sign-in started again drew the link anew at the editor's foot,
+        // partly under its bar at 380: in sight first, as above
+        await via.scrollIntoViewIfNeeded();
         await via.click();
         await menu.locator(".pm-item", { hasText: w.custom }).click();
         const form = box.locator("form.proxy-ask");
