@@ -361,9 +361,12 @@ func TestToolsEffortRefusedOnChat(t *testing.T) {
 			up.mu.Lock()
 			up.calls = nil
 			up.mu.Unlock()
-			code, body := post(t, tc.path, tc.body)
-			if code != 200 || !strings.Contains(body, "from chat") {
-				t.Fatalf("status %d: %s", code, body)
+			rec := serveHeader(t, New(), tc.path, tc.body)
+			if body := rec.Body.String(); !strings.Contains(body, "from chat") {
+				t.Fatalf("response: %s", body)
+			}
+			if got := rec.Result().Header.Get(modelHeader); got != "relay/gpt-6-luna:none" {
+				t.Errorf("%s = %q, want relay/gpt-6-luna:none", modelHeader, got)
 			}
 			up.mu.Lock()
 			defer up.mu.Unlock()

@@ -309,7 +309,7 @@ func TestKeepAliveBeforeTheVendorsHeaders(t *testing.T) {
 	h := newHoldWriter(rec, true)
 	h.streams, h.alive = true, &keptAlive{proto: provider.Responses}
 	r := httptest.NewRequest("POST", "/v1/responses", nil)
-	noteMember(h, r, provider.Provider{ID: "q"}, "m")
+	noteMember(h, r, provider.Provider{ID: "q"}, "m", "")
 	end := h.watch()
 	// the vendor's headers come in as passthrough copies them, the first
 	// comment going out meanwhile

@@ -40,17 +40,20 @@ var vendorNamed = []string{"claude", "claude-desktop", "codex"}
 type memberKey struct{}
 
 // noteMember says on the try's reply which provider and model answer it,
-// and tells the request's memberWriter, if it has one.
-func noteMember(w http.ResponseWriter, r *http.Request, p provider.Provider, model string) {
+// and at which reasoning effort it was asked ("" when none is known), and
+// tells the request's memberWriter, if it has one. The header is
+// provider/model[:effort]; the body's model stays provider/model.
+func noteMember(w http.ResponseWriter, r *http.Request, p provider.Provider, model, effort string) {
 	id := p.ID + "/" + model
+	seat := provider.WithMemberEffort(id, effort)
 	if hw, ok := w.(*holdWriter); ok {
 		// watch's keepAlive may send them meanwhile
 		hw.note(providerHeader, p.ID)
-		hw.note(modelHeader, id)
+		hw.note(modelHeader, seat)
 	} else {
 		h := w.Header()
 		h.Set(providerHeader, p.ID)
-		h.Set(modelHeader, id)
+		h.Set(modelHeader, seat)
 	}
 	if mw, _ := r.Context().Value(memberKey{}).(*memberWriter); mw != nil {
 		mw.setMember(id)

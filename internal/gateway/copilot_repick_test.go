@@ -280,3 +280,74 @@ func TestCopilotAutoFallsBackToBase(t *testing.T) {
 		t.Fatalf("the route told the picks %+v", picks)
 	}
 }
+
+// Auto repicks reuse the translated body: the new model's supported levels
+// must not change what the reply says was actually sent.
+func TestCopilotAutoRepickHeaderSaysWireEffort(t *testing.T) {
+	for _, effort := range []string{"low", "", "retry"} {
+		t.Run("effort="+effort, func(t *testing.T) {
+			var mu sync.Mutex
+			var asked []map[string]any
+			copilotFake(t, "gho_repick_effort", func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				defer mu.Unlock()
+				switch r.URL.Path {
+				case "/models":
+					io.WriteString(w, `{"data":[{"id":"pick-first","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}},{"id":"pick-next","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}}]}`)
+				case "/auto":
+					w.WriteHeader(404)
+				case "/models/session":
+					io.WriteString(w, `{"session_token":"auto-tok","selected_model":"pick-first","available_models":["pick-first","pick-next"],"expires_at":`+mustString(time.Now().Add(time.Hour).Unix())+`}`)
+				default:
+					var body map[string]any
+					json.Unmarshal(b, &body)
+					asked = append(asked, body)
+					if modelOf(b) == "pick-first" {
+						w.WriteHeader(400)
+						io.WriteString(w, copilotNotSupported)
+						return
+					}
+					if effort == "retry" && body["reasoning_effort"] != "none" {
+						w.WriteHeader(400)
+						io.WriteString(w, `{"error":{"message":"Function tools with reasoning_effort are not supported; set reasoning_effort to 'none'."}}`)
+						return
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					io.WriteString(w, chatHi)
+				}
+			})
+			for model, levels := range map[string][]string{"pick-first": {"low", "high"}, "pick-next": {"medium", "high"}} {
+				if err := provider.SetModelEfforts("copilot/"+model, levels); err != nil {
+					t.Fatal(err)
+				}
+			}
+			body := `{"model":"copilot/auto","input":"hi"}`
+			if effort != "" {
+				askedEffort := effort
+				if effort == "retry" {
+					askedEffort = "low"
+				}
+				body = `{"model":"copilot/auto","input":"hi","reasoning":{"effort":"` + askedEffort + `"}}`
+			}
+			rec := serveHeader(t, New(), "/v1/responses", body)
+			mu.Lock()
+			defer mu.Unlock()
+			count, wantEffort := 2, effort
+			if effort == "retry" {
+				count, wantEffort = 3, "none"
+			}
+			if len(asked) != count || asked[len(asked)-1]["model"] != "pick-next" {
+				t.Fatalf("requests: %v", asked)
+			}
+			wire, _ := asked[len(asked)-1]["reasoning_effort"].(string)
+			if wire != wantEffort {
+				t.Fatalf("wire effort %q, want %q", wire, wantEffort)
+			}
+			want := provider.WithMemberEffort("copilot/pick-next", wire)
+			if got := rec.Result().Header.Get(modelHeader); got != want {
+				t.Errorf("%s = %q, want actual wire %q", modelHeader, got, want)
+			}
+		})
+	}
+}

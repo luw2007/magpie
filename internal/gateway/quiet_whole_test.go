@@ -197,8 +197,17 @@ func TestQuietNotAReplyLastFails(t *testing.T) {
 	if code != 200 || !strings.HasPrefix(body, ": keepalive") || b.n == 0 || strings.Contains(body, "OK: ") {
 		t.Fatalf("%d %q (b %d)", code, body, b.n)
 	}
-	if said := saidIn(provider.Chat, body); !strings.HasPrefix(said, "error:b did not stream: ") {
-		t.Fatalf("the agent's stream says %q:\n%s", said, body)
+	var failed bool
+	dec := decoder(provider.Chat)
+	readSSE(strings.NewReader(body), func(_, data string) error {
+		return dec(data, func(ev Event) {
+			if ev.Kind == KError {
+				failed = true
+			}
+		})
+	})
+	if !failed {
+		t.Fatalf("the agent's stream has no error event:\n%s", body)
 	}
 	if calls := s.Recent(); len(calls) == 0 || calls[0].Status != http.StatusBadGateway || !strings.Contains(calls[0].Error, "did not stream") {
 		t.Fatalf("logged as %+v", calls)

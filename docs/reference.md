@@ -1580,6 +1580,16 @@ models are named `provider/model`.
   groups off, it goes to the first of them in that order alone.
 - Every reply names who answered in `X-Magpie-Provider` (the provider)
   and `X-Magpie-Model` (`provider/model`), and so does the usage log.
+  When the reasoning effort the request really went out at is known,
+  `X-Magpie-Model` ends with it as `provider/model:effort`
+  (`codex-gpt/gpt-6-luna:max`): the level the client asked fitted to the
+  model's levels, or the one a group's member is fixed at, as translated
+  for the vendor, and that of the member that answered after a failover.
+  When no effort is specified or selected, there is no suffix; magpie never
+  fills in a vendor's default. The response body's model naming is unchanged:
+  it keeps the vendor's name, or `provider/model` when member naming is enabled.
+  Headers describe the selection when they are sent; a retry or failover
+  after a streaming keepalive has sent them cannot revise them.
 
 Anything with a base-URL setting can use it:
 

@@ -1428,15 +1428,24 @@ func newHoldWriter(w http.ResponseWriter, hold bool) *holdWriter {
 func (h *holdWriter) Header() http.Header { return h.header }
 
 // note sets a header magpie says of the try, which keepAlive may send
-// from watch's goroutine before the try has its status.
+// from watch's goroutine before the try has its status. Until the status
+// the try's own goroutine fills Header() with no lock, so a note (which may
+// come from another goroutine, as a search round's request is built) waits
+// in notes and joins the header with the status (writeHeader). Once the
+// agent has the headers (pass, keepAlive) a later note can't reach it.
 func (h *holdWriter) note(k, v string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.header.Set(k, v)
+	if h.passing || h.alive != nil && h.alive.sent {
+		return
+	}
 	if h.notes == nil {
 		h.notes = http.Header{}
 	}
 	h.notes.Set(k, v)
+	if h.status != 0 {
+		h.header.Set(k, v)
+	}
 }
 
 func (h *holdWriter) WriteHeader(code int) {
@@ -1450,6 +1459,9 @@ func (h *holdWriter) writeHeader(code int) {
 		return
 	}
 	h.status = code
+	for k, v := range h.notes {
+		h.header[k] = slices.Clone(v)
+	}
 	if h.hold && code >= 400 {
 		return
 	}

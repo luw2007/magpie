@@ -764,9 +764,12 @@ func TestOpenRouterMandatoryReasoningRetries(t *testing.T) {
 			if err := provider.Save(*p); err != nil {
 				t.Fatal(err)
 			}
-			code, body := post(t, tc.path, tc.body)
-			if code != 200 || f.calls != tc.calls {
-				t.Fatalf("%d %s after %d calls, last sent %s", code, body, f.calls, f.got)
+			rec := serveHeader(t, New(), tc.path, tc.body)
+			if f.calls != tc.calls {
+				t.Fatalf("%s after %d calls, last sent %s", rec.Body, f.calls, f.got)
+			}
+			if got := rec.Result().Header.Get(modelHeader); got != "fake/m1" {
+				t.Errorf("%s = %q after reasoning was removed, want fake/m1", modelHeader, got)
 			}
 			if tc.proto == provider.Chat && hasReasoningDisabled(f.got) || tc.proto == provider.Anthropic && bytes.Contains(f.got, []byte(`"disabled"`)) {
 				t.Fatalf("retry still disables reasoning: %s", f.got)
