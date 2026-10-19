@@ -410,6 +410,14 @@ name matches the heading (case-insensitively) is not repeated; distinct accounts
 remain named. The existing reading footer, stale warning and error display stay
 visible, and sources that report load retain their load figure. Pool bindings
 and history identity are unchanged.
+
+Usage sources and quota pools are configured at the bottom of Overview, after
+the usage note. Separate source and pool groups use compact responsive cards
+with counts and Add actions; pool reference details stay collapsed until opened.
+Inline editors use a single card. Configuration does not duplicate raw allowance
+JSON: the allowance meters above remain the usage display. CRUD, discovery,
+credentials, pool bindings and backend behavior are unchanged.
+
 The Plugins page updates the npm search-results section when a search answers,
 leaving suggested plugin cards in place so a click begun before the answer still
 opens the intended plugin. `plugin-market.test.cjs` holds the search response

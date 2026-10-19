@@ -19,28 +19,46 @@ function usageConfigButton(label, action) {
 }
 function renderUsageConfig() {
   const box = document.getElementById("usageConfig"); if (!box) return;
-  box.replaceChildren(el("h3", "", t("Usage sources and quota pools")));
+  box.replaceChildren(el("h3", "usage-config-title", t("Usage sources and quota pools")));
   box.append(el("p", "hint", t("Pools use the maximum applicable account usage, never a sum. Missing usage is unknown, not zero. Separate allowance windows are retained.")));
-  box.append(usageConfigButton(t("Add source"), () => editUsageSource()), usageConfigButton(t("Add pool"), () => editUsagePool()));
+  const group = (title, items, addLabel, addAction) => {
+    const section = el("section", "usage-config-group");
+    const head = el("div", "usage-config-head");
+    head.append(el("h4", "", t(title)), el("span", "hint", String(items.length)), usageConfigButton(t(addLabel), addAction));
+    const grid = el("div", "sess-grid usage-config-grid");
+    if (!items.length) grid.append(el("div", "sess-card sess-none", t("None")));
+    section.append(head, grid); box.append(section); return grid;
+  };
+  const sources = group("Usage sources", usageConfig.sources, "Add source", () => editUsageSource());
   for (const s of usageConfig.sources) {
-    const row = el("div", "row"); row.append(el("span", "grow", `${s.name || s.id} · ${s.type} · ${s.off ? t("Disabled") : t("Enabled")}`));
-    row.append(usageConfigButton(t("Edit"), () => editUsageSource(s)), usageConfigButton(t("Discover accounts"), async () => {
+    const card = el("article", "sess-card usage-config-card");
+    card.append(el("strong", "usage-config-name", s.name || s.id), el("p", "hint", `${s.type} · ${s.off ? t("Disabled") : t("Enabled")}`));
+    const actions = el("div", "usage-config-actions");
+    actions.append(usageConfigButton(t("Edit"), () => editUsageSource(s)), usageConfigButton(t("Discover accounts"), async () => {
       const accounts = await usageConfigRequest(`sources/${encodeURIComponent(s.id)}/discover`, "POST", {});
       editUsagePool({ sourceRef: s.id, accountIDs: [] }, accounts || []);
-    }), usageConfigButton(t("Delete"), async () => { if (confirm(`${t("Delete source")} ${s.name || s.id}?`)) { await usageConfigRequest(`sources/${encodeURIComponent(s.id)}`, "DELETE"); await loadUsageConfig(); } })); box.append(row);
+    }), usageConfigButton(t("Delete"), async () => { if (confirm(`${t("Delete source")} ${s.name || s.id}?`)) { await usageConfigRequest(`sources/${encodeURIComponent(s.id)}`, "DELETE"); await loadUsageConfig(); } }));
+    card.append(actions); sources.append(card);
   }
+  const pools = group("Quota pools", usageConfig.pools, "Add pool", () => editUsagePool());
   for (const p of usageConfig.pools) {
-    const row = el("div", "row"); const info = el("div", "grow");
+    const card = el("article", "sess-card usage-config-card");
     const source = usageConfig.sources.find(s => s.id === p.sourceRef);
-    const sourceLabel = source?.name ? `${source.name} (${p.sourceRef})` : p.sourceRef;
-    info.append(el("div", "", `${p.name || p.id} · ${p.available ? t("Usage available") : t("Usage unknown / unavailable")}`),
-      el("div", "hint", `${t("Pool")}: ${p.id} · ${t("Source")}: ${sourceLabel} · ${t("Accounts")}: ${(p.accountIDs || []).join(", ") || t("None")} · ${t("Keys")}: ${(p.keys || []).join(", ") || t("None")}`));
-    if (p.available) { const windows = el("pre", "hint"); windows.textContent = JSON.stringify(p.allowance, null, 2); info.append(windows); }
-    row.append(info, usageConfigButton(t("Edit"), () => editUsagePool(p)), usageConfigButton(t("Delete"), async () => { if (confirm(`${t("Delete pool")} ${p.name || p.id}?`)) { await usageConfigRequest(`pools/${encodeURIComponent(p.id)}`, "DELETE"); await loadUsageConfig(); } })); box.append(row);
+    card.append(el("strong", "usage-config-name", p.name || p.id), el("p", "hint", t(p.available ? "Usage available" : "Usage unknown / unavailable")), el("p", "hint", source?.name || p.sourceRef || t("None")));
+    const details = el("details", "usage-config-details");
+    details.append(el("summary", "", t("Details")));
+    const list = el("dl");
+    for (const [label, value] of [["Pool", p.id], ["Source", p.sourceRef], ["Accounts", (p.accountIDs || []).join(", ")], ["Keys", (p.keys || []).join(", ")]]) list.append(el("dt", "", t(label)), el("dd", "", value || t("None")));
+    details.append(list); card.append(details);
+    const actions = el("div", "usage-config-actions");
+    actions.append(usageConfigButton(t("Edit"), () => editUsagePool(p)), usageConfigButton(t("Delete"), async () => { if (confirm(`${t("Delete pool")} ${p.name || p.id}?`)) { await usageConfigRequest(`pools/${encodeURIComponent(p.id)}`, "DELETE"); await loadUsageConfig(); } }));
+    card.append(actions); pools.append(card);
   }
 }
 function usageConfigForm(title) {
-  const box = document.getElementById("usageConfig"); box.replaceChildren(el("h3", "", title));
+  const root = document.getElementById("usageConfig");
+  const box = el("div", "sess-card usage-config-editor");
+  box.append(el("h3", "usage-config-title", title)); root.replaceChildren(box);
   usageConfigEditing = true;
   const values = {};
   const add = (name, value = "", type = "text") => { const i = input(value, name, type); values[name] = i; box.append(...field(name, i)); return i; };

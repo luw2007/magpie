@@ -37,7 +37,6 @@ magpie.plugin("usage", (ctx) => {
       <div class="segs" id="quotaMode" hidden></div>
     </div>
     <section class="subscription-usage" id="subscriptionUsage"></section>
-    <section id="usageConfig"></section>
     <p class="usage-note" id="usageScope" data-t>Gateway calls only; session-log calls are in Requests. Local rejections are excluded from totals.</p>
     <section class="stats" id="stats"></section>
     <section class="chart" id="chart"></section>
@@ -51,6 +50,7 @@ magpie.plugin("usage", (ctx) => {
     <div class="row-head" id="usageKeysHead" hidden><button class="fold" type="button" data-fold="keys" aria-expanded="true" aria-controls="usageKeys"><span class="label" data-t>Gateway keys</span></button></div>
     <div class="list" id="usageKeys" hidden></div>
     <p class="usage-note" id="usageNote"></p>
+    <section class="usage-config" id="usageConfig"></section>
   </div>
   <div class="usage-pane" id="ledgerPane" hidden>
     <div class="sess-tools">

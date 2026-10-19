@@ -1497,6 +1497,26 @@ details.cx-part[open] > summary .cx-h { margin-bottom: 2px; }
 .sess-card-head .tz { font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess-card-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11px; color: var(--muted); }
 .sess-card-foot .grow { flex: 1; }
+/* Bottom-of-Overview configuration, separate from allowance display cards. */
+.usage-config { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.usage-config-title { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--muted); }
+.usage-config-group { margin-top: 18px; }
+.usage-config-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.usage-config-head h4 { margin: 0; font-size: 12px; font-weight: 600; }
+.usage-config-head button { margin-left: auto; }
+.usage-config-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.usage-config-card { gap: 6px; overflow-wrap: anywhere; }
+.usage-config-card p { margin: 0; }
+.usage-config-name { font-size: 13px; }
+.usage-config-actions { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: auto; padding-top: 10px; }
+.usage-config-details { font-size: 12px; color: var(--muted); }
+.usage-config-details summary { cursor: pointer; }
+.usage-config-details dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 10px 0 0; }
+.usage-config-details dt { color: var(--faint); }
+.usage-config-details dd { margin: 0; overflow-wrap: anywhere; }
+.usage-config-editor { display: block; overflow-wrap: anywhere; }
+.usage-config-editor > button { margin: 12px 12px 0 0; }
+.usage-config-editor input, .usage-config-editor select { max-width: 100%; }
 .sess-none { color: var(--faint); font-size: 12px; padding: 18px 0; text-align: center; margin: auto 0; }
 .sess-more { font-size: 11px; color: var(--faint); padding: 4px 2px 0; }
 /* a card of bars is one grid: its names take the width the longest needs
