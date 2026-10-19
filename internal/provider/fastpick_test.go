@@ -18,7 +18,7 @@ func TestSetFastPick(t *testing.T) {
 	if !IsFastPick("codex", "oa/gpt-6.1-sol") || IsFastPick("opencode", "oa/gpt-6.1-sol") {
 		t.Fatalf("picks %v", settings.Load().FastPicks)
 	}
-	for _, id := range []string{"rl/claude-opus-5-5", "oa/nope", GroupPrefix + "f"} {
+	for _, id := range []string{"oa/nope", GroupPrefix + "f"} {
 		if err := SetFastPick("codex", id, true); err == nil {
 			t.Errorf("%s switched fast", id)
 		}
@@ -34,6 +34,15 @@ func TestSetFastPick(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := SetFastPick("codex", "rl/gpt-6.1-sol", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetFastPick("codex", "rl/claude-opus-5-5", true); err != nil {
+		t.Fatal(err)
+	}
+	if !IsFastPick("codex", "rl/claude-opus-5-5") {
+		t.Fatal("relay Opus fast pick was not saved")
+	}
+	if err := SetFastPick("codex", "rl/claude-opus-5-5", false); err != nil {
 		t.Fatal(err)
 	}
 

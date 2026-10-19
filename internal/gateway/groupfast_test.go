@@ -198,9 +198,45 @@ func TestFastMemberAnthropic(t *testing.T) {
 	}
 }
 
-// A member not sent fast, and one whose vendor has no fast mode magpie can
-// ask for (a relay; Claude Sonnet), goes as the agent asked: no tier, no
-// speed, no beta.
+// A relay's Opus is selected by model name, for a group's fast member
+// and a client's priority request, in both native and translated APIs.
+func TestFastRelayOpus(t *testing.T) {
+	s, up := fasted(t)
+	if err := provider.Save(provider.Provider{ID: "relay-opus", Name: "Relay Opus", Key: "k", Anthropic: "https://relay.example", Models: []string{"claude-opus-5-5", "claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, memberFast := range []bool{false, true} {
+		var fast []string
+		if memberFast {
+			fast = []string{"relay-opus/claude-opus-5-5"}
+		}
+		saveFastGroup(t, []string{"relay-opus/claude-opus-5-5"}, fast)
+		for _, a := range fastAsks {
+			body := []byte(a.body)
+			if !memberFast {
+				proto := provider.Chat
+				switch a.name {
+				case "responses":
+					proto = provider.Responses
+				case "anthropic":
+					proto = provider.Anthropic
+				}
+				body = withFast(proto, body)
+			}
+			postProto(t, s, a.path, string(body))
+			host, path, beta, sent := up.last(t)
+			if host != "relay.example" || path != "/v1/messages" || sent["model"] != "claude-opus-5-5" || sent["speed"] != "fast" || !strings.Contains(beta, claudeFastBeta) {
+				t.Fatalf("member fast %v, %s: %s%s beta %q body %v", memberFast, a.name, host, path, beta, sent)
+			}
+			if _, ok := sent["service_tier"]; ok {
+				t.Fatalf("%s: OpenAI tier leaked to Anthropic: %v", a.name, sent)
+			}
+		}
+	}
+}
+
+// A member not sent fast, and one whose model has no fast mode magpie can
+// ask for (Claude Sonnet), goes as the agent asked: no tier, no speed, no beta.
 func TestFastMemberLeftAlone(t *testing.T) {
 	s, up := fasted(t)
 	check := func(what string) {
@@ -336,7 +372,7 @@ func TestWithFastWire(t *testing.T) {
 		{"api.anthropic.com", "claude-opus-5-5", true},
 		{"api.anthropic.com", "claude-opus-4-8-20260101", true},
 		{"api.anthropic.com", "claude-sonnet-5", false},
-		{"relay.example", "claude-opus-5-5", false},
+		{"relay.example", "claude-opus-5-5", true},
 	} {
 		b, err := build(provider.Anthropic, r, c.model, c.host, false)
 		if err != nil {

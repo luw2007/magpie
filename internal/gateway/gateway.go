@@ -3726,7 +3726,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		body = thinkingOffAsTaken(body, path)
 		body = samplingAsTaken(body, path)
 		asked := askedBetas(in)
-		if gjson.GetBytes(body, "speed").String() == "fast" && provider.HostOf(p.Base(to)) == "api.anthropic.com" {
+		if gjson.GetBytes(body, "speed").String() == "fast" && provider.ClaudeFast(modelOf(body)) {
 			asked = append(slices.Clone(asked), claudeFastBeta) // a group's member sent fast
 		}
 		// auto mode's review goes to Claude alone (automode.go)
@@ -5767,7 +5767,7 @@ func build(proto provider.Protocol, r *Request, model, host string, rejectTemp b
 		// the whole request away for (#1611)
 		out = withThinkingOnToolTurns(out)
 	}
-	if r.Fast && host == "api.anthropic.com" && provider.ClaudeFast(model) {
+	if r.Fast && provider.ClaudeFast(model) {
 		// Claude's fast mode, on the models that have it (its beta header
 		// goes with it: forwardOnce)
 		out = withFields(out, map[string]any{"speed": "fast"})

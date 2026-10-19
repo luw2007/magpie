@@ -3,9 +3,9 @@ package provider
 // A group's member may be sent in its vendor's fast mode (Discord: "gpt-6.1
 // sol · high · fast"): OpenAI's priority processing (service_tier
 // "priority", Codex's Fast) on a ChatGPT account or an OpenAI key, Cursor's
-// -fast model, Claude's fast mode (speed "fast") on an Anthropic key for
-// the Opus models that have it. A member whose model has none is sent as
-// it is.
+// -fast model, Claude's fast mode (speed "fast") on an Anthropic endpoint
+// for the Opus models that have it, including relays. A member whose model
+// has none is sent as it is.
 //
 // Group.Fast lists those members as Members spells them, kept apart from
 // the member's id so that a version before it, which reads no "fast",
@@ -48,11 +48,12 @@ func (g Group) IsFast(id string) bool {
 // CanFast reports whether model, as p serves it, has a fast mode magpie
 // can ask for: a ChatGPT account's GPT models (Codex's Fast), Cursor's
 // models with a -fast one, an OpenAI key's GPT and o-series models on its
-// Responses API (priority processing), and an Anthropic key's Opus models with fast mode.
-// A Claude subscription runs Claude Code itself, and a cloud (Bedrock,
-// Vertex) refuses the field, so neither is. A provider the user added by
-// its address (AddedByAddress) is asked for priority on a GPT model it
-// serves on an OpenAI API, when the user switches it fast themselves
+// Responses API (priority processing), and Opus models with fast mode on
+// an Anthropic endpoint, including a relay. A Claude subscription runs
+// Claude Code itself, and a cloud (Bedrock, Vertex) refuses the field, so
+// neither is. A provider the user added by its address (AddedByAddress)
+// is asked for priority on a GPT model it serves on an OpenAI API, when
+// the user switches it fast themselves
 // (#1615): it is sent service_tier "priority" there, as Codex's own Fast
 // already is (#1234), and one that turns the field away is asked again
 // without it and not sent it again (the gateway's optional fields).
@@ -97,7 +98,7 @@ func CanFast(p Provider, model string) bool {
 	if HostOf(p.Responses) == "api.openai.com" && openAIFast.MatchString(model) {
 		return true
 	}
-	if HostOf(p.Anthropic) == "api.anthropic.com" && ClaudeFast(model) {
+	if p.Anthropic != "" && ClaudeFast(model) {
 		return true
 	}
 	return OwnFast(p, model)
@@ -174,7 +175,7 @@ func cleanFast(entries []Entry, g *Group) error {
 			return fmt.Errorf("%s is a group: its models are sent as it says, so it takes no :%s", model, FastWord)
 		}
 		if p, m, ok := resolveIn(entries, model); ok && !CanFast(p, m) {
-			return fmt.Errorf("%s has no fast mode magpie can ask for (ChatGPT and OpenAI GPT models, a GPT model on a provider you added by its address, Cursor's with a fast one, and Claude Opus 4.8 and 5 on an Anthropic key have)", model)
+			return fmt.Errorf("%s has no fast mode magpie can ask for (ChatGPT and OpenAI GPT models, a GPT model on a provider you added by its address, Cursor's with a fast one, and Claude Opus 4.8 and 5 on an Anthropic endpoint have)", model)
 		}
 		out = append(out, f)
 	}

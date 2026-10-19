@@ -45,7 +45,11 @@ func TestCanFast(t *testing.T) {
 		{*an, "claude-opus-5-5", true},
 		{*an, "claude-opus-4-8-20260501", true},
 		{*an, "claude-sonnet-5", false},
-		{*rl, "claude-opus-5-5", false}, // Claude's speed isn't asked of a relay
+		{*rl, "claude-opus-5-5", true},
+		{*rl, "claude-opus-5-5-20260922", true},
+		{*rl, "claude-sonnet-5", false},
+		{*rl, "claude-opus-5-5-other", false},
+		{Provider{ID: "br", Anthropic: "https://bedrock-runtime.us-east-1.amazonaws.com"}, "claude-opus-5-5", false},
 	} {
 		if got := CanFast(c.p, c.model); got != c.want {
 			t.Errorf("%s/%s: %v, want %v", c.p.ID, c.model, got, c.want)
@@ -130,7 +134,7 @@ func TestSaveGroupFast(t *testing.T) {
 	if g, _, _ = FindGroup("group/f"); !slices.Contains(g.Fast, "openai/gpt-6.1-sol:high") {
 		t.Fatalf("after the rename %v", g.Fast)
 	}
-	for _, m := range []string{"rl/claude-opus-5-5:fast", "an/claude-sonnet-5:fast", "group/f:fast"} {
+	for _, m := range []string{"an/claude-sonnet-5:fast", "group/f:fast"} {
 		err := SaveGroup(Group{ID: "g", Members: []string{m, "an/claude-opus-5-5"}})
 		if err == nil || !(strings.Contains(err.Error(), "no fast mode") || strings.Contains(err.Error(), "takes no :fast")) {
 			t.Errorf("%s: %v", m, err)
