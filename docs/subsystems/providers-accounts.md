@@ -172,14 +172,21 @@ computer's. Routing is each computer's own decision, weighed by its own
 providers, accounts and quota, so it is switched, never merged, and nothing of
 it is stored here. The remote answers three read-only paths
 ([`gateway/trace_peers.go`](../../internal/gateway/trace_peers.go)):
-`GET /v1/magpie/trace?after=&wait=` (the live trace; `wait` is capped at 25
-seconds, as the page's own long poll waits), `GET /v1/magpie/trace/history?day=`
-(the days kept, and the routes of one) and `GET /v1/magpie/trace/route?id=&day=`
-(one request, `null` when it has none: a 404 would read as "no such API"). All
-three follow the quotas' rule: this machine, or another with an enabled gateway
-key while the gateway is shared (`local`, `sharedWith`), and a key held to a
-budget, models or accounts is refused (`refuseHeld`, `heldRefused`), since the
-routes of every key's requests are not its to see.
+`GET /v1/magpie/routing/trace?after=&wait=` (the live trace; `wait` is capped
+at 25 seconds, as the page's own long poll waits),
+`GET /v1/magpie/routing/trace/history?day=` (the days kept, and the routes of
+one) and `GET /v1/magpie/routing/trace/route?id=&day=` (one request, `null`
+when it has none: a 404 would read as "no such API"). All three follow the
+quotas' rule: this machine, or another with an enabled gateway key while the
+gateway is shared (`local`, `sharedWith`), and a key held to a budget, models
+or accounts is refused (`refuseHeld`, `heldRefused`), since the routes of
+every key's requests are not its to see.
+These peer APIs answer `{object: "trace", data: ...}`; the live `data` holds
+the trace state and the remote's `now` clock. They are distinct from the
+[loopback-only owner trace](gateway-routing.md#remote-magpie-apis) at
+`/v1/magpie/trace`, which has a flat response with process identity and never
+allows a LAN reader, even with a gateway key. There are no old peer-path
+aliases; both computers must use the routing namespace for remote sources.
 
 On the Mac, `?source=<id of a remote-magpie provider>` on `/api/gateway/trace`,
 `/history` and `/route` turns the read to that provider
@@ -191,11 +198,12 @@ name nothing in this one's chats. An id that is no remote magpie in use is a
 a 502 `{error, kind}` with `provider.RemoteErrorKind`'s kind. It is fetched with
 `provider.RemoteGet`, so a day's routes can be as large as a usage day.
 
-The page (`source` in [`routing.js`](../../internal/gui/assets/routing.js)) has
-a Computer picker (`#rtSource`) beside the tabs, there only once a remote magpie
-is in use and not on the Groups and Several accounts pages, which are this
-computer's. Choosing a computer empties the page, ends a replay and the long
-poll in flight (`setSource`, `srcGen`), and asks all three reads with
+The page (`source` in
+[`plugins/routing/client.js`](../../internal/gui/assets/plugins/routing/client.js))
+has a Computer picker (`#rtSource`) beside the tabs, there only once a remote
+magpie is in use and not on the Groups and Several accounts pages, which are
+this computer's. Choosing a computer empties the page, ends a replay and the
+long poll in flight (`setSource`, `srcGen`), and asks all three reads with
 `source`; an answer that came back after a switch is dropped. A failure is told
 over every pane (`#rtSrcNote`) in words for its kind. For another computer the
 page leaves out this computer's quota windows and the Try now button, which
@@ -203,8 +211,9 @@ lifts a rest on this gateway, and asks no session titles. A remote taken away
 while looked at returns the page to this computer.
 
 Verification: `TestPeerRoutingEndpoints`, `TestHeldKeyToldNoAccounts`,
-`TestNetworkGatewayGuardsEveryRoute`, `TestRoutingReadsARemoteMagpie`, and the
-browser test `routing-source.test.cjs`.
+`TestNetworkGatewayGuardsEveryRoute`, `TestRoutingReadsARemoteMagpie`,
+`TestOwnerAndPeerTraceAreDistinct`, and the browser test
+`routing-source.test.cjs`.
 
 The CLI and TUI report model-list fetch errors for remote and other mixed providers
 (such as OpenRouter, serving conversation and decision models). Only a

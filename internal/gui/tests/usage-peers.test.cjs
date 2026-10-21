@@ -130,8 +130,27 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await t.test(lang + ": Pull now asks for that remote alone and the line follows", async () => {
         const state = { peers: [{ id: "devbox", name: "Devbox", error: "remote magpie didn't take this key", kind: "key" }], pulls: [], afterPull: [{ ...good, at: ago(1e3) }] };
         const { page, errors } = await open(lang, "dark", state);
+        const view = page.locator("#view-usage");
+        const pull = page.locator("#ledPeers").getByRole("button", { name: w.pull });
+        // Requests now has a dashboard above its peer notices. Reach the
+        // action as a reader before measuring whether the action scrolls:
+        // the page deliberately rejects automatic non-reader scrolling.
+        const pane = await view.boundingBox();
+        await page.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
+        for (let i = 0; i < 80; i++) {
+          const target = await pull.evaluate((button) => {
+            const b = button.getBoundingClientRect();
+            const v = button.closest(".view").getBoundingClientRect();
+            const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+            return { reached: b.top >= v.top && b.bottom <= v.bottom && button.contains(hit), up: b.top < v.top + v.height / 2 };
+          });
+          if (target.reached) break;
+          await page.mouse.wheel(0, target.up ? -80 : 80);
+          await page.waitForTimeout(100);
+        }
+        await page.waitForTimeout(200);
         const before = await page.locator("#view-usage").evaluate((v) => v.scrollTop);
-        await page.locator("#ledPeers").getByRole("button", { name: w.pull }).click();
+        await pull.click();
         await page.locator("#ledPeers .led-peer:not(.warn)").waitFor();
         assert.deepEqual(state.pulls, [{ id: "devbox" }]);
         assert.match(await text(page), /Devbox/);

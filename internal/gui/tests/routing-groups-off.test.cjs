@@ -5,12 +5,15 @@
 // so and has a button that turns them on (plugins/builtin {id:"groups"}),
 // after which the groups and New group are back and the note is gone. With
 // them on, there is no note. English and Chinese, Chromium and WebKit, wide
-// and narrow, and every language has the strings.
+// and narrow, and every language has the strings. The page opens on Live,
+// so each test opens the Routing groups pane before it reads the note or
+// the groups there.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [
@@ -82,6 +85,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, false, posts));
         await page.goto("http://magpie.test/?view=routing");
+        // the page opens on Live: the note, the groups and New group are the
+        // Groups pane's
+        await openPane(page, "groups");
 
         const note = page.locator(".rt-gsec .rt-goff");
         await note.waitFor();
@@ -110,6 +116,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, true, []));
       await page.goto("http://magpie.test/?view=routing");
+      await openPane(page, "groups");
       await page.locator(".rt-group", { hasText: "Mine" }).waitFor({ state: "visible" });
       assert.equal(await page.locator(".rt-goff").isVisible(), false);
       assert(await page.locator("#rtNewGroup").isVisible());
@@ -121,6 +128,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const page = await open(engine, 900, t, `${engine}-routing-groups-off-i18n.png`);
     await page.route("**/*", serve("en", false, []));
     await page.goto("http://magpie.test/?view=routing");
+    await openPane(page, "groups");
     await page.locator(".rt-goff").waitFor();
     const missing = await page.evaluate((ks) => ["zh", "zh-TW", "ja", "de"].flatMap((l) => ks.filter((k) => !I18N[l]?.[k]).map((k) => `${l}: ${k}`)), keys);
     assert.deepEqual(missing, []);

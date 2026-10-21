@@ -336,7 +336,7 @@ func TestNetworkGatewayGuardsEveryRoute(t *testing.T) {
 		{"GET", "/api/version"}, {"GET", "/api/tags"}, {"POST", "/api/show"},
 		{"GET", "/v1/magpie/quotas"}, {"GET", "/v1/magpie/quotas/history"},
 		{"GET", provider.RemoteCardsPath}, {"POST", provider.RemoteRefreshPath}, {"GET", usage.PeersPath},
-		{"GET", TracePath}, {"GET", TraceHistoryPath}, {"GET", TraceRoutePath + "?id=1&day=2000-01-01"},
+		{"GET", PeerTracePath}, {"GET", PeerTraceHistoryPath}, {"GET", PeerTraceRoutePath + "?id=1&day=2000-01-01"},
 		{"GET", "/v1/magpie/route?session=s"}, {"GET", "/v1/magpie/concurrency"}, {"GET", "/v1/magpie/limit"},
 		{"POST", "/v1/chat/completions"}, {"POST", "/chat/completions"},
 		{"POST", "/v1/responses"}, {"POST", "/responses"}, {"GET", "/v1/responses"}, {"GET", "/responses"},

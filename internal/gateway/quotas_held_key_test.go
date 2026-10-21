@@ -75,9 +75,9 @@ func TestHeldKeyToldNoAccounts(t *testing.T) {
 		{"GET", provider.RemoteCardsPath},
 		{"POST", provider.RemoteRefreshPath},
 		{"GET", "/v1/magpie/concurrency"},
-		{"GET", TracePath},
-		{"GET", TraceHistoryPath},
-		{"GET", TraceRoutePath + "?id=1&day=2000-01-01"},
+		{"GET", PeerTracePath},
+		{"GET", PeerTraceHistoryPath},
+		{"GET", PeerTraceRoutePath + "?id=1&day=2000-01-01"},
 	}
 	route := func(from, secret, session string) any {
 		t.Helper()

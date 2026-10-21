@@ -5,6 +5,7 @@ function renderQuotas() {
   renderPanelQuota();
   const subscriptions = $("#subscriptionUsage");
   const restoreFlash = keepQuotaFlash(subscriptions);
+  const restoreRefresh = keepQuotaRefresh(subscriptions);
   subscriptions.replaceChildren();
   // the allowances' own heading, apart from the period's cost: used or
   // left turns their meters, and is only there when some card has one (a
@@ -31,9 +32,10 @@ function renderQuotas() {
       subscriptions.append(card);
     }
     packUsageNow(subscriptions);
+    restoreRefresh();
     return;
   }
-  if (usageArranging) { usageRenderPending = true; return; }
+  if (usageArranging) { usageRenderPending = true; restoreRefresh(); return; }
   subscriptions.hidden = !quotas.length;
   // an agent with several accounts is one card, a section per account
   const groups = [];
@@ -156,6 +158,7 @@ function renderQuotas() {
   markUpstream();
   packUsageNow(subscriptions);
   restoreFlash();
+  restoreRefresh();
   requestAnimationFrame(focusQuotaCard);
 }
 // packUsage lays the Usage page's cards out in columns, each card as tall

@@ -11,8 +11,9 @@ import (
 // the GUI shows a notice in the reader's language by matching the English
 // it gets to these templates (NOTICES and tNotice in i18n.js), and
 // TestEveryNoticeIsTranslated holds each to a translation in every
-// language the GUI has (#1508). A notice of several sentences is notices
-// joined with a space.
+// language the GUI translates into (English is the source language, its
+// keys the English t() falls back to, #1508). A notice of several
+// sentences is notices joined with a space.
 type notice string
 
 var notices []notice

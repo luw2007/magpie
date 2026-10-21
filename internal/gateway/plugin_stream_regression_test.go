@@ -44,15 +44,11 @@ func pluginReplyGateway(t *testing.T, vendor http.Handler) (string, string, *htt
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = nil
 	tr.DisableCompression = true
-	tr.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		c, err := (&net.Dialer{}).DialContext(ctx, network, address)
-		if err == nil {
-			if tcp, ok := c.(*net.TCPConn); ok {
-				_ = tcp.SetReadBuffer(32 << 10)
-			}
-		}
-		return c, err
-	}
+	// Leave the reading client's receive window autotuned. Shrinking it after
+	// Dial has negotiated TCP window scaling can make Linux wait for window
+	// updates between bursts, throttling even the unpaced JSON reader. The
+	// server's small write buffer and pluginPacedReader provide backpressure;
+	// the stalled-client case sets its own receive buffer separately.
 	t.Cleanup(tr.CloseIdleConnections)
 	return gw.URL, pid + "/fake-1", &http.Client{Transport: tr, Timeout: 75 * time.Second}
 }

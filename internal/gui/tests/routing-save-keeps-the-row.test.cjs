@@ -5,12 +5,15 @@
 // the shrink left the reader at the foot of the list — rows they never clicked
 // — while the row they were editing was above the window. The row saved comes
 // back into sight instead, as near to where they were as the shorter content
-// allows. In every language, Chromium and WebKit, wide and narrow.
+// allows. The page opens on Live, so the reader opens the Routing groups
+// pane, where the rows and the editor are, before any of it. In every
+// language, Chromium and WebKit, wide and narrow.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 // enough models that the editor is taller than the window it is opened in
@@ -71,6 +74,26 @@ const seen = (page) => page.evaluate(() => {
     max: Math.round(v.scrollHeight - v.clientHeight),
   };
 });
+// Whether the Save is where a reader's wheel leaves it clickable: the
+// whole button inside the view and below its sticky head (the head
+// wraps, so its own box is read, not a fixed height), and the button's
+// centre really the Save's — a Save left under the head takes the click
+const atSave = (page, text) => page.evaluate((txt) => {
+  const v = document.querySelector("#view-routing");
+  const vr = v.getBoundingClientRect();
+  const hb = document.querySelector("#view-routing > .row-head").getBoundingClientRect();
+  const re = new RegExp(`^${txt}$`);
+  const b = [...v.querySelectorAll(".rt-gedit button")].find((n) => re.test(n.textContent.trim()));
+  const br = b && b.getBoundingClientRect();
+  if (!br) return null;
+  const at = document.elementFromPoint(br.x + br.width / 2, br.y + br.height / 2);
+  return {
+    inSight: br.top >= hb.bottom - 1 && br.bottom <= vr.bottom + 1,
+    low: br.bottom > vr.bottom,
+    underHead: br.top < hb.bottom,
+    hit: !!(at && b.contains(at)),
+  };
+}, text);
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) for (const width of [1100, 420]) {
@@ -89,6 +112,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=routing");
+      // the groups, their rows and the editor are the Routing groups pane's
+      await openPane(page, "groups");
       await page.locator(".rt-group[data-id=big]").waitFor();
 
       // narrow, the row is below the window's foot; magpie moves the page
@@ -109,15 +134,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await save.waitFor();
       const view = page.locator("#view-routing");
       const box = await view.boundingBox();
-      // the reader scrolls down to the Save, as they must: the editor is taller
-      // than the window
+      // the reader scrolls down to the Save, as they must: the editor is
+      // taller than the window. The page's own head is sticky and wraps
+      // (taller at 420), so a Save the wheel left under it takes the
+      // click: on down while the Save is below the foot, back up when it
+      // has ridden too far, until the whole button is inside the view
+      // under the head and its centre is the Save's
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       for (let i = 0; i < 200; i++) {
-        const b = await save.boundingBox();
-        if (b && b.y + b.height <= box.y + box.height) break;
-        if (await view.evaluate((v) => v.scrollTop + v.clientHeight >= v.scrollHeight - 1)) break;
-        await page.mouse.wheel(0, 120);
-        await page.waitForTimeout(20);
+        const at = await atSave(page, saveText);
+        if (at && at.inSight && at.hit) break;
+        // back up only when the Save has ridden under the head; the page's
+        // foot ends the downward strokes, never the corrective ones
+        const up = !!at && !at.low && at.underHead;
+        if (!up && await view.evaluate((v) => v.scrollTop + v.clientHeight >= v.scrollHeight - 1)) break;
+        if (at && at.inSight && !at.hit) { await page.waitForTimeout(120); continue; }
+        await page.mouse.wheel(0, up ? -80 : 120);
+        await page.waitForTimeout(100);
       }
       await page.waitForTimeout(300);
       const before = await seen(page);

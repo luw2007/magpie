@@ -32,11 +32,11 @@ func TestRoutingReadsARemoteMagpie(t *testing.T) {
 		route := gateway.Route{ID: 42, Seq: 7, Time: time.Now(), Agent: "codex", Model: "gpt", Provider: "p", Order: []gateway.Weighed{}, Tries: []gateway.Try{}, Done: true, Status: 200,
 			Usage: []gateway.RouteUsage{{Provider: "p", Model: "gpt", Input: 1000, Output: 100}}}
 		switch r.URL.Path {
-		case gateway.TracePath:
+		case gateway.PeerTracePath:
 			json.NewEncoder(w).Encode(map[string]any{"data": gateway.PeerTrace{TraceState: gateway.TraceState{Seq: 7, Routes: []gateway.Route{route}}, Now: time.Now()}})
-		case gateway.TraceHistoryPath:
+		case gateway.PeerTraceHistoryPath:
 			json.NewEncoder(w).Encode(map[string]any{"data": gateway.PeerHistory{Days: []gateway.HistoryDay{{Day: "2026-10-14", Requests: 1}}, Routes: []gateway.Route{route}}})
-		case gateway.TraceRoutePath:
+		case gateway.PeerTraceRoutePath:
 			if r.URL.Query().Get("id") == "42" {
 				json.NewEncoder(w).Encode(map[string]any{"data": route})
 			} else {
@@ -67,7 +67,7 @@ func TestRoutingReadsARemoteMagpie(t *testing.T) {
 	if !tr.Routes[0].Priced && tr.Routes[0].Unpriced == 0 {
 		t.Fatalf("the remote's route is not priced here: %+v", tr.Routes[0])
 	}
-	if want := "/v1/magpie/trace?after=3&wait=25 Bearer secret"; asked[len(asked)-1] != want {
+	if want := "/v1/magpie/routing/trace?after=3&wait=25 Bearer secret"; asked[len(asked)-1] != want {
 		t.Fatalf("asked %q, want %q", asked[len(asked)-1], want)
 	}
 

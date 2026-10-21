@@ -14360,7 +14360,10 @@ function renderKeyAccounts(p) {
     bar.append(count, el("span", "grow"), x, add);
     box.append(keys, bar);
     list.append(box);
-    queueMicrotask(() => keys.focus({ preventScroll: true }));
+    // a frame first, as in openModal: focused before the box paints,
+    // WebKit scrolls to the textarea, preventScroll or not; skipped when
+    // something newer took the focus in the meantime
+    requestAnimationFrame(() => { if (keys.isConnected && document.activeElement === document.body) keys.focus({ preventScroll: true }); });
   } else if (addingKey?.id === p.id) {
     const box = el("div", "acc adding");
     // the key is what's needed; a name is only for telling keys apart
@@ -14404,7 +14407,10 @@ function renderKeyAccounts(p) {
     bar.append(el("span", "grow"), x, add);
     box.append(fields, bar);
     list.append(box);
-    queueMicrotask(() => key.focus());
+    // as the bulk box above: a frame for the paint first, or WebKit
+    // scrolls to the unpainted field, preventScroll or not; skipped when
+    // something newer took the focus in the meantime
+    requestAnimationFrame(() => { if (key.isConnected && document.activeElement === document.body) key.focus({ preventScroll: true }); });
   } else {
     const add = el("button", "acc add");
     const ic = el("span", "dot");

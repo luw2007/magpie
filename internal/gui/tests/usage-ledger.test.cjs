@@ -52,7 +52,7 @@ function page(q) {
   };
 }
 
-function server(lang, theme, asked) {
+function server(lang, theme, asked, trace) {
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     const json = (data) => route.fulfill({ json: data });
@@ -60,7 +60,9 @@ function server(lang, theme, asked) {
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/gateway/trace") {
       await new Promise((r) => setTimeout(r, 100));
-      return json({ mine: false, seq: 0, routes: [], totals: { requests: 0, rerouted: 0, errors: 0 }, now: new Date().toISOString() });
+      // a live trace given, from this computer's gateway; else another
+      // magpie serves it
+      return json(trace || { mine: false, seq: 0, routes: [], totals: { requests: 0, rerouted: 0, errors: 0 }, now: new Date().toISOString() });
     }
     if (url.pathname === "/api/gateway/history") return json({ days: [], routes: [], cut: false });
     if (url.pathname === "/api/gateway/route") {
@@ -137,13 +139,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const shots = process.env.ARTIFACT_DIR;
     if (shots) await fs.mkdir(shots, { recursive: true });
 
-    const open = async (lang, theme, asked, width = 1180, height = 640) => {
+    // trace: the gateway's live trace, asked once as the page boots; Routing
+    // asks no more while it is out of sight, so a live one is waited for by
+    // what its first answer sets off (the history read) rather than a while
+    const open = async (lang, theme, asked, trace, width = 1180, height = 640) => {
       const errors = [];
       const page = await (await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" })).newPage();
       page.setDefaultTimeout(5000);
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.route("**/*", server(lang, theme, asked));
+      await page.route("**/*", server(lang, theme, asked, trace));
+      const pathnameOf = (r) => new URL(r.url()).pathname;
+      const firstTrace = trace && page.waitForResponse((r) => pathnameOf(r) === "/api/gateway/trace");
+      const firstHistory = trace && page.waitForResponse((r) => pathnameOf(r) === "/api/gateway/history");
       await page.goto("http://magpie.test/");
+      if (trace) {
+        await firstTrace;
+        await firstHistory; // the first snapshot is in, its routes with it
+      }
       await page.locator('nav [data-view="usage"], [data-view="usage"]').first().click();
       await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await page.locator("#ledWrap .led tbody tr").first().waitFor();
@@ -410,17 +422,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       await t.test(lang + ": newest live route needs no return-to-live button", async () => {
         const asked = [];
-        const { page, errors } = await open(lang, "light", asked);
-        await page.route("**/api/gateway/trace?*", async route => {
-          await page.waitForTimeout(100);
-          await route.fulfill({json:{mine:true, seq:1, routes:[{id:123,time:ROWS[0].t,agent:"codex",model:"gpt-6-sol",provider:"relay",order:[],tries:[],done:true,status:200}],totals:{requests:1,rerouted:0,errors:0},now:new Date().toISOString()}}).catch(()=>{});
-        });
-        await page.waitForTimeout(5500);
+        // the gateway's own trace from the page's first read: the newest
+        // request is live, not one fetched from history, so opening it
+        // pins nothing. Routing asks no more while it is out of sight
+        const live = { mine: true, seq: 1, routes: [{ id: 123, time: ROWS[0].t, agent: "codex", model: "gpt-6-sol", provider: "relay", order: [], tries: [], done: true, status: 200 }], totals: { requests: 1, rerouted: 0, errors: 0 }, now: new Date().toISOString() };
+        const { page, errors } = await open(lang, "light", asked, live);
         const link = page.locator(".led tbody tr").first().getByTitle(lang === "en" ? "View routing" : "查看路由");
         await wheelTo(page, link);
         await link.click();
         await page.locator("#view-routing").waitFor({state:"visible"});
-        assert.equal(await page.locator(".rt-log-head").getByText(lang === "en" ? "Back to live" : "回到实时", {exact:true}).count(), 0);
+        // the log tells of the live request once it is drawn: not one
+        // fetched from history, which would head it with its time
+        const head = page.locator(".rt-log-head");
+        await page.waitForFunction(() => document.querySelector(".rt-log-head")?.textContent.trim());
+        assert.equal(await head.getByText(lang === "en" ? "How the last request was routed" : "最近一个请求是怎么路由的", {exact:true}).count(), 1);
+        assert.equal(await head.getByText(lang === "en" ? "Back to live" : "回到实时", {exact:true}).count(), 0);
         assert.deepEqual(errors, []);
         await page.close();
       });

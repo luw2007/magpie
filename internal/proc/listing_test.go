@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 // countLooks counts the commands looked for on PATH for real, from here on.
@@ -32,6 +33,7 @@ func TestMissingCommandsReadEachFolderOnce(t *testing.T) {
 	}
 	t.Setenv("PATH", joinList(dirs))
 	t.Setenv("NoDefaultCurrentDirectoryInExePath", "1")
+	time.Sleep(20 * time.Millisecond) // a folder time a coarse clock tells apart, so each is read once
 	lookWindowFor(t, lookFresh)
 	looks := countLooks(t)
 	read := listingRead

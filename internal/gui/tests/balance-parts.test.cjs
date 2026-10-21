@@ -143,9 +143,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const pover = await panel.evaluate(() => [...document.querySelectorAll(".pq-card.bal")].filter((c) => c.scrollWidth > c.clientWidth + 1).length);
       assert.equal(pover, 0, "nothing runs out of a balance's card");
 
-      const missing = await page.evaluate(() => ["As of {when}", "Updated {when}", "As of {when} — couldn't be read just now"].filter((k) => !I18N.zh[k])
-        .concat(Object.keys(I18N).flatMap((l) => ["Granted", "Topped up"].filter((k) => !I18N[l][k]).map((k) => l + ":" + k))));
-      assert.deepEqual(missing, [], "every string has its Chinese");
+      // the translation contract: en is the source language, its table
+      // empty on purpose, so what's displayed IS the key — resolved as t()
+      // would resolve it; every other language must still carry the key
+      const missing = await page.evaluate(() => {
+        const keys = ["As of {when}", "Updated {when}", "As of {when} — couldn't be read just now", "Granted", "Topped up"];
+        return keys.filter((k) => (I18N.en?.[k] ?? k) !== k).map((k) => "en:" + k)
+          .concat(Object.keys(I18N).filter((l) => l !== "en").flatMap((l) => keys.filter((k) => !I18N[l][k]).map((k) => l + ":" + k)));
+      });
+      assert.deepEqual(missing, [], "every string has its translations");
       assert.deepEqual(errors, []);
     });
   }

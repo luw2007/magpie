@@ -265,8 +265,8 @@ from every call in the period, so without the cut they would name other keys.
 `TestUsageOverGateway` covers both, and a red when either cut is removed.
 A held key is refused (`refuseHeld`, 403 `provider.KeyHeldCode`) the
 quotas, their history, kept cards and refresh, `/v1/magpie/concurrency` and
-the routing paths another magpie reads (`/v1/magpie/trace`,
-`/trace/history`, `/trace/route`)
+the peer routing paths (`/v1/magpie/routing/trace`,
+`/v1/magpie/routing/trace/history`, `/v1/magpie/routing/trace/route`)
 (#1981); `/v1/magpie/route` tells it only routes whose `callerKey` is its
 own. `Route.callerKey` is set by `trace.beginFor` from the request's
 caller, so a route begun without it is told to no held key.

@@ -226,3 +226,5 @@ Run the relevant package tests with an isolated home directory. Resolve GOPATH a
 ```
 
 Some migration and gateway plugin tests require Bun on PATH and use local plugin fixtures; they skip when Bun is unavailable. Report any skipped tests and verify the community package separately when its implementation changes.
+
+The large-reply gateway fixtures in `internal/gateway/plugin_stream_regression_test.go` use a small server write buffer and an explicitly paced downstream reader to exercise backpressure. Reading clients keep TCP receive-window autotuning: reducing their receive buffer after dialing can stall Linux window updates and make transport behavior, rather than plugin progress, determine the result. Only the deliberately stalled client constrains its receive buffer.

@@ -12,14 +12,19 @@
 //   It walks them with for…in.
 //
 // The test counts both while requests come in and fly, and checks the
-// arc is still drawn and the names still hidden. MAGPIE_ROUTING_ASSETS
-// points the page at an older asset tree, to watch this go red there.
+// arc is still drawn and the names still hidden. The page opens on Live,
+// where the flight is; a request's row is the Requests pane's, drawn
+// though that pane is hidden, so it is waited for attached there and
+// opened to see it once the arc has been counted — opening another pane
+// stops the stage, so not before. MAGPIE_ROUTING_ASSETS points the page
+// at an older asset tree, to watch this go red there.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const engines = process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"];
+const { openPane } = require("./routing-pane.cjs");
 
 const assets = path.resolve(process.env.MAGPIE_ROUTING_ASSETS || path.join(__dirname, "../assets"));
 const iso = (ms) => new Date(ms).toISOString();
@@ -92,7 +97,9 @@ for (const engine of engines) for (const lang of ["en", "zh"]) {
     const next = [];
     await page.route("**/*", serve(lang, [req(1)], next));
     await page.goto("http://magpie.test/?view=routing");
-    await page.locator(".rt-req").first().waitFor();
+    // the request is listed as soon as it is answered, in the Requests
+    // pane: the page opens on Live, so the row is there attached, not shown
+    await page.locator(".rt-req").first().waitFor({ state: "attached" });
     await page.waitForTimeout(800);
 
     // a request under way flies through magpie for as long as it is
@@ -107,6 +114,11 @@ for (const engine of engines) for (const lang of ["en", "zh"]) {
     // laid every frame, it is about as many as the frames; the stage still
     // settling (a column fitted, a row come in) lays it a few times
     assert(arcs * 4 <= frames, `the arc through magpie was laid ${arcs} times over ${frames} frames, about once a frame`);
+
+    // the row is the Requests pane's: opened now that the arc is counted,
+    // since another pane in sight stops the stage's flights
+    await openPane(page, "requests");
+    await page.locator(".rt-req").first().waitFor();
 
     // the trace's answers: noteAccounts walks each without Object.entries
     const entries = await page.evaluate(async () => {

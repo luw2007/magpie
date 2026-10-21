@@ -108,9 +108,9 @@ func TestNoteServedInATestWritesAtOnce(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	at := time.Now().Truncate(time.Second)
-	NoteServed(Provider{ID: "dk", Key: "sk-key-0002"}, at)
+	NoteServed(Provider{ID: "dk", Key: "sk-key-0002", KeyID: "key-0002"}, at)
 	var m map[string]time.Time
-	if b, err := os.ReadFile(servedPath()); err != nil || json.Unmarshal(b, &m) != nil || !m["dk#"+KeyID("sk-key-0002")].Equal(at) {
+	if b, err := os.ReadFile(servedPath()); err != nil || json.Unmarshal(b, &m) != nil || !m["dk#key-0002"].Equal(at) {
 		t.Fatalf("not written as the answer was noted: %v %v", err, m)
 	}
 	servedFlush.Lock()
@@ -145,9 +145,9 @@ func TestNoteServedWritesBehind(t *testing.T) {
 	servedFlush.Lock()
 	writes := servedFlush.writes
 	servedFlush.Unlock()
-	key := "dk#" + KeyID("sk-key-0001")
+	key := "dk#key-0001"
 	for i := range 200 {
-		NoteServed(Provider{ID: "dk", Key: "sk-key-0001"}, now.Add(time.Duration(i)*time.Millisecond))
+		NoteServed(Provider{ID: "dk", Key: "sk-key-0001", KeyID: "key-0001"}, now.Add(time.Duration(i)*time.Millisecond))
 	}
 	if b, _ := os.ReadFile(servedPath()); string(b) != string(other) {
 		t.Fatalf("written on a request answered: %s", b)
@@ -176,7 +176,7 @@ func TestNoteServedWritesBehind(t *testing.T) {
 	}
 	// and by itself, a moment later
 	servedFlushAfter = time.Millisecond
-	NoteServed(Provider{ID: "dk", Key: "sk-key-0001"}, now.Add(time.Second))
+	NoteServed(Provider{ID: "dk", Key: "sk-key-0001", KeyID: "key-0001"}, now.Add(time.Second))
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		if b, _ := os.ReadFile(servedPath()); json.Unmarshal(b, &m) == nil && m[key].Equal(now.Add(time.Second)) {
 			break

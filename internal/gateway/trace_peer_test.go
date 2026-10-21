@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
@@ -65,6 +66,52 @@ func TestGatewayTraceIsLoopbackOnly(t *testing.T) {
 			t.Fatalf("another machine reached the trace: %d %s", w.Code, w.Body)
 		}
 	})
+}
+
+// The owner trace and the shared peer routing trace are two APIs, not one
+// route under two names: /v1/magpie/trace is this computer's alone, flat and
+// naming the process that serves (#2606); /v1/magpie/routing/trace is the
+// peer family's, in a data envelope, for another magpie that carries a
+// gateway key. The peer family's old flat paths are no alias for either.
+func TestOwnerAndPeerTraceAreDistinct(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	h := New().Handler()
+
+	get := func(path string) (int, map[string]any) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", path, nil)
+		r.RemoteAddr = "127.0.0.1:50123"
+		h.ServeHTTP(w, r)
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s: %d %.200s", path, w.Code, w.Body)
+		}
+		return w.Code, out
+	}
+
+	if c, out := get("/v1/magpie/trace"); c != 200 || out["object"] != "trace" || out["routes"] == nil {
+		t.Fatalf("the owner trace: %d %v", c, out)
+	} else if _, ok := out["data"]; ok {
+		t.Error("the owner trace answers the peer envelope")
+	} else if out["pid"] == nil || out["serves"] == nil {
+		t.Errorf("the owner trace doesn't name its magpie: %v", out)
+	}
+
+	if c, out := get(PeerTracePath); c != 200 || out["data"] == nil || out["object"] != "trace" {
+		t.Fatalf("the peer trace: %d %v", c, out)
+	} else if out["pid"] != nil || out["serves"] != nil || out["routes"] != nil {
+		t.Errorf("the peer trace answers the owner trace's shape: %v", out)
+	}
+
+	// no aliases: the peer family's paths from before the routing namespace
+	// are no API at all, and the owner path keeps its own shape alone
+	for _, p := range []string{"/v1/magpie/trace/history", "/v1/magpie/trace/route?id=1&day=2000-01-01"} {
+		if c, _ := get(p); c != http.StatusNotFound {
+			t.Errorf("%s: %d, want 404", p, c)
+		}
+	}
 }
 
 // Another magpie's trace is read from this computer alone (#2606): an

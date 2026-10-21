@@ -116,6 +116,14 @@ node --test --test-concurrency=1 internal/gui/tests/gateway-caller-keys.test.cjs
 
 ## Other Browser Regressions
 
+`key-import.test.cjs` checks single and bulk key entry, import counts and resting
+key reasons in English and Chinese on both engines. Autofocus after switching
+entry modes must preserve the provider editor's scroll position.
+`key-replace.test.cjs` checks replacement and double-click/Escape without changing
+a key's configuration or scrolling, in every language at wide and narrow widths.
+Its reader navigation reaches the actual key control inside the editor's clipped
+body before recording the no-scroll baseline.
+
 `local-address.test.cjs` checks the Address of a local server's provider
 (Ollama, LM Studio, oMLX, MLX-Serve): under the key in a Server address
 section, folded unless the provider is away from the preset's default or an address typed or
@@ -1991,8 +1999,9 @@ while a remote has not been pulled yet; the time of the last read when it is
 fine; and, when it fails, what to do about it for a remote that can't be
 reached, doesn't take the key, isn't shared or is too old (with the time of
 the last good read, or "not read yet"), amber only then. Pull now posts for
-that remote alone and the line follows the reloaded list; the click moves
-nothing and no row has a left border. English and Chinese, Chromium and
+that remote alone and the line follows the reloaded list; the reader wheels
+past the Requests dashboard to reach Pull now before measuring that the click
+moves nothing. No row has a left border. English and Chinese, Chromium and
 WebKit, with the API faked.
 
 `routing-source.test.cjs` checks the Routing page's Computer picker: none
@@ -2003,6 +2012,17 @@ brings them back; a remote that fails (can't be reached, doesn't take the key,
 isn't shared, too old, anything else) says what to do about it over the page,
 keeps none of this computer's requests under its name, and is gone once the
 remote answers. English and Chinese, Chromium and WebKit, with the API faked.
+
+`routing-panes.test.cjs` and `routing-pane-smoke.test.cjs` check the four
+Routing panes independently. Requests continues reading the live trace and
+redrawing arrivals while its pane is open, without running the hidden Live
+stage's animation. Switching panes redraws the current request list; switching
+computers clears the previous computer's rows even when the remote fails.
+Group and request regressions open their respective panes through the visible
+tabs rather than assuming all four panes are visible together.
+The mid-list group-save regression wheels Save fully below the wrapping sticky
+header before clicking, so it tests the saved row's position rather than an
+automatic click scroll to an obscured control.
 
 With Node.js and Playwright available, `make test-ui` manually runs the whole suite:
 every `internal/gui/tests/*.test.cjs`, discovered automatically. Files are
@@ -2500,3 +2520,45 @@ does. Both engines, at 440px. The reckoning itself is covered by
 `TestHistoricalWindowHoldsUsesEachWindowsOwnReading`,
 `TestWindowHoldsResetBeforeRefillReading` and
 `TestWindowHoldsDryAgainAfterReset`.
+
+## Usage configuration
+
+The Usage page keeps its usage sources and quota pools at the foot of the
+Overview, as cards (`900be8d0`), and a provider key's pools as a compact
+fold of its own in the editor, all saved through the same
+`/api/usage/sources` and `/api/usage/pools` the server serves
+(`internal/gui/usage_config.go`).
+
+`usage-config-cards.test.cjs` checks the cards: each group headed by its
+title, how many it holds and its Add; a source card saying its type and
+whether it is on, with Edit, Discover accounts and Delete; a pool card
+saying whether its usage is available and which source it draws on, with
+Edit and Delete and its pool, source, accounts and keys folded under
+Details (an empty one saying None), which opens without moving the page.
+The section follows the page's note, with no left-border accent, and stacks
+one card a row at 440px with no sideways scroll.
+
+`usage-config-crud.test.cjs` checks the editors: Add source opens one card
+in the section's place, whose Save posts the source (a stored credential
+left blank is kept, and never shown but as the placeholder saying so), whose
+Cancel drops the draft posting nothing; Edit reopens with the id fixed.
+Discover accounts asks the source and opens a new pool on the accounts it
+names. A pool is named, drawn on a source and ticked full of its accounts,
+picking another source clearing the picks; Save posts id, name, source and
+account IDs. Delete asks first: dismissed nothing is sent, accepted the
+source or pool goes and the count follows. No click moves the page.
+
+`key-pool-binding.test.cjs` checks a key's pools in the provider's editor:
+a chip a pool in the key's own fold, its tick staged on that key alone — a
+click on a chip moves the editor none — and saved with the editor's Save,
+which posts only the keys whose picks changed, an empty list for one with
+every pool unticked, and reopens showing what was saved. A pool gone off
+the configuration stays listed and picked, named with "unavailable".
+Cancel asks (Discard) when a pick is staged, and dropping it posts nothing.
+The section's words are the page's own, in English and Chinese.
+
+All three fake the API; English and Chinese, Chromium and WebKit.
+
+```sh
+node --test internal/gui/tests/usage-config-cards.test.cjs internal/gui/tests/usage-config-crud.test.cjs internal/gui/tests/key-pool-binding.test.cjs
+```

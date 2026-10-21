@@ -11,25 +11,26 @@ import (
 // What another magpie that has this one as its provider (remote-magpie) may
 // read of its routing, to show it on its own Routing page: the live trace,
 // a kept day, and one request of either. Read-only; nothing here is kept
-// there.
+// there. This peer API has its own routing namespace and data envelope:
+// /v1/magpie/trace is the loopback-only owner API, never a shared peer API.
 const (
-	TracePath        = "/v1/magpie/trace"
-	TraceHistoryPath = "/v1/magpie/trace/history"
-	TraceRoutePath   = "/v1/magpie/trace/route"
+	PeerTracePath        = "/v1/magpie/routing/trace"
+	PeerTraceHistoryPath = "/v1/magpie/routing/trace/history"
+	PeerTraceRoutePath   = "/v1/magpie/routing/trace/route"
 )
 
 // peerTraceWaitMax caps how long one trace ask waits for a change: the
 // Routing page's own long poll waits as long.
 const peerTraceWaitMax = 25 * time.Second
 
-// PeerTrace is TracePath's answer: the trace since a seq, with this
+// PeerTrace is PeerTracePath's answer: the trace since a seq, with this
 // computer's clock for the page to measure its flights by.
 type PeerTrace struct {
 	TraceState
 	Now time.Time `json:"now"`
 }
 
-// PeerHistory is TraceHistoryPath's answer: the days kept, and the routes of
+// PeerHistory is PeerTraceHistoryPath's answer: the days kept, and the routes of
 // the day asked for.
 type PeerHistory struct {
 	Days   []HistoryDay `json:"days"`

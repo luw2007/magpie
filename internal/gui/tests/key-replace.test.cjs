@@ -68,12 +68,29 @@ const want = {
 
 const scrolled = (page) => page.evaluate(() => [window.scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop > 0).map((e) => `${e.className}:${e.scrollTop}`)].join(" "));
 const sideways = (page) => page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-// a reader wheels the row into sight and points at it
+// a reader wheels the row's masked value, the double-click target, and
+// the Change key button wholly into the editor body's view — the wheel
+// here is the reader's own, so the click later has nothing left to
+// scroll into sight — and points at the value
 async function reach(page, row) {
   await page.mouse.move(200, 300);
-  for (let i = 0; i < 30 && !(await row.evaluate((e) => e.getBoundingClientRect().bottom < innerHeight - 80)); i++) await page.mouse.wheel(0, 200);
+  // wheel the measured gap, either direction, waiting between wheels:
+  // a fixed downward-only step can overshoot, and never fixes a row
+  // sitting above the body's view
+  const outside = () => row.evaluate((e) => {
+    const b = e.closest(".ebody").getBoundingClientRect();
+    const gap = (t) => {
+      const r = t.getBoundingClientRect();
+      return r.height && (r.top < b.top || r.bottom > b.bottom) ? (r.top < b.top ? b.top - r.top : b.bottom - r.bottom) : 0;
+    };
+    return gap(e.querySelector(".plan.mono") || e) || gap(e.querySelector(".key-edit"));
+  });
+  for (let i = 0, g = await outside(); i < 40 && g; i++, g = await outside()) {
+    await page.mouse.wheel(0, Math.max(-400, Math.min(400, g)));
+    await page.waitForTimeout(100);
+  }
   await page.waitForTimeout(200);
-  await row.hover();
+  await row.locator(".plan.mono").hover();
 }
 const at = (loc) => loc.evaluate((e) => { const r = e.getBoundingClientRect(); return e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
 

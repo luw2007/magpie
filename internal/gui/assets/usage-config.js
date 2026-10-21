@@ -83,7 +83,7 @@ async function editUsagePool(pool = {}, discovered) {
   const accounts = el("div"); box.append(...field(t("Accounts"), accounts));
   let selected = new Set(pool.accountIDs || []);
   const paint = (items) => { accounts.replaceChildren(); const ids = new Set(items.map(a => a.id)); for (const id of selected) if (!ids.has(id)) items.push({ id, name: t("Saved account") }); for (const a of items) { const label = el("label", "row"); const tick = input("", "", "checkbox"); tick.checked = selected.has(a.id); tick.onchange = () => tick.checked ? selected.add(a.id) : selected.delete(a.id); label.append(tick, el("span", "", `${a.name || a.id} · ${a.id} ${a.platform || ""} ${a.type || ""}`)); accounts.append(label); } };
-  paint(discovered || [...selected].map(id => ({ id })));
+  paint(discovered || [...selected].map(id => ({ id, name: t("Saved account") })));
   source.onchange = () => { selected = new Set(); paint([]); };
   box.append(usageConfigButton(t("Discover accounts"), async () => { paint(await usageConfigRequest(`sources/${encodeURIComponent(source.value)}/discover`, "POST", {}) || []); }), usageConfigButton(t("Save"), async () => {
     await usageConfigRequest(pool.id ? `pools/${encodeURIComponent(pool.id)}` : "pools", pool.id ? "PUT" : "POST", { id: values.id.value, name: values.name.value, sourceRef: source.value, accountIDs: [...selected] }); usageConfigEditing = false; await loadUsageConfig();
@@ -103,10 +103,10 @@ function renderKeyBinding(p, k) {
   const modelsOf = () => modelsInput.value.split(",").map(s => s.trim()).filter(Boolean);
   const stage = () => {
     if (!draft) return;
-    const models = modelsOf(), now = [...selected];
+    // "*" alone is every model, which the provider stores as no list at all
+    const models = modelsOf().filter((m) => m !== "*"), now = [...selected];
     const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-    const wasModels = k.models?.length ? k.models : ["*"];
-    if (same([...now].sort(), [...(k.poolRefs || [])].sort()) && same(models.length ? models : ["*"], wasModels)) {
+    if (same([...now].sort(), [...(k.poolRefs || [])].sort()) && same(models, k.models || [])) {
       if (draft.keyBindings) delete draft.keyBindings[k.id];
     } else {
       draft.keyBindings = draft.keyBindings || {};
@@ -121,14 +121,17 @@ function renderKeyBinding(p, k) {
 
   const poolsWrap = el("div", "kbind-pools");
   for (const pool of choices) {
-    const label = el("label", "kbind-chip" + (pool.unavailable ? " unavailable" : ""));
+    // gone off the configuration, or on it with no usage of its own: named
+    // with why, and kept, for a key still set to it
+    const why = !available.has(pool.id) || pool.available === false;
+    const label = el("label", "kbind-chip" + (why ? " unavailable" : ""));
     const tick = input("", "", "checkbox");
     const mark = () => label.classList.toggle("on", tick.checked); // a class, not :has(), which Safari before 15.4 lacks
     tick.checked = selected.has(pool.id);
     mark();
     tick.onchange = () => { mark(); tick.checked ? selected.add(pool.id) : selected.delete(pool.id); stage(); };
     const meta = el("span", "kbind-meta");
-    meta.textContent = (pool.name || pool.id) + (available.has(pool.id) ? "" : " · " + t("unavailable"));
+    meta.textContent = (pool.name || pool.id) + (why ? " · " + t("unavailable") : "");
     label.append(tick, meta);
     poolsWrap.append(label);
   }

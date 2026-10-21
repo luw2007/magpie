@@ -5,8 +5,10 @@
 // days and a request with ?source=<id>, empties what the other computer showed
 // (its requests are never mixed in) and goes back to this computer's by the
 // same menu. A remote that fails says what to do about it, by the kind the
-// server sorted the failure into, and leaves the page where it was. English
-// and Chinese; no backend, the API is faked.
+// server sorted the failure into, and leaves the page where it was. An answer
+// that comes back only after the reader has left that computer changes
+// nothing about the computer shown now, nor what it says failed. English and
+// Chinese; no backend, the API is faked.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -48,6 +50,7 @@ const TEXT = {
 };
 
 function server(lang, remotes, seen, fail) {
+  let localDays = 0;
   return async (r) => {
     const url = new URL(r.request().url());
     const json = (data, status = 200) => r.fulfill({ json: data, status });
@@ -57,13 +60,28 @@ function server(lang, remotes, seen, fail) {
     if (url.pathname === "/api/state") return json({ ...state, settings: { lang, theme: "light" } });
     if (url.pathname === "/api/gateway/trace" || url.pathname === "/api/gateway/history") {
       seen.push(url.pathname.split("/").pop() + ":" + src);
+      const d = url.searchParams.get("day");
+      // A held answer comes back only when the test lets it: by then the
+      // reader has left that computer. fail.hold gives the kind it fails with
+      // ("" for an answer), and "history:<id>:answered" says it was delivered.
+      const hold = fail.hold;
+      if (url.pathname.endsWith("history") && src && hold) {
+        const kind = await hold();
+        await json(kind ? { error: "boom", kind: kind === "other" ? "other" : kind }
+          : { cut: false, days: [{ day, requests: 9 }], routes: d ? [THERE] : [] }, kind ? 502 : 200);
+        seen.push("history:" + src + ":answered");
+        return;
+      }
       if (src && fail.kind) return json({ error: "boom", kind: fail.kind === "other" ? "other" : fail.kind }, 502);
       if (url.pathname.endsWith("trace")) {
         if (url.searchParams.get("wait")) await new Promise((x) => setTimeout(x, 20e3));
         return json({ mine: true, now: now.toISOString(), seq: 30, totals: { requests: 1, rerouted: 0, errors: 0 }, routes: [src ? THERE : HERE] });
       }
-      const d = url.searchParams.get("day");
-      return json({ cut: false, days: [{ day, requests: 1 }], routes: d ? [src ? THERE : HERE] : [] });
+      // this computer's days gain one more once it is asked again: a mark the
+      // reader can see of which answer the bar was drawn from
+      if (!src && ++localDays > 1) return json({ cut: false, days: [{ day, requests: 1 }, { day: "2020-01-01", requests: 2 }], routes: d ? [HERE] : [] });
+      // each computer counts its own days: the held answer's 9 is never one's
+      return json({ cut: false, days: [{ day, requests: src ? 3 : 1 }], routes: d ? [src ? THERE : HERE] : [] });
     }
     if (url.pathname === "/api/gateway/call") {
       seen.push("call:" + url.searchParams.get("route"));
@@ -101,6 +119,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const pick = async (page, name) => {
       await page.locator("#rtSource").click();
       await page.locator(".sess-menu .pm-item", { hasText: name }).click();
+    };
+
+    // A gate the test opens to let a held answer back, a poll of the faked
+    // API's record until it says what the test waits for, and a watch that
+    // what the page shows stays so for a while (a late answer would change it
+    // at once, and there is nothing else to wait on for it not doing so).
+    const held = () => { let release; const p = new Promise((r) => { release = r; }); return { p, release }; };
+    const until = async (ok, what) => {
+      for (let i = 0; i < 100; i++) { if (ok()) return; await new Promise((r) => setTimeout(r, 50)); }
+      assert.fail(what);
+    };
+    const stays = async (check, what) => {
+      for (let i = 0; i < 20; i++) { await check(what); await new Promise((r) => setTimeout(r, 50)); }
     };
 
     for (const lang of ["en", "zh"]) {
@@ -174,6 +205,56 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(await page.locator("#rtSrcNote").isHidden());
         assert.deepEqual(errors, []);
       });
+
+      await t.test(lang + ": the remote's days, held until this computer is shown, leave its list alone", async () => {
+        const fail = {}, gate = held();
+        fail.hold = async () => { await gate.p; return ""; };
+        const { page, errors, seen } = await open(lang, ["devbox"], fail);
+        await pick(page, "Devbox");
+        await until(() => seen.includes("history:devbox"), "the remote's days were not asked: " + seen);
+        fail.hold = null; // only that answer is held
+        const here = seen.filter((s) => s === "history:").length;
+        await pick(page, w.here);
+        await until(() => seen.filter((s) => s === "history:").length > here, "this computer's days were not asked again: " + seen);
+        await page.locator(".rt-days .rt-day small").filter({ hasText: /^2$/ }).waitFor(); // the bar was drawn from this computer's answer
+        await page.locator(".rt-req", { hasText: "model-here" }).waitFor();
+        gate.release();
+        await until(() => seen.includes("history:devbox:answered"), "the held answer was never delivered: " + seen);
+        // the held answer arrives and is read; the list stays this computer's
+        await stays(async (what) => {
+          assert.deepEqual(await page.locator(".rt-days .rt-day small").allInnerTexts(), ["1", "2"], what + ": the remote's days were counted here");
+          assert.equal(await page.locator(".rt-req", { hasText: "model-here" }).count(), 1, what + ": this computer's request left the list");
+          assert.equal(await page.locator(".rt-req", { hasText: "model-there" }).count(), 0, what + ": the remote's request came in with its days");
+          assert(await page.locator("#rtSrcNote").isHidden(), what + ": the held answer said something over this computer");
+        }, "a held days answer");
+        assert.deepEqual(errors, []);
+      });
+
+      await t.test(lang + ": the remote's failure, held until it is shown again, doesn't speak for it now", async () => {
+        const fail = {}, gate = held();
+        fail.hold = async () => { await gate.p; return "key"; };
+        const { page, errors, seen } = await open(lang, ["devbox"], fail);
+        await pick(page, "Devbox");
+        await page.locator(".rt-req", { hasText: "model-there" }).waitFor();
+        await until(() => seen.includes("history:devbox"), "the remote's days were not asked: " + seen);
+        await pick(page, w.here);
+        await page.locator(".rt-req", { hasText: "model-here" }).waitFor();
+        fail.hold = null; // the answer asked now is not held
+        await pick(page, "Devbox");
+        await page.locator(".rt-days .rt-day small").filter({ hasText: /^3$/ }).waitFor();
+        await page.locator(".rt-req", { hasText: "model-there" }).waitFor();
+        assert(await page.locator("#rtSrcNote").isHidden());
+        gate.release();
+        await until(() => seen.includes("history:devbox:answered"), "the held answer was never delivered: " + seen);
+        // the held failure arrives and is read; the note stays about nothing
+        await stays(async (what) => {
+          assert(await page.locator("#rtSrcNote").isHidden(), what + ": the held failure spoke for the computer shown now");
+          assert.deepEqual(await page.locator(".rt-days .rt-day small").allInnerTexts(), ["3"], what + ": the held failure emptied the days shown");
+          assert.equal(await page.locator(".rt-req", { hasText: "model-there" }).count(), 1, what + ": the remote's request went with the held failure");
+          assert.equal(await page.locator(".rt-req", { hasText: "model-here" }).count(), 0, what + ": this computer's request came in with the held failure");
+        }, "a held failure");
+      });
+
     }
   });
 }

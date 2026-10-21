@@ -748,8 +748,8 @@ func TestDeepSeekBalanceSplit(t *testing.T) {
 	}
 	t.Cleanup(func() { http.DefaultClient.Transport = old })
 
-	if err := Save(Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com", Key: "sk-gift", KeyName: "gift",
-		Keys: []KeyAccount{{Name: "two", Key: "sk-two"}, {Name: "paid", Key: "sk-paid"}}}); err != nil {
+	if err := Save(Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com",
+		Keys: []KeyAccount{{ID: "gift", Name: "gift", Key: "sk-gift"}, {ID: "two", Name: "two", Key: "sk-two"}, {ID: "paid", Name: "paid", Key: "sk-paid"}}}); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]SubscriptionQuota{}

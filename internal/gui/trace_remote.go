@@ -44,7 +44,7 @@ func remoteFailed(rw http.ResponseWriter, err error) {
 // one: Mine is true, as it is the serving gateway's own.
 func remoteTrace(rw http.ResponseWriter, r *http.Request, p provider.Provider) {
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
-	path := gateway.TracePath + "?after=" + strconv.FormatInt(after, 10)
+	path := gateway.PeerTracePath + "?after=" + strconv.FormatInt(after, 10)
 	if r.URL.Query().Get("wait") != "" {
 		path += "&wait=25"
 	}
@@ -62,7 +62,7 @@ func remoteTrace(rw http.ResponseWriter, r *http.Request, p provider.Provider) {
 // remoteHistory is the remote's kept days and the routes of ?day=.
 func remoteHistory(rw http.ResponseWriter, r *http.Request, p provider.Provider) {
 	var got gateway.PeerHistory
-	if err := provider.RemoteGet(r.Context(), p, gateway.TraceHistoryPath+"?day="+url.QueryEscape(r.URL.Query().Get("day")), &got); err != nil {
+	if err := provider.RemoteGet(r.Context(), p, gateway.PeerTraceHistoryPath+"?day="+url.QueryEscape(r.URL.Query().Get("day")), &got); err != nil {
 		remoteFailed(rw, err)
 		return
 	}
@@ -84,7 +84,7 @@ func remoteRoute(rw http.ResponseWriter, r *http.Request, p provider.Provider) {
 		return
 	}
 	var got *gateway.Route
-	path := gateway.TraceRoutePath + "?id=" + url.QueryEscape(q.Get("id")) + "&day=" + url.QueryEscape(q.Get("day"))
+	path := gateway.PeerTraceRoutePath + "?id=" + url.QueryEscape(q.Get("id")) + "&day=" + url.QueryEscape(q.Get("day"))
 	if err := provider.RemoteGet(r.Context(), p, path, &got); err != nil {
 		remoteFailed(rw, err)
 		return

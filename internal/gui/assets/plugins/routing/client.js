@@ -2436,15 +2436,18 @@ function routingPage(part) {
       : x.toLocaleDateString(intlLang(), { month: "short", day: "numeric", weekday: "short" });
   };
   async function loadDays(d) {
+    const myGen = srcGen;
     try {
       const r = await fetch(withSource("/api/gateway/history?day=" + encodeURIComponent(d || "")));
       const res = await r.json();
+      if (myGen !== srcGen) return; // History belongs to the computer that was asked.
       if (source && !r.ok) { sourceNote(sourceFailed(res)); days = []; past = []; } else {
         days = res.days || [];
         noteAccounts(res.routes);
         if (d && d === day) { past = (res.routes || []).map(whole); pastCut = !!res.cut; }
       }
     } catch {}
+    if (myGen !== srcGen) return;
     renderHist(); // shown once there are days, though none are live
   }
   async function lookAt(d) {
@@ -2644,7 +2647,7 @@ function routingPage(part) {
     return els;
   }
   function renderHist() {
-    if (!shown()) return; // drawn by resume()'s renderAll, as the stage
+    if (!viewShown()) return; // Requests stays current independently of the Live stage.
     const rs = listed();
     renderStats(rs);
     const all = allListed();
@@ -3651,6 +3654,7 @@ function routingPage(part) {
   // finish hidden work here too. The first visible frame alone owns resume.
   function start() {
     inSightAgain();
+    if (viewShown()) renderAll();
     if (!shown()) { pause(); return; }
     kick();
   }
@@ -3720,7 +3724,7 @@ function routingPage(part) {
   // on every change, 4 to 8 times a second under traffic, for nothing it
   // drew. Out of sight it asks nothing; in sight again it asks once for all
   // that changed meanwhile, and plays only the requests still under way
-  const inSight = () => !document.hidden && (shown() || !!(pBox && pShown()));
+  const inSight = () => !document.hidden && ((viewShown() && (routingPage === "live" || routingPage === "requests")) || !!(pBox && pShown()));
   let heard = false, sightWait = null, caught = false;
   function inSightAgain() {
     if (sightWait && inSight()) { const go = sightWait; sightWait = null; go(); }
@@ -3901,6 +3905,7 @@ function routingPage(part) {
     day = ""; days = []; past = []; pastCut = false;
     pinned = null; cur = null; capQ = [];
     empty();
+    renderHist(); // Clear Requests too: empty() only draws the Live stage.
     srcKey = "";
     sourceNote("");
     drawSource();

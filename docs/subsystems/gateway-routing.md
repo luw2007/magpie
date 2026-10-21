@@ -229,6 +229,11 @@ request alone. `Server.gatewayTrace` in
 [`trace_peer_test.go`](../../internal/gateway/trace_peer_test.go) and
 `TestHeldKeyToldNoAccounts` in
 [`quotas_held_key_test.go`](../../internal/gateway/quotas_held_key_test.go).
+The shared peer routing APIs use a separate `/v1/magpie/routing/trace`
+namespace and a `data` envelope; they do not replace or alias this owner
+endpoint (`TestOwnerAndPeerTraceAreDistinct`). See
+[Routing across computers](providers-accounts.md#routing-across-computers)
+for their routes, remote source readers and authorization contract.
 
 A remote provider serves the conversation, token-counting, System One,
 embeddings, rerank, speech-to-text, image generation/edit and video

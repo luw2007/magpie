@@ -38,7 +38,7 @@ func lookWindowFor(t *testing.T, d time.Duration) {
 func TestLookPathAsksOnceWhileFoldersAreUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", dir)
-	// within the app's window, and past it with the folders unchanged
+	time.Sleep(20 * time.Millisecond) // a folder time a coarse clock tells apart, so the answer is kept
 	for _, window := range []time.Duration{lookFresh, 0} {
 		lookWindowFor(t, window)
 		asks := 0
@@ -88,6 +88,7 @@ func TestLookPathWindowPathAndForget(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
 	t.Setenv("PATH", a)
 	lookWindowFor(t, time.Hour)
+	time.Sleep(20 * time.Millisecond) // a folder time a coarse clock tells apart, so the miss is kept
 	if _, err := LookPath("magpie-fake-agent"); err == nil {
 		t.Fatal("found before installing")
 	}

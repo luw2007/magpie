@@ -13,6 +13,11 @@ import (
 	"testing"
 )
 
+// sourceLang is the language i18n.js writes its words in: the keys are
+// the English the window shows, and each other language translates them.
+// Its table holds no translation of its own.
+const sourceLang = "en"
+
 // i18nTables reads the GUI's i18n.js: each language's table, by its name,
 // and the NOTICES list tNotice matches notices against.
 func i18nTables(t *testing.T) (map[string]map[string]string, []string) {
@@ -65,12 +70,24 @@ func i18nTables(t *testing.T) (map[string]map[string]string, []string) {
 }
 
 // Every notice an agent gives is in the GUI's NOTICES and has a
-// translation in each language i18n.js has, with the same {slots}: a
-// Chinese window showed ZCode's restart advice in English (#1508).
+// translation in each language i18n.js translates into, with the same
+// {slots}: a Chinese window showed ZCode's restart advice in English
+// (#1508).
+//
+// English is the source language, not a translation: a notice's template
+// is its English, and i18n.js's keys are the English t() falls back to,
+// so its en table has nothing to add. The tables held to a translation
+// are the rest.
 func TestEveryNoticeIsTranslated(t *testing.T) {
 	tables, list := i18nTables(t)
-	if len(tables) < 4 {
-		t.Fatalf("read %d language tables from i18n.js", len(tables))
+	translated := 0
+	for name := range tables {
+		if name != sourceLang {
+			translated++
+		}
+	}
+	if translated < 4 {
+		t.Fatalf("read %d language tables from i18n.js besides %s", translated, sourceLang)
 	}
 	ns := Notices()
 	if len(ns) < 60 {
@@ -88,6 +105,11 @@ func TestEveryNoticeIsTranslated(t *testing.T) {
 		}
 		for name, table := range tables {
 			tr, ok := table[n]
+			// the source language says the notice itself, so a missing
+			// key there is the fallback t() makes, not a gap
+			if !ok && name == sourceLang {
+				continue
+			}
 			if !ok {
 				t.Errorf("%s has no translation of %q", name, n)
 				continue

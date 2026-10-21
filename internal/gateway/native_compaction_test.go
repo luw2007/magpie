@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -18,6 +20,13 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 )
+
+// nativeAccountCatalog names the account model-list cache used by
+// provider.Account.Lists, not an API key's persistent identity.
+func nativeAccountCatalog(user string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(user)))
+	return "codex@" + hex.EncodeToString(sum[:5])
+}
 
 // nativeSealedReply is a Responses stream whose output is one compaction item,
 // sealed by the vendor as enc.
@@ -330,10 +339,10 @@ func TestNativeCompactionWriterWhoseListLacksTheModel(t *testing.T) {
 	codexSignedIn(t, "spare@example.com")
 	b := newResetBackend(t)
 	// the spare's plan lists the model; the writer's no longer does
-	if err := catalog.SaveLive("codex@"+provider.KeyID("spare@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-5.5"}}); err != nil {
+	if err := catalog.SaveLive(nativeAccountCatalog("spare@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-5.5"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.SaveLive("codex@"+provider.KeyID("me@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-4.1"}}); err != nil {
+	if err := catalog.SaveLive(nativeAccountCatalog("me@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-4.1"}}); err != nil {
 		t.Fatal(err)
 	}
 	wroteCheckpoint("gAAAAB-sealed-by-me", candidate{p: provider.Provider{ID: "codex", Account: &provider.Account{User: "me@example.com"}}})
@@ -373,10 +382,10 @@ func TestNativeCompactionWriterThroughAGroupWhoseListLacksTheModel(t *testing.T)
 	codexSignedIn(t, "spare@example.com")
 	b := newResetBackend(t)
 	// the spare's plan lists the model; the writer's no longer does
-	if err := catalog.SaveLive("codex@"+provider.KeyID("spare@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-5.5"}}); err != nil {
+	if err := catalog.SaveLive(nativeAccountCatalog("spare@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-5.5"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.SaveLive("codex@"+provider.KeyID("me@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-4.1"}}); err != nil {
+	if err := catalog.SaveLive(nativeAccountCatalog("me@example.com"), provider.CodexBase, []catalog.Model{{ID: "gpt-4.1"}}); err != nil {
 		t.Fatal(err)
 	}
 	nativeOn(t, "codex")
