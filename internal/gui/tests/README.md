@@ -1,5 +1,12 @@
 # Dropdown browser regression
 
+`plugin-gateway.test.cjs` checks gateway-only plugin identification, the existing
+JSON options editor and aggregate diagnostics in all five languages on Chromium
+and WebKit. It uses local API fixtures, saves options through the real page, and
+checks that request hooks have no provider badge. `MAGPIE_GATEWAY_ASSETS` selects
+an older asset directory for a failing regression comparison; user settings and
+live gateways are never accessed.
+
 `settings-proxy-auth.test.cjs` checks optional SOCKS5/SOCKS5h usernames and
 passwords in Settings, using the real page with isolated API fixtures. It
 covers saving and reloading, escaped and non-UTF-8 credentials, masked
@@ -696,6 +703,14 @@ over them; the allowances' tab named Allowances. A click, with the panel
 scrolled, asks for the window's Routing page on that request and moves
 nothing; the window opened so has that request picked. In English and
 Chinese.
+
+`panel-routing-pick.test.cjs` switches a Manual routing group's model from
+the tray panel's Routing tab (#2489): only a Manual group of two or more
+that is on gets a row, its picked member a button opening the app's menu
+(no native select), a member no provider serves noted so. A pick posts
+/api/groups/pick with the group's id and the member alone, and the row says
+the new one; the picked one again posts nothing. At 440px, nothing runs out
+of the panel. Chromium and WebKit, in every language.
 
 `login-import.test.cjs` brings ChatGPT accounts in from CLIProxyAPI's auth
 files: offered from the accounts list and from a browser sign-in under way,
@@ -2171,8 +2186,9 @@ WebKit, in English and Chinese:
 node --test internal/gui/tests/plugin-progressive.test.cjs
 
 `lightweight.test.cjs` checks Settings → General's Lightweight mode row
-(#580): off by default, On and Off saved as `lightweight` true and false
-without the page moving, another setting's save keeping it, no left-border
+(#580): on for a user who never chose, Off and On saved as `lightweight`
+false and true without the page moving, another setting's save keeping the
+choice or leaving it unchosen (no `lightweight` posted), no left-border
 accent, and no such row on a browser's page (`web`). English and Chinese,
 Chromium and WebKit, with `/api/settings` faked:
 node --test internal/gui/tests/lightweight.test.cjs
@@ -2361,8 +2377,9 @@ node --test internal/gui/tests/ledger-protocol.test.cjs
 
 `library-rtk-nohook.test.cjs` checks that an agent RTK has no hook for
 (DeepSeek Harness) is listed in Library › RTK with a No RTK hook tag saying
-why, and that its switch can't be turned on, while Pi's can. English and
-Chinese, Chromium and WebKit.
+why, and that its switch can't be turned on, while Pi's can. Grok Build's
+tag gives its own reason and rtk-ai/rtk#2136, never dsh's #3847. English
+and Chinese, Chromium and WebKit.
 
 ```sh
 node --test internal/gui/tests/library-rtk-nohook.test.cjs

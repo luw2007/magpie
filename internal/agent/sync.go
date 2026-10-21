@@ -45,9 +45,14 @@ func SyncCatalog() {
 		// the catalog built once for every agent's lists, not for each
 		// look-up of each (thousands at magpie's start, with 30 providers)
 		release := provider.Hold()
+		renaming := setToFoundGroups()
 		for _, a := range All() {
 			if a.Sync != nil {
 				_ = synced(a.Sync)
+			}
+			// a field magpie set to a found group's id before (autoref.go)
+			if renaming[a.ID] {
+				a.renameFoundGroups()
 			}
 		}
 		release()
@@ -221,6 +226,13 @@ func mergeKept(have, want map[string]any, own []string) map[string]any {
 	}
 	for k, h := range have {
 		if slices.Contains(own, k) {
+			// magpie's key for the gateway, where the user put a key of
+			// the gateway's own instead: theirs stays (keyHolds)
+			if hs, ok := h.(string); ok {
+				if ws, ok := want[k].(string); ok && hs != ws && keyHolds(hs, ws) {
+					out[k] = hs
+				}
+			}
 			continue
 		}
 		w, ok := want[k]

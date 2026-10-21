@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -23,11 +24,22 @@ import (
 // read out of them; nothing keeps a reference to one after unpack.
 var rowDecodes = sync.Pool{New: func() any { return new([]byte) }}
 
+// rowEncodes are pack's scratch: the rows' bytes before compression and
+// S2's output. s2.Encode makes its output as large as the worst case
+// (MaxEncodedLen, more than the input), and an archive cut from it kept
+// that whole allocation, several times the compressed bytes: the largest
+// thing a started magpie held, ~17 MB for ~380k calls, and uncounted in
+// Bytes. The archive is copied out of the scratch at its own length.
+var rowEncodes = sync.Pool{New: func() any { return new([2][]byte) }}
+
 func (c *rowChunk) pack() *rowChunk {
 	if c == nil || len(c.Rows) < 64 || len(c.Archive) != 0 {
 		return c
 	}
-	data := make([]byte, 0, len(c.Rows)*64)
+	scratch := rowEncodes.Get().(*[2][]byte)
+	defer rowEncodes.Put(scratch)
+	data := scratch[0][:0]
+	defer func() { scratch[0] = data[:0] }()
 	put := func(v uint64) { data = binary.AppendUvarint(data, v) }
 	put(uint64(len(c.Rows)))
 	put(uint64(len(c.Strings)))
@@ -62,19 +74,44 @@ func (c *rowChunk) pack() *rowChunk {
 		put(uint64(p.Status))
 		put(uint64(p.Flags))
 		put(uint64(p.Tries))
+		if p.Flags&rowCredits != 0 {
+			put(math.Float64bits(p.Credits))
+		}
 	}
-	archive := s2.Encode(nil, data)
-	if int64(len(archive)) >= c.Bytes {
+	encoded := s2.Encode(scratch[1][:cap(scratch[1])], data)
+	scratch[1] = encoded[:0]
+	if int64(len(encoded)) >= c.Bytes {
 		return c
 	}
 	next := *c
 	next.Rows, next.Strings, next.dict = nil, nil, nil
-	next.Archive, next.Locations = slices.Clip(archive), locations
+	next.Archive, next.Locations = slices.Clone(encoded), locations
 	next.Bytes = int64(len(next.Archive)+len(locations)*8) + codexActorBytes(next.codexActors)
 	return &next
 }
 
 func (c *rowChunk) unpack() *rowChunk { return c.unpackInto(nil) }
+
+// keptStrings copies out the strings that a result kept after a read takes
+// from the rows it visited. An unpacked block's strings are cut from one
+// allocation (unpackInto), so a cache holding one session id from a block
+// holds every string of that block: its request and response ids and its
+// errors. The Sessions and Routing caches kept a session id from nearly
+// every block, and so the decoded text of the whole history: ~200 MB at
+// rest for 600k calls.
+type keptStrings map[string]string
+
+func (k keptStrings) of(s string) string {
+	if s == "" {
+		return ""
+	}
+	if kept, ok := k[s]; ok {
+		return kept
+	}
+	kept := strings.Clone(s)
+	k[kept] = kept
+	return kept
+}
 
 // unpackInto is unpack decoding the rows into rows when it is large enough:
 // every field of a row is written, so a reused slice needs no clearing.
@@ -157,6 +194,10 @@ func (c *rowChunk) unpackInto(into []packedRow) *rowChunk {
 		p.FirstReasoning = int64(take())
 		p.Cost, p.Status, p.Flags = math.Float64frombits(take()), int32(take()), uint16(take())
 		p.Tries = int32(take())
+		p.Credits = 0
+		if p.Flags&rowCredits != 0 {
+			p.Credits = math.Float64frombits(take())
+		}
 	}
 	if !valid || len(data) != 0 {
 		return nil

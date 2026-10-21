@@ -35,6 +35,36 @@ FrierenF on Discord). A run as anyone else has its env as before. Only the
 bridge's run gets it; the warm-up and `/usage` runs don't skip
 permissions.
 
+Every Claude Code magpie starts for the subscription (a turn's run, the
+warm-up and model test `askClaude`, `/usage`, and the sign-in's
+`auth login` and `auth status`) is given its proxy through one helper,
+`claudeCLI.proxied` in each package, which is
+`netproxy.EnvForBunWith`: the account's own proxy, else the
+subscription's, else the global one (`netproxy.EnvWith`), with a SOCKS5
+proxy replaced by magpie's loopback HTTP bridge to it (`netproxy.Bridge`,
+as for every bun magpie starts, #1409). Claude Code is built with Bun,
+which takes only http:// and https:// proxies: given `socks5://`, every
+request failed as `UnsupportedProxyProtocol`, after about three minutes of
+Claude Code's own retries, as a 502 (#2651). A Claude Code in a WSL
+distro that doesn't share Windows' loopback (`wslrun.Tool.Host` set)
+can't reach the bridge, so there, and where the bridge can't start, a
+SOCKS proxy is refused before Claude Code starts, with an error that says
+to use an http:// proxy. The `settings.json` env that magpie writes for the
+user's own Claude Code sessions leaves a SOCKS proxy out (see
+[Providers and accounts](providers-accounts.md)).
+
+The helper offers each of the client's tools under `bridgeToolName`
+(`bridgeTools`), which Claude Code calls `mcp__magpie__<name>`. Claude Code
+keeps only `[A-Za-z0-9_-]` of an MCP tool's name, so a name it would change
+(`spawn.agent`, `fs/read`), one longer than 51 (64 with the prefix) or one
+ending as a changed name ends (`_` and 12 hex digits) is cut, made of those
+characters and given a hash of the whole name: unique (`a.b` and `a_b`
+stay apart), the same in every run, so a resumed session, the history
+(`renderParts`) and the tool-choice line (`toolChoiceAsk`) name it as the
+run was offered it. `subscriptionRun.names` (`bridgeNames`) maps it back
+to the declared name in `toolStart`, for streamed and whole messages, and
+in `mcpCall` (#2649).
+
 The run's MCP server is magpie itself (`magpie claude-mcp-helper`,
 `internal/claudebridge`), which hands each tool call back to the gateway
 at `POST /_magpie/claude-mcp/<token>` (`mcpCall`), where the call is
@@ -129,6 +159,40 @@ output. If selection takes longer, the gateway logs the missing report
 and sends keepalives without the dropped-mark header. Later fallback can
 also change the selected run after headers have been sent. Reporting never
 fails the request or delays an ordinary request's keepalives.
+
+## The caller's instructions as the system prompt (`claudeLeanPrompt`)
+
+Every run is the real Claude Code. By default it keeps Claude Code's own
+system prompt, and the caller's instructions go in the run's first user
+message inside `<external_system_instructions>`. Settings › Models ›
+Replies › Short Claude system prompt (`claudeLeanPrompt`, off by default)
+starts a run with `--system-prompt-file` instead. The file is `system.md`
+in the run's temp folder, under the distro's mount in WSL (`claudeCLI.file`).
+It holds `leanSystem`: the caller's instructions without a client Claude
+Code's billing line, plus the tool-choice line. The first message then holds
+the conversation alone. Claude Code still sends its billing block and its
+identity line, so requests come from the real binary. They no longer carry
+Claude Code's prompt, and that is the ban risk the setting names.
+
+A request with client cache marks (#1717) is never lean: its system marks
+are placed in the first message. The mode is part of the run's identity
+(`cacheIdentity`, and the tool-results check in `serveSubscription`), so a
+run started in one mode never takes a turn of the other. After the setting
+changes, the next turn starts a run with the rendered history.
+
+Measured on 2026-10-16 with a real Claude subscription on Sonnet 5.5,
+Claude Code 2.1.301:
+
+| Client | Off | On |
+| --- | --- | --- |
+| Chat client, ~600-token prompt, 2 tools, 3 turns | 10,048 input tokens | 6,580 (−35%) |
+| `claude -p` as the client, Read and Bash, 4 requests | 85,453 / 85,471 | 81,948 / 81,977 (−4%) |
+
+The saving is a fixed ~0.9–1.2K tokens a request. It is large for light
+clients and small for clients with Claude Code-sized prompts. Without any
+tool, Claude Code's built-in tools are already off (`--tools ""`). A run
+told the whole conversation again costs far more, because it writes the
+history to the 1h cache at 2×.
 
 ## Runtime path for a new turn
 
@@ -358,6 +422,57 @@ A client that drops the images' message without adding text to a result
 goes on only when that message held images alone, no text. A tool result of an image alone (pi-ai's "(see attached image)")
 whose text is replaced by the line is not this shape, and starts anew.
 
+## How many Claude Code processes run (`claudeRoom`, #2956)
+
+Every Claude Code magpie starts for a Claude subscription takes a place in
+`claudeRoom` (`claude_room.go`) before it starts, and frees it once its
+process has exited: each conversation's run (`startRun`), busy, idle or
+parked on tool results, and each one-off test, warm-up and /usage read
+(`runClaudeTree`). Nothing bounded them before. Claude Code 2.1.303 holds
+about 205 MiB RSS idle on Linux arm64, 86–112 MiB of it its own, and a
+512 MiB systemd service had 2 busy runs and 14 starting at once when the
+kernel's OOM killer ended them. In Docker under a 512 MiB memory cgroup,
+six idle runs were enough for two OOM kills.
+
+How many may run (`claudeRunsMost`):
+
+- the user's `claudeRunsMost` in settings.json, set with
+  `magpie claude-code runs N` (`auto` clears it). It is this machine's own
+  setting (`KeepOwn`): a sync never brings a desktop's number to a server.
+- otherwise, on Linux, `(limit − 256 MiB) / 128 MiB`, at least 1, where
+  the limit is the least of MemTotal, the cgroup v2 `memory.max` and
+  `memory.high` of magpie's cgroup and every one above it, and the cgroup v1
+  `memory.limit_in_bytes` (`memLimit`). 512 MiB gives 2, 1 GiB 6, a 964 MiB
+  machine with no cgroup limit 5. It is read once per process.
+- otherwise no bound: macOS, Windows, and a Linux whose limits can't be
+  read. A limit not known is not a small one.
+
+An ask that finds no room (`take`):
+
+1. lets go of the run idle longest, of any bridge. Its session is shelved,
+   as a run pushed past `idleMost` is, so its conversation's next turn
+   resumes it (`--resume`) and is told only the new messages.
+2. otherwise lets go of the run parked longest on tool results, once it has
+   waited `parkLongest`. Busy runs, and runs waiting on tool calls made
+   recently, are never let go.
+3. otherwise waits for one to end: woken when a process exits or a run
+   goes idle (`nudge`), and it looks again every `roomLook` (5s) for a
+   parked run that has come to wait `parkLongest`.
+
+A run being ended counts as `leaving`, so several waiting asks don't each
+let one go for the same room. After `claudeRoomWait` (2 minutes), or once
+the request's context ends, the ask gives up. A conversation's turn is
+answered 503 with "N Claude Code processes are running, as many as may run
+at once (why); none ended within …" and how to set the number. `start`
+doesn't retry without the saved session after such an error. A /usage read
+returns it as its error.
+
+Routing treats that 503 (`claudeNoRoom`) as a protected failure. No
+account is rested, no other Claude account is asked next (each would wait
+for the same room), and the request isn't tried again after a moment. A
+member of the group at another provider answers it. Alone, the client gets
+the 503.
+
 ## Files a run leaves
 
 - Its session: `<config>/projects/<work project>/<session>.jsonl`, for
@@ -478,7 +593,15 @@ carries none.
 
 ```sh
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeClientCache' -count=1
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeLeanPrompt' -count=1
 go test -tags nogui ./internal/claudecode/ -count=1
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeCodeGivenTheBridgeForASOCKSProxy$' -count=1
+go test -tags nogui ./internal/provider/ -run '^TestClaudeSignInBridgesASOCKSProxy$' -count=1
+go test -tags nogui ./internal/netproxy/ -run '^TestEnvForBunWith' -count=1
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeToolNamesComeBackAsDeclared$' -count=1
+go test -tags nogui ./internal/gateway/ -run 'TestClaudeRunsHeldToTheRoom|TestClaudeRoom|TestClaudeOneOffsTakeRoom|TestClaudeMemRuns|TestClaudeRunsMost|TestClaudeNoRoom' -count=1
+go test -tags nogui ./internal/cli/ -run '^TestClaudeCodeRunsSetsTheUsersOwn$' -count=1
+go test -tags nogui ./internal/settings/ -run '^TestClaudeRunsMostIsMachineLocal$' -count=1
 go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeHistoryCachedAcrossNewRuns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy|ClaudeIdle|ClaudeSideQuestion|ClaudeNoRunSaysWhy|ClaudeToolResultsNoRunSaysWhy|ClaudePromptToldUserText|ClaudePromptKeepsInstructions|ClaudeToolResultsGoOnWithTheUsersWords|ClaudeToolResultsKeepInstructions|ToolResultKeepsUserTextSentMidTurn' -count=1
 ```
 

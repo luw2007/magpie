@@ -491,7 +491,7 @@ function renderUsageLoading() {
   for (const id of ["usageAgents", "usageAgentsHid", "usageModels", "usageKeys"]) $("#" + id).hidden = true;
   // the allowances' head is renderQuotas' alone: the quotas it heads are
   // still there while the period loads (#809, Hu9956: 用量界面红框这行会延迟几秒才会出现)
-  for (const h of $$("#view-usage .row-head:not(#quotaHead)")) h.hidden = true;
+  for (const h of $$("#view-usage .row-head:not(#quotaHead, .plugin-panel > .row-head)")) h.hidden = true;
   $("#usageNote").textContent = "";
 }
 
@@ -669,7 +669,7 @@ function renderUsage() {
   $("#chart").hidden = empty;
   for (const id of ["usageAgents", "usageModels"]) $("#" + id).hidden = empty;
   if (empty) $("#usageAgentsHid").hidden = true;
-  for (const h of $$("#view-usage .row-head:not(#quotaHead)")) h.hidden = empty;
+  for (const h of $$("#view-usage .row-head:not(#quotaHead, .plugin-panel > .row-head)")) h.hidden = empty;
   $("#usageKeysHead").hidden = $("#usageKeys").hidden = empty || !u.callerKeys?.length;
   // each subscription account's share, by the account that answered (#557)
   $("#usageAccountsHead").hidden = $("#usageAccounts").hidden = empty || !u.accounts?.length;
@@ -916,19 +916,65 @@ try {
   if (["tokens", "cost", "calls", "speed"].includes(m)) ledMetric = m;
 } catch {}
 
+// The filters a click set for the reader rather than one they picked in a
+// filter's menu: someone in the chart's ranking or a day of its columns
+// ("a click lists only theirs"), or a way in from elsewhere (the tray
+// panel's Open Usage, a route Routing sent here). They last while the
+// Requests are looked at, and go when the reader leaves them, for another
+// tab or page (TJHHHH on Discord: a click on Codex in the ranking had
+// every later visit list only Codex's requests). A filter picked in its
+// menu stays, as one picked in a Mac app's does.
+const ledLent = new Set();
+const LED_UNLEND = {
+  agent: () => { ledAgent = ""; },
+  provider: () => { ledProvider = ""; },
+  model: () => { ledModel = ""; ledQuery = ""; $("#ledQ").value = ""; },
+  callerKey: () => { ledCallerKey = ""; },
+  day: () => { ledDay = ""; },
+  purpose: () => { ledPurpose = ""; },
+  computer: () => { ledComputer = ""; },
+  via: () => { ledVia = ""; },
+};
+// the reader picked this filter themselves: it stays
+const ledOwn = (k) => ledLent.delete(k);
+
 let ledRouteInfo = null, ledBeforeRoute = null;
 window.openUsageRoute = (route) => {
-  if (!ledBeforeRoute) ledBeforeRoute = { period, ledOffset, ledPurpose, ledAgent, ledProvider, ledAccount, ledCallerKey, ledFailed, ledRetried, ledQuery, ledModel, ledComputer, ledDay, ledVia };
+  if (!ledBeforeRoute) ledBeforeRoute = { period, ledOffset, ledPurpose, ledAgent, ledProvider, ledAccount, ledCallerKey, ledFailed, ledRetried, ledQuery, ledModel, ledComputer, ledDay, ledVia, lent: [...ledLent] };
   ledRoute = route.id;
   ledRouteInfo = route;
   ledOffset = 0; ledPurpose = ""; ledAgent = ""; ledProvider = ""; ledAccount = ""; ledCallerKey = ""; ledFailed = false; ledRetried = false; ledQuery = ""; ledModel = ""; ledComputer = ""; ledVia = "";
   ledDay = "";
+  ledLent.clear();
   $("#ledQ").value = "";
   period = "all";
   usageTab = "requests";
   ledger = null;
   show("usage");
 };
+// the one request a route from Routing listed gives way to the list as it
+// was before it
+function ledRouteOff() {
+  ledRoute = 0; ledRouteInfo = null;
+  if (ledBeforeRoute) {
+    ({ period, ledOffset, ledPurpose = "", ledAgent, ledProvider, ledAccount = "", ledCallerKey, ledFailed, ledRetried = false, ledQuery, ledModel, ledComputer = "", ledDay = "", ledVia = "" } = ledBeforeRoute);
+    ledLent.clear();
+    for (const k of ledBeforeRoute.lent || []) ledLent.add(k);
+  }
+  ledBeforeRoute = null;
+  $("#ledQ").value = ledQuery;
+}
+// ledLeave: the reader leaves the Requests; what a click lent them goes
+// (the rows drawn for them aren't shown again on the way back)
+function ledLeave() {
+  const routed = !!ledRoute;
+  if (routed) ledRouteOff();
+  if (!ledLent.size && !routed) return;
+  for (const k of ledLent) LED_UNLEND[k]();
+  ledLent.clear();
+  ledOffset = 0;
+  ledger = null;
+}
 
 function ledParams(extra) {
   const q = new URLSearchParams({ period });
@@ -1250,8 +1296,10 @@ function ledContentBox(c) {
 // the window's chart can also say how fast the replies came (#860)
 const LED_TREND = [...LED_METRICS, ["speed", "Speed"]];
 // "modelAt" is a model at the provider it went to, so one model's speed at
-// each provider is ranked side by side (inaction on Discord)
-const LED_SPLITS = [["model", "Model"], ["modelAt", "Model · provider"], ["provider", "Provider"], ["agent", "Agent"]];
+// each provider is ranked side by side (inaction on Discord); "callerKey"
+// the gateway key that made it, "none" for calls with none, offered while
+// the period has a key's calls (#2521)
+const LED_SPLITS = [["model", "Model"], ["modelAt", "Model · provider"], ["provider", "Provider"], ["agent", "Agent"], ["callerKey", "Gateway key"]];
 // cacheTTLs: a call's cache writes split by how long they are kept, where
 // some were for an hour (Anthropic bills those at 2× input, 5 minutes'
 // at 1.25×); nothing when none were
@@ -1371,16 +1419,19 @@ function drawLedTrend() {
     slide(host, key);
   };
   pill($("#ledMetric"), "ledMetric", LED_TREND, ledMetric, (id) => { ledMetric = id; try { localStorage.setItem("magpie.ledMetric", id); } catch {} drawLedTrend(); });
-  pill($("#ledSplit"), "ledSplit", LED_SPLITS, ledSplit, (id) => { ledSplit = id; drawLedTrend(); });
+  const keyed = (l.callerKeys || []).length > 0;
+  if (ledSplit === "callerKey" && !keyed) ledSplit = "model";
+  pill($("#ledSplit"), "ledSplit", LED_SPLITS.filter(([id]) => id !== "callerKey" || keyed), ledSplit, (id) => { ledSplit = id; drawLedTrend(); });
   const chart = $("#ledChart"), rank = $("#ledRank");
   drawLedColumns(chart, l, ledSplit, ledMetric, false, (day) => {
     ledDay = ledDay === day ? "" : day;
+    ledLent.add("day");
     ledOffset = 0;
     loadLedger().catch((e) => status(e.message, "err"));
   });
   rank.chart = chart;
   if (!rank.rail) ledRail($("#ledRail"), rank);
-  const picked = ledSplit === "provider" ? ledProvider : ledSplit === "agent" ? ledAgent
+  const picked = ledSplit === "provider" ? ledProvider : ledSplit === "agent" ? ledAgent : ledSplit === "callerKey" ? ledCallerKey
     : ledSplit === "modelAt" ? (ledProvider && ledModel ? ledProvider + "/" + ledModel : "") : ledModel;
   drawLedRank(rank, l, ledSplit, ledMetric, picked, (x) => {
     // a click lists only that one's requests; on the one listed, all again
@@ -1390,9 +1441,11 @@ function drawLedTrend() {
       ledProvider = off ? "" : x.id.slice(0, cut);
       ledModel = off ? "" : x.id.slice(cut + 1);
       ledQuery = ledModel; q.value = ledQuery;
-    } else if (ledSplit === "provider") ledProvider = ledProvider === x.id ? "" : x.id;
-    else if (ledSplit === "agent") ledAgent = ledAgent === x.id ? "" : x.id;
-    else { const q = $("#ledQ"); ledModel = ledModel === x.id ? "" : x.id; ledQuery = ledModel; q.value = ledQuery; }
+      ledLent.add("provider").add("model");
+    } else if (ledSplit === "provider") { ledProvider = ledProvider === x.id ? "" : x.id; ledLent.add("provider"); }
+    else if (ledSplit === "agent") { ledAgent = ledAgent === x.id ? "" : x.id; ledLent.add("agent"); }
+    else if (ledSplit === "callerKey") { ledCallerKey = ledCallerKey === x.id ? "" : x.id; ledLent.add("callerKey"); }
+    else { const q = $("#ledQ"); ledModel = ledModel === x.id ? "" : x.id; ledQuery = ledModel; q.value = ledQuery; ledLent.add("model"); }
     ledOffset = 0;
     loadLedger().catch((e) => status(e.message, "err"));
   }, false);
@@ -1615,10 +1668,11 @@ new ResizeObserver(() => {
 }).observe($("#ledChart"));
 
 // the third: a column a narrow window leaves out, its value in the row's
-// details (#860)
+// details (#860), 2 for one left out only when that isn't enough; the
+// fourth, the header's tooltip
 const LED_COLS = [
   ["Time"], ["Agent"], ["Requested"], ["Provider · account"], ["Sent", "", true], ["Served"], ["Effort", "", true],
-  ["In", "n"], ["Out", "n"], ["Cache write", "n", true], ["Cache read", "n", true], ["Cost", "n"], ["Duration", "n"], ["Speed", "n"], ["Status"],
+  ["In", "n"], ["Out", "n"], ["Cache write", "n", true], ["Cache read", "n", true], ["Cost", "n"], ["TTFT", "n", 2, "Time to first token"], ["Duration", "n"], ["Speed", "n"], ["Status"],
 ];
 
 // the tokens a reply was seen to write and the ms it took, as
@@ -1688,20 +1742,23 @@ function ledFit() {
   const wrap = $("#ledWrap"), table = wrap.querySelector("table.led");
   let hint = $("#ledTight");
   if (!table) { if (hint) hint.hidden = true; return; }
-  table.classList.remove("tight", "tighter");
+  table.classList.remove("tight", "tight2", "tighter");
   const over = () => wrap.scrollWidth > wrap.clientWidth + 1;
   const tight = over();
   table.classList.toggle("tight", tight);
   // still too wide (#860: a Windows window at 175%, its wider fonts): the
   // price reference line goes too, in the cost's tooltip and the details
   // as well, and names are cut shorter, whole in their tooltips
+  // still too wide: the first token's column goes (#2522), and only
+  // then what follows
+  if (tight && over()) table.classList.add("tight2");
   if (tight && over()) table.classList.add("tighter");
   if (!hint) {
     hint = el("span", "led-tight");
     hint.id = "ledTight";
     $("#ledSum").after(hint);
   }
-  hint.textContent = hint.title = t("Sent, Effort and the cache are in each row's details");
+  hint.textContent = hint.title = table.classList.contains("tight2") ? t("Sent, Effort, the first token and the cache are in each row's details") : t("Sent, Effort and the cache are in each row's details");
   hint.hidden = !tight;
 }
 
@@ -1764,7 +1821,10 @@ function renderLedger() {
   const missingProvider = ledProvider && !providers.some((p) => p.id === ledProvider);
   const accounts = l.accounts || [];
   const missingAccount = ledAccount && !accounts.some((a) => a.id === ledAccount);
-  const missingCaller = ledCallerKey && !callers.some((k) => k.id === ledCallerKey);
+  // "none": the calls no gateway key made, a choice beside the keys when
+  // there are such calls, so one key's are told from the rest (#2521)
+  const noKey = callers.length > 0 && (ledCallerKey === "none" || (l.by?.callerKey || []).some((s) => s.id === "none"));
+  const missingCaller = ledCallerKey && ledCallerKey !== "none" && !callers.some((k) => k.id === ledCallerKey);
   const computers = computerOpts(l.computers);
   const missingComputer = ledComputer && !computers.some((c) => c.v === ledComputer);
   if (missingAgent || missingProvider || missingAccount || missingCaller || missingComputer) {
@@ -1787,15 +1847,15 @@ function renderLedger() {
   costHead(fmtCost(l), l.unpriced ? unpricedCalls(l.unpriced) : "", unpricedCallsWhy(l.unpriced));
 
   // the filters: choices seen in the period, and failures alone
-  sessPick($("#ledPurpose"), "All purposes", ledPurpose, purposeOptions(l.purposes || [], ledPurpose), "Purpose", (v) => { ledPurpose = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledPurpose"), "All purposes", ledPurpose, purposeOptions(l.purposes || [], ledPurpose), "Purpose", (v) => { ledPurpose = v; ledOwn("purpose"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   $("#ledPurpose").title = t("Purpose");
-  sessPick($("#ledComputer"), "All computers", ledComputer, computers, "Computer", (v) => { ledComputer = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
-  sessPick($("#ledAgent"), "All agents", ledAgent, l.agents.map((a) => ({ v: a.id, name: a.name, note: "" })), "Agent", (v) => { ledAgent = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
-  sessPick($("#ledProvider"), "All providers", ledProvider, providers.map((p) => ({ v: p.id, name: t(p.name), note: "" })), "Provider", (v) => { ledProvider = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledComputer"), "All computers", ledComputer, computers, "Computer", (v) => { ledComputer = v; ledOwn("computer"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledAgent"), "All agents", ledAgent, l.agents.map((a) => ({ v: a.id, name: a.name, note: "" })), "Agent", (v) => { ledAgent = v; ledOwn("agent"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  sessPick($("#ledProvider"), "All providers", ledProvider, providers.map((p) => ({ v: p.id, name: t(p.name), note: "" })), "Provider", (v) => { ledProvider = v; ledOwn("provider"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledAccount"), "All accounts", ledAccount, accounts.map((a) => ({ v: a.id, name: a.id, note: (a.providers || []).map((p) => t(p)).join(" · ") })), "Account", (v) => { ledAccount = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledKey"), "All gateway keys", ledCallerKey, callers.map((k) => ({
     v: k.id, name: k.name, note: "",
-  })), "Gateway keys", (v) => { ledCallerKey = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
+  })).concat(noKey ? [{ v: "none", name: t("No gateway key"), note: "" }] : []), "Gateway keys", (v) => { ledCallerKey = v; ledOwn("callerKey"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   const seg = $("#ledStatus");
   seg.replaceChildren();
   // every request, those the agent got an error for, and those answered
@@ -1853,6 +1913,7 @@ function renderLedger() {
         const next = ledVia === pick ? "" : pick;
         if (next === ledVia) return;
         ledVia = next;
+        ledOwn("via");
         ledOffset = 0;
         loadLedger().catch((e) => status(e.message, "err"));
       };
@@ -1885,10 +1946,7 @@ function renderLedger() {
   $("#ledRouteClear").title = t("Clear filter");
   $("#ledRouteClear").setAttribute("aria-label", t("Clear filter"));
   $("#ledRouteClear").onclick = () => {
-    ledRoute = 0; ledRouteInfo = null;
-    if (ledBeforeRoute) ({ period, ledOffset, ledPurpose = "", ledAgent, ledProvider, ledAccount = "", ledCallerKey, ledFailed, ledRetried = false, ledQuery, ledModel, ledComputer = "", ledDay = "", ledVia = "" } = ledBeforeRoute);
-    ledBeforeRoute = null;
-    $("#ledQ").value = ledQuery;
+    ledRouteOff();
     loadLedger().catch((e) => status(e.message, "err"));
   };
   renderLedgerDash(l);
@@ -1911,7 +1969,12 @@ function renderLedger() {
   wrap.classList.remove("none");
   const table = el("table", "led");
   const head = el("tr");
-  for (const [name, cls, opt] of LED_COLS) head.append(el("th", (cls || "") + (opt ? " lc-opt" : ""), t(name)));
+  const optCls = (opt) => opt === 2 ? " lc-opt2" : opt ? " lc-opt" : "";
+  for (const [name, cls, opt, tip] of LED_COLS) {
+    const th = el("th", (cls || "") + optCls(opt), t(name));
+    if (tip) th.title = t(tip);
+    head.append(th);
+  }
   table.append(el("thead"), el("tbody"));
   table.tHead.append(head);
   for (const r of l.rows) {
@@ -1921,7 +1984,7 @@ function renderLedger() {
     tr.tabIndex = 0;
     tr.setAttribute("aria-expanded", ledOpen.has(key) ? "true" : "false");
     const td = (child, cls, title) => {
-      const c = el("td", (cls || "") + (LED_COLS[tr.childElementCount]?.[2] ? " lc-opt" : ""));
+      const c = el("td", (cls || "") + optCls(LED_COLS[tr.childElementCount]?.[2]));
       if (typeof child === "string") c.textContent = child; else c.append(child);
       if (title) c.title = title;
       tr.append(c);
@@ -2006,6 +2069,11 @@ function renderLedger() {
     // asked for it to its last; some have none, and are dashes, not 0 ms
     const timed = r.source === "log";
     const untimed = !Number.isFinite(r.ms) || r.ms <= 0;
+    // the wait for its first token, in a column of its own to compare down
+    // the list: the duration holds it and the writing after it (#2522).
+    // One not streamed, or that failed before any, has none
+    td(r.ttft_ms > 0 ? (timed ? "≈" : "") + ledTook(r.ttft_ms) : "—", "n ttft" + (r.ttft_ms > 0 ? "" : " faint"),
+      r.ttft_ms > 0 ? [t("{n} ms", { n: ledNum(r.ttft_ms) }), timed ? t("About: told from the session file's times, a little more or less than it took") : ""].filter(Boolean).join(" · ") : "");
     const durationBand = untimed ? "" : r.ms <= 10000 ? "fast" : r.ms <= 30000 ? "slow" : "long";
     td(untimed ? "—" : (timed ? "≈" : "") + ledTook(r.ms), "n duration " + (untimed ? "faint" : "duration-" + durationBand),
       [!untimed ? t("{n} ms", { n: ledNum(r.ms) }) : "", !untimed ? t("Duration colors: ≤10 s green · 10–30 s amber · >30 s red") : "", timed && !untimed ? t("About: told from the session file's times, a little more or less than it took") : "", r.ttft_ms ? t("TTFT {ms}", { ms: ledTook(r.ttft_ms) }) : ""].filter(Boolean).join(" · "));
@@ -2069,11 +2137,12 @@ function renderLedger() {
   $("#ledQ").oninput = (e) => {
     ledQuery = e.target.value;
     ledModel = "";
+    ledOwn("model");
     clearTimeout(typing);
     typing = setTimeout(() => { ledOffset = 0; loadLedger().catch((err) => status(err.message, "err")); }, 250);
   };
   $("#ledQ").onkeydown = (e) => {
-    if (e.key === "Escape" && e.target.value) { e.stopPropagation(); e.target.value = ""; ledQuery = ""; ledModel = ""; ledOffset = 0; loadLedger().catch((err) => status(err.message, "err")); }
+    if (e.key === "Escape" && e.target.value) { e.stopPropagation(); e.target.value = ""; ledQuery = ""; ledModel = ""; ledOwn("model"); ledOffset = 0; loadLedger().catch((err) => status(err.message, "err")); }
   };
   $("#ledExport").onclick = async () => {
     const b = $("#ledExport");
@@ -2161,6 +2230,7 @@ function renderUsageTab() {
     const b = el("button", "opt" + (id === usageTab ? " on" : ""), t(name));
     b.onclick = () => {
       if (id === usageTab) return;
+      if (usageTab === "requests") ledLeave();
       usageTab = id;
       try { localStorage.setItem("magpie.usageTab", id); } catch {}
       $("#usageCost").replaceChildren();
@@ -3533,6 +3603,8 @@ if (mode === "window" && params.get("view") === "usage") {
   ledComputer = params.get("computer") || "";
   const v = params.get("via") || "";
   ledVia = v === "through" || v === "direct" || v === "reported" ? v : "";
+  // a way in, not the reader's pick: they go once the Requests are left
+  for (const [k, x] of [["provider", ledProvider], ["agent", ledAgent], ["purpose", ledPurpose], ["computer", ledComputer], ["via", ledVia]]) if (x) ledLent.add(k);
   const u = new URL(location.href);
   for (const k of ["tab", "provider", "agent", "computer", "card", "purpose", "via", "period"]) u.searchParams.delete(k);
   history.replaceState(null, "", u);

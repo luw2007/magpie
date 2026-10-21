@@ -117,6 +117,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		OwnModelsHidden:      []string{"dsh"},
 		OrderedModels:        map[string][]string{"codex": {"group/g", "p/n"}},
 		FastPicks:            map[string][]string{"codex": {"p/n"}},
+		UltraPicks:           map[string][]string{"codex": {"p/n"}},
 		AgentEfforts:         map[string]string{"cursor-local": "high"},
 		PluginCheckins:       map[string]bool{"fakeco": true},
 		PluginOptions:        map[string]map[string]bool{"fakeco": {"auto": true}},
@@ -140,6 +141,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		Port:                 3591,
 		CORSOrigins:          []string{"http://localhost:3000"},
 		AllowIPs:             []string{"203.0.113.7"},
+		FetchPrivate:         []string{"nas.lan"},
 		GitHubToken:          "ghp_kept",
 		RequestArchive:       true,
 		RequestArchiveMaxMB:  64,
@@ -176,8 +178,11 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GatewayMode:          "off",
 		QuotaReads:           "asked",
 		NoAccountDiscovery:   true,
+		RedactModel:          true,
 	}
 	was.DesktopSubagentEffort = "high"
+	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
+	was.ClaudeRunsMost = 3
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

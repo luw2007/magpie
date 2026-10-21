@@ -45,7 +45,7 @@ func modelNameIn(names map[string]string, pid, model string) (string, bool) {
 // and the model.
 func splitRef(ref string) (*Provider, string, error) {
 	r := strings.TrimPrefix(strings.TrimSpace(ref), "magpie/")
-	if strings.HasPrefix(r, GroupPrefix) {
+	if IsGroupRef(r) {
 		return nil, "", errors.New("that is a routing group, not a provider's model")
 	}
 	pid, model, ok := strings.Cut(r, "/")
@@ -213,7 +213,7 @@ func PriceKey(pid, model string) (string, bool) {
 // reset` over a price still in the file would have the user believe it gone.
 func DropModelPrice(key string) (bool, error) {
 	key = strings.TrimPrefix(strings.TrimSpace(key), "magpie/")
-	if strings.HasPrefix(key, GroupPrefix) {
+	if IsGroupRef(key) {
 		return false, errors.New("that is a routing group, not a provider's model")
 	}
 	pid, model, ok := strings.Cut(key, "/")
@@ -621,7 +621,7 @@ func setModelSame(ref, same string) (bool, error) {
 
 // ImageOverride is the user's answer for whether pid's model takes images.
 func ImageOverride(pid, model string) (bool, bool) {
-	return ImageOverrideIn(settings.Load(), pid, model)
+	return ImageOverrideIn(settings.Shared(), pid, model)
 }
 
 // ImageOverrideIn is ImageOverride from settings s already read: a list of
@@ -668,9 +668,9 @@ func renameModelPrefs(s *settings.Settings, from, to string) bool {
 	// well, and are not one of the per-model preference maps: they say
 	// which models are shown, not what a model is called or costs
 	// (and so is the order they are listed in, the ones picked for an agent
-	// shown only its picks, and the ones sent fast)
+	// shown only its picks, and the ones sent fast or Ultrafast)
 	hidden := false
-	for _, m := range []map[string][]string{s.HiddenModels, s.PickedModels, s.OrderedModels, s.FastPicks} {
+	for _, m := range []map[string][]string{s.HiddenModels, s.PickedModels, s.OrderedModels, s.FastPicks, s.UltraPicks} {
 		for _, ids := range m {
 			for i, id := range ids {
 				if rest, ok := strings.CutPrefix(id, from+"/"); ok {
@@ -812,6 +812,25 @@ func SetCodexAutoReview(id string) error {
 		return nil
 	}
 	s.CodexAutoReview = id
+	if err := settings.Save(s); err != nil {
+		return err
+	}
+	catalog.Touched()
+	return nil
+}
+
+// SetCodexAsyncCompact sets Codex's background compaction
+// (settings.CodexAsyncCompact) and the share of a model's window it starts
+// at, 1–100 or 0 for Codex's own, and has Codex's config written again.
+func SetCodexAsyncCompact(on bool, percent int) error {
+	if percent < 0 || percent > 100 {
+		return fmt.Errorf("Codex compacts in the background past 1 to 100%% of a model's window, not %d%%", percent)
+	}
+	s := settings.Load()
+	if s.CodexAsyncCompact == on && s.CodexAsyncCompactPercent == percent {
+		return nil
+	}
+	s.CodexAsyncCompact, s.CodexAsyncCompactPercent = on, percent
 	if err := settings.Save(s); err != nil {
 		return err
 	}
@@ -1147,7 +1166,7 @@ func SetUpstreamName(ref, name string) error {
 // now.
 func DropUpstreamName(key string) (bool, error) {
 	key = strings.TrimPrefix(strings.TrimSpace(key), "magpie/")
-	if strings.HasPrefix(key, GroupPrefix) {
+	if IsGroupRef(key) {
 		return false, errors.New("that is a routing group, not a provider's model")
 	}
 	pid, model, ok := strings.Cut(key, "/")
@@ -1246,13 +1265,8 @@ func (p Provider) asksOwnBackend() bool {
 		return false
 	}
 	switch p.Account.Agent {
-	case "claude", "cursor", "devin", "kiro", "zed", CommandCodePlanID:
+	case "claude":
 		return true
 	}
-	// Qoder is one backend however many sites it is signed in to, and the
-	// gateway's dispatch covers the whole family rather than the site the
-	// account was made on, so the family is asked of rather than one id of
-	// it: a name refused for the one subscription has to be refused for
-	// the other too, which is as much magpie's own there.
-	return slices.Contains(qoderAgents, p.Account.Agent)
+	return false
 }

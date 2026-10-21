@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/gateway"
@@ -68,7 +70,8 @@ func viaMagpie(agent, prefix string) []Option {
 		}
 		return u
 	}
-	fast := provider.FastPicks(agent)
+	fast, ultra := provider.FastPicks(agent), provider.UltraPicks(agent)
+	var tiered map[string]bool // provider.UltraModels, read at the first fast model
 	for _, e := range shown {
 		if e.Group != "" {
 			groups = append(groups, Option{Value: prefix + e.ID, Label: e.Name, Note: "routing group · via magpie",
@@ -86,6 +89,12 @@ func viaMagpie(agent, prefix string) []Option {
 		if provider.CanFast(e.Provider, e.Model) {
 			o.FastFor, o.Fast = agent, slices.Contains(fast, e.ID)
 			o.OwnFast = provider.OwnFast(e.Provider, e.Model)
+			if tiered == nil {
+				tiered = provider.UltraModels()
+			}
+			if provider.UltraOn(e.Provider, e.Model, tiered) {
+				o.UltraOK, o.Ultra = true, o.Fast && slices.Contains(ultra, e.ID)
+			}
 		}
 		out = append(out, o)
 	}
@@ -122,8 +131,59 @@ func isMagpie(v string) bool {
 	if pid, _, ok := strings.Cut(v, "/"); ok && dryProviders[pid] {
 		return true
 	}
-	_, _, ok := provider.Resolve(v)
-	return ok && strings.Contains(v, "/")
+	if !strings.Contains(v, "/") {
+		return false
+	}
+	return magpieRefs.get(v, func() bool {
+		_, _, ok := provider.Resolve(v)
+		return ok
+	})
+}
+
+// magpieRefs keeps isMagpie's answers while provider.StampNow stays the
+// same, for a minute at most. Outside a request that holds the catalog,
+// each Resolve built every provider's entries again: the window's drift
+// poll, every 15s, asked it for each agent's values, ~6 MB a poll (the
+// procmem heap profile: 235 MB of 1.37 GB in 10 minutes of GUI use).
+var magpieRefs stampedRefs
+
+// stampedRefs is a model value → answer, dropped when the stamp moves,
+// after a minute (what the stamp can't see: an account another program
+// signed in to), or once it holds more values than any config has.
+type stampedRefs struct {
+	mu    sync.Mutex
+	stamp provider.Stamp
+	at    time.Time
+	of    map[string]bool
+}
+
+const (
+	stampedRefsFor = time.Minute
+	stampedRefsMax = 4096
+)
+
+func (s *stampedRefs) get(v string, build func() bool) bool {
+	st := provider.StampNow()
+	s.mu.Lock()
+	if s.stamp != st || time.Since(s.at) >= stampedRefsFor || len(s.of) >= stampedRefsMax {
+		s.stamp, s.at, s.of = st, time.Now(), nil
+	}
+	if ok, found := s.of[v]; found {
+		s.mu.Unlock()
+		return ok
+	}
+	s.mu.Unlock()
+	// built from what is there after st was taken: never older than st
+	ok := build()
+	s.mu.Lock()
+	if s.stamp == st {
+		if s.of == nil {
+			s.of = map[string]bool{}
+		}
+		s.of[v] = ok
+	}
+	s.mu.Unlock()
+	return ok
 }
 
 func firstOf(xs []string) string {

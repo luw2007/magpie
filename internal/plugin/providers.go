@@ -12,8 +12,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
@@ -390,11 +392,7 @@ func listingProxies() map[string]map[string]string {
 	if ProxyFor == nil {
 		return out
 	}
-	var m map[string]json.RawMessage
-	if b, err := readAuthFile(); err == nil {
-		_ = json.Unmarshal(b, &m)
-	}
-	for k := range m {
+	for k := range authRaw() {
 		id := ProviderOf(k)
 		if out[id] == nil {
 			out[id] = map[string]string{"": forHost(ProxyFor(id, ""))}
@@ -705,12 +703,49 @@ func firstNonEmpty(ss ...string) string {
 	return ""
 }
 
+// readAuth is plugin-auth.json's sign-ins as storedAuth, by key. What it
+// returns is shared: the caller must not change it.
 func readAuth() map[string]storedAuth {
-	var m map[string]storedAuth
-	if b, err := readAuthFile(); err == nil {
-		_ = json.Unmarshal(b, &m)
-	}
+	m, _ := filememo.Read("plugin-auth:stored", AuthPath(), func(b []byte) (map[string]storedAuth, error) {
+		raw, err := parseAuth(b)
+		out := make(map[string]storedAuth, len(raw))
+		for k, v := range raw {
+			var a storedAuth
+			_ = json.Unmarshal(v, &a)
+			out[k] = a
+		}
+		return out, err
+	})
 	return m
+}
+
+// authRaw is plugin-auth.json's sign-ins by key, each as it is written.
+// What it returns is shared: the caller must not change it.
+func authRaw() map[string]json.RawMessage {
+	m, _ := filememo.Read("plugin-auth", AuthPath(), parseAuth)
+	return m
+}
+
+// authParses counts plugin-auth.json's parses, for tests.
+var authParses atomic.Int64
+
+// parseAuth is plugin-auth.json's contents b, or its last good generation
+// when b doesn't read (#1505). It is parsed once for each version of the
+// file (filememo): the providers' every build read it whole, and parsed
+// it twice over, for each plugin signed in to, on every request the
+// gateway served (#2502).
+func parseAuth(b []byte) (map[string]json.RawMessage, error) {
+	authParses.Add(1)
+	var m map[string]json.RawMessage
+	if json.Unmarshal(b, &m) != nil {
+		bak, err := lastgood.Fallback(AuthPath(), b, validAuth)
+		if err != nil {
+			return nil, err
+		}
+		m = nil
+		_ = json.Unmarshal(bak, &m)
+	}
+	return m, nil
 }
 
 // validAuth is plugin-auth.json's contents: one object of sign-ins.
@@ -775,6 +810,9 @@ type Authorization struct {
 	URL          string `json:"url"`
 	Instructions string `json:"instructions"`
 	Method       string `json:"method"`
+	// Opened is a page the plugin (its vendor's CLI) opened already, not
+	// to be opened again
+	Opened bool `json:"opened"`
 }
 
 // NewAccount is the account a sign-in goes to when it is a new one: the
@@ -965,15 +1003,15 @@ func Check(ctx context.Context, provider, account string) (Checked, error) {
 
 // Auths are provider's sign-ins as plugin-auth.json keeps them, by key.
 func Auths(provider string) map[string]map[string]any {
-	var m map[string]map[string]any
-	if b, err := readAuthFile(); err == nil {
-		_ = json.Unmarshal(b, &m)
-	}
 	out := map[string]map[string]any{}
-	for k, v := range m {
-		if ProviderOf(k) == provider {
-			out[k] = v
+	for k, v := range authRaw() {
+		if ProviderOf(k) != provider {
+			continue
 		}
+		// the caller's own: decoded afresh from what is shared
+		var a map[string]any
+		_ = json.Unmarshal(v, &a)
+		out[k] = a
 	}
 	return out
 }
@@ -1017,6 +1055,11 @@ type UsageResets struct {
 	ByWindow bool   `json:"byWindow"`
 	FiveHour int    `json:"fiveHour"`
 	Weekly   int    `json:"weekly"`
+	Team     bool   `json:"team"` // a team plan's, not the person's own
+	Each     []struct {
+		Until  string `json:"until"` // RFC 3339, "": it never runs out
+		Window string `json:"window"`
+	} `json:"each"`
 }
 
 type UsageWindow struct {

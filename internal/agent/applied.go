@@ -101,6 +101,11 @@ func (a *Agent) Apply(key, v string) error {
 	if f == nil {
 		return nil
 	}
+	// a found group named by its old id is written as it is listed now,
+	// auto/<model> (autoref.go)
+	if pub, ok := a.publicValue(v); ok {
+		v = pub
+	}
 	was := a.Values()
 	if err := f.Set(v); err != nil {
 		return err
@@ -314,8 +319,8 @@ func groupNamed(v string) string {
 	// magpie set (GroupFor takes it off; so does GroupFinder)
 	v = strings.TrimSuffix(strings.TrimSpace(v), "[1m]")
 	v = strings.TrimPrefix(v, magpieID+"/")
-	if strings.HasPrefix(v, provider.GroupPrefix) {
-		return v
+	if provider.IsGroupRef(v) {
+		return provider.CanonicalRef(v) // auto/<model> and group/auto-<slug> are one group
 	}
 	g, _ := provider.GroupFor(v)
 	return g
@@ -901,12 +906,13 @@ func sameHost(a, b string) bool { return hostOf(a) == hostOf(b) }
 // gateway — pairs of key and value, read with get — and says which no longer
 // holds, "" when all do. A URL is quoted; a key's value never is. A URL
 // that reaches magpie another way (reachesMagpie: a reverse proxy, #1985)
-// holds.
+// holds. So does a key of the gateway's own the user put in place of
+// magpie's (keyHolds).
 func wiringOff(name, file string, get func(string) (string, bool), kvs ...string) string {
 	for i := 0; i+1 < len(kvs); i += 2 {
 		k, want := kvs[i], kvs[i+1]
 		v, _ := get(k)
-		if v == want || v != "" && reachesMagpie(v, want) {
+		if keyHolds(v, want) || v != "" && reachesMagpie(v, want) {
 			continue
 		}
 		where := name + "'s " + k + " (" + filepath.Base(file) + ")"

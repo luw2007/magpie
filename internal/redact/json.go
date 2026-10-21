@@ -360,6 +360,21 @@ func jsonEscape(s string) string {
 // Anthropic answers 400 "Invalid `signature` in `thinking` block".
 func MaskJSON(body []byte, o Options) ([]byte, int) {
 	signed, args, defs := scan(body)
+	masked := func(path, key, s string) bool {
+		return !keepIn(path, key, s, args, defs) && (signed == nil || !under(path, signed))
+	}
+	if o.Model != nil {
+		// the model is asked once, for all of the request's texts
+		var texts []string
+		if _, ok := walk(body, func(path, key, s string) string {
+			if masked(path, key, s) {
+				texts = append(texts, s)
+			}
+			return s
+		}); ok {
+			o = withModel(o, texts)
+		}
+	}
 	total := 0
 	var seen []string // value, placeholder, value, placeholder…
 	put := func(kind, v string) string {
@@ -368,7 +383,7 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 		return p
 	}
 	out, ok := walk(body, func(path, key, s string) string {
-		if keepIn(path, key, s, args, defs) || signed != nil && under(path, signed) {
+		if !masked(path, key, s) {
 			return s
 		}
 		t, n := mask(s, o, put)
@@ -402,7 +417,7 @@ func MaskJSON(body []byte, o Options) ([]byte, int) {
 		// number or an address the vendor wrote of its own can be one
 		// masked in another conversation (13800138000 is in many), and
 		// masked, its text would no longer match its signature
-		t, n := apply(t, knownSpans(t, Options{Secrets: o.Secrets}), placeholder)
+		t, n := apply(t, knownSpans(t, Options{Secrets: o.Secrets}), placeholder, o.Seen)
 		total += n
 		return t
 	})

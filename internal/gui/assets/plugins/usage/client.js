@@ -51,6 +51,7 @@ magpie.plugin("usage", (ctx) => {
     <div class="list" id="usageKeys" hidden></div>
     <p class="usage-note" id="usageNote"></p>
     <section class="usage-config" id="usageConfig"></section>
+    <div class="plugin-slot" data-slot="usage" hidden></div>
   </div>
   <div class="usage-pane" id="ledgerPane" hidden>
     <div class="sess-tools">
@@ -137,5 +138,8 @@ magpie.plugin("usage", (ctx) => {
     reload() { return refreshUsage(true); },
     costs() { renderCosts(); },
     tab() { return usageTab; },
+    // the reader goes to another page: the Requests give back what a
+    // click lent them (ledLeave)
+    leave() { if (usageTab === "requests") ledLeave(); },
   });
 });

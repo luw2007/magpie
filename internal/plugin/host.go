@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/settings"
@@ -89,13 +91,14 @@ type call struct {
 	// A fetch's head and chunks wait here, in the order they came, until
 	// the body's reader takes them: the host's reader queues them without
 	// ever waiting on one request's consumer (see push).
-	stream  bool
-	mu      sync.Mutex
-	queue   []message
-	queued  int           // the queued chunks' decoded bytes
-	over    error         // why the call was given up on
-	stopped bool          // the call is over for good: nothing more is queued
-	wake    chan struct{} // buffered 1: something was queued, or the call is over
+	stream      bool
+	cancellable bool // a gateway request owns asynchronous I/O, without a stream slot
+	mu          sync.Mutex
+	queue       []message
+	queued      int           // the queued chunks' decoded bytes
+	over        error         // why the call was given up on
+	stopped     bool          // the call is over for good: nothing more is queued
+	wake        chan struct{} // buffered 1: something was queued, or the call is over
 
 	// window is this call's credit in charged bytes (a frame's payload plus
 	// frameOverhead) and owed is how much of it the child has spent and the
@@ -342,7 +345,7 @@ func (c *call) transitionLocked(event callEvent, why error, answer *message) fun
 			}{c.over.Error()}}
 			c.terminal = &m
 		}
-		if event == callCancelled && c.state == callActive && c.stream {
+		if event == callCancelled && c.state == callActive && (c.stream || c.cancellable) {
 			c.state = callAborting
 		} else {
 			c.state = callReleased
@@ -641,6 +644,9 @@ func changed() {
 }
 
 func changedNow() {
+	// the sign-ins are read again, even by a request holding the files it
+	// read (filememo.Hold): a sign-in just saved is in what comes next
+	filememo.Look(AuthPath())
 	onChangeMu.Lock()
 	fs := append([]func(){}, onChangeNow...)
 	onChangeMu.Unlock()
@@ -803,6 +809,12 @@ func get(ctx context.Context) (*host, error) {
 	checkList()
 	hostMu.Lock()
 	defer hostMu.Unlock()
+	return getLocked(ctx)
+}
+
+// getLocked requires hostMu. Gateway hooks bound both the lock wait and
+// startup with their request-hook budget.
+func getLocked(ctx context.Context) (*host, error) {
 	if hostStale.Swap(false) && current != nil {
 		go current.retire()
 		current = nil
@@ -958,13 +970,14 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		Spec    string         `json:"spec"`
 		Target  string         `json:"target"`
 		Options map[string]any `json:"options,omitempty"`
+		Gateway string         `json:"gateway,omitempty"`
 	}
 	var items []item
 	for _, e := range l.Plugins {
 		// a plugin that is only gateway middleware or an agent runs in
 		// magpie (internal/middleware, internal/agentplug), not here
 		if !e.Off && !InMagpieOnly(Target(e.Spec)) {
-			items = append(items, item{e.Spec, Target(e.Spec), e.Options})
+			items = append(items, item{e.Spec, Target(e.Spec), e.Options, Gateway(Target(e.Spec))})
 		}
 	}
 	var res struct {
@@ -1021,8 +1034,9 @@ func (h *host) read(out io.Reader) {
 	for {
 		line, err := readLine(r, h.lineLimit())
 		if len(line) > 0 {
-			var m message
-			if json.Unmarshal(line, &m) == nil {
+			if m, ok := chunkFrame(line); ok {
+				h.dispatch(m)
+			} else if json.Unmarshal(line, &m) == nil {
 				h.dispatch(m)
 			}
 		}
@@ -1043,6 +1057,45 @@ func (h *host) read(out io.Reader) {
 		err = errors.New("the plugin host quit")
 	}
 	h.fail(fmt.Errorf("the plugin host quit: %v", err))
+}
+
+var (
+	chunkHead = []byte(`{"id":`)
+	chunkMid  = []byte(`,"event":"chunk","data":"`)
+)
+
+// chunkFrame is the chunk frame in line when it has exactly the shape
+// host.js's chunkLine writes, {"id":N,"event":"chunk","data":"…"}, with
+// nothing in the data JSON would escape: the reply's bytes come in these,
+// and encoding/json scanned every base64 byte of each, several times what
+// decoding them costs. Any other line is not one, and is unmarshalled; push
+// checks the data is base64 of a frame's size either way.
+func chunkFrame(line []byte) (message, bool) {
+	line = bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+	rest, ok := bytes.CutPrefix(line, chunkHead)
+	if !ok {
+		return message{}, false
+	}
+	i := bytes.IndexByte(rest, ',')
+	if i <= 0 || i > 18 {
+		return message{}, false
+	}
+	var id int64
+	for _, c := range rest[:i] {
+		if c < '0' || c > '9' {
+			return message{}, false
+		}
+		id = id*10 + int64(c-'0')
+	}
+	data, ok := bytes.CutPrefix(rest[i:], chunkMid)
+	if !ok {
+		return message{}, false
+	}
+	data, ok = bytes.CutSuffix(data, []byte(`"}`))
+	if !ok || bytes.IndexByte(data, '"') >= 0 || bytes.IndexByte(data, '\\') >= 0 {
+		return message{}, false
+	}
+	return message{ID: id, Event: "chunk", Data: string(data)}, true
 }
 
 // readLine reads one '\n'-terminated line, at most max bytes, so a child that
@@ -1392,6 +1445,9 @@ func (h *host) call(ctx context.Context, method string, params, out any) error {
 	if err != nil {
 		return err
 	}
+	c.mu.Lock()
+	c.cancellable = method == "gatewayRequest"
+	c.mu.Unlock()
 	if err := h.enqueueCall(ctx, map[string]any{"id": id, "method": method, "params": params}, nil, c); err != nil {
 		c.settle(err)
 		return err

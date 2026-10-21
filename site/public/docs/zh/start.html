@@ -168,7 +168,7 @@
 
     <h3>跨供应商的同一个模型</h3>
     <p>路由组是几个模型（来自一个或多个供应商），Agent 把它当作一个来选：<code>group/&lt;id&gt;</code>，在选择列表的 <em>路由组</em> 下面。两个供应商用同一个名字提供的模型会自动成组；在 <span class="ui">路由</span> 标签页点 <span class="ui">新建组</span> 可以把任意模型组到一起。排第一的模型决定这个组对外的能力。</p>
-    <div class="callout"><b>不用手动建的组。</b>再加一个供应商，只要它提供的模型和已有的同名（比如 Claude 订阅和 Copilot 都有 Claude Opus，DeepSeek 官方 API 和 OpenRouter 都有 DeepSeek），magpie 就会自动把它们组成一个路由组：<code>group/auto-&lt;模型&gt;</code>，包含所有提供这个模型的供应商。名字按各家不同的写法匹配（<code>deepseek/deepseek-chat</code> 和 <code>deepseek-chat</code> 算同一个）。给 Agent 选这个组，请求就会分摊到这些供应商上；不想要的可以用 <code>magpie group rm</code> 隐藏。</div>
+    <div class="callout"><b>不用手动建的组。</b>再加一个供应商，只要它提供的模型和已有的同名（比如 Claude 订阅和 Copilot 都有 Claude Opus，DeepSeek 官方 API 和 OpenRouter 都有 DeepSeek），magpie 就会自动把它们组成一个路由组：<code>auto/&lt;模型&gt;</code>（模型自己的 id，比如 <code>auto/claude-opus-4.6</code>；以前的 <code>group/auto-…</code> 也照样能用），包含所有提供这个模型的供应商。名字按各家不同的写法匹配（<code>deepseek/deepseek-chat</code> 和 <code>deepseek-chat</code> 算同一个）。给 Agent 选这个组，请求就会分摊到这些供应商上；不想要的可以用 <code>magpie group rm</code> 隐藏。</div>
     <div class="table-wrap"><table>
       <tr><th>路由</th><th>谁排在前面</th></tr>
       <tr><td>智能 <code>smart</code></td><td>默认。把成员的账号和 Key 放在一起排（组里的路由组算一个，见下文）：还有余量的订阅里，额度最先重置的排第一。看周额度的重置时间；只有 5 小时额度、没有周额度的账号（如 Claude Enterprise）看它的 5 小时重置，所以排在所有更晚重置的周额度前面。没有重置时间的积分（WorkBuddy 的积分包，各自到期）按剩余积分最早过期的时间算，所以积分最先过期的 WorkBuddy 账号排第一。失败后在休息的排最后。</td></tr>
@@ -196,6 +196,7 @@
       <li><span class="ui">压缩上下文时</span>：Agent 压缩对话上下文时命中——Claude Code 的 <code>/compact</code> 和自动压缩、Codex、OpenCode、Pi、Gemini CLI、Qwen Code、Kimi Code——让更便宜、更快的模型来写总结，对话本身仍留在原来的模型上。压缩请求单独决定：它所在的这一轮和缓存都留在原处。对话比规则里的模型能装下的还长时，改由下一条命中的规则或组本来的顺序决定。</li>
       <li><b>时段和星期。</b>规则可以只在某些时段、某几天生效，按这台电脑的时钟——比如厂商的高峰期。把这段时间的对话“先发给”别的模型，厂商那个模型仍排在后面做故障转移。要把它完全拿掉，在规则的 <span class="ui">⋯</span> 菜单里选 <span class="ui">改为暂停该模型</span>：规则生效期间（它的时段、星期和 Agent），这个模型移出分组——不排第一、不做备用、也不会因为会话粘性被留住——时段过了自动回来。暂停只按时段、星期和 Agent 判断；组里所有模型都被暂停时，会告诉 Agent。</li>
       <li><b>文件夹。</b><span class="ui">项目文件夹</span>：Agent 的工作目录是你列出的文件夹之一或其子文件夹时命中：<code>~/work/acme</code> 包括 <code>~/work/acme/web</code>，不包括 <code>~/work/acme-old</code>。文件夹以 Agent 在请求里告诉模型的为准——Claude Code、Codex、OpenCode 和 Pi 都会说——不说明工作目录的 Agent 不会命中任何按文件夹的规则。<code>~</code> 是你的主目录，<code>C:\work</code> 也就是 WSL 里的 <code>/mnt/c/work</code>，macOS 和 Windows 上不区分大小写。</li>
+      <li><b>推理强度。</b>规则还可以设定它的模型用什么推理强度，让一个意图同时选定模型和推理强度：在规则的 <span class="ui">⋯</span> 菜单里选 <span class="ui">设定推理强度</span>，或在终端用 <code>use-effort=low</code>。不管 Agent 要求什么，该模型都按这个推理强度发送，取模型最接近的档位；magpie 不知道档位的模型，以及排在它后面做备用的模型，按 Agent 的要求发送。详见<a href="/docs/zh/intent#effort">意图路由</a>。</li>
       <li>路由标签页会显示每一轮是被哪条规则送到哪里的、意图判断模型给出的答案，以及 Agent 说的工作目录。</li>
     </ul>
     <h3 id="nested">路由组里放路由组</h3>

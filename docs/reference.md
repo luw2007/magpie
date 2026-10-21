@@ -54,7 +54,7 @@ line; agents connected to magpie lose it when it quits.
   use its models through the gateway, with nothing copied and no key to
   paste.
 - **Providers with one field.** Pick a preset (Anthropic, OpenAI, Gemini,
-  DeepSeek, Kimi, GLM, MiniMax, StepFun, Qwen, Baidu Qianfan, Tencent Cloud Token Plan,
+  Amazon Bedrock and its Mantle endpoint, DeepSeek, Kimi, GLM, MiniMax, StepFun, Qwen, Baidu Qianfan, Tencent Cloud Token Plan,
   Huawei Cloud MaaS, Volcengine Ark, Mistral, Groq, Nous Portal, xAI, OpenRouter, Together,
   Fireworks, SiliconFlow, NVIDIA NIM, ModelScope, AiHubMix, PipeLLM, 302.AI, Ollama, LM Studio…),
   paste a key, done. Custom vendors need a name and a base URL. magpie never
@@ -89,7 +89,7 @@ line; agents connected to magpie lose it when it quits.
 
 | Agent        | File                              | Fields          |
 | ------------ | --------------------------------- | --------------- |
-| Claude Code  | `~/.claude/settings.json`         | provider, model, opus/sonnet/haiku/fable, sign-in (through magpie) |
+| Claude Code  | `~/.claude/settings.json`         | provider, model, opus/sonnet/haiku/fable, auto mode, sign-in (through magpie) |
 | Claude Desktop | `Claude/` + `Claude-3p/configLibrary/` in `~/Library/Application Support` (`%LOCALAPPDATA%` on Windows, `~/.config` on Linux). A Desktop installed as an MSIX package on Windows keeps them in its package instead (`%LOCALAPPDATA%\Packages\Claude_<publisher>\LocalCache\Local`, or `AnthropicPBC.Claude_<publisher>` for the Store's package, its own data in `LocalCache\Roaming\Claude`). Desktop 2.31226 and later, packaged, reads the real `%LOCALAPPDATA%\Claude-3p` instead, so for a packaged Desktop magpie writes both ([`desktopdir`](../internal/desktopdir/desktopdir.go)) | provider (its third-party gateway mode: Code and Cowork on magpie, no Anthropic sign-in; restart Desktop), opus/sonnet/haiku/fable, subagent model and subagent effort (magpie's settings, applied by the gateway to subagent tool turns; no restart) |
 | Codex        | `~/.codex/config.toml`            | provider, model, effort |
 | Gemini CLI   | `~/.gemini/settings.json`, `~/.gemini/.env` | auth, model |
@@ -322,7 +322,8 @@ handed on, and isn't counted as a request. The CSV's last columns are
 `tries` (on the final row, when the request took more than one),
 `handed_on`, then `tier_asked`, `tier_sent` and `tier_served`: the
 service tier the client asked for (Claude's fast speed reads `fast`), the
-one that try went out at (a fast pick sends `priority`; Ultrafast becomes
+one that try went out at (a fast pick sends `priority`, or `ultrafast`
+where the pick is set to Ultrafast; Ultrafast becomes
 `priority` on an account whose plan doesn't offer it), and the one the
 vendor's reply said it ran at, empty when the reply doesn't say. The JSON
 log keeps them as `tier_asked`, `tier_sent` and `tier_served`, and each
@@ -945,7 +946,10 @@ the hook as a variable (or cast it), or put the icon in `package.json`.
 #### Gateway middleware
 
 A plugin can also be gateway middleware: `onRequest(body, ctx)` sees each
-request an agent sends before it is routed, `onEvent(event, ctx)` each
+request an agent sends before it is routed, `onProvider(body, ctx)` the
+body each provider it is tried on is sent (`ctx.provider` has its `id`,
+`name`, `account` and `model`; each try starts from what `onRequest`
+left), `onEvent(event, ctx)` each
 event of a streamed reply and `onResponse(body, ctx)` a whole one, all in
 the agent's own API. A hook returns the changed object, or nothing to
 leave it; `onEvent` returns `null` to drop an event, and
@@ -998,7 +1002,9 @@ Ready-made middleware, under Plugins › Discover › Gateway middleware
 (`@magpie-community/middleware-<name>`), mostly New API's channel settings
 with the same JSON: `param-override` (`param_override`), `model-map`
 (`model_mapping`), `system-prompt`, `word-guard` (sensitive words) and
-`think-tags` (strip `<think>…</think>`, or `thinking_to_content`). A
+`think-tags` (strip `<think>…</think>`, or `thinking_to_content`), and
+`antigravity-cloak`, which keeps the words Antigravity turns Claude Code's
+system prompt away for out of what it sends Antigravity alone. A
 middleware's entry in the community `registry.json` has
 `"kind": "middleware"` and no `providers`.
 
@@ -1687,9 +1693,12 @@ It exposes:
 | `/v1/audio/transcriptions`, `/v1/audio/translations` | OpenAI speech to text (multipart, passed through) |
 | `/v1/models`, `/v1beta/models` | the catalog            |
 | `/v1/codex/models`       | the catalog as Codex's `model_catalog_url` reads it ([Codex on another computer](#providers-and-the-gateway)) |
+| `/api/version`, `/api/tags`, `/api/show` | the catalog as an Ollama server lists it, for a client that takes a custom endpoint only as Ollama (below) |
 
 Each `/v1/models` entry includes `reasoning` and `supported_reasoning_levels`
-(`[{"effort":"low"}, ...]`). A routing group is marked `reasoning` when any
+(`[{"effort":"low"}, ...]`), and the same levels as plain names in
+`reasoning_levels` (`["low", ...]`, `[]` when there are none), which
+clients of the Catwalk schema (Crush and kin) read (#2576). A routing group is marked `reasoning` when any
 member thinks; `supported_reasoning_levels` lists the levels the members
 that think have in common. A member known not to think doesn't take them
 away (#2127), nor does one whose levels nothing knows (#597). A member magpie
@@ -1700,6 +1709,16 @@ what the agent asked, as before. `native_endpoints`
 (`["/v1/messages"]`) names the APIs a request for the model is passed
 straight through on; it is left out of a routing group, and of a model every
 request to which is translated anyway.
+
+A client that takes a custom endpoint only as an Ollama server (Visual
+Studio's and VS Code's Copilot: Manage Models, then Ollama) is given
+`http://127.0.0.1:3425` as the Ollama URL, no `/v1`. It reads the models
+from `/api/tags`, each one's tools, vision, thinking and window from
+`/api/show`, and chats on `/v1/chat/completions`. Ollama's own chat
+(`/api/chat`, `/api/generate`, so `ollama run`) isn't served. Copilot sends
+no key, so this works on this computer only; behind a reverse proxy with a
+single public URL, `/api` goes to `magpie web`'s page, so give the
+gateway's own port.
 
 Requests pass straight through when the vendor speaks the agent's API and
 are translated otherwise, streaming, tool calls and reasoning included. The
@@ -1800,6 +1819,42 @@ add it to `~/.claude/settings.json` yourself:
 `"statusLine": {"type": "command", "command": "magpie statusline"}`. With
 the gateway not running it prints an empty line.
 
+`magpie heap [<file>]` is for a report of magpie holding too much memory: a
+macOS `sample` of the app shows Go's frames as `???`. It asks the running
+magpie that serves the gateway (the app, the menu bar, `magpie serve` or
+`magpie web`) for `GET /v1/magpie/heap`, a Go heap profile taken after a
+collection (`runtime/pprof`'s `heap`, gzipped protobuf, which
+`go tool pprof` reads), and writes it to `<file>`, else
+`magpie-heap-<date>-<time>.pb.gz` in the working folder, never over a file
+there. It prints the file and the runtime's numbers the gateway sends in
+`X-Magpie-Heap-Stats`: the process, `HeapAlloc` (and what is live after the
+collection), `HeapInuse`, `HeapSys`, `StackSys`, `Sys` (all Go took from
+the system; a footprint far above it is outside Go, such as the webview),
+`NumGC` and the goroutine count. The route answers only a program on this
+computer calling it as `localhost` or a loopback address: another machine,
+a proxy's or tunnel's client, any request with a browser's marks (an
+Origin, listed or not, `null`, `Sec-Fetch-*`, a `Mozilla/` user agent) and
+any other `Host` are refused 403, with a gateway key too. With
+`MAGPIE_ADDR` on an address that isn't loopback, the call isn't from
+loopback, so it is refused as well.
+
+`magpie cpu [<file>] [--seconds N]` is for a report of magpie using too
+much CPU (@LeiCheng42 on X, while Codex ran). It asks the same running
+magpie for `GET /v1/magpie/cpu?seconds=N`, a Go CPU profile recorded for
+30 seconds, or N from 5 to 120 (`runtime/pprof`'s CPU profile, gzipped
+protobuf, which `go tool pprof` reads). While it records, use magpie as
+you do when it is busy, such as running Codex: the gateway goes on serving
+every other call, and the profile is of that. It writes the profile to
+`<file>`, else `magpie-cpu-<date>-<time>.pb.gz` in the working folder,
+and refuses a file that is there before it records, not after. It prints
+the file and the numbers the gateway sends in `X-Magpie-CPU-Stats`: the
+process, the CPU time it used over the seconds recorded (user and system,
+as the system counts it, with the share of one core) and since it started,
+its cores and `GOMAXPROCS`, and the goroutine count. Go records one CPU
+profile at a time, so a second `magpie cpu` while one records is refused
+409; one whose caller hangs up stops recording. The route answers the same
+callers as `/v1/magpie/heap`, and refuses the same ones 403.
+
 A gateway key held to a budget, to some models or to some accounts is told
 none of this magpie's accounts (#1981): `/v1/magpie/quotas`,
 `/v1/magpie/quotas/history`, `/v1/magpie/quotas/cards`,
@@ -1830,11 +1885,14 @@ machine), with every session in `sessions` where the window's lists the
 top 100 by tokens; `sessionCount` is how many there are. `GET /v1/magpie/usage/requests` is its requests a page at a time
 (`offset`, `limit` up to 500), with the same filters as the Requests log:
 `period`, `day`, `agent`, `provider`, `model`, `account`, `callerKey`,
-`purpose`, `failed`, `retried`, `q`, `via`, `computer`. What was said in a call is not
+`purpose`, `failed`, `retried`, `q`, `via`, `computer`. `callerKey=none`
+keeps the calls no gateway key made, and `by.callerKey` splits the page's
+calls by key, `none` among them (#2521). What was said in a call is not
 in either. Like `/v1/magpie/quotas`, they answer this machine, and another
 only with a gateway key. A key held to a budget, to some models or to some
 accounts is told its own calls alone: `/v1/magpie/usage` refuses it with a
-403, and `/v1/magpie/usage/requests` keeps only its rows and filter lists.
+403, and `/v1/magpie/usage/requests` keeps only its rows, filter lists and
+share of the split by key.
 
 What is in flight now, for a status bar such as SketchyBar (#2132):
 `GET /v1/magpie/concurrency` answers `requests`, every agent request the
@@ -1869,8 +1927,18 @@ curl -s http://127.0.0.1:3425/v1/magpie/usage/requests \
 
 - **Fields:** `t` (RFC 3339), `agent`, `provider`, `model` and `rid` are
   required. `in`, `out`, `cache_read`, `cache_write`, `cache_write_1h`,
-  `reasoning`, `ms`, `ttft_ms`, `status`, `cost` (USD), `effort`,
-  `session` and `err` may be left out.
+  `reasoning`, `ms`, `ttft_ms`, `first_text_ms`, `flow_ms`, `status`,
+  `cost` (USD), `effort`, `session` and `err` may be left out.
+- **Speed:** the Requests page tells a reply's speed from `out`, `ms` and
+  `ttft_ms` (ms from the request to the reply's first content: text,
+  reasoning or a tool call). A reply that reasoned (`reasoning` above 0)
+  is timed from its first text, so it tells a speed only with
+  `first_text_ms` (ms from the request to its first text), which may not
+  be before `ttft_ms` or after `ms`. `flow_ms` is how long the content
+  took to come, from where the speed is timed: the time from a tenth of
+  it to nine tenths, times 10/8 (at most `ms` × 10/8). A reply whose
+  content came in under a quarter of its window was held and let go in a
+  burst, and tells no speed. Leave out what you don't know.
 - **Pricing:** a record without `cost` is priced at magpie's prices for
   its provider and model.
 - **Past times:** `t` is taken as given, however far back, so a history
@@ -2183,9 +2251,10 @@ uses the service's gateway.
 
 ### Docker
 
-`docker build` makes a server image: the terminal-only binary on
-distroless (`cc`, for the glibc the plugins' Bun needs) with bash and
-busybox for a terminal in the container (`docker exec -it magpie bash`, or a
+`docker build` makes a server image: the terminal-only binary on Debian 12
+slim, with bash and curl, so a vendor's `curl … | bash` installer runs and
+the CLI it installs (Cursor's, Devin's, Grok Build) finds the glibc it links,
+as the plugins' Bun does, and a terminal opens in the container (`docker exec -it magpie bash`, or a
 NAS panel's terminal; `magpie` is on its PATH), run as nonroot,
 with everything it keeps in a volume at `/config`: magpie's own files
 (`/config/magpie`), the sign-ins kept where their agent keeps them (HOME is
@@ -2257,9 +2326,10 @@ expose it publicly without gateway-key authentication.
 Such a page is in **gateway mode**: it shows Providers, Gateway, Routing,
 Usage, Plugins and Settings, with no Agents, Sessions or Library tab, and
 Settings leaves out what is written into this machine's agents (provider in
-model names, Codex subagents, long conversations, Codex thread titles,
-Codex thread descriptions, Codex composer predictions) and
-the desktop's alerts and tray. `magpie web` is in it by itself when it finds
+model names) and the desktop's alerts and tray. Codex's and Claude Code's own
+settings (Codex subagents, long conversations, Codex thread titles and the
+rest) are on the Agents page, in the agent's opened row, so a gateway has
+none of them. `magpie web` is in it by itself when it finds
 no agents on its machine, as in the container, and with
 `magpie web --gateway`. *Settings › General › Gateway mode* picks Automatic,
 On or Off for this machine (it wins over both); Off brings every page back.

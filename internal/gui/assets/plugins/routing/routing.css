@@ -236,6 +236,12 @@
 .rt-reqs { padding: 4px; overflow-y: auto; display: grid; align-content: start; grid-template-columns: auto fit-content(32%) minmax(min(14em, 30%), 1fr) fit-content(40%); }
 .rt-req { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; column-gap: 12px; padding: 6px 8px; font: inherit; font-size: 12px; text-align: left; color: var(--fg-2); background: none; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
 .rt-req:hover { background: var(--card-2); }
+/* a long list draws only the rows near its sight, between gaps as tall as
+   the rest; a probe is a row unlike any drawn, there for the columns'
+   widths only (#2524) */
+.rt-reqs.win { overflow-anchor: none; }
+.rt-reqs .rt-gap { grid-column: 1 / -1; }
+.rt-req.probe { height: 0; padding-block: 0; border-block-width: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .rt-req[aria-pressed="true"] { background: var(--card-2); border-color: var(--line); color: var(--fg); }
 .rt-req .at { font-variant-numeric: tabular-nums; color: var(--muted); }
 .rt-req .asked { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -396,7 +402,9 @@ button.rt-session { cursor: pointer; }
 .rt-act.rt-keys.open .chev { transform: rotate(180deg); }
 .rt-act.rt-keys:focus { outline: none; }
 .rt-act.rt-keys:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
-.rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); animation: rtlive 1.8s infinite; --fg: var(--green); }
+.rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); --fg: var(--green); }
+/* it pulses while a request is under way only (#2827) */
+.rt-livedot.on { animation: rtlive 1.8s infinite; }
 @media (prefers-reduced-motion: reduce) { .rt-livedot { animation: none; } }
 /* routing groups, and the providers routing over several of their own */
 .rt-gsec, .rt-psec { display: grid; gap: 6px; margin-top: 16px; }
@@ -465,6 +473,12 @@ button.rt-session { cursor: pointer; }
 .rt-pick.off { opacity: .55; }
 .rt-pick:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
 .rt-gnone { padding: 14px; font-size: 12px; line-height: 1.5; }
+/* the routing groups switched off: where they were, a line of why and the
+   way back on */
+.rt-goff { display: grid; gap: 6px; }
+.rt-goffbox { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; }
+.rt-goffwhy { flex: 1 1 260px; min-width: 0; font-size: 12px; line-height: 1.5; color: var(--fg-2); }
+.rt-goffon { flex: none; }
 .rt-gfound, .rt-gnames { display: flex; align-items: center; gap: 12px; padding: 2px 4px 4px; }
 .rt-gfound .txt, .rt-gnames .txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .rt-gfound b, .rt-gnames b { font-size: 12.5px; font-weight: 600; }
@@ -637,10 +651,14 @@ button.rt-session { cursor: pointer; }
 .rt-addc.wide { width: auto; height: 26px; padding: 0 10px 0 8px; border: 1px dashed var(--line); }
 .rt-addc:hover, .rt-addc.open, .rt-addc:focus-visible { color: var(--fg); background: var(--card-2); }
 .rt-addc.wide:hover, .rt-addc.wide.open { border-color: var(--muted); }
-/* the rule's ⋯: on hover, as the usage rows' */
-.rt-rule > .rt-rmore { align-self: start; opacity: 0; transition: opacity .12s, background .12s, color .12s; }
-.rt-rule:hover > .rt-rmore, .rt-rule > .rt-rmore:focus-visible, .rt-rule > .rt-rmore.open { opacity: 1; }
-@media (hover: none) { .rt-rule > .rt-rmore { opacity: 1; } }
+/* the rule's ⋯, always drawn, in the icons' quiet grey: it is the only
+   way to move or remove a rule, and drawn on hover alone nobody found it
+   (ppBruce on Discord: "a rule added has no delete button") */
+.rt-rule > .rt-rmore { align-self: start; }
+.rt-rule > .rt-rmore.open { background: var(--pill); color: var(--fg); }
+/* why Save refused the rule, under it until it has a condition */
+.rt-rule > .rt-rneed { grid-column: 2 / -1; color: var(--amber, var(--muted)); font-size: 11.5px; }
+.rt-rule > .rt-rneed[hidden] { display: none; }
 /* how a part works, under an ⓘ beside it */
 .rt-info { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--muted); cursor: help; outline: none; }
 .rt-info:hover, .rt-info:focus-visible { color: var(--fg); }
@@ -792,6 +810,11 @@ button.rt-session { cursor: pointer; }
 .pr-head .text { flex: none; font-size: 12px; }
 .skeleton.pr-sk { display: inline-block; width: 150px; height: 9px; border-radius: 4px; vertical-align: middle; }
 .skeleton.pr-sk-row { height: 40px; border-radius: 11px; }
+/* a Manual group's model, picked from the tray (#2489) */
+.pr-picks { display: flex; flex-direction: column; padding: 4px; border-radius: 11px; background: var(--card); box-shadow: var(--card-edge); }
+.pr-pick { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 2px 4px 2px 8px; font-size: 12px; }
+.pr-gname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-weight: 550; }
+.pr-pick .sess-pick { flex: 0 1 auto; min-width: 0; max-width: 62%; }
 .pr-none { margin: 0; padding: 12px; border-radius: 11px; background: var(--card); box-shadow: var(--card-edge); font-size: 12px; line-height: 1.55; color: var(--muted); }
 .pr-none b { display: block; color: var(--fg); font-weight: 550; }
 .pr-list { display: flex; flex-direction: column; padding: 4px; border-radius: 11px; background: var(--card); box-shadow: var(--card-edge); }
@@ -850,3 +873,4 @@ button.rt-session { cursor: pointer; }
 .rt-gtpl-card.off b { color: var(--muted); }
 .rt-gtpl-card .acts { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px; }
 .rt-gtplbtn { display: inline-flex; align-items: center; gap: 4px; }
+.rt-log-head .mask-badge { margin-left: 8px; }

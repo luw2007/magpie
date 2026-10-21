@@ -6,6 +6,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { openPane } = require("./routing-pane.cjs");
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -158,9 +159,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           // clicks where the page shows the picker and its menu: once the
           // story's head wraps at this width (its "Request and response"
           // button) the page is scrolled, and Playwright's WebKit then
-          // places them hundreds of pixels lower, under the footer
+          // places them hundreds of pixels lower, under the footer. The
+          // reader wheels to them first (reach): the page puts back a
+          // scroll that isn't the reader's, as scrollIntoView from here
+          // is, and the click landed on whatever the put-back left there
+          // (#2658)
           const tap = async (loc) => {
-            const [x, y] = await loc.evaluate((e) => { e.scrollIntoView({ block: "center" }); const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
+            await reach(page, loc);
+            const [x, y] = await loc.evaluate((e) => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
             await page.mouse.click(x, y);
           };
           await tap(page.locator("#rtMetrics"));

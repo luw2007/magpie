@@ -281,9 +281,18 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 	for _, g := range out.CallerKeys {
 		callerLabels[g.CallerKeyID] = g.Name
 	}
+	// a group magpie found is named as agents pick it, auto/<model>; the
+	// ledger keeps group/auto-<slug> (provider.CanonicalRef)
+	pub := map[string]string{}
 	for _, r := range page {
 		a := who(r.Agent)
 		lr := Row{Row: r, AgentName: a.Name, Icon: a.Icon, ProviderName: which(r.Provider).Name}
+		if req := r.Requested; strings.HasPrefix(req, provider.GroupPrefix) {
+			if _, ok := pub[req]; !ok {
+				pub[req] = provider.PublicRef(req)
+			}
+			lr.Requested = pub[req]
+		}
 		if r.Source != "log" && r.Source != usage.SourceReported {
 			lr.Access = access[r.Provider]
 		}
@@ -341,6 +350,15 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 					prov, model, _ := strings.Cut(s.ID, "/")
 					a := which(prov)
 					ls.Name, ls.Icon = model+" · "+a.Name, a.Icon
+				case "callerKey":
+					// the key's own name, as the key filter says it; the
+					// GUI translates the name of the calls with none
+					ls.Name, ls.Icon = callerLabels[s.ID], "generic"
+					if s.ID == usage.NoCallerKey {
+						ls.Name = "No gateway key"
+					} else if ls.Name == "" {
+						ls.Name = s.ID
+					}
 				}
 				shares = append(shares, ls)
 			}
@@ -365,9 +383,16 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 // OwnPage is l, a page filtered to the gateway key key's own calls, with
 // its filter lists cut to what those calls had: they are drawn from every
 // call in the period, and so would name the other keys, and the agents,
-// providers and accounts only someone else's calls reached.
+// providers and accounts only someone else's calls reached. The split by
+// key is counted without the key's pick, so it is cut to the key's own
+// share too, or it would tell a holder every other key's calls (#2521).
 func OwnPage(l Ledger, key string) Ledger {
 	l.CallerKeys = slices.DeleteFunc(l.CallerKeys, func(g Group) bool { return g.CallerKeyID != key })
+	for _, by := range []map[string][]Share{l.By, l.ChartBy} {
+		if by != nil {
+			by["callerKey"] = slices.DeleteFunc(by["callerKey"], func(s Share) bool { return s.ID != key })
+		}
+	}
 	had := func(d string) map[string]bool {
 		m := map[string]bool{}
 		for _, s := range l.By[d] {

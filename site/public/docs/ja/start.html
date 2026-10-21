@@ -168,7 +168,7 @@
 
     <h3>1 つのモデルを複数のプロバイダで</h3>
     <p>グループとは、1 つまたは複数のプロバイダのモデルを、エージェントが 1 つとして選べるようにまとめたものです。ピッカーの <em>Routing groups</em> の下に <code>group/&lt;id&gt;</code> として表示されます。2 つのプロバイダが同じ名前で提供しているモデルは、それだけでグループになります。<span class="ui">Routing</span> タブの <span class="ui">New group</span> では、好きなモデルを組み合わせてグループを作れます。グループで何ができるかは、最初のモデルが基準になります。</p>
-    <div class="callout"><b>何もしなくてもできるグループ。</b> すでに持っているモデルを提供する 2 つ目のプロバイダを追加すると（Claude サブスクリプションと Copilot の Claude Opus、DeepSeek 自身の API と OpenRouter の DeepSeek など）、magpie はそれを提供するすべてのプロバイダにまたがるグループ <code>group/auto-&lt;model&gt;</code> を自動で作ります。名前はベンダーごとの表記の違い（<code>deepseek/deepseek-chat</code>、<code>deepseek-chat</code>）を吸収して照合されます。エージェントにこれを選ぶとリクエストがすべてに分散されます。不要なものは <code>magpie group rm</code> で非表示にできます。</div>
+    <div class="callout"><b>何もしなくてもできるグループ。</b> すでに持っているモデルを提供する 2 つ目のプロバイダを追加すると（Claude サブスクリプションと Copilot の Claude Opus、DeepSeek 自身の API と OpenRouter の DeepSeek など）、magpie はそれを提供するすべてのプロバイダにまたがるグループ <code>auto/&lt;model&gt;</code>（モデル自身の ID。例: <code>auto/claude-opus-4.6</code>。以前の <code>group/auto-…</code> も引き続き使えます）を自動で作ります。名前はベンダーごとの表記の違い（<code>deepseek/deepseek-chat</code>、<code>deepseek-chat</code>）を吸収して照合されます。エージェントにこれを選ぶとリクエストがすべてに分散されます。不要なものは <code>magpie group rm</code> で非表示にできます。</div>
     <div class="table-wrap"><table>
       <tr><th>ルーティング</th><th>先に使われるもの</th></tr>
       <tr><td>スマート <code>smart</code></td><td>デフォルトです。メンバーのアカウントとキーをまとめて扱い（グループ内のグループは 1 つとして扱います。下記参照）、クォータに余裕のあるサブスクリプションのうち、利用枠が最も早く更新されるもの。基準は週の枠です。週の枠がなく 5 時間枠だけのアカウント（Claude Enterprise）は 5 時間枠で判断されるため、それより後に週の枠が更新されるものすべてより先になります。リセットのないクレジット（WorkBuddy のパッケージはそれぞれの日に失効します）は、残りのうち最も早く失効する時点で判断されるため、クレジットが最も早く失効する WorkBuddy アカウントが先になります。失敗後に休止中のものは最後に回ります。</td></tr>
@@ -196,6 +196,7 @@
       <li><span class="ui">compacting</span> は、エージェントが会話を圧縮するとき（Claude Code の <code>/compact</code> と自動圧縮、Codex、OpenCode、Pi、Gemini CLI、Qwen Code、Kimi Code）に一致します。これにより、会話は元のモデルのまま、要約だけをより安く速いモデルに書かせられます。圧縮は単独で判断されます。圧縮が起きたターンとそのキャッシュは元の送り先に留まります。会話がルールのモデルが受け付けられる長さを超えている場合は、次に一致するルール、またはグループの順序で決まります。</li>
       <li><b>時間帯と曜日。</b>ルールは、このコンピューターの時計で、特定の時間帯や曜日だけ有効にできます（ベンダーのピーク時間など）。その間のターンを別のモデルに送るルールでは、ベンダーのモデルはフォールバックとして後ろに残ります。完全に外すには、ルールの <span class="ui">⋯</span> メニューから <span class="ui">代わりにモデルを一時停止</span> を選びます。ルールが有効な間（時間帯、曜日、エージェント）、そのモデルはグループから外れ、先頭にもフォールバックにもならず、会話の継続でも使われません。時間帯が終われば戻ります。一時停止は時間帯、曜日、エージェントだけで判断し、グループのモデルがすべて一時停止中ならエージェントにそう伝えます。</li>
       <li><b>フォルダ。</b><span class="ui">フォルダ</span> は、エージェントの作業フォルダが指定したフォルダのどれか、またはその中にあるときに一致します。<code>~/work/acme</code> は <code>~/work/acme/web</code> を含み、<code>~/work/acme-old</code> は含みません。フォルダはエージェントがリクエストでモデルに伝えるもの（Claude Code、Codex、OpenCode、Pi が伝えます）なので、伝えないエージェントはフォルダのルールに一致しません。<code>~</code> はホームフォルダ、<code>C:\work</code> は WSL の <code>/mnt/c/work</code> と同じで、macOS と Windows では大文字小文字を区別しません。</li>
+      <li><b>推論。</b>ルールはモデルに求める推論も指定できるので、インテントでモデルと推論の強さを組で選べます。ルールの <span class="ui">⋯</span> メニューの <span class="ui">推論を指定</span>、またはターミナルで <code>use-effort=low</code>。エージェントの指定にかかわらず、モデルの最も近いレベルでその推論を求めます。magpie がレベルを知らないモデルと、その後ろのフェイルオーバー先のモデルはエージェントの指定どおりです。<a href="/docs/ja/intent#effort">インテントルーティング</a>を参照してください。</li>
       <li>ルーティングタブには、各ターンをどのルールがどこへ送ったか、分類モデルが何と答えたか、エージェントが伝えた作業フォルダが表示されます。</li>
     </ul>
     <h3 id="nested">グループの中のグループ</h3>

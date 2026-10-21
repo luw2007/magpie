@@ -333,6 +333,7 @@ func TestNetworkGatewayGuardsEveryRoute(t *testing.T) {
 	routes := [][2]string{
 		{"GET", "/"}, {"GET", "/v1"}, {"GET", "/v1/models"}, {"GET", "/models"}, {"GET", "/v1/models/x"},
 		{"GET", "/muse-code/models"}, {"GET", "/api/hello"},
+		{"GET", "/api/version"}, {"GET", "/api/tags"}, {"POST", "/api/show"},
 		{"GET", "/v1/magpie/quotas"}, {"GET", "/v1/magpie/quotas/history"},
 		{"GET", provider.RemoteCardsPath}, {"POST", provider.RemoteRefreshPath}, {"GET", usage.PeersPath},
 		{"GET", TracePath}, {"GET", TraceHistoryPath}, {"GET", TraceRoutePath + "?id=1&day=2000-01-01"},

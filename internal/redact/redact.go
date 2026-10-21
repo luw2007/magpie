@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Options says what to mask.
@@ -40,6 +41,14 @@ type Options struct {
 	// id, where the user chose; one not in it is as its Category.On says.
 	// None of them is masked while Personal is off.
 	Kinds map[string]bool
+	// Model, where set, finds more in the texts to mask (model.go)
+	Model Model
+
+	// Seen, where set, is told of each value masked
+	Seen func(Hit)
+
+	// found are the spans Model found, by text, for one request's texts
+	found map[string][]Found
 }
 
 // covers says o masks what a rule of category cat finds: "" are the
@@ -85,6 +94,8 @@ type rule struct {
 	back, ahead int
 	// cat is what turns the rule on (Options.covers): "" the secrets
 	cat string
+	// yours is a rule the user wrote (customRules)
+	yours bool
 	// anyGroup takes the first group that matched, for a pattern with a
 	// group in each of its alternatives
 	anyGroup bool
@@ -326,10 +337,66 @@ func placeholder(kind, v string) string {
 type span struct {
 	start, end int
 	kind       string
+	by         string // which finder found it: one of the By constants
+}
+
+// Which finder found a value (Hit.By): magpie's rules, the user's own
+// rules, the user's words, the local model (with the Chinese names it
+// brings, which run only with it), or a value masked before (known.go).
+const (
+	ByRule  = "rule"
+	ByYours = "yours"
+	ByWord  = "word"
+	ByModel = "model"
+	ByKnown = "known"
+)
+
+// Hit is one value masked: its kind, the finder that found it, and the
+// placeholder it went as. It never holds the value itself.
+type Hit struct {
+	Kind, By, Placeholder string
+}
+
+// Value is the value behind placeholder p, while this run of magpie
+// remembers it.
+func Value(p string) (string, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	v, ok := values[p]
+	return v, ok
+}
+
+// Hint is as much of v as may be kept where v itself may not: its first
+// character (the first few of a key's, which name its kind: sk-, ghp_)
+// and how many characters it has.
+func Hint(kind, v string) (head string, n int) {
+	n = utf8.RuneCountInString(v)
+	if n < 2 {
+		return "", n
+	}
+	k := 1
+	if _, personal := kindCats[kind]; !personal && kind != "TERM" && n >= 16 {
+		// a key's prefix, up to where its random part starts
+		k = 0
+		for _, c := range v {
+			if k >= 4 || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_", c) {
+				break
+			}
+			k++
+			if c == '-' || c == '_' {
+				break
+			}
+		}
+		k = max(k, 1)
+	}
+	r := []rune(v)
+	return string(r[:k]), n
 }
 
 // Mask swaps what o covers in s for placeholders, and says how many.
-func Mask(s string, o Options) (string, int) { return mask(s, o, placeholder) }
+func Mask(s string, o Options) (string, int) {
+	return mask(s, withModel(o, []string{s}), placeholder)
+}
 
 // mask swaps what o covers in s for what put makes of each value.
 func mask(s string, o Options, put func(kind, v string) string) (string, int) {
@@ -346,7 +413,7 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 			if j < 0 {
 				break
 			}
-			found = append(found, span{i + j, i + j + len(w), "TERM"})
+			found = append(found, span{i + j, i + j + len(w), "TERM", ByWord})
 			i += j + len(w)
 		}
 	}
@@ -381,12 +448,12 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 				took := false
 				for g, kind := range r.groups {
 					if a, b := m[2*g+2], m[2*g+3]; a >= 0 && r.takes(s, a, b, r.groupOK[g]) {
-						found = append(found, span{a, b, kind})
+						found = append(found, span{a, b, kind, r.by()})
 						took = true
 					}
 				}
 				if took {
-					split = append(split, span{m[2], m[1], ""})
+					split = append(split, span{m[2], m[1], "", ""})
 				}
 				continue
 			}
@@ -409,7 +476,7 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 				ok = nil
 			}
 			if r.takes(s, a, b, ok) {
-				found = append(found, span{a, b, r.kind})
+				found = append(found, span{a, b, r.kind, r.by()})
 			}
 		}
 	}
@@ -420,8 +487,17 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 	}
 	// after the rules', so where a rule finds the same value it keeps the
 	// kind it has always had
+	found = append(found, modelSpans(s, o)...)
 	found = append(found, knownSpans(s, o)...)
-	return apply(s, found, put)
+	return apply(s, found, put, o.Seen)
+}
+
+// by is the finder r is, for Hit.By.
+func (r rule) by() string {
+	if r.yours {
+		return ByYours
+	}
+	return ByRule
 }
 
 // matches are r's matches in s, lower being lowerASCII(s), as
@@ -505,7 +581,8 @@ func (r rule) takes(s string, a, b int, ok func(string) bool) bool {
 
 // apply swaps each of found in s for what put makes of its value, the
 // first and longest where they overlap, nothing inside a placeholder.
-func apply(s string, found []span, put func(kind, v string) string) (string, int) {
+// seen, where set, is told of each.
+func apply(s string, found []span, put func(kind, v string) string, seen func(Hit)) (string, int) {
 	if len(found) == 0 {
 		return s, 0
 	}
@@ -534,7 +611,11 @@ func apply(s string, found []span, put func(kind, v string) string) (string, int
 			continue
 		}
 		b.WriteString(s[last:f.start])
-		b.WriteString(put(f.kind, s[f.start:f.end]))
+		p := put(f.kind, s[f.start:f.end])
+		b.WriteString(p)
+		if seen != nil {
+			seen(Hit{f.kind, f.by, p})
+		}
 		last, n = f.end, n+1
 	}
 	b.WriteString(s[last:])

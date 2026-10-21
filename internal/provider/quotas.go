@@ -16,6 +16,28 @@ func Quotas(ctx context.Context) []SubscriptionQuota {
 	return cardsServed(subs, plans, balances, LastServed())
 }
 
+// InProviderOrder is qs in the order the user put the providers in on the
+// Providers page (SetOrder), each provider's cards as they came; a card of
+// no provider here (a remote magpie's) after them all. The window's Usage
+// page and the tray panel's Allowances tab draw them so, where the user
+// hasn't arranged the cards themselves (Zhenbao TONG on Discord: the
+// providers moved in the window, the tray kept its own order).
+func InProviderOrder(qs []SubscriptionQuota) []SubscriptionQuota {
+	at := map[string]int{}
+	for i, p := range All() {
+		at[p.ID] = i
+	}
+	rank := func(q SubscriptionQuota) int {
+		if i, ok := at[q.Provider]; ok {
+			return i
+		}
+		return len(at)
+	}
+	out := slices.Clone(qs)
+	slices.SortStableFunc(out, func(a, b SubscriptionQuota) int { return rank(a) - rank(b) })
+	return out
+}
+
 // Allotted is Quotas without the keys' balances: the accounts and plans
 // whose allowance runs out and starts again, which is what magpie quota
 // wait waits on; no key's balance is asked for.
@@ -67,8 +89,11 @@ type Quota struct {
 	User        string      `json:"user,omitempty"`
 	Windows     []QuotaSpan `json:"windows"`
 	Balance     string      `json:"balance,omitempty"`
-	Error       string      `json:"error,omitempty"`
-	AsOf        *time.Time  `json:"asOf,omitempty"` // the cached reading's time, nil for a new one
+	// BalanceSplit is what the Balance is made of, when the vendor tells
+	// it (SubscriptionQuota's)
+	BalanceSplit []BalancePart `json:"balanceSplit,omitempty"`
+	Error        string        `json:"error,omitempty"`
+	AsOf         *time.Time    `json:"asOf,omitempty"` // the cached reading's time, nil for a new one
 	// ReadDeferred says no request was made this time, rather than one failed.
 	ReadDeferred bool `json:"readDeferred,omitempty"`
 	// ReadAt is when the windows or balance shown were read, nil when not
@@ -167,7 +192,7 @@ func quotaReport(subs, plans, balances []SubscriptionQuota, now time.Time) []Quo
 				kind = "balance"
 			}
 			r := Quota{Provider: q.Provider, Name: q.Name, Kind: kind, Plan: q.Plan, User: q.User, AsOf: q.AsOf, ReadAt: q.ReadAt, ReadDeferred: q.ReadDeferred,
-				Windows: []QuotaSpan{}, Balance: q.Balance, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets, ResetsUsed: q.ResetsUsed, From: q.From, Alias: q.Alias, Seat: q.Seat}
+				Windows: []QuotaSpan{}, Balance: q.Balance, BalanceSplit: q.BalanceSplit, Error: q.Error, Until: q.Until, Renew: q.Renew, Resets: q.Resets, ResetsUsed: q.ResetsUsed, From: q.From, Alias: q.Alias, Seat: q.Seat}
 			r.PoolRef, r.SourceRef, r.AccountID = q.PoolRef, q.SourceRef, q.AccountID
 			r.KeyRefs, r.DisplayName, r.Status = q.KeyRefs, q.DisplayName, quotaStatus(q, now)
 			r.LoadPercent = q.LoadPercent

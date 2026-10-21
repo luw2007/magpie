@@ -395,8 +395,11 @@ type settingsJSON struct {
 	// settings, environment, system, off or none
 	ProxyNow    string `json:"proxyNow"`
 	ProxySource string `json:"proxySource"`
-	// whether magpie opens at login: the system's record, not a setting
-	Login bool `json:"login"`
+	// whether magpie opens at login: the system's record, not a setting;
+	// LoginAllow, the record is there but the user switched it off in
+	// System Settings › Login Items, which is where it's allowed again
+	Login      bool `json:"login"`
+	LoginAllow bool `json:"loginAllow,omitempty"`
 	// the model that describes images when Vision names none, and those
 	// that can be named
 	VisionAuto   string     `json:"visionAuto,omitempty"`
@@ -583,6 +586,10 @@ type searchFailedJSON struct {
 	At           time.Time `json:"at"`
 }
 
+// loginState is whether magpie opens at login, as the system will act on
+// it. A var for the tests: the real one asks the user's own system.
+var loginState = autostart.Enabled
+
 func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
@@ -622,7 +629,8 @@ func settingsState() settingsJSON {
 			s.OTelEnv = true
 		}
 	}
-	s.Login = autostart.Enabled()
+	login := loginState()
+	s.Login, s.LoginAllow = login != autostart.Off, login == autostart.NeedsAllowing
 	if s.LAN {
 		s.LANURLs, s.LANContainer = gateway.LANURLs(), gateway.ContainerAddrs()
 	}
@@ -1128,6 +1136,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	cliBehindRoutes(mux)
 	gatewayFixRoutes(mux)
 	gatewayModeRoutes(mux)
+	privacyModelRoutes(mux)
+	maskingRoutes(mux)
 	builtinRoutes(mux)
 	mux.HandleFunc("GET /api/settings", func(rw http.ResponseWriter, r *http.Request) {
 		access.MigrateLegacyLANKeyBestEffort()
@@ -1172,6 +1182,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if _, sent := fields["noAutoDownload"]; !sent {
 			in.NoAutoDownload = cur.NoAutoDownload
 		}
+		// nor how long an image is given to be drawn
+		if _, sent := fields["imageTimeout"]; !sent {
+			in.ImageTimeout = cur.ImageTimeout
+		}
 		in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
 		in.Window, in.WindowMaximised = cur.Window, cur.WindowMaximised // the window's own, as it was last resized
 		// and what other pages keep here: which models an agent is shown, and
@@ -1186,6 +1200,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.PickedModels = cur.PickedModels       // "only models I pick" (#1337)
 		in.OwnModelsHidden = cur.OwnModelsHidden // an agent's own models left out (#1642)
 		in.FastPicks = cur.FastPicks             // switched in the agents' pickers (#954)
+		in.UltraPicks = cur.UltraPicks           // and sent Ultrafast (#1954)
 		in.AgentEfforts = cur.AgentEfforts       // picked in an agent's row (#1003)
 		in.PluginCheckins = cur.PluginCheckins   // set on its own (plugin-checkin below)
 		in.PluginOptions = cur.PluginOptions     // set on its own (plugin-option below)
@@ -1196,11 +1211,14 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.Port = cur.Port                                 // set on its own (port below), which moves the gateway
 		in.CORSOrigins = cur.CORSOrigins                   // set on its own (cors below)
 		in.AllowIPs = cur.AllowIPs                         // set on its own (allowips below)
+		in.FetchPrivate = cur.FetchPrivate                 // in settings.json only
 		in.GitHubToken = cur.GitHubToken                   // set on its own (github-token below), never sent to the page
 		in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
 		in.RequestArchiveMaxMB = cur.RequestArchiveMaxMB   // in settings.json only
+		in.ClaudeRunsMost = cur.ClaudeRunsMost             // magpie claude-code runs, or settings.json (#2956)
 		in.GatewayConversations = cur.GatewayConversations // Sessions' explicit recording consent
 		in.RedactRules = cur.RedactRules                   // the masking rules, set on their own
+		in.RedactModel = cur.RedactModel                   // set on its own (privacy-model)
 		in.DisabledModels = cur.DisabledModels             // set on their own (disabled-models below, #1867)
 		// used or left is the Usage page's toggle as much as Settings', set on its own
 		in.QuotaLeft = cur.QuotaLeft
@@ -1218,6 +1236,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.CodexAgentsV1 = cur.CodexAgentsV1
 		in.FullContext = cur.FullContext // set on its own (full-context below)
 		in.CompactAt = cur.CompactAt     // and so is the threshold
+		// Codex's background compaction, set on its own (codex-async-compact below)
+		in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 		// Claude Desktop's list, set in its row on the Agents page
 		in.DesktopLongest = cur.DesktopLongest
 		// and the Get started card put away, from the card itself
@@ -1498,6 +1518,28 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// Codex's background compaction (#2490): on or off, and the share of
+	// a model's window it starts at (0: Codex's own, 65), written into the
+	// config Codex is routed through
+	mux.HandleFunc("POST /api/settings/codex-async-compact", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			On      bool
+			Percent *int
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		pct := settings.Load().CodexAsyncCompactPercent
+		if in.Percent != nil {
+			pct = *in.Percent
+		}
+		if err := provider.SetCodexAsyncCompact(in.On, pct); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// where Codex's request for a thread's description goes: "" as Codex
 	// sends it, or a model's id. It is separate from the title setting.
 	mux.HandleFunc("POST /api/settings/codex-descriptions", func(rw http.ResponseWriter, r *http.Request) {
@@ -1597,7 +1639,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			// Resolve intentionally accepts arbitrary names under a known
 			// provider. An approval reviewer must be a model or group magpie
 			// actually lists, including providers kept unlisted for routing.
-			if !slices.ContainsFunc(provider.Served(), func(e provider.Entry) bool { return e.ID == v }) {
+			if !slices.ContainsFunc(provider.Served(), func(e provider.Entry) bool { return e.ID == v || e.Group != "" && provider.SameRef(e.ID, v) }) {
 				fail(rw, fmt.Errorf("no model %s for Codex's auto-review", v))
 				return
 			}

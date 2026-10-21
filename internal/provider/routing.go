@@ -30,6 +30,10 @@ const (
 	Weighted = "weight"
 	// Benchmark is a group-only routing that picks members by benchmark IQ score.
 	Benchmark = "benchmark"
+	// FreeFirst spends what costs nothing first: the models its vendor
+	// serves at no cost to the subscription's allowance or credits, before
+	// the ones that spend it (routes.FreeFirst).
+	FreeFirst = "free"
 )
 
 // pluginRouting is a routing a plugin serves: "<plugin>/<name>".
@@ -682,19 +686,6 @@ func StaleAllowance(agent, user string) {
 	delete(loginUsageCache.m, key)
 	delete(loginUsageCache.pending, key) // nor a reading asked for before
 	loginUsageCache.Unlock()
-	// the built-in keeps Grok's usage by home; a Grok moved to its plugin
-	// keeps it as "plugin:grok"'s, the line above
-	if agent == "grok" {
-		gs := grokLogins()
-		grokHomeUsage.Lock()
-		for _, g := range gs {
-			if strings.EqualFold(g.User, user) {
-				delete(grokHomeUsage.m, g.Home)
-				delete(grokHomeUsage.pending, g.Home)
-			}
-		}
-		grokHomeUsage.Unlock()
-	}
 	usedCache.Lock()
 	if usedCache.at != nil {
 		usedCache.at[agent] = time.Time{}

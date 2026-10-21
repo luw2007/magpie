@@ -48,27 +48,38 @@ func (g Group) IsFast(id string) bool {
 // CanFast reports whether model, as p serves it, has a fast mode magpie
 // can ask for: a ChatGPT account's GPT models (Codex's Fast), Cursor's
 // models with a -fast one, an OpenAI key's GPT and o-series models on its
-// Responses API (priority processing), and Opus models with fast mode on
-// an Anthropic endpoint, including a relay. A Claude subscription runs
-// Claude Code itself, and a cloud (Bedrock, Vertex) refuses the field, so
-// neither is. A provider the user added by its address (AddedByAddress)
-// is asked for priority on a GPT model it serves on an OpenAI API, when
-// the user switches it fast themselves
+// Responses API (priority processing), Opus models with fast mode on an
+// Anthropic endpoint, including a relay, and a plugin's models it says
+// are served at priority. A Claude subscription runs Claude Code itself,
+// and a cloud (Bedrock, Vertex) refuses the field, so neither is. A provider
+// the user added by its address (AddedByAddress) is asked for priority on
+// a GPT model it serves on an OpenAI API, when the user switches it fast themselves
 // (#1615): it is sent service_tier "priority" there, as Codex's own Fast
 // already is (#1234), and one that turns the field away is asked again
 // without it and not sent it again (the gateway's optional fields).
 func CanFast(p Provider, model string) bool {
 	if p.IsPlugin() {
+		pp, ok := PluginOf(p.ID)
+		if !ok {
+			return false
+		}
+		// a model the plugin says its vendor serves at the priority tier
+		// (serviceTiers, #2514), on its Chat or Responses API, which the
+		// gateway sends service_tier "priority" there (Lovest on Discord:
+		// only Cursor's plugin could be picked fast)
+		m, listed := pluginModel(pp, model)
+		if listed && pluginTierOn(pp.ID, m, "priority") {
+			return true
+		}
 		// Cursor's plugin runs a model as its fast variant when the chat
 		// request says service_tier "priority". From 0.2.2 it lists a model
 		// once per context size (claude-opus-5-5@300k) and says fast on
 		// the ones Cursor has a fast variant of (#1360); 0.1.x listed the
 		// fast one as a model of its own, -fast, as the built-in does
-		pp, ok := PluginOf(p.ID)
-		if !ok || p.PluginProvider() != "cursor" {
+		if p.PluginProvider() != "cursor" {
 			return false
 		}
-		if m, ok := pluginModel(pp, model); ok && m.Fast {
+		if listed && m.Fast {
 			return true
 		}
 		if strings.HasSuffix(model, "-fast") {
@@ -171,11 +182,11 @@ func cleanFast(entries []Entry, g *Group) error {
 			continue // taken out of the group
 		}
 		model, _ := memberEffortIn(entries, f)
-		if strings.HasPrefix(model, GroupPrefix) {
+		if IsGroupRef(model) {
 			return fmt.Errorf("%s is a group: its models are sent as it says, so it takes no :%s", model, FastWord)
 		}
 		if p, m, ok := resolveIn(entries, model); ok && !CanFast(p, m) {
-			return fmt.Errorf("%s has no fast mode magpie can ask for (ChatGPT and OpenAI GPT models, a GPT model on a provider you added by its address, Cursor's with a fast one, and Claude Opus 4.8 and 5 on an Anthropic endpoint have)", model)
+			return fmt.Errorf("%s has no fast mode magpie can ask for (ChatGPT and OpenAI GPT models, a GPT model on a provider you added by its address, Cursor's with a fast one, a plugin's it says are served at priority, and Claude Opus 4.8 and 5 on an Anthropic endpoint have)", model)
 		}
 		out = append(out, f)
 	}
