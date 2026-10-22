@@ -1947,7 +1947,7 @@ function routingPage(part) {
         el("span", "", rp ? t("How the request at {time} was routed", { time: clock(r.time) })
           : pinned ? t("How the request at {time} was routed", { time: clock(r.time) }) : t("How the last request was routed")));
       // what masking kept from the vendor, its record a click away
-      if (r.masked?.n && !rp) logHead.append(maskedBadge(r.masked));
+      if ((r.masked?.n || r.masked?.warned) && !rp) logHead.append(maskedBadge(r.masked));
       logHead.append(el("span", "grow"));
       if (!rp && r.done) {
         const usage = el("button", "text", t("View usage"));
@@ -4834,9 +4834,12 @@ function routingPage(part) {
     if (g && d.id === undefined) d.id = g.id;
     // an open group folds back into its row from its heading, as it opened
     // from the row (ARNO on Discord) — only while nothing in it has
-    // changed, so a stray click never throws an edit away; Cancel does that
+    // changed, so a stray click never throws an edit away; Cancel does that.
+    // Its own class, not .fold: that is the Models head's chip, whose
+    // padding and corners made the heading's line curve at its ends and
+    // its space above differ from below (the owner, 10-21)
     if (g) {
-      h.classList.add("fold");
+      h.classList.add("folds");
       h.setAttribute("role", "button");
       h.tabIndex = 0;
       h.setAttribute("aria-expanded", "true");

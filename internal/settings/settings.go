@@ -96,7 +96,17 @@ type Settings struct {
 	RedactPersonal bool            `json:"redactPersonal,omitempty"`
 	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
 	RedactWords    []string        `json:"redactWords,omitempty"`
-	RedactRules    []redact.Rule   `json:"redactRules,omitempty"`
+	// RedactWordsAnyCase matches RedactWords in any case (ZoeCats on
+	// Discord); off, the default, a word is matched as written.
+	RedactWordsAnyCase bool          `json:"redactWordsAnyCase,omitempty"`
+	RedactRules        []redact.Rule `json:"redactRules,omitempty"`
+	// RedactActions is what is done with a value of a kind (redact.Hit's
+	// Kind: API_KEY, EMAIL, a rule's own…) other than masking it, where
+	// the user chose: redact.Warn sends it as written and records it,
+	// redact.Block holds the request back. RedactAllow are values sent
+	// as written whatever finds them, each whole, in any case (#1977).
+	RedactActions map[string]string `json:"redactActions,omitempty"`
+	RedactAllow   []string          `json:"redactAllow,omitempty"`
 	// LAN shares the gateway on the local network; remote callers must use
 	// named caller keys. LANKey is retained for older Magpie versions.
 	// LAN is this computer's own (KeepOwn; Lullaby on Discord: sharing
@@ -371,8 +381,9 @@ type Settings struct {
 	// Lightweight lets the webview of a window closed — the tray panel or
 	// the main window — go once it has stayed closed a while, and makes it
 	// again when it is opened (#580): less memory, a moment's wait. This
-	// computer's own (KeepOwn). Nil is on: a user who never chose has it,
-	// one who turned it off keeps it off (LightweightOn).
+	// computer's own (KeepOwn). Nil is off: a window made again on each
+	// opening was too slow to have by default (the owner, 10-21: "太卡");
+	// one who turned it on keeps it on (LightweightOn).
 	Lightweight *bool `json:"lightweight,omitempty"`
 	// KeepAwake keeps this computer from going to sleep by itself while
 	// agents work through the gateway and for a while after (xiao_wang24004
@@ -976,11 +987,12 @@ func CarryPerModel(in, cur *Settings) {
 // models that can take more.
 const WorkingWindow = 272000
 
-// LightweightOn says whether lightweight mode is on: unless the user
-// turned it off. A hidden webview kept for good holds what its page drew
-// while hidden, which grew ~20 MB a minute on Windows under steady
-// requests (#2515).
-func (s Settings) LightweightOn() bool { return s.Lightweight == nil || *s.Lightweight }
+// LightweightOn says whether lightweight mode is on: only when the user
+// turned it on. It was on for a user who never chose, since a hidden
+// webview kept for good holds what its page drew while hidden (~20 MB a
+// minute on Windows under steady requests, #2515), but each opening then
+// waited for the page to load again.
+func (s Settings) LightweightOn() bool { return s.Lightweight != nil && *s.Lightweight }
 
 // Working is the context window an agent is told for a model with one of
 // n tokens (see FullContext).
@@ -1467,6 +1479,12 @@ func save(s Settings, recording bool) error {
 		return err
 	}
 	s.RedactRules = rules
+	if s.RedactActions, err = redactActions(s.RedactActions); err != nil {
+		return err
+	}
+	if s.RedactAllow, err = redactAllow(s.RedactAllow); err != nil {
+		return err
+	}
 	s.AgentOrder, s.AgentsHidden, s.AgentsShown = ids(s.AgentOrder), ids(s.AgentsHidden), ids(s.AgentsShown)
 	s.UsageOrder = ids(s.UsageOrder)
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)

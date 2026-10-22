@@ -36,7 +36,10 @@ type Options struct {
 	Secrets  bool     // API keys, private keys, tokens, passwords
 	Personal bool     // emails, phone numbers, ID and bank card numbers
 	Words    []string // the user's own: names, codenames, hosts
-	Rules    []Rule   // the user's own rules, masked with the secrets
+	// WordsAnyCase matches Words in any case: Nightjar masks NIGHTJAR and
+	// nightjar too. Off, a word is matched as written.
+	WordsAnyCase bool
+	Rules        []Rule // the user's own rules, masked with the secrets
 	// Kinds turns each of the Categories of personal data on or off by its
 	// id, where the user chose; one not in it is as its Category.On says.
 	// None of them is masked while Personal is off.
@@ -44,7 +47,16 @@ type Options struct {
 	// Model, where set, finds more in the texts to mask (model.go)
 	Model Model
 
-	// Seen, where set, is told of each value masked
+	// Actions is what is done with a value of a kind (a Hit's Kind) other
+	// than masking it, where the user chose: Warn sends it as written,
+	// Block masks it and the request is held back (the gateway's). A kind
+	// not in it is masked.
+	Actions map[string]string
+	// Allow are values the user lets go as written, whichever finder finds
+	// them: each a whole value, in any case.
+	Allow []string
+
+	// Seen, where set, is told of each value masked, warned of or blocked
 	Seen func(Hit)
 
 	// found are the spans Model found, by text, for one request's texts
@@ -209,12 +221,50 @@ func secretValue(v string) bool {
 
 func realEmail(v string) bool {
 	host := strings.ToLower(v[strings.LastIndexByte(v, '@')+1:])
+	if fileHost(host) {
+		return false
+	}
 	for _, fake := range []string{"example.com", "example.org", "example.net", "localhost", ".test", ".invalid", ".example"} {
 		if host == strings.TrimPrefix(fake, ".") || strings.HasSuffix(host, fake) {
 			return false
 		}
 	}
 	return !strings.HasPrefix(host, "noreply") && !strings.Contains(v, "noreply@")
+}
+
+// fileExt are file name extensions that are no top-level domain, so
+// what ends in one is a file's name and not an address: an image a Mac
+// saved at twice its size, 261020_14-16-11@2x.jpg, went to the model as
+// {{EMAIL_…}} and Pi could no longer read the file (#3029).
+// Other files are named so too (intro@2x.mp4, strings@base.json), and
+// none of these is a domain either (IANA's list, checked 2026-10-21).
+var fileExt = map[string]bool{
+	"jpg": true, "jpeg": true, "png": true, "gif": true, "webp": true, "svg": true, "heic": true, "heif": true,
+	"avif": true, "bmp": true, "tif": true, "tiff": true, "ico": true, "icns": true, "pdf": true,
+	"svgz": true, "apng": true, "jxl": true, "psd": true, "eps": true, "lottie": true,
+	"mp4": true, "m4v": true, "webm": true, "mkv": true, "avi": true, "mp3": true, "m4a": true, "wav": true,
+	"ogg": true, "flac": true, "aac": true, "ttf": true, "otf": true, "woff": true, "woff2": true, "eot": true,
+	"json": true, "yaml": true, "yml": true, "toml": true, "xml": true, "txt": true, "csv": true, "tsv": true,
+	"log": true, "html": true, "htm": true, "css": true, "scss": true, "less": true, "js": true, "mjs": true,
+	"cjs": true, "jsx": true, "ts": true, "tsx": true, "doc": true, "docx": true, "xls": true, "xlsx": true,
+	"ppt": true, "pptx": true, "gz": true, "tgz": true, "tar": true, "rar": true, "7z": true, "dmg": true,
+}
+
+// scaleExt are file extensions that are top-level domains too (.zip,
+// .mov, .md, .map): a name ending in one is a file's only with a scale
+// before it, icon@2x.zip, intro@1.5x.mov, while ops@files.zip is an
+// address.
+var scaleExt = map[string]bool{"zip": true, "mov": true, "md": true, "map": true}
+
+var scaleRe = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?x$`)
+
+// fileHost says host, what follows the @ of what looks like an address,
+// is the end of a file's name: an extension no domain has (fileExt), or a
+// scale and an extension that is a domain too (scaleExt).
+func fileHost(host string) bool {
+	dot := strings.LastIndexByte(host, '.')
+	ext := host[dot+1:]
+	return fileExt[ext] || dot > 0 && scaleExt[ext] && scaleRe.MatchString(host[:dot])
 }
 
 func chineseID(v string) bool {
@@ -308,10 +358,17 @@ func loadKey() []byte {
 
 var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-func placeholder(kind, v string) string {
+// tag is the placeholder v of kind goes as, made and not remembered: a
+// value sent as written (Warn) is named by it in the record of what was
+// found, and a preview names each value by it.
+func tag(kind, v string) string {
 	h := hmac.New(sha256.New, key())
 	h.Write([]byte(kind + "\x00" + v))
-	p := "{{" + kind + "_" + strings.ToLower(b32.EncodeToString(h.Sum(nil))[:8]) + "}}"
+	return "{{" + kind + "_" + strings.ToLower(b32.EncodeToString(h.Sum(nil))[:8]) + "}}"
+}
+
+func placeholder(kind, v string) string {
+	p := tag(kind, v)
 	mu.Lock()
 	if _, ok := values[p]; !ok {
 		if len(values) >= maxValues {
@@ -351,10 +408,21 @@ const (
 	ByKnown = "known"
 )
 
-// Hit is one value masked: its kind, the finder that found it, and the
-// placeholder it went as. It never holds the value itself.
+// What is done with a value of a kind (Options.Actions) other than
+// masking it.
+const (
+	Warn  = "warn"  // sent as written, and recorded
+	Block = "block" // masked, and the request held back
+)
+
+// Hit is one value found: its kind, the finder that found it, the
+// placeholder it went as (or would have, for one sent as written), what
+// was done with it ("" masked, Warn, Block) and its Hint. It never holds
+// the value itself.
 type Hit struct {
-	Kind, By, Placeholder string
+	Kind, By, Placeholder, Action string
+	Head                          string
+	Len                           int
 }
 
 // Value is the value behind placeholder p, while this run of magpie
@@ -393,9 +461,31 @@ func Hint(kind, v string) (head string, n int) {
 	return string(r[:k]), n
 }
 
+// anyCases are the patterns that find a user's word in any case, by word.
+var anyCases sync.Map
+
+// anyCase finds w as written but in any case (Unicode's simple folding, so
+// a word whose case changes its length in bytes is still found whole).
+func anyCase(w string) *regexp.Regexp {
+	if re, ok := anyCases.Load(w); ok {
+		return re.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(w))
+	anyCases.Store(w, re)
+	return re
+}
+
 // Mask swaps what o covers in s for placeholders, and says how many.
 func Mask(s string, o Options) (string, int) {
 	return mask(s, withModel(o, []string{s}), placeholder)
+}
+
+// Preview is Mask with nothing remembered: each value goes as the
+// placeholder it would have, which isn't kept for Restore or as a value
+// seen before (known.go).
+func Preview(s string, o Options) string {
+	out, _ := mask(s, withModel(o, []string{s}), tag)
+	return out
 }
 
 // mask swaps what o covers in s for what put makes of each value.
@@ -406,6 +496,12 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 	var found []span
 	for _, w := range o.Words {
 		if w = strings.TrimSpace(w); len(w) < 2 {
+			continue
+		}
+		if o.WordsAnyCase {
+			for _, m := range anyCase(w).FindAllStringIndex(s, -1) {
+				found = append(found, span{m[0], m[1], "TERM", ByWord})
+			}
 			continue
 		}
 		for i := 0; ; {
@@ -489,7 +585,7 @@ func mask(s string, o Options, put func(kind, v string) string) (string, int) {
 	// kind it has always had
 	found = append(found, modelSpans(s, o)...)
 	found = append(found, knownSpans(s, o)...)
-	return apply(s, found, put, o.Seen)
+	return apply(s, found, put, o)
 }
 
 // by is the finder r is, for Hit.By.
@@ -580,9 +676,10 @@ func (r rule) takes(s string, a, b int, ok func(string) bool) bool {
 }
 
 // apply swaps each of found in s for what put makes of its value, the
-// first and longest where they overlap, nothing inside a placeholder.
-// seen, where set, is told of each.
-func apply(s string, found []span, put func(kind, v string) string, seen func(Hit)) (string, int) {
+// first and longest where they overlap, nothing inside a placeholder. A
+// value o allows is left as it is, and one of a kind o warns of is left
+// and told. o.Seen, where set, is told of each.
+func apply(s string, found []span, put func(kind, v string) string, o Options) (string, int) {
 	if len(found) == 0 {
 		return s, 0
 	}
@@ -605,21 +702,49 @@ func apply(s string, found []span, put func(kind, v string) string, seen func(Hi
 		return found[i].end > found[j].end
 	})
 	var b strings.Builder
-	last, n := 0, 0
+	last, next, n := 0, 0, 0 // next: where the next value may start
 	for _, f := range found {
-		if f.start < last {
+		if f.start < next {
+			continue
+		}
+		next = f.end
+		v := s[f.start:f.end]
+		if o.allows(v) {
+			continue
+		}
+		act := o.Actions[f.kind]
+		if act != Warn && act != Block {
+			act = ""
+		}
+		h := Hit{Kind: f.kind, By: f.by, Action: act}
+		h.Head, h.Len = Hint(f.kind, v)
+		if act == Warn {
+			if o.Seen != nil {
+				h.Placeholder = tag(f.kind, v)
+				o.Seen(h)
+			}
 			continue
 		}
 		b.WriteString(s[last:f.start])
-		p := put(f.kind, s[f.start:f.end])
-		b.WriteString(p)
-		if seen != nil {
-			seen(Hit{f.kind, f.by, p})
+		h.Placeholder = put(f.kind, v)
+		b.WriteString(h.Placeholder)
+		if o.Seen != nil {
+			o.Seen(h)
 		}
 		last, n = f.end, n+1
 	}
 	b.WriteString(s[last:])
 	return b.String(), n
+}
+
+// allows says the user lets v go as written (Options.Allow).
+func (o Options) allows(v string) bool {
+	for _, a := range o.Allow {
+		if strings.EqualFold(strings.TrimSpace(a), v) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAny(s string, subs []string) bool {

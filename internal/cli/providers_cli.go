@@ -43,6 +43,9 @@ const providerUsage = `usage:
                                           compaction=native asks the provider Codex's own compaction and hands
                                           Codex its sealed item as it came (a Responses API, a ChatGPT account,
                                           Copilot), compaction=magpie, the default, has magpie summarise
+                                          additional-tools=on sends a tool Claude Code's tool search loads to its
+                                          Responses API where it was loaded (an additional_tools item, which
+                                          keeps the cache); additional-tools=default puts it with the other tools
   magpie provider key <id> <key>          change the API key
   magpie provider keys <id> [list]        list stable key IDs, masked secrets and bindings
   magpie provider keys <id> bind <key-id> --pools <id,...> --models <id,...>
@@ -142,6 +145,41 @@ const providerUsage = `usage:
        magpie provider set my-relay id=relay   (renames it: groups and agents on my-relay/… move to relay/…)
                                    (family: a tag for which agents are shown its models, see magpie visible)`
 
+// keyColumn is what magpie providers says of p's key or account.
+func keyColumn(p provider.Provider) string {
+	switch {
+	case p.Off:
+		return faint.Render("○ switched off")
+	case p.Account != nil && signedOut(p):
+		// every account in use refused: listed to be signed in again,
+		// as the app's row says, never "signed in"
+		return amber.Render("○ "+p.Account.User+" is signed out") + muted.Render(" · sign in again")
+	case p.Account != nil:
+		return green.Render("●") + " " + muted.Render("signed in as "+p.Account.User)
+	case p.IsVertex() && !p.Ready():
+		// no project an address can be made of (providers.json edited
+		// by hand): nothing is asked, as the app's row says
+		return amber.Render("○ needs a project")
+	case p.IsVertex():
+		// no key: a token minted from the user's Google credentials,
+		// traded for a service account's when it impersonates one
+		who := "Google credentials"
+		if p.Vertex != nil && p.Vertex.Impersonate != "" {
+			who += " as " + p.Vertex.Impersonate
+		}
+		return green.Render("●") + " " + muted.Render(who)
+	case p.Key != "":
+		return green.Render("●") + " " + muted.Render(provider.Mask(p.Key))
+	case p.Ready():
+		return green.Render("●") + " " + muted.Render("no key needed")
+	default:
+		return amber.Render("○ no key")
+	}
+}
+
+// signedOut is Provider.SignedOut, for a test to stand in for.
+var signedOut = provider.Provider.SignedOut
+
 // providers: `magpie providers`
 func providers() error {
 	all := provider.All()
@@ -164,30 +202,7 @@ func providers() error {
 		if p.Preset == "" && p.Account == nil {
 			r.name += " " + faint.Render("custom")
 		}
-		switch {
-		case p.Off:
-			r.key = faint.Render("○ switched off")
-		case p.Account != nil:
-			r.key = green.Render("●") + " " + muted.Render("signed in as "+p.Account.User)
-		case p.IsVertex() && !p.Ready():
-			// no project an address can be made of (providers.json edited
-			// by hand): nothing is asked, as the app's row says
-			r.key = amber.Render("○ needs a project")
-		case p.IsVertex():
-			// no key: a token minted from the user's Google credentials,
-			// traded for a service account's when it impersonates one
-			who := "Google credentials"
-			if p.Vertex != nil && p.Vertex.Impersonate != "" {
-				who += " as " + p.Vertex.Impersonate
-			}
-			r.key = green.Render("●") + " " + muted.Render(who)
-		case p.Key != "":
-			r.key = green.Render("●") + " " + muted.Render(provider.Mask(p.Key))
-		case p.Ready():
-			r.key = green.Render("●") + " " + muted.Render("no key needed")
-		default:
-			r.key = amber.Render("○ no key")
-		}
+		r.key = keyColumn(p)
 		n := len(p.Exposed())
 		if t, ok := p.Listed(); ok {
 			r.models = fmt.Sprintf("%d of %d models", n, len(p.Available())) + muted.Render(" · fetched "+ago(t))
@@ -1110,6 +1125,18 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				p.CodexAsSent = false
 			default:
 				return fmt.Errorf("codex=as-sent|default, not %q", v)
+			}
+		case "additional-tools":
+			// on: a tool an Anthropic client's tool search loads goes to
+			// the provider's Responses API in an additional_tools item
+			// where it was loaded, which keeps the cached prefix (#2660)
+			switch strings.ToLower(v) {
+			case "on", "yes":
+				p.AdditionalTools = true
+			case "default", "no", "off":
+				p.AdditionalTools = false
+			default:
+				return fmt.Errorf("additional-tools=on|default, not %q", v)
 			}
 		case "user-agent", "ua":
 			// agent: a request goes with the User-Agent the agent that

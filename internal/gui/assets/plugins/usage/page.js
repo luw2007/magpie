@@ -1,8 +1,12 @@
 // The Usage page's code (client.js has its markup and hooks): run after
 // app.js, whose helpers and state it shares, and before start.js shows the
 // first page.
-function renderQuotas() {
-  renderPanelQuota();
+// lazy: drawn only if something the panel shows changed (a load's answer,
+// the window coming back), not each time it is asked (#3192)
+function renderQuotas(lazy) {
+  renderPanelQuota(lazy);
+  // The tray panel never shows the Usage page's cards and curves.
+  if (mode === "panel") return;
   const subscriptions = $("#subscriptionUsage");
   const restoreFlash = keepQuotaFlash(subscriptions);
   const restoreRefresh = keepQuotaRefresh(subscriptions);
@@ -11,17 +15,17 @@ function renderQuotas() {
   // left turns their meters, and is only there when some card has one (a
   // balance is only ever what is left)
   $("#quotaHead").hidden = !!quotas && !quotas.length;
-  const mode = $("#quotaMode");
-  mode.hidden = !quotas?.some((q) => !q.error && q.windows?.length);
-  if (!mode.hidden) {
-    mode.replaceChildren();
+  const pick = $("#quotaMode");
+  pick.hidden = !quotas?.some((q) => !q.error && q.windows?.length);
+  if (!pick.hidden) {
+    pick.replaceChildren();
     for (const [left, name] of [[false, "Used"], [true, "Left"]]) {
       const b = el("button", "opt" + (left === quotaLeft ? " on" : ""), t(name));
       b.title = t(left ? "Show how much of each window is left" : "Show how much of each window is used");
       b.onclick = () => { if (left !== quotaLeft) setQuotaLeft(left); };
-      mode.append(b);
+      pick.append(b);
     }
-    slide(mode, "quotaMode");
+    slide(pick, "quotaMode");
   }
   renderQuotaTrend();
   if (!quotas) {
