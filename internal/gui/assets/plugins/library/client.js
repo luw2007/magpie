@@ -521,6 +521,12 @@ magpie.plugin("library", (ctx) => {
   // agent written that isn't one of them had it taken out (#332).
   function report(res, done, given) {
     if (!res) return;
+    // an update that found its source without the skill: said so, not
+    // as done or failed (スライム on Discord)
+    if (res.gone?.length) {
+      status(goneSaid(res.gone), "warn", 10000);
+      return;
+    }
     // skills installed together (lc on Discord): those the library had
     // already, and those left out because another by that name is in the
     // way, are named, beside how many were installed
@@ -1421,7 +1427,16 @@ magpie.plugin("library", (ctx) => {
     if (s.transport === "stdio") return [s.command, ...(s.args || [])].map(quote).join(" ");
     return s.url;
   }
-  function quote(a) { return /^[\w@%+=:,./-]+$/.test(a) ? a : "'" + a.replace(/'/g, `'\\''`) + "'"; }
+  // quote: an argument as this system's shell reads it, and words() reads
+  // back. On Windows that is cmd's double quotes, and a \ is a path's, not an
+  // escape: sh's 'C:\…\npx.cmd' read as quotes magpie had added to the
+  // command (fremontdango on Discord), and a path typed as it is lost its \
+  // and : on save (#2685).
+  const WIN_LINE = /^Win/.test(navigator.platform);
+  function quote(a) {
+    if (WIN_LINE) return a && !/[\s"'&|<>^%]/.test(a) ? a : '"' + a.replace(/"/g, '""') + '"';
+    return /^[\w@%+=:,./-]+$/.test(a) ? a : "'" + a.replace(/'/g, `'\\''`) + "'";
+  }
 
   function sseBlocked(s) {
     return (a) => {
@@ -1580,7 +1595,10 @@ magpie.plugin("library", (ctx) => {
   // each says it does (nf1qaz2w on Discord), with Check again under them.
   const health = new Map(); // name → { key: the server as checked, h: what was found, null while checking }
   const toolsOpen = new Set(); // the servers whose tools are shown
-  const healthKey = (s) => JSON.stringify([s.transport, s.command, s.args, s.env, s.url, s.headers, s.signIn]);
+  // a command is started where its agents run, this computer or a WSL
+  // distro (mcp_check_wsl.go): agents moved between them is a check anew
+  const healthKey = (s) => JSON.stringify([s.transport, s.command, s.args, s.env, s.url, s.headers, s.signIn,
+    s.transport === "stdio" ? [...new Set((s.agents || []).map((a) => a.split("@wsl:")[1] || ""))].sort() : null]);
   const toolList = (name) => { const h = health.get(name)?.h; return h?.state === "ok" ? h.toolList || [] : []; };
   // whether an agent the page shows gets the server, here or in a project
   // magpie keeps whose folder is there. The library keeps every agent it
@@ -1729,6 +1747,14 @@ magpie.plugin("library", (ctx) => {
   }
   function healthWords(h, s) {
     if (h.state === "ok") return [h.tools === 1 ? t("1 tool") : t("{n} tools", { n: h.tools }), t("It started and listed its tools")];
+    // an agent signed in to it on its own (Claude Code's /mcp, in WSL too)
+    // uses it, though magpie's check, without that sign-in, was asked for
+    // one: the row says who, not "needs sign-in" (CyberCaius on Discord)
+    if (h.state === "auth" && h.agentSignIn?.length) {
+      const names = h.agentSignIn.map(nameOf);
+      const text = t("signed in in {agent}", { agent: names[0] }) + (names.length > 1 ? " +" + (names.length - 1) : "");
+      return [text, t("{agents}: signed in to it on its own, and uses it. magpie's check doesn't have that sign-in, so it can't list the tools: open it to sign in once in magpie too", { agents: names.join(", ") })];
+    }
     if (h.state === "auth") {
       const why = h.oauth
         ? (s?.transport === "http" ? t("The server asks for a sign-in — open it to sign in once in magpie") : t("The server asks for a sign-in"))
@@ -1754,6 +1780,9 @@ magpie.plugin("library", (ctx) => {
       // a ${NAME} magpie's own environment hasn't; an agent started from a
       // shell that has it still gets it
       case "novar": return [t("{names} not set", { names: h.detail }), t("magpie can't check it: {names} isn't set where magpie runs. An agent started where it is set still gets it", { names: h.detail })];
+      // the agents given it run in a WSL distro that isn't running, which
+      // a check doesn't start: nothing is known of the server
+      case "wsldown": return [t("WSL {distro} not running", { distro: h.detail }), t("magpie can't check it: the agents given it run in WSL {distro}, which isn't running, and a check doesn't start it", { distro: h.detail })];
       default: return [t("couldn't check"), more(t("magpie couldn't check it"))];
     }
   }
@@ -1781,12 +1810,20 @@ magpie.plugin("library", (ctx) => {
         b.title = t("Connecting to it to list its tools");
         continue;
       }
-      const [text, tip] = healthWords(e.h, lib.servers.find((s) => s.name === b.dataset.server));
+      let [text, tip] = healthWords(e.h, lib.servers.find((s) => s.name === b.dataset.server));
+      // a command agents in WSL start is checked where they run: the tip
+      // says where, and a failure which place it was (loong on Discord)
+      const places = (e.h.checked || []).map((p) => (p ? "WSL " + p : "Windows"));
+      if (places.length && e.h.state === "ok") tip += "\n" + t("Checked in: {places}", { places: places.join(", ") });
+      else if (places.length) {
+        text += " · " + places[places.length - 1];
+        tip += "\n" + t("Failed in: {place}", { place: places[places.length - 1] });
+      }
       // a check magpie couldn't make for want of a variable only the
       // agent's own launch sets says nothing of the server, so it isn't
       // painted as broken (#2308, ASD-max: Codex's host-only codex_app,
       // whose pipe Codex itself hands it)
-      b.className = "lib-health " + (e.h.state === "ok" ? "ok" : e.h.state === "auth" ? "auth" : e.h.why === "novar" ? "unknown" : "err");
+      b.className = "lib-health " + (e.h.state === "ok" || e.h.agentSignIn?.length ? "ok" : e.h.state === "auth" ? "auth" : e.h.why === "novar" || e.h.why === "wsldown" ? "unknown" : "err");
       b.replaceChildren(el("span", "", text));
       if (toolList(b.dataset.server).length) {
         const open = toolsOpen.has(b.dataset.server);
@@ -1947,11 +1984,13 @@ magpie.plugin("library", (ctx) => {
     for (let i = 0; i < s.length; i++) {
       const c = s[i];
       if (q) {
-        if (c === q) q = "";
-        else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
+        // on Windows "" in quotes is one ", as quote() writes it
+        if (c === q && WIN_LINE && q === '"' && s[i + 1] === '"') cur += s[++i];
+        else if (c === q) q = "";
+        else if (c === "\\" && q === '"' && !WIN_LINE && i + 1 < s.length) cur += s[++i];
         else cur += c;
       } else if (c === "'" || c === '"') { q = c; any = true; }
-      else if (c === "\\" && i + 1 < s.length) { cur += s[++i]; any = true; }
+      else if (c === "\\" && !WIN_LINE && i + 1 < s.length) { cur += s[++i]; any = true; }
       else if (/\s/.test(c)) { if (cur || any) out.push(cur); cur = ""; any = false; }
       else cur += c;
     }
@@ -2132,6 +2171,19 @@ magpie.plugin("library", (ctx) => {
           g.append(...field(t("Sign-in"), signBox, t("For a server that asks you to sign in (OAuth): magpie signs in once, and every agent given it uses that sign-in")));
         } else appBox = null;
       }
+      // how long the agents that take one (Codex's startup_timeout_sec)
+      // wait for it to start, shown only when one of them is here (#3168)
+      const slow = [...new Set(all.filter((a) => a.startup).map((a) => a.name))];
+      if (slow.length) {
+        const wait = field2(d.startupTimeout || "", "30", (v) => {
+          wait.value = v.replace(/\D/g, "").slice(0, 5);
+          d.startupTimeout = Number(wait.value) || 0;
+        });
+        wait.inputMode = "numeric";
+        wait.classList.add("lib-startup");
+        wait.setAttribute("aria-label", t("Startup timeout"));
+        g.append(...field(t("Startup timeout"), wait, t("Seconds {agents} waits for it to start and list its tools. Empty leaves {agents}'s own 30; a value you wrote in its config.toml by hand is kept", { agents: slow.join(", ") })));
+      }
       slot.append(g);
       if (appBox) drawApp();
       // its own icon while it runs as it did; another way of running is another server
@@ -2150,7 +2202,7 @@ magpie.plugin("library", (ctx) => {
     // send saves the form; s is then the server as saved, for a save after
     // a sign-in's to be of it
     const send = async () => {
-      const body = { old: s ? s.name : "", server: { name: d.name, transport: d.transport, agents: d.agents } };
+      const body = { old: s ? s.name : "", server: { name: d.name, transport: d.transport, agents: d.agents, startupTimeout: d.startupTimeout || 0 } };
       if (d.transport === "stdio") Object.assign(body.server, { command: d.command, args: d.args, env: d.env });
       else Object.assign(body.server, { url: d.url, headers: d.headers, oauth: d.transport === "http" && d.oauth?.clientId ? d.oauth : null });
       take(await api("library/servers/save", body));
@@ -2685,8 +2737,14 @@ magpie.plugin("library", (ctx) => {
         autoChecked = true;
         setTimeout(() => checkSkills(true), 0);
       }
+      // skills their source no longer has, from one place only: no group
+      // heading is drawn to hold its Clean up, so the bar does
+      if (skillGroups().length === 1) {
+        const gone = lib.skills.filter(isGone);
+        if (gone.length) rh.append(cleanUpButton(gone));
+      }
       // one changed here is updated from its own row, which asks first
-      const stale = lib.skills.filter((s) => s.check?.status === "update" && !s.edited);
+      const stale = lib.skills.filter((s) => s.check?.status === "update" && !s.edited && !isGone(s));
       if (stale.length) {
         const n = stale.length;
         const u = button(t("Update {n}", { n }), "action lib-updall", async (e, b) => {
@@ -3118,7 +3176,7 @@ magpie.plugin("library", (ctx) => {
     head.append(chev, el("span", "name" + (p.mono && p.key ? " mono" : ""), p.label),
       el("span", "sub", filtering && hits.length !== n ? t("{n} of {total}", { n: hits.length, total: n }) : String(n)));
     // a dot when GitHub changed some of its skills
-    const stale = p.skills.filter((s) => s.check?.status === "update").length;
+    const stale = p.skills.filter((s) => s.check?.status === "update" && !isGone(s)).length;
     if (stale) {
       const dot = el("span", "lib-dot");
       dot.title = stale === 1 ? t("1 skill has an update") : t("{n} skills have updates", { n: stale });
@@ -3169,7 +3227,9 @@ magpie.plugin("library", (ctx) => {
     who.append(sub);
     const tags = el("div", "lib-tags");
     // one changed here is updated from its own row, which asks first (#1449)
-    const stale = g.skills.filter((s) => s.check?.status === "update" && !s.edited);
+    const stale = g.skills.filter((s) => s.check?.status === "update" && !s.edited && !isGone(s));
+    const gone = g.skills.filter((s) => isGone(skillNamed(s.name) || s));
+    if (gone.length) tags.append(cleanUpButton(gone.map((s) => skillNamed(s.name) || s)));
     if (stale.length) {
       const u = button(t("Update {n}", { n: stale.length }), "action lib-updall", async (e, b) => {
         b.classList.add("busy");
@@ -3981,13 +4041,14 @@ magpie.plugin("library", (ctx) => {
       const v = await api(names ? "library/skills/update-some" : "library/skills/update-all", names ? { names } : {});
       take(v);
       const res = v.result || {};
-      const up = res.updated?.length || 0, no = res.unupdated || [];
+      const up = res.updated?.length || 0, no = res.unupdated || [], gone = res.gone || [];
       // one changed here is left as it is (#1449): said apart from those
       // that couldn't be fetched
       const isEdited = (p) => lib.skills.some((s) => s.edited && "skill:" + s.name === p.what);
       const kept = no.filter(isEdited).map((p) => p.what.replace(/^skill:/, "")), failed = no.filter((p) => !isEdited(p));
-      if (no.length) {
+      if (no.length || gone.length) {
         const parts = [];
+        if (gone.length) parts.push(goneSaid(gone));
         if (failed.length) {
           const p = failed[0];
           parts.push(t("{name} wasn't updated: {error}", { name: p.what.replace(/^skill:/, ""), error: p.error }) + (failed.length > 1 ? " " + t("(and {n} more)", { n: failed.length - 1 }) : ""));
@@ -4343,20 +4404,23 @@ magpie.plugin("library", (ctx) => {
     try {
       take(await api("library/skills/check", {}));
       const got = lib.skills.filter((s) => s.check);
-      const n = got.filter((s) => s.check.status === "update").length;
+      const n = got.filter((s) => s.check.status === "update" && !isGone(s)).length;
       const unknown = got.filter((s) => s.check.status === "unknown");
-      let msg = n ? (n === 1 ? t("1 skill has an update") : t("{n} skills have updates", { n })) : t("Every skill is up to date");
+      const gone = lib.skills.filter(isGone).map((s) => s.name);
+      let msg = n ? (n === 1 ? t("1 skill has an update") : t("{n} skills have updates", { n })) : gone.length ? "" : t("Every skill is up to date");
+      if (gone.length) msg += (msg ? " · " : "") + goneSaid(gone);
       const more = lib.newSkills?.length || 0;
       if (more) msg += " · " + (more === 1 ? t("1 more skill in their repositories") : t("{n} more skills in their repositories", { n: more }));
       if (quiet) {
         const said = [];
         if (n) said.push(n === 1 ? t("1 skill has an update") : t("{n} skills have updates", { n }));
+        if (gone.length) said.push(goneSaid(gone));
         if (more) said.push(more === 1 ? t("1 more skill in their repositories") : t("{n} more skills in their repositories", { n: more }));
         if (said.length) status(said.join(" · "), "ok");
       } else if (unknown.length) {
         msg += " · " + t("{n} couldn't be checked: {error}", { n: unknown.length, error: checkError(unknown[0].check) });
         status(msg, "warn", 8000);
-      } else status(msg, "ok");
+      } else status(msg, gone.length ? "warn" : "ok", gone.length ? 10000 : undefined);
     } catch (e) {
       if (!quiet) status(e.message, "err", 6000);
     }
@@ -4532,7 +4596,14 @@ magpie.plugin("library", (ctx) => {
     const who = el("div", "who");
     const nm = el("div", "name", s.name);
     const c = s.check;
-    if (c?.status === "update") {
+    const gone = isGone(s);
+    if (gone) {
+      // its source no longer has it: kept till the user takes it out
+      const repo = gitRepoOf(s) || skillRepo(s);
+      nm.append(tag(t("Removed upstream"), "warn lib-gone", repo
+        ? t("{repo} no longer has this skill: it was removed there. It stays here until you remove it.", { repo })
+        : t("Its source no longer has this skill: it was removed there. It stays here until you remove it.")));
+    } else if (c?.status === "update") {
       const b = tag(t("Update available"), "lib-new", t("Changed on GitHub since it was installed") + "\n" + checkLine(c));
       if (c.url) {
         b.classList.add("link");
@@ -4587,7 +4658,9 @@ magpie.plugin("library", (ctx) => {
       who.append(src);
     }
     const acts = el("div", "lib-rowacts");
-    if (s.kind === "github" || s.kind === "git" || s.origin) {
+    // one its source no longer has has nothing to update from: Update all,
+    // or a check, finds it there again if it comes back
+    if (!gone && (s.kind === "github" || s.kind === "git" || s.origin)) {
       const u = button("", "lib-icon", async (e, b) => {
         if (s.edited) return confirmUpdateEdited(s);
         b.classList.add("busy");
@@ -4612,6 +4685,70 @@ magpie.plugin("library", (ctx) => {
     row.onclick = () => viewSkill(s);
     row.title = t("Read {name}'s SKILL.md", { name: s.name });
     return row;
+  }
+
+  // A skill its source no longer has (スライム on Discord): an update or a
+  // check read the repository and found it removed there. Nothing takes
+  // it out by itself; Clean up takes out every such skill of a group at
+  // once, asking first, and a row's Remove takes out one.
+  const isGone = (s) => !!s.gone || s.check?.status === "gone";
+  function goneSaid(names) {
+    return names.length === 1 ? t("{name} was removed from its source", { name: names[0] })
+      : t("{n} skills were removed from their sources: {names}", { n: names.length, names: names.join(", ") });
+  }
+  function cleanUpButton(skills) {
+    const b = button(t("Clean up {n}", { n: skills.length }), "action lib-updall lib-cleanup", () => confirmRemoveGone(skills));
+    b.title = skills.length === 1 ? t("Remove {name}: its source no longer has it", { name: skills[0].name })
+      : t("Remove the {n} skills their source no longer has", { n: skills.length });
+    return b;
+  }
+  function confirmRemoveGone(skills) {
+    const names = skills.map((s) => s.name), n = names.length;
+    const repos = [...new Set(skills.map((s) => gitRepoOf(s) || skillRepo(s)).filter(Boolean))];
+    const ed = el("div", "editor lib-editor lib-remove-gone");
+    const head = el("div", "ehead");
+    head.append(glyph(GLYPH.trash), el("b", "", n === 1 ? t("Remove {name}?", { name: names[0] }) : t("Remove {n} skills removed upstream?", { n })));
+    ed.append(head);
+    ed.append(el("p", "lib-confirm", repos.length === 1
+      ? (n === 1 ? t("{repo} no longer has this skill: it was removed there.", { repo: repos[0] }) : t("{repo} no longer has these skills: they were removed there.", { repo: repos[0] }))
+      : t("Their sources no longer have these skills: they were removed there.")));
+    // each by name, and one changed here says so: removing it takes the change out too
+    const list = el("ul", "lib-gonelist");
+    for (const s of skills) {
+      const li = el("li", "", s.name);
+      if (s.edited) li.append(tag(t("Changed here"), "warn lib-edited", t("You changed it here since it was fetched.")));
+      list.append(li);
+    }
+    ed.append(list);
+    ed.append(el("p", "lib-confirm", takenFrom(skills) + " " + t("Their folders are moved to magpie's backups (Backups, at the top of the Library), not deleted.")));
+    const bar = el("div", "bar");
+    const go = button(n === 1 ? t("Remove") : t("Remove {n}", { n }), "primary danger-fill", async () => {
+      go.disabled = true;
+      if (await removeGone(names)) closeLibModal(true);
+      else go.disabled = false;
+    });
+    bar.append(el("span", "grow"), button(t("Cancel"), "", closeLibModal), go);
+    ed.append(bar);
+    modal = { save: () => go.click() };
+    openLib(ed);
+  }
+  // only those still marked removed from their source are taken out; one
+  // found there again meanwhile stays, and is said
+  async function removeGone(names) {
+    try {
+      const v = await api("library/skills/remove-gone", { names });
+      take(v);
+      const res = v.result || {}, no = res.unremoved || [];
+      const out = names.filter((x) => !no.some((p) => p.what === "skill:" + x));
+      const done = out.length === 1 ? t("{name} removed", { name: out[0] }) : t("{n} skills removed", { n: out.length });
+      if (no.length) status((out.length ? done + " · " : "") + t("{name} wasn't removed: {error}", { name: no[0].what.replace(/^skill:/, ""), error: no[0].error }) + (no.length > 1 ? " " + t("(and {n} more)", { n: no.length - 1 }) : ""), "warn", 10000);
+      else report(res, done);
+      render();
+      return true;
+    } catch (e) {
+      status(e.message, "err", 6000);
+      return false;
+    }
   }
 
   // An update of a skill changed here replaces the change (#1449): asked in

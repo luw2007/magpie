@@ -77,7 +77,8 @@ const groupUsage = `usage:
            Anthropic key for Opus 4.8 and 5; a model without one is refused (codex/gpt-6.1-sol:high:fast)
            a pattern puts in every model it matches, as magpie models lists them now and later: a glob, where
            * is any run of characters, / too, over the provider/model id in any case (openrouter/*:free,
-           *-free, opencode-zen/*), or re:<regexp> matching the whole id (re:openrouter/.*:(free|beta)).
+           *-free, opencode-zen/*), or re:<regexp> matching the whole id, in any case too (re:openrouter/.*:(free|beta));
+           (?-i) in the regexp makes case matter (re:(?-i)openrouter/.*:FREE).
            Quote it for the shell. The group keeps the pattern, not its models: one the vendor adds joins,
            one it drops leaves. The models you name come first, in your order, then those the patterns
            match, in the order magpie models lists them; one both named and matched keeps its named place.
@@ -119,6 +120,7 @@ const groupUsage = `usage:
        magpie group set fast models+=gcloud/gemini-3.8-flash:medium
        magpie group add my-free-pool models='openrouter/*:free,opencode-zen/*-free' routing=order
        magpie group set opus-anywhere routing=weight weight=claude/claude-opus-5-5=3
+       magpie group set deepseek-anywhere routing=fast   # the provider that answered it fastest lately first
        magpie group pick opus-anywhere copilot/claude-opus-5.5
        magpie claude group/opus-anywhere`
 
@@ -135,8 +137,9 @@ var routingNames = []struct {
 	{provider.Pace, "pace", []string{"weekly-pace"}},
 	{provider.Weighted, "weight", []string{"weighted", "by-weight", "weighted-round-robin", "wrr"}},
 	{provider.FreeFirst, "free", []string{"free-first", "freest", "no-cost"}},
+	{provider.Fastest, "fast", []string{"fastest", "speed", "speed-first"}},
 	{provider.Manual, "manual", []string{"pick", "picked", "pinned"}},
-	{provider.Benchmark, "benchmark", []string{"fast"}},
+	{provider.Benchmark, "benchmark", nil},
 }
 
 var staysNames = []struct {

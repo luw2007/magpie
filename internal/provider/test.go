@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/probelog"
 )
 
 // Result is what a probe of one endpoint came back with.
@@ -34,7 +36,7 @@ type Result struct {
 // serves, signed with a key made for it and asking for a model that key
 // sees, and reports what came back.
 func (p Provider) Test(ctx context.Context) []Result {
-	ctx = p.Via(ctx)
+	ctx = p.ownRequests(p.Via(ctx), probelog.KindTest)
 	if p.DecideOnly() {
 		return p.testDecide(ctx)
 	}
@@ -239,7 +241,7 @@ func tinyDrawing(q Provider, model string) (url, body string) {
 // on the endpoint it's served on and with a key that sees it: whether each
 // answers, not only whether the vendor does. Results are in models' order.
 func (p Provider) TestModels(ctx context.Context, models []string) []Result {
-	ctx = p.Via(ctx)
+	ctx = p.ownRequests(p.Via(ctx), probelog.KindTest)
 	out := make([]Result, len(models))
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
@@ -486,13 +488,23 @@ func AuthHeaders(p Provider, proto Protocol) map[string]string {
 	return map[string]string{"Authorization": "Bearer " + p.Key}
 }
 
+// ownRequests is ctx with the requests sent under it written into the
+// request log as magpie's own, of kind (probelog), for p.
+func (p Provider) ownRequests(ctx context.Context, kind string) context.Context {
+	account := ""
+	if p.Account != nil {
+		account = p.Account.User
+	}
+	return probelog.With(ctx, kind, p.ID, account)
+}
+
 func probe(ctx context.Context, p Provider, proto Protocol, url string, body []byte, model string, wait time.Duration) Result {
 	r := Result{Protocol: proto, Model: model}
 	if model == "" {
 		r.Error = "no model to try: expose one, or refresh the model list"
 		return r
 	}
-	ctx, cancel := context.WithTimeout(ctx, wait)
+	ctx, cancel := context.WithTimeout(probelog.WithModel(ctx, model), wait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -626,8 +638,13 @@ func streamAnswer(r io.Reader) (msg string, failed bool) {
 // at fault and magpie changes nothing about it: the address is.
 const BlockedHint = "the provider's network firewall blocked requests from this IP; wait a while, or switch to another network or proxy"
 
-// edgeBlocked matches such a block page, whoever's firewall served it.
-var edgeBlocked = regexp.MustCompile(`(?i)request has been blocked|errors\.aliyun\.com`)
+// edgeBlocked matches such a block page, whoever's firewall served it:
+// Alibaba Cloud's, and Cloudflare's — its WAF's "Sorry, you have been
+// blocked" (titled "Attention Required! | Cloudflare"), its "Access denied
+// | … used Cloudflare to restrict access" page, and the plain-text
+// "error code: 1020" (and the other access-denied codes, 1005 to 1012) it
+// answers a client that takes no HTML.
+var edgeBlocked = regexp.MustCompile(`(?i)request has been blocked|errors\.aliyun\.com|you have been blocked|used cloudflare to restrict access|error code: 10(0[5-9]|1[0-2]|20)\b`)
 
 // EdgeBlocked says whether an error body is a firewall's block page rather
 // than the vendor's API answering, or one already put in plain words.
@@ -641,6 +658,9 @@ func EdgeBlocked(b []byte) bool {
 // link it gave.
 func APIError(b []byte, fallback string) string {
 	if edgeBlocked.Match(b) {
+		if said, ok := WebPage(b); ok && fallback != "" {
+			return fallback + ": " + said + " — " + BlockedHint
+		}
 		if fallback == "" {
 			return BlockedHint
 		}
@@ -806,14 +826,98 @@ func apiError(b []byte, fallback string) string {
 			return m
 		}
 	}
+	// a web page in place of the API's answer is said for what it is, and
+	// an HTTP error with an empty body as refused with no details (a bare
+	// "403 Forbidden" told the user nothing of a relay's firewall,
+	// maralica on Discord); an empty stream event is no such refusal
+	if said, ok := WebPage(b); ok {
+		if fallback == "" {
+			return said
+		}
+		return fallback + ": " + said
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		if statusLine(fallback) {
+			return fallback + ": " + NoDetails
+		}
+		return fallback
+	}
 	// a body in no shape known is shown as it is, cut short, so what the
-	// vendor said isn't lost; an HTML page says nothing worth showing
+	// vendor said isn't lost; other markup says nothing worth showing
 	s := strings.Join(strings.Fields(string(b)), " ")
-	if s == "" || strings.HasPrefix(s, "<") {
+	if strings.HasPrefix(s, "<") {
 		return fallback
 	}
 	if r := []rune(s); len(r) > 300 {
 		s = string(r[:300]) + "…"
 	}
 	return fallback + ": " + s
+}
+
+// NoDetails is what an error with an empty body is said as: the upstream
+// refused and gave no reason, which an API seldom does and a firewall or
+// proxy in front of it often does.
+const NoDetails = "refused with no details (an empty reply, often from a firewall or proxy in front of the API rather than the API itself)"
+
+// pageStart is how a web page begins, or a fragment of one that a proxy
+// serves as its error.
+var pageStart = regexp.MustCompile(`(?i)^<(!doctype\s+html|html[\s>]|head[\s>]|body[\s>]|title[\s>]|meta[\s>])`)
+
+// pageTitle is a web page's title.
+var pageTitle = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+
+// PageTitle is a web page's title as plain words, cut to 120 runes: no
+// markup, entities read, whitespace folded. "" when there is none.
+func PageTitle(b []byte) string {
+	m := pageTitle.FindSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	t := strings.Join(strings.Fields(html.UnescapeString(tagRe.ReplaceAllString(string(m[1]), " "))), " ")
+	if r := []rune(t); len(r) > 120 {
+		t = string(r[:120]) + "…"
+	}
+	return t
+}
+
+// tagRe is a markup tag, taken out of a title that holds one.
+var tagRe = regexp.MustCompile(`<[^>]*>`)
+
+// statusLine says a fallback is an HTTP error's status ("403 Forbidden",
+// or its text alone, "Forbidden"), what an error body was answered with,
+// not a stream event's or another reader's words.
+func statusLine(s string) bool {
+	if len(s) >= 3 && s[0] >= '1' && s[0] <= '5' && s[1] >= '0' && s[1] <= '9' && s[2] >= '0' && s[2] <= '9' && (len(s) == 3 || s[3] == ' ') {
+		return true
+	}
+	for c := 400; c < 600; c++ {
+		if t := http.StatusText(c); t != "" && t == s {
+			return true
+		}
+	}
+	return false
+}
+
+// Unsaid describes an HTTP error's body that holds no message of its
+// own: an empty one (NoDetails), or a web page (WebPage). ok is false for
+// any other body, whose message is the vendor's to give.
+func Unsaid(b []byte) (string, bool) {
+	if len(bytes.TrimSpace(b)) == 0 {
+		return NoDetails, true
+	}
+	return WebPage(b)
+}
+
+// WebPage describes a web page served in place of the API's answer — a
+// firewall's, a CDN's, a relay's own — by its title. ok is false for a
+// body that isn't one.
+func WebPage(b []byte) (string, bool) {
+	t := bytes.TrimLeft(bytes.TrimSpace(b), "\ufeff")
+	if !pageStart.Match(t) {
+		return "", false
+	}
+	if title := PageTitle(t); title != "" {
+		return "a web page, not an API reply: “" + title + "”", true
+	}
+	return "a web page, not an API reply", true
 }

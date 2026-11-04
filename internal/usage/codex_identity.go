@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"hash/maphash"
 	"slices"
 	"strings"
 	"sync"
@@ -179,104 +180,243 @@ func cloneCodexChunks(chunks []*rowChunk) []*rowChunk {
 	return out
 }
 
-func codexChunkResponsePairs(gateways, locals []*rowChunk, duplicateLocal map[rowRef]bool) map[rowRef]rowRef {
-	gatewayIDs := map[string][]rowRef{}
+// rowResponseID is rowText's slot of Record.ResponseID.
+const rowResponseID = 25
+
+// codexChunkResponsePairs are the Codex calls the gateway and a session file
+// both name by one response id, gateway to local, and each local call's
+// compaction. Only the ids the gateway names are kept of the locals': a map
+// of every Codex call's id held each decoded chunk's strings.
+func codexChunkResponsePairs(gateways, locals []*rowChunk, duplicateLocal map[rowRef]bool) (map[rowRef]rowRef, map[rowRef]*bool) {
+	type pick struct {
+		gateways, locals   int
+		gateway, local     rowRef
+		gatewayOK, localOK bool
+		compaction         *bool
+	}
+	picks := map[string]*pick{}
+	var rows chunkRows
+	defer rows.release()
 	for _, chunk := range gateways {
-		for i := range chunk.Rows {
-			row := chunk.row(i)
-			if row.ResponseID != "" {
-				gatewayIDs[row.ResponseID] = append(gatewayIDs[row.ResponseID], rowRef{chunk, i})
+		open := rows.of(chunk)
+		for i := range open.Rows {
+			if open.text(&open.Rows[i], rowResponseID) == 0 {
+				continue
 			}
+			row := open.row(i)
+			p := picks[row.ResponseID]
+			if p == nil {
+				p = &pick{}
+				picks[row.ResponseID] = p
+			}
+			p.gateways++
+			p.gateway = rowRef{chunk, i}
+			p.gatewayOK = isCodexRow(row) && !row.IsRejected() && row.Source != SourceReported
 		}
 	}
-	localIDs := map[string][]rowRef{}
+	lent := lentRows() // picks are looked up by a local's id, not keyed
+	defer lent.release()
 	for _, chunk := range locals {
-		for i := range chunk.Rows {
+		open := lent.of(chunk)
+		for i := range open.Rows {
 			ref := rowRef{chunk, i}
 			if duplicateLocal[ref] {
 				continue
 			}
-			row := chunk.row(i)
-			if row.ResponseID != "" {
-				localIDs[row.ResponseID] = append(localIDs[row.ResponseID], ref)
+			p := picks[open.Strings[open.text(&open.Rows[i], rowResponseID)]]
+			if p == nil {
+				continue
 			}
+			row := open.row(i)
+			p.locals++
+			p.local = ref
+			p.localOK = isCodexRow(row) && row.Source == "log"
+			p.compaction = row.Compaction
 		}
 	}
-	pairs := map[rowRef]rowRef{}
-	for id, gatewayRefs := range gatewayIDs {
-		localRefs := localIDs[id]
-		if len(gatewayRefs) != 1 || len(localRefs) != 1 {
-			continue
-		}
-		gateway, local := gatewayRefs[0], localRefs[0]
-		gatewayRow, localRow := gateway.row(), local.row()
-		if isCodexRow(gatewayRow) && !gatewayRow.IsRejected() && gatewayRow.Source != SourceReported && isCodexRow(localRow) && localRow.Source == "log" {
-			pairs[gateway] = local
+	pairs, compactions := map[rowRef]rowRef{}, map[rowRef]*bool{}
+	for _, p := range picks {
+		if p.gateways == 1 && p.locals == 1 && p.gatewayOK && p.localOK {
+			pairs[p.gateway] = p.local
+			compactions[p.local] = p.compaction
 		}
 	}
-	return pairs
+	return pairs, compactions
 }
 
+// foldIDs are each chunk's Codex log calls by a hash of their response
+// id, kept by the chunk's serial (foldCodexRows). A page polled while one
+// session was live decoded every session file of the period again to
+// hash the same ids: ~40 MB a poll of today's page, and as much again
+// for Codex's effort.
+var foldIDs struct {
+	sync.Mutex
+	by   map[uint64]*foldedIDs
+	turn uint64
+}
+
+type foldedIDs struct {
+	// each call's hash shifted left by foldIndexBits, and its index in
+	// the bits that frees: calls whose hash is the same are told apart by
+	// their ids after, so a shortened hash only reads a few more rows
+	calls []uint64
+	turn  uint64 // the fold that used it last
+}
+
+const foldIndexBits = 24
+
+var foldSeed = maphash.MakeSeed()
+
+// foldKept is how many folds a chunk's ids outlive the last that read
+// them: the page's and Codex effort's are of different chunks.
+const foldKept = 4
+
+// foldHashing, in tests, is told each chunk foldCodexRows reads ids from.
+var foldHashing func(*rowChunk)
+
 func foldCodexRows(locals []*rowChunk) map[rowRef]bool {
-	localIDs := map[string][]rowRef{}
+	// The calls are found by a hash of their response id, not the id: a map
+	// keyed by every Codex call's id held each decoded chunk's strings. Calls
+	// whose hash is the same are told apart by their ids after.
+	first := map[uint64]rowRef{}
+	again := map[uint64][]rowRef{}
+	rows := lentRows() // an id is kept as its hash
+	defer rows.release()
+	foldIDs.Lock()
+	foldIDs.turn++
+	turn := foldIDs.turn
+	known := make(map[*rowChunk]*foldedIDs, len(locals))
 	for _, chunk := range locals {
-		for i := range chunk.Rows {
-			row := chunk.row(i)
-			if isCodexRow(row) && row.Source == "log" && row.ResponseID != "" {
-				localIDs[row.ResponseID] = append(localIDs[row.ResponseID], rowRef{chunk, i})
+		if f := foldIDs.by[chunk.serial]; chunk.serial != 0 && f != nil {
+			f.turn = turn
+			known[chunk] = f
+		}
+	}
+	foldIDs.Unlock()
+	var made map[uint64]*foldedIDs
+	for _, chunk := range locals {
+		f := known[chunk]
+		if f == nil {
+			if foldHashing != nil {
+				foldHashing(chunk)
+			}
+			f = &foldedIDs{turn: turn}
+			open := rows.of(chunk)
+			for i := range open.Rows {
+				id := open.Strings[open.text(&open.Rows[i], rowResponseID)]
+				if id == "" {
+					continue
+				}
+				if row := open.row(i); !isCodexRow(row) || row.Source != "log" {
+					continue
+				}
+				f.calls = append(f.calls, maphash.String(foldSeed, id)<<foldIndexBits|uint64(i))
+			}
+			if chunk.serial != 0 && len(open.Rows) < 1<<foldIndexBits {
+				if made == nil {
+					made = map[uint64]*foldedIDs{}
+				}
+				f.calls = slices.Clip(f.calls)
+				made[chunk.serial] = f
+			}
+		}
+		for _, call := range f.calls {
+			ref, h := rowRef{chunk, int(call & (1<<foldIndexBits - 1))}, call>>foldIndexBits
+			if f, ok := first[h]; !ok {
+				first[h] = ref
+			} else {
+				if again[h] == nil {
+					again[h] = []rowRef{f}
+				}
+				again[h] = append(again[h], ref)
 			}
 		}
 	}
+	foldIDs.Lock()
+	if foldIDs.by == nil {
+		foldIDs.by = map[uint64]*foldedIDs{}
+	}
+	for serial, f := range made {
+		foldIDs.by[serial] = f
+	}
+	for serial, f := range foldIDs.by {
+		if f.turn+foldKept < foldIDs.turn {
+			delete(foldIDs.by, serial)
+		}
+	}
+	foldIDs.Unlock()
+	var refs []rowRef
+	for _, hashed := range again {
+		refs = append(refs, hashed...)
+	}
+	read := rowsOf(locals, refs)
 	skip := map[rowRef]bool{}
-	for _, refs := range localIDs {
-		if len(refs) < 2 {
-			continue
-		}
-		actors := make([]string, len(refs))
-		rows := make([]Row, len(refs))
-		identical := true
-		actor := ""
-		actorConflict := false
-		for i, ref := range refs {
-			rows[i] = ref.row()
-			if ref.Index < len(ref.Chunk.codexActors) {
-				actors[i] = ref.Chunk.codexActors[ref.Index]
+	for _, hashed := range again {
+		byID := map[string][]rowRef{}
+		var ids []string
+		for _, ref := range hashed {
+			id := read[ref].ResponseID
+			if byID[id] == nil {
+				ids = append(ids, id)
 			}
-			if i == 0 {
-				actor = actors[i]
-			} else {
-				if actors[i] != actor {
-					actorConflict = true
-				}
-				if !sameCodexCall(rows[0], rows[i]) {
-					identical = false
-				}
-			}
+			byID[id] = append(byID[id], ref)
 		}
-		if !identical {
-			for _, ref := range refs {
-				setCodexActor(ref.Chunk, ref.Index, "")
-			}
-			continue
+		for _, id := range ids {
+			foldCodexCall(byID[id], read, skip)
 		}
-		if actorConflict {
-			setCodexActor(refs[0].Chunk, refs[0].Index, "")
-		}
-		for _, ref := range refs[1:] {
-			skip[ref] = true
-		}
-		compactions := make([]*bool, len(refs))
-		for i := range refs {
-			compactions[i] = rows[i].Compaction
-		}
-		refs[0].Chunk.setCodexCompaction(refs[0].Index, mergeCodexCompactions(compactions))
 	}
 	return skip
 }
 
+// foldCodexCall keeps the first of refs, the calls a session file names by
+// one response id, and skips the rest when they are the same call.
+func foldCodexCall(refs []rowRef, read map[rowRef]Row, skip map[rowRef]bool) {
+	if len(refs) < 2 {
+		return
+	}
+	actors := make([]string, len(refs))
+	rows := make([]Row, len(refs))
+	identical := true
+	actor := ""
+	actorConflict := false
+	for i, ref := range refs {
+		rows[i] = read[ref]
+		if ref.Index < len(ref.Chunk.codexActors) {
+			actors[i] = ref.Chunk.codexActors[ref.Index]
+		}
+		if i == 0 {
+			actor = actors[i]
+		} else {
+			if actors[i] != actor {
+				actorConflict = true
+			}
+			if !sameCodexCall(rows[0], rows[i]) {
+				identical = false
+			}
+		}
+	}
+	if !identical {
+		for _, ref := range refs {
+			setCodexActor(ref.Chunk, ref.Index, "")
+		}
+		return
+	}
+	if actorConflict {
+		setCodexActor(refs[0].Chunk, refs[0].Index, "")
+	}
+	for _, ref := range refs[1:] {
+		skip[ref] = true
+	}
+	compactions := make([]*bool, len(refs))
+	for i := range refs {
+		compactions[i] = rows[i].Compaction
+	}
+	refs[0].Chunk.setCodexCompaction(refs[0].Index, mergeCodexCompactions(compactions))
+}
+
 func setCodexActor(chunk *rowChunk, index int, actor string) {
-	if len(chunk.codexActors) != len(chunk.Rows) {
-		actors := make([]string, len(chunk.Rows))
+	if n := rowsIn(chunk); len(chunk.codexActors) != n {
+		actors := make([]string, n)
 		copy(actors, chunk.codexActors)
 		chunk.codexActors = actors
 	}
@@ -321,7 +461,17 @@ type effortEntry struct {
 	have     bool
 	building chan struct{} // closed when the build under way ends
 	used     int64
+	at       time.Time // when the kept answer's build began
 }
+
+// effortFresh is how long an answer stands before a change is built into
+// it. Codex and Claude Code write to their session files all the time, so
+// nearly every 15 s Sessions poll found the history changed and built the
+// ledger of all of it again: over a real history that was ~2.5 GB
+// allocated and ~1 s of CPU every 3.5 minutes for this answer alone. A
+// thread's consumption a minute behind is still the thread's; the page's
+// own rows and totals are read as they change.
+var effortFresh = time.Minute
 
 // effortBuilt, in tests, is told each time CodexModelEffort reads the ledger.
 var effortBuilt func()
@@ -331,6 +481,15 @@ func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 	if LogCalls != nil { // synthetic logs carry no state to key on
 		return codexModelEffort(codexEffortRows(p, Clock(), LogCalls))
 	}
+	codexEffort.Lock()
+	if e := codexEffort.periods[p]; e != nil && e.have && e.root == requestRoot() && time.Since(e.at) < effortFresh {
+		codexEffort.built++
+		e.used = codexEffort.built
+		value := e.value
+		codexEffort.Unlock()
+		return cloneEffort(value) // read before the state is: that is most of an unchanged ask's cost
+	}
+	codexEffort.Unlock()
 	now := Clock()
 	st := readRequestState(now)
 	codexEffort.Lock()
@@ -358,6 +517,7 @@ func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 	done := make(chan struct{})
 	e.building = done
 	codexEffort.Unlock()
+	began := time.Now()
 	var value map[string][]sessions.ModelEffort
 	defer func() {
 		codexEffort.Lock()
@@ -365,7 +525,7 @@ func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 		if value != nil {
 			// kept under the state read before the build: a call written
 			// while it ran changes the state, and the next ask builds again
-			e.key, e.root, e.value, e.have = st.key, st.root, value, true
+			e.key, e.root, e.value, e.have, e.at = st.key, st.root, value, true, began
 		}
 		codexEffort.Unlock()
 		close(done)
@@ -375,10 +535,7 @@ func CodexModelEffort(p Period) map[string][]sessions.ModelEffort {
 	if effortBuilt != nil {
 		effortBuilt()
 	}
-	// Only Codex's own calls carry a Codex thread: a gateway call is told
-	// its thread by the Codex call that has its response id, so the other
-	// agents' session files are not read for this.
-	value = codexModelEffort(codexEffortRows(p, now, codexCalls))
+	value = codexEffortOfIndex(st, p, now)
 	return cloneEffort(value)
 }
 
@@ -472,37 +629,53 @@ func cloneEffort(values map[string][]sessions.ModelEffort) map[string][]sessions
 }
 
 func codexModelEffort(rows []Row) map[string][]sessions.ModelEffort {
-	type modelEffortKey struct{ model, effort string }
-	type total struct {
-		value  sessions.ModelEffort
-		priced bool
+	sums := effortSums{}
+	for i := range rows {
+		sums.add(&rows[i])
 	}
-	groups := map[string]map[modelEffortKey]*total{}
-	for _, row := range rows {
-		if row.codexActor == "" || row.IsRejected() ||
-			row.Input+row.Output+row.CacheRead+row.CacheWrite == 0 {
-			continue
-		}
-		byModel := groups[row.codexActor]
-		if byModel == nil {
-			byModel = map[modelEffortKey]*total{}
-			groups[row.codexActor] = byModel
-		}
-		key := modelEffortKey{row.Model, row.Effort}
-		entry := byModel[key]
-		if entry == nil {
-			entry = &total{value: sessions.ModelEffort{Model: row.Model, Effort: row.Effort}, priced: true}
-			byModel[key] = entry
-		}
-		entry.priced = entry.priced && row.Priced
-		entry.value.Input += row.Input
-		entry.value.Output += row.Output
-		entry.value.CacheRead += row.CacheRead
-		entry.value.CacheWrite += row.CacheWrite
-		entry.value.CacheWrite1h += row.CacheWrite1h
-		entry.value.Reasoning += row.Reasoning
-		entry.value.Cost += row.Cost
+	return sums.values()
+}
+
+type modelEffortKey struct{ model, effort string }
+
+type effortTotal struct {
+	value  sessions.ModelEffort
+	priced bool
+}
+
+// effortSums adds rows up by Codex thread, model and effort as they are
+// visited, so that no build holds the rows themselves.
+type effortSums map[string]map[modelEffortKey]*effortTotal
+
+func (groups effortSums) add(row *Row) {
+	if row.codexActor == "" || row.IsRejected() ||
+		row.Input+row.Output+row.CacheRead+row.CacheWrite == 0 {
+		return
 	}
+	byModel := groups[row.codexActor]
+	if byModel == nil {
+		byModel = map[modelEffortKey]*effortTotal{}
+		groups[row.codexActor] = byModel
+	}
+	key := modelEffortKey{row.Model, row.Effort}
+	entry := byModel[key]
+	if entry == nil {
+		// the row's strings can be lent (visitActors): what is kept is a copy
+		key = modelEffortKey{strings.Clone(row.Model), strings.Clone(row.Effort)}
+		entry = &effortTotal{value: sessions.ModelEffort{Model: key.model, Effort: key.effort}, priced: true}
+		byModel[key] = entry
+	}
+	entry.priced = entry.priced && row.Priced
+	entry.value.Input += row.Input
+	entry.value.Output += row.Output
+	entry.value.CacheRead += row.CacheRead
+	entry.value.CacheWrite += row.CacheWrite
+	entry.value.CacheWrite1h += row.CacheWrite1h
+	entry.value.Reasoning += row.Reasoning
+	entry.value.Cost += row.Cost
+}
+
+func (groups effortSums) values() map[string][]sessions.ModelEffort {
 	out := make(map[string][]sessions.ModelEffort, len(groups))
 	for actor, byModel := range groups {
 		values := make([]sessions.ModelEffort, 0, len(byModel))

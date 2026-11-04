@@ -11,6 +11,7 @@ package gateway
 import (
 	"context"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -119,6 +120,11 @@ type Route struct {
 	Own     int64 `json:"own,omitempty"`
 	Retried int64 `json:"retried,omitempty"`
 	Queued  int64 `json:"queued,omitempty"`
+	// Phase: "redact" while it is being masked and not yet done
+	// (noteRedacting), so its row says masking rather than routing;
+	// Masking: the ms of Own that went on masking it (maskingMs)
+	Phase   string `json:"phase,omitempty"`
+	Masking int64  `json:"masking,omitempty"`
 	// Served: the model the reply says answered, as the last try has it;
 	// Swapped: another than the one that try asked for; Routed: that try
 	// asked another magpie's routing group, and Served is its member
@@ -153,6 +159,9 @@ type RouteUsage struct {
 	CacheRead  int    `json:"cache_read,omitempty"`
 	CacheWrite int    `json:"cache_write,omitempty"`
 	Reasoning  int    `json:"reasoning,omitempty"`
+	// CacheUnknown: the vendor counted no cache tokens, so the Routing
+	// page shows no hit rate rather than 0% (Kiro, zeewell on X)
+	CacheUnknown bool `json:"cache_unknown,omitempty"`
 }
 
 // PricingRecord lets the routing view reuse the ledger's effective prices.
@@ -263,16 +272,22 @@ type Weighed struct {
 	Amount   float64           `json:"amount,omitempty"`
 	Limit    float64           `json:"limit,omitempty"`
 	Unit     string            `json:"unit,omitempty"`
-	Renews   []time.Time       `json:"renews,omitempty"` // when those windows renew, the biggest first
-	Pace     float64           `json:"pace,omitempty"`   // remaining allowance per hour until its window resets
-	Due      *time.Time        `json:"due,omitempty"`    // when the allowance window used for pace resets
-	Tokens   float64           `json:"tokens,omitempty"` // least used: tokens it served lately
-	Free     bool              `json:"free,omitempty"`   // its model costs nothing there (free first)
-	Turn     bool              `json:"turn,omitempty"`   // in turn: it was this one's turn
-	Fit      int               `json:"fit,omitempty"`    // keyFit
-	Speaks   provider.Protocol `json:"speaks,omitempty"` // a key made for one protocol only
-	Rest     *Rest             `json:"rest,omitempty"`   // resting after a failure, when the request came
+	Renews   []time.Time       `json:"renews,omitempty"`   // when those windows renew, the biggest first
+	Pace     float64           `json:"pace,omitempty"`     // remaining allowance per hour until its window resets
+	Due      *time.Time        `json:"due,omitempty"`      // when the allowance window used for pace resets
+	Tokens   float64           `json:"tokens,omitempty"`   // least used: tokens it served lately
+	Free     bool              `json:"free,omitempty"`     // its model costs nothing there (free first)
+	LateTTFT float64           `json:"lateTtft,omitempty"` // speed first: its ms to the first token lately, 0 if not measured (speed.go)
+	LateTPS  float64           `json:"lateTps,omitempty"`  // speed first: its tokens a second lately, 0 if not told
+	Turn     bool              `json:"turn,omitempty"`     // in turn: it was this one's turn
+	Fit      int               `json:"fit,omitempty"`      // keyFit
+	Speaks   provider.Protocol `json:"speaks,omitempty"`   // a key made for one protocol only
+	Rest     *Rest             `json:"rest,omitempty"`     // resting after a failure, when the request came
 	Unlisted bool              `json:"unlisted,omitempty"`
+	// Window: left out as the request is longer than this, its model's
+	// context window (roomy), unless every one with room is out of its
+	// allowance (#3749)
+	Window int `json:"window,omitempty"`
 	// DueBy: "reset" when Due is when an auto-used Codex reset about to
 	// run out starts the windows again, sooner than they renew (#717)
 	DueBy string `json:"dueBy,omitempty"`
@@ -293,6 +308,10 @@ type Weighed struct {
 	// NoCredits: held at 100% (Capped), a Codex account the user set not
 	// to spend its credits once its allowance is used up
 	NoCredits bool `json:"noCredits,omitempty"`
+	// Credits: a Codex account that goes on past its allowance on its
+	// credits, and is let spend them: all but used up, it still answers,
+	// and goes before those used up with nothing to go on with
+	Credits bool `json:"credits,omitempty"`
 	// Rank: its place in its provider's own list of accounts or keys, the
 	// order the provider's page shows and a drag sets (#217); routing may
 	// weigh them in another
@@ -352,6 +371,9 @@ type Try struct {
 	// Upstream: the provider an aggregator said answered behind it
 	// (OpenRouter's DeepInfra, Novita …)
 	Upstream string `json:"upstream,omitempty"`
+	// Pin: the upstream the try asked the Cline API to serve it from
+	// (provider.ClinePassAsked), "" when it asked for none
+	Pin string `json:"pin,omitempty"`
 	// Tier: the service tier it went out at, once a fast pick or an
 	// account without Ultrafast had changed it; TierServed: the one its
 	// reply said it ran at, when it said one (#1784)
@@ -385,6 +407,10 @@ type Try struct {
 	// Codex resets was spent by itself (the user's setting) — on Who, and
 	// what spending it did — and the request asked again
 	Reset *AutoReset `json:"reset,omitempty"`
+	// Credits: a Codex account that holds credits, refused as out of its
+	// allowance, was asked again at once, for the vendor to spend its
+	// credits on the turn (creditsAgain)
+	Credits bool `json:"credits,omitempty"`
 	// Auto: the models Copilot's Auto picked for it, in turn — where each
 	// pick came from and Copilot's refusal of it — Model being "auto"
 	Auto []provider.AutoPick `json:"auto,omitempty"`
@@ -439,7 +465,7 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 		w.Kind = "provider"
 	}
 	if l, ok := wg.lefts[c.allowanceKey()]; ok {
-		w.Known, w.Used, w.Renews, w.Pace = true, l.used, l.renews, l.pace
+		w.Known, w.Used, w.Renews, w.Pace, w.Credits = true, l.used, l.renews, l.pace, l.credits
 		if !l.fullest.IsZero() {
 			ur := l.fullest
 			w.UsedRenews = &ur
@@ -466,6 +492,9 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 	if wg.free != nil {
 		w.Free = wg.free[c.rest]
 	}
+	if sp, ok := wg.speed[c.restID()]; ok {
+		w.LateTTFT, w.LateTPS = math.Round(sp[0]), math.Round(sp[1]*10)/10
+	}
 	if sinks(p.Sink, p.Routing) {
 		markSunk(&w, c)
 	}
@@ -488,6 +517,17 @@ type trace struct {
 	// folders: each session's folder, as its requests said it last, for
 	// the requests that don't say it (a title, a topic check)
 	folders map[string]sessionFolder
+	// liftSeq is the seq a rest was last lifted by hand at (lifted): a
+	// page waiting hears of it, though no route changed
+	liftSeq int64
+}
+
+// lifted tells the pages waiting that a rest was lifted (Unrest).
+func (t *trace) lifted() {
+	t.mu.Lock()
+	t.changed()
+	t.liftSeq = t.seq
+	t.mu.Unlock()
 }
 
 type sessionFolder struct {
@@ -515,6 +555,10 @@ type TraceState struct {
 	// (OwnerTrace): the console names it from here, so the name follows the
 	// trace when another magpie takes the gateway over (#2606)
 	By *TraceBy `json:"by,omitempty"`
+	// Lifted is when each rest lifted before its time was lifted, by the
+	// key it rested by (Rest.Key): the routes kept from before still say
+	// it rested, and the page shows it resting no more
+	Lifted map[string]time.Time `json:"lifted,omitempty"`
 }
 
 // TraceBy names the magpie a trace was read from.
@@ -645,6 +689,17 @@ func (t *trace) trim() {
 	}
 }
 
+// drop takes rt off the trace, a route that only stood for a request
+// until its own began (unrouted.go).
+func (t *trace) drop(rt *Route) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if i := slices.Index(t.routes, rt); i >= 0 {
+		t.routes = slices.Delete(t.routes, i, i+1)
+		t.changed()
+	}
+}
+
 // update changes a route under the lock.
 // maskedOf is r's Masked, read under the lock.
 func (t *trace) maskedOf(r *Route) *Masked {
@@ -709,7 +764,7 @@ func (s *Server) gatewayTrace(w http.ResponseWriter, r *http.Request) {
 		wait = 25 * time.Second
 	}
 	st := s.Trace(r.Context(), after, wait)
-	writeJSON(w, 200, map[string]any{"object": "trace", "now": time.Now(), "seq": st.Seq, "routes": st.Routes, "totals": st.Totals, "ids": st.IDs, "pid": os.Getpid(), "serves": Serves})
+	writeJSON(w, 200, map[string]any{"object": "trace", "now": time.Now(), "seq": st.Seq, "routes": st.Routes, "totals": st.Totals, "ids": st.IDs, "lifted": st.Lifted, "pid": os.Getpid(), "serves": Serves})
 }
 
 // ownerURL is the gateway's address on loopback, where the magpie serving
@@ -769,18 +824,19 @@ func OwnerTrace(ctx context.Context, after int64, wait time.Duration) (TraceStat
 		return TraceState{}, false
 	}
 	var out struct {
-		Object string  `json:"object"`
-		Seq    int64   `json:"seq"`
-		Routes []Route `json:"routes"`
-		Totals Totals  `json:"totals"`
-		IDs    []int64 `json:"ids"`
-		Pid    int     `json:"pid"`
-		Serves string  `json:"serves"`
+		Object string               `json:"object"`
+		Seq    int64                `json:"seq"`
+		Routes []Route              `json:"routes"`
+		Totals Totals               `json:"totals"`
+		IDs    []int64              `json:"ids"`
+		Lifted map[string]time.Time `json:"lifted"`
+		Pid    int                  `json:"pid"`
+		Serves string               `json:"serves"`
 	}
 	if decodeJSON(b, &out) != nil || out.Object != "trace" || out.Routes == nil {
 		return TraceState{}, false
 	}
-	return TraceState{Seq: out.Seq, Routes: out.Routes, Totals: out.Totals, IDs: out.IDs, By: &TraceBy{Pid: out.Pid, Serves: out.Serves}}, true
+	return TraceState{Seq: out.Seq, Routes: out.Routes, Totals: out.Totals, IDs: out.IDs, Lifted: out.Lifted, By: &TraceBy{Pid: out.Pid, Serves: out.Serves}}, true
 }
 
 // OwnerLanes reads the lanes of the magpie serving the gateway's address, for
@@ -837,8 +893,9 @@ func (s *Server) Trace(ctx context.Context, after int64, wait time.Duration) Tra
 				st.Routes = append(st.Routes, c)
 			}
 		}
-		if len(st.Routes) > 0 || wait <= 0 {
+		if len(st.Routes) > 0 || wait <= 0 || t.liftSeq > after {
 			t.mu.Unlock()
+			st.Lifted = liftedRests()
 			return st
 		}
 		if t.wake == nil {
@@ -859,6 +916,7 @@ func (s *Server) Trace(ctx context.Context, after int64, wait time.Duration) Tra
 				gather.Stop()
 			}
 		case <-deadline.C:
+			st.Lifted = liftedRests()
 			return st
 		case <-ctx.Done():
 			return st
@@ -889,5 +947,6 @@ func routeUsage(id, model string, u Usage) []RouteUsage {
 		return out
 	}
 	return append(out, RouteUsage{Provider: id, Model: model, Input: u.Input, Output: u.Output,
-		CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Reasoning: u.Reasoning})
+		CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Reasoning: u.Reasoning,
+		CacheUnknown: u.cacheNotCounted()})
 }

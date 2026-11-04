@@ -16,6 +16,8 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 		Key         string   `json:"key"`
 		KeyName     string   `json:"keyName"`
 		KeyProtocol Protocol `json:"keyProtocol"`
+		KeyWeight   int      `json:"keyWeight"`
+		KeyPlan     string   `json:"keyPlan"`
 	}
 	var decoded Provider
 	v.providerJSON = (*providerJSON)(&decoded)
@@ -23,7 +25,7 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if v.Key != "" {
-		decoded.Keys = append([]KeyAccount{{Name: v.KeyName, Key: v.Key, Protocol: v.KeyProtocol}}, decoded.Keys...)
+		decoded.Keys = append([]KeyAccount{{Name: v.KeyName, Key: v.Key, Protocol: v.KeyProtocol, Weight: v.KeyWeight, Plan: v.KeyPlan}}, decoded.Keys...)
 	}
 	// Legacy files have no identities. Repeated reads before the next save
 	// must agree so references from the GUI can resolve.

@@ -260,8 +260,11 @@ type sharedSource struct {
 func sharedSources(since time.Time) (out []sharedSource, some bool) {
 	self, _ := Computer()
 	from := ""
-	if !since.IsZero() { // a day's calls began where it was a day: one before
-		from = since.AddDate(0, 0, -1).Format(time.DateOnly)
+	// A day's calls began where it was a day, and since is the reader's
+	// day, which can begin up to 26 hours from that computer's (UTC-12 and
+	// UTC+14): two days before.
+	if !since.IsZero() {
+		from = since.AddDate(0, 0, -2).Format(time.DateOnly)
 	}
 	seen := map[string]bool{}
 	for _, root := range []string{PeersDir(), OthersDir()} {

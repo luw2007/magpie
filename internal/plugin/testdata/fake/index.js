@@ -93,6 +93,29 @@ export const FakePlugin = async ({ client }) => ({
       // Cline sends glm-5.3-flash through OpenRouter, not Vercel's gateway
       cfg.provider[ID].models["glm-5.3-flash"] = { name: "GLM 5.3 Flash", limit: { context: 1000, output: 100 } }
     }
+    // $FAKE_MINIMAX: MiniMax Code's models as its plugin (minimax 0.1.4)
+    // gives them, on Anthropic's API: M3.1-Flash and its -Preview always
+    // think at an effort, M3 thinks or doesn't (plugins#316)
+    if (process.env.FAKE_MINIMAX) {
+      const efforts = Object.fromEntries(["low", "medium", "high", "xhigh", "max"].map((e) => [e, { thinking: { type: "adaptive" }, effort: e }]))
+      const mm = { provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, limit: { context: 1048576, output: 524288 } }
+      cfg.provider[ID].models["MiniMax-M3.1-Flash"] = { ...mm, name: "M3.1-Flash", variants: efforts }
+      cfg.provider[ID].models["MiniMax-M3.1-Flash-Preview"] = { ...mm, name: "M3.1-Flash-Preview", variants: efforts }
+      cfg.provider[ID].models["MiniMax-M3"] = { ...mm, name: "MiniMax-M3", variants: { none: { thinking: { type: "disabled" } }, high: { thinking: { type: "adaptive" } } } }
+    }
+    // $FAKE_ZCODE: GLM-5.3 as ZCode's plugin (zcode 0.1.x) gives it, on
+    // Anthropic's API with a thinking budget per level
+    if (process.env.FAKE_ZCODE) {
+      const budget = { low: 4096, high: 16000, max: 31999 }
+      const variants = Object.fromEntries(["low", "high", "max"].map((e) => [e, { thinking: { type: "enabled", budgetTokens: budget[e] } }]))
+      cfg.provider[ID].models["GLM-5.3"] = { name: "GLM-5.3", provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, variants, limit: { context: 1000000, output: 128000 } }
+      // $FAKE_ZCODE_TRIAL: the Start Plan trial models beside the
+      // subscription's, as a ZCode account that once had them lists them
+      if (process.env.FAKE_ZCODE_TRIAL) {
+        cfg.provider[ID].models["GLM-5.3-Flash-Trial"] = { name: "GLM 5.3 Flash Trial", provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, limit: { context: 1000000, output: 128000 } }
+        cfg.provider[ID].models["GLM-5.3-Trial"] = { name: "GLM 5.3 Trial", provider: { npm: "@ai-sdk/anthropic" }, reasoning: true, limit: { context: 1000000, output: 128000 } }
+      }
+    }
     // $FAKE_SEARCHES: the provider's upstream searches by itself (#2027),
     // as a plugin in front of Claude's API says
     if (process.env.FAKE_SEARCHES) cfg.provider[ID].searches = true
@@ -121,8 +144,9 @@ export const FakePlugin = async ({ client }) => ({
   },
   auth: {
     provider: ID,
+    single: process.env.FAKE_KEYLESS === "1",
     methods: [
-      { type: "api", label: "API key" },
+      { type: "api", label: "API key", ...(process.env.FAKE_KEYLESS === "1" ? { keyless: true, authorize: async (inputs) => ({ type: "success", key: inputs.credential || "public-fixture" }) } : {}) },
       {
         type: "oauth",
         label: "Browser",
@@ -165,6 +189,10 @@ export const FakePlugin = async ({ client }) => ({
         h.set("authorization", "Bearer " + (a.type === "oauth" ? a.access : a.key))
         h.set("x-models", Object.keys(provider.models).sort().join(","))
         h.set("x-body-type", typeof init.body)
+        // $FAKE_RUN: the test this host runs for, so its vendor tells its
+        // own requests from a stray that reached a port the kernel handed
+        // on (testenv.FakeVendor)
+        if (process.env.FAKE_RUN) h.set("x-fake-run", process.env.FAKE_RUN)
         // where magpie said the agent works, as the plugin read it; its own
         // headers go on too, as a plugin that sends on what it got sends
         // them, for the host to take off
@@ -199,6 +227,14 @@ export const FakePlugin = async ({ client }) => ({
       }
       if (a.refresh === "r-kept") return { error: "sign in again to see usage", signIn: "kept" }
       if (a.refresh === "r-renewed") return { error: "usage is down", signIn: "renewed" }
+      // $FAKE_WINDOWS: a JSON file of each account's windows, read at
+      // each reading, as a vendor's usage page says them now (Factory's
+      // plugin with Standard usage only, plugins#349)
+      if (process.env.FAKE_WINDOWS) {
+        const fs = await import("node:fs")
+        const ws = JSON.parse(fs.readFileSync(process.env.FAKE_WINDOWS, "utf8"))[a.accountId]
+        if (ws) return { plan: "Fake Pro", windows: ws }
+      }
       const full = a.accountId === "full@fake"
       return {
         plan: "Fake Pro",
@@ -238,7 +274,7 @@ export const FakePlugin = async ({ client }) => ({
               case "ck-throw":
                 throw new Error("FakeCo's check-in is down")
               case "ck-odd":
-                return { outcome: "yes" }
+                return { outcome: "yes", message: "the daily credits were refreshed" }
             }
             return { outcome: "inactive" }
           },
@@ -261,8 +297,9 @@ export const FakePlugin = async ({ client }) => ({
       if (auth?.type === "oauth" && auth.refresh?.startsWith("rot-")) {
         await client.auth.set({ path: { id: ID }, body: { ...auth, refresh: auth.refresh + "+" } })
       }
-      // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00 credits
-      p.models["fake-1"].free = true
+      // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00
+      // credits ($FAKE_NO_FREE: a list with no free model, as ZCode's is)
+      if (!process.env.FAKE_NO_FREE) p.models["fake-1"].free = true
       // fake-claude's credits are a number, discounted; fake-gemini's as
       // WorkBuddy's picker writes them
       if (p.models["fake-claude"]) Object.assign(p.models["fake-claude"], { rate: 0.5, rateWas: 1 })

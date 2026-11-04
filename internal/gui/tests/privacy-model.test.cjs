@@ -10,16 +10,16 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
-const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
+const { wheelTo, watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const size = 1637572192;
 const words = {
-  en: { name: "Find with a local model", on: "On", gpu: "On, on the GPU (MTL0)" },
-  zh: { name: "用本地模型查找", on: "开启", gpu: "已开启，运行在 GPU（MTL0）" },
-  "zh-TW": { name: "用本機模型查找", on: "開啟", gpu: "已開啟，執行於 GPU（MTL0）" },
-  ja: { name: "ローカルモデルで検出", on: "オン", gpu: "オン、GPU で実行中（MTL0）" },
-  de: { name: "Mit lokalem Modell finden", on: "An", gpu: "An, auf der GPU (MTL0)" },
+  en: { name: "Find with a local model", badge: "New", on: "On", gpu: "On, on the GPU (MTL0)" },
+  zh: { name: "用本地模型查找", badge: "新", on: "开启", gpu: "已开启，运行在 GPU（MTL0）" },
+  "zh-TW": { name: "用本機模型查找", badge: "新", on: "開啟", gpu: "已開啟，執行於 GPU（MTL0）" },
+  ja: { name: "ローカルモデルで検出", badge: "新着", on: "オン", gpu: "オン、GPU で実行中（MTL0）" },
+  de: { name: "Mit lokalem Modell finden", badge: "Neu", on: "An", gpu: "An, auf der GPU (MTL0)" },
 };
 
 // model is the page's /api/privacy-model: a POST is recorded and moves it
@@ -36,8 +36,8 @@ function serve(lang, masking, model, posts) {
     if (url.pathname === "/api/settings") return json(settings());
     if (url.pathname === "/api/privacy-model") {
       if (r.request().method() === "POST") {
-        const { do: doing } = JSON.parse(r.request().postData());
-        posts.push(doing);
+        const { do: doing, model: id } = JSON.parse(r.request().postData());
+        posts.push(id ? doing + " " + id : doing);
         if (doing === "on") Object.assign(model, { downloading: true, done: 0, total: size, ticks: 0 });
         if (doing === "cancel") Object.assign(model, { downloading: false, done: 0 });
         if (doing === "remove") Object.assign(model, { installed: false, on: false });
@@ -47,6 +47,9 @@ function serve(lang, masking, model, posts) {
         model.done = Math.round(size * 0.4);
       }
       const { ticks, ...out } = model;
+      out.model ||= "privacy-filter";
+      // every model to pick: this one, and the other as the test has it
+      out.models = [{ ...out, models: undefined }, ...(model.others || [])];
       return json(out);
     }
     if (url.pathname === "/api/groups") return json({ models: [], groups: [], pools: [] });
@@ -72,13 +75,23 @@ async function open(engine, lang, width, masking, model, posts) {
   return { browser, page, errors };
 }
 
-// what the row shows: its words, whether they are cut, and that it is
-// inside the list
+const guard = { model: "astrlink-guard", supported: true, installed: false, size: 38958270 };
+const pickWords = {
+  en: { head: "The local model", note: "Chinese and English, few false alarms in code · 39 MB" },
+  zh: { head: "本地模型", note: "中英文，代码里很少误判 · 39 MB" },
+  "zh-TW": { head: "本機模型", note: "中英文，程式碼裡很少誤判 · 39 MB" },
+  ja: { head: "ローカルモデル", note: "中国語と英語、コードでの誤検出が少ない · 39 MB" },
+  de: { head: "Lokales Modell", note: "Chinesisch und Englisch, wenig Fehlalarme in Code · 39 MB" },
+};
+
+// what the row shows: its words and its New mark, whether they are cut,
+// that it is inside the list, and that it is the page's first setting
 const look = (page) => page.evaluate(() => {
   const r = document.querySelector("#privacyModelRow"), list = r.closest(".list").getBoundingClientRect();
   const sub = r.querySelector(".sub"), b = r.getBoundingClientRect(), v = r.querySelector(".val").getBoundingClientRect();
   return {
-    name: r.querySelector(".name").textContent, sub: sub.textContent,
+    name: r.querySelector(".name").firstChild.textContent, badge: r.querySelector(".name .badge.new")?.textContent, sub: sub.textContent,
+    first: r === document.querySelector("#setPage-privacy .list.prefs > .row"),
     on: r.querySelector(".segs .opt.on")?.textContent, buttons: [...r.querySelectorAll("button.text")].map((x) => x.textContent),
     cut: sub.scrollWidth > sub.clientWidth + 1 || sub.scrollHeight > sub.clientHeight + 1,
     inside: b.left >= list.left - 1 && b.right <= list.right + 1 && v.right <= b.right + 1,
@@ -98,6 +111,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await row.locator(".segs").waitFor();
         let m = await look(page);
         assert.equal(m.name, w.name);
+        assert.equal(m.badge, w.badge);
+        assert(m.first, "the model is the first setting under the card");
         assert(m.sub.includes("1.6 GB"), `says what it downloads: ${m.sub}`);
         if (lang !== "en") assert(!/no rule can find|Turning it on/.test(m.sub), `translated: ${m.sub}`);
         assert(!m.cut && m.inside && !m.wide, `shown in full and inside: ${JSON.stringify(m)}`);
@@ -134,6 +149,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const { browser, page, errors } = await open(engine, "en", 1100, true, model, posts);
     t.after(() => browser.close());
     const row = page.locator("#privacyModelRow");
+    await wheelTo(page, row, 300); // under the masking card; WebKit's own scroll-into-view misses it
     await row.locator(".segs .opt", { hasText: "On" }).click();
     await row.locator("button.text", { hasText: "Cancel" }).click();
     await page.waitForFunction(() => document.querySelector("#privacyModelRow .segs .opt.on")?.textContent === "Off");
@@ -141,6 +157,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     Object.assign(model, { installed: true, on: false });
     await page.reload();
+    await wheelTo(page, row.locator("button.text", { hasText: "Delete model" }), 300);
     await row.locator("button.text", { hasText: "Delete model" }).click();
     await page.locator("dialog.action-confirm button", { hasText: /^Delete$/ }).click();
     await page.waitForFunction(() => !document.querySelector("#privacyModelRow button.text"));
@@ -153,13 +170,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const { browser, page, errors } = await open(engine, "en", 1100, false, { supported: true, size }, []);
     t.after(() => browser.close());
     await page.locator("#redactList .row", { hasText: "Mask personal data" }).waitFor();
-    // How it's found: the rules first, then the model, both waiting on
-    // something to mask, with nothing to press
+    // How it's found, before What to mask: the model first, marked new,
+    // then the rules, both waiting on something to mask, with nothing to
+    // press
     const found = await page.$$eval("#findList > .row", (rs) => rs.map((r) => [r.id, r.querySelector(".name").textContent, r.querySelector(".sub").textContent, r.querySelectorAll("button").length]));
     assert.deepEqual(found, [
+      ["privacyModelRow", "Find with a local model" + "New", "Turn on Mask secrets or Mask personal data first", 0],
       ["maskRulesRow", "Rules", "Turn on Mask secrets or Mask personal data first", 0],
-      ["privacyModelRow", "Find with a local model", "Turn on Mask secrets or Mask personal data first", 0],
     ]);
+    assert(await page.evaluate(() => document.querySelector("#findList").compareDocumentPosition(document.querySelector("#redactList")) & Node.DOCUMENT_POSITION_FOLLOWING), "How it's found comes before What to mask");
     assert.equal(await page.locator("#privacyModelRow.pm-wait").count(), 1);
     await browser.close();
 
@@ -169,4 +188,45 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.equal(await two.page.locator("#privacyModelRow .segs").count(), 0);
     assert.deepEqual([...errors, ...two.errors], []);
   });
+
+  // the model is picked in the app's own menu beside the switch (#3578):
+  // each model by its name, what it is and its size, in every language;
+  // picking one says so to magpie, and nothing is cut or moved
+  for (const lang of Object.keys(pickWords)) {
+    for (const width of [1100, 640]) {
+      test(`${engine} ${lang} ${width}px: the local model is picked from the app's menu`, async (t) => {
+        const posts = [], model = { supported: true, installed: true, on: true, running: true, device: "CPU", size, others: [guard] };
+        const { browser, page, errors } = await open(engine, lang, width, true, model, posts);
+        t.after(() => browser.close());
+        const row = page.locator("#privacyModelRow");
+        await wheelTo(page, row, 300);
+        const pick = row.locator("button.pm-model");
+        await pick.waitFor();
+        assert.equal(await page.locator("#privacyModelRow select").count(), 0, "no native select");
+        assert.equal((await pick.textContent()).trim(), "Privacy Filter");
+        let m = await look(page);
+        assert(!m.cut && m.inside && !m.wide, `shown in full and inside: ${JSON.stringify(m)}`);
+        const before = await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]);
+        await pick.click();
+        const menu = page.locator(".proto-menu");
+        await menu.waitFor();
+        const items = await menu.evaluate((b) => ({
+          head: b.querySelector(".pm-head").textContent,
+          items: [...b.querySelectorAll(".pm-item")].map((i) => [i.querySelector(".pm-name").textContent, i.querySelector(".pm-note").textContent, i.classList.contains("on")]),
+          inside: b.getBoundingClientRect().left >= 0 && b.getBoundingClientRect().right <= innerWidth,
+        }));
+        assert.equal(items.head, pickWords[lang].head);
+        assert.deepEqual(items.items.map((i) => i[0]), ["Privacy Filter", "AstrLink Guard"]);
+        assert.deepEqual(items.items.map((i) => i[2]), [true, false], "the one in use is ticked");
+        assert.equal(items.items[1][1], pickWords[lang].note);
+        assert(items.items[0][1].includes("1.6 GB"), items.items[0][1]);
+        assert(items.inside, "the menu is inside the window");
+        await menu.locator(".pm-item", { hasText: "AstrLink Guard" }).click();
+        await page.waitForFunction(() => !document.querySelector(".proto-menu"));
+        assert.deepEqual(posts, ["pick astrlink-guard"]);
+        assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.querySelector("#view-settings").scrollTop]), before, "the pick moved nothing");
+        assert.deepEqual(errors, []);
+      });
+    }
+  }
 }

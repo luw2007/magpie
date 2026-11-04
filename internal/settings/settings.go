@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -33,6 +34,10 @@ import (
 	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/steady"
 )
+
+// CodexAutoReviewSession is the CodexAutoReview that runs Codex's
+// auto-review on the session's own model.
+const CodexAutoReviewSession = "session"
 
 // Settings is what the user chose. "" and "system" both mean "follow the OS".
 type Settings struct {
@@ -71,7 +76,13 @@ type Settings struct {
 	// environment and then the system, "direct" uses none, anything else
 	// is the proxy (http://, https:// or socks5://; host:port means http).
 	Proxy string `json:"proxy,omitempty"`
-	OTel  OTel   `json:"otel,omitempty"`
+	// ProxyCustom is the last proxy of the user's own Proxy held, kept
+	// while Proxy is "" or "direct" so that choosing Custom again in
+	// Settings brings back the address and login typed (Zane on Discord).
+	// Save sets it from Proxy, and it is stored as Proxy is. This
+	// computer's own (KeepOwn), as Proxy is.
+	ProxyCustom string `json:"proxyCustom,omitempty"`
+	OTel        OTel   `json:"otel,omitempty"`
 	// GitHubToken is a GitHub token the library's requests to GitHub's
 	// API carry, raising its rate limit from 60 requests an hour to 5,000.
 	// It is a secret: the Settings page is told only a masked one, and a
@@ -90,12 +101,19 @@ type Settings struct {
 	// category's On says. RedactModel has a local model (internal/pii) find
 	// what the rules can't as well, a name or an address in free text,
 	// under Redact and RedactPersonal; it is this computer's own, as the
-	// model is downloaded on it.
-	Redact         bool            `json:"redact,omitempty"`
-	RedactModel    bool            `json:"redactModel,omitempty"`
-	RedactPersonal bool            `json:"redactPersonal,omitempty"`
-	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
-	RedactWords    []string        `json:"redactWords,omitempty"`
+	// model is downloaded on it. RedactShape sends a key as a made-up key
+	// of its own form (sk_… as another sk_…) instead of a placeholder
+	// (redact.Options.Shape; Charles Cao on X). RedactModelName is the
+	// local model picked (pii.PrivacyFilter, pii.AstrLinkGuard); "" for
+	// none picked, which pii.Choose reads. It is this computer's, as
+	// RedactModel is.
+	Redact          bool            `json:"redact,omitempty"`
+	RedactShape     bool            `json:"redactShape,omitempty"`
+	RedactModel     bool            `json:"redactModel,omitempty"`
+	RedactModelName string          `json:"redactModelName,omitempty"`
+	RedactPersonal  bool            `json:"redactPersonal,omitempty"`
+	RedactKinds     map[string]bool `json:"redactKinds,omitempty"`
+	RedactWords     []string        `json:"redactWords,omitempty"`
 	// RedactWordsAnyCase matches RedactWords in any case (ZoeCats on
 	// Discord); off, the default, a word is matched as written.
 	RedactWordsAnyCase bool          `json:"redactWordsAnyCase,omitempty"`
@@ -151,6 +169,17 @@ type Settings struct {
 	// RequestArchiveMaxMB is how much of each body the archive keeps, in
 	// MiB: 0 for 32, at most 1024 (#447)
 	RequestArchiveMaxMB int `json:"requestArchiveMaxMB,omitempty"`
+	// RequestArchiveLocal keeps the request archive on this computer's disk,
+	// in magpie's folder (gateway/archive_local.go), while sync has no S3
+	// bucket for it (CyberCaius on Discord). Its own switch, separate from
+	// RequestArchive, which sync carries to every computer: this computer's
+	// own (KeepOwn), so a request body is written to a disk only where the
+	// user turned it on.
+	RequestArchiveLocal bool `json:"requestArchiveLocal,omitempty"`
+	// RequestArchiveLocalMB is how large the archive on this computer grows
+	// before its oldest calls are removed, in MiB: 0 for 1024. In
+	// settings.json only; this computer's own (KeepOwn).
+	RequestArchiveLocalMB int `json:"requestArchiveLocalMB,omitempty"`
 	// GatewayConversations is local, opt-in recording of session traffic.
 	// Only SetGatewayConversations changes it; other saves keep local consent.
 	GatewayConversations bool `json:"gatewayConversations,omitempty"`
@@ -314,6 +343,13 @@ type Settings struct {
 	// checked against the SHA-256 the update feed at usemagpie.ai gives,
 	// never one from the mirror. magpie update mirror sets it.
 	UpdateMirror string `json:"updateMirror,omitempty"`
+	// UpdateChannel is which versions an update is offered: "" every
+	// version as it comes out, the default; UpdateStable ("stable") one a
+	// week, the newest that had been out three days as the week began, or
+	// an urgent one (a security hole, a ban risk, lost data) at once, from
+	// the update feed's ?channel=stable (ssharpcc on X). Settings' Update
+	// channel and magpie update channel set it.
+	UpdateChannel string `json:"updateChannel,omitempty"`
 	// Vision is the model that describes an image to a model that can't see
 	// it: a model's id (provider/model, group/<id>), "off" to turn such an
 	// image away, or empty for one magpie picks (see gateway.seer).
@@ -334,6 +370,11 @@ type Settings struct {
 	// than 5): from 1 to ImageTimeoutMost, 0 for ImageTimeoutDefault.
 	// ImageWait reads it.
 	ImageTimeout int `json:"imageTimeout,omitempty"`
+	// ClassifyTimeout is how long, in seconds, a routing group's classifier
+	// is given to say which intent a turn is (#2934: a Kiro subscription's
+	// haiku needed more than 8): from 1 to ClassifyTimeoutMost, 0 for
+	// ClassifyTimeoutDefault. ClassifyWait reads it.
+	ClassifyTimeout int `json:"classifyTimeout,omitempty"`
 	// Searcher is the provider that searches the web for a model that
 	// can't: "<provider>" with the small model magpie picks of it,
 	// "<provider>/<model>", or empty for the one magpie picks
@@ -485,7 +526,10 @@ type Settings struct {
 	// in every entry of the list magpie hands Codex as
 	// auto_review_model_override, which Codex takes before its own
 	// codex-auto-review or the conversation's model at low effort. ""
-	// leaves the list as it was.
+	// leaves the list as it was. CodexAutoReviewSession has each of
+	// magpie's entries name itself, so the review runs on the session's
+	// model when that is one of magpie's, not on codex-auto-review through
+	// the ChatGPT sign-in (cybercaius on Discord).
 	CodexAutoReview string `json:"codexAutoReview,omitempty"`
 	// CodexSubagentModel is the model the gateway puts every subagent
 	// Codex spawns on (a request x-openai-subagent names collab_spawn),
@@ -645,7 +689,10 @@ type Settings struct {
 	ModelNames map[string]string `json:"modelNames,omitempty"`
 	// ModelEfforts are the reasoning levels the user keeps of a model's,
 	// by "<provider id>/<model id>": the lists magpie hands out offer only
-	// those (see provider.SetModelEfforts).
+	// those, while the vendor is still asked at any level it has; for a
+	// model with no levels known they are the levels given it, and the
+	// gateway fits a request to them (see provider.SetModelEfforts,
+	// magpie model spec).
 	ModelEfforts map[string][]string `json:"modelEfforts,omitempty"`
 	// ModelReasonless are the models the user said take no reasoning ask,
 	// by "<provider id>/<model id>": magpie offers them no levels and
@@ -702,6 +749,15 @@ type Settings struct {
 	// that model's maker's price (provider.SamePriceIn, #2344). Absent
 	// leaves it to its id.
 	ModelSameAs map[string]string `json:"modelSameAs,omitempty"`
+	// UsageAliases are the model ids the user counts as one in Usage and
+	// Sessions, from an id to the name it is counted under
+	// ("deepseek-v4.1-flash": "deepseek-flash", SlouchyQuill507 on
+	// Discord): what spent the same model under two names is one row there.
+	// Only how usage is grouped and shown changes: no request, model list
+	// or price reads it (provider.SetUsageAlias). Keyed by a bare model id,
+	// not "<provider>/<model>", so it is not named Model* and is not one
+	// of the per-model maps a provider's rename moves. Absent is none.
+	UsageAliases map[string]string `json:"usageAliases,omitempty"`
 	// ModelKinds is what the user said a model makes, by "<provider
 	// id>/<model id>": "image" or "video", for a provider set up with a
 	// base URL whose own model list doesn't say so (shen-joe, #1399).
@@ -813,6 +869,10 @@ func CheckModelPrice(key string, m ModelPrice) error {
 // provider it came through, its id lower-cased after it.
 const AnyProvider = "*/"
 
+// UpdateStable is UpdateChannel's Stable: a version a week, an urgent one
+// at once.
+const UpdateStable = "stable"
+
 // anArticle is the article a word takes where a message names it, so that an
 // input price is not "a input price".
 func anArticle(word string) string {
@@ -875,6 +935,27 @@ func (s Settings) ImageWait() time.Duration {
 	return time.Duration(min(m, ImageTimeoutMost)) * time.Minute
 }
 
+// ClassifyTimeoutDefault is the seconds a classifier is given when
+// ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
+// the turn waits on it before it goes anywhere, with nothing sent to its
+// agent meanwhile.
+const (
+	ClassifyTimeoutDefault = 8
+	ClassifyTimeoutMost    = 60
+)
+
+// ClassifyWait is how long a classifier is given to answer:
+// ClassifyTimeout's seconds, ClassifyTimeoutDefault's when it is 0 (or
+// below), and no more than ClassifyTimeoutMost's when settings.json was
+// written by hand past it.
+func (s Settings) ClassifyWait() time.Duration {
+	n := s.ClassifyTimeout
+	if n < 1 {
+		n = ClassifyTimeoutDefault
+	}
+	return time.Duration(min(n, ClassifyTimeoutMost)) * time.Second
+}
+
 // Themes and Langs are the accepted values, in the order the UI offers them.
 var (
 	Themes     = []string{"system", "light", "dark"}
@@ -885,6 +966,8 @@ var (
 	Warmups = []string{"", "week", "all"}
 	// TrayEvery are TrayUsageEvery's values, in minutes.
 	TrayEvery = []int{1, 3, 5, 10, 30}
+	// UpdateChannels are UpdateChannel's values: every version, Stable.
+	UpdateChannels = []string{"", UpdateStable}
 	// UpdateEveries are UpdateEvery's values, in minutes.
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
@@ -1032,6 +1115,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.UIFont, s.CodeFont = cur.UIFont, cur.CodeFont
 	s.PageWidth = cur.PageWidth
 	s.Window, s.Proxy, s.Port, s.Dock, s.DockWindow, s.Lightweight = cur.Window, cur.Proxy, cur.Port, cur.Dock, cur.DockWindow, cur.Lightweight
+	s.ProxyCustom = cur.ProxyCustom
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
 	s.GatewayMode = cur.GatewayMode
@@ -1041,8 +1125,9 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.LAN, s.AllowIPs = cur.LAN, cur.AllowIPs
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
-	s.RedactModel = cur.RedactModel
+	s.RedactModel, s.RedactModelName = cur.RedactModel, cur.RedactModelName
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
+	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 }
 
 // RenamePerModel moves what the user said of a provider's models to the id
@@ -1330,6 +1415,29 @@ func EditCheckinOff(edit func([]string) []string) error {
 	return save(s, false)
 }
 
+// EditUsageAliases changes UsageAliases alone, as edit returns them from
+// what the file holds now, so a save elsewhere from an older snapshot isn't
+// undone. A settings file that can't be read is left as it is, with the
+// error: what it holds is unknown, not "no aliases". edit is given a copy,
+// and an error from it saves nothing.
+func EditUsageAliases(edit func(map[string]string) (map[string]string, error)) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	m, err := edit(maps.Clone(s.UsageAliases))
+	if err != nil {
+		return err
+	}
+	if len(m) == 0 {
+		m = nil
+	}
+	s.UsageAliases = m
+	return save(s, false)
+}
+
 // SetRedactModel turns the local masking model on or off, on its own, as
 // Settings → Privacy does once the model is downloaded.
 func SetRedactModel(on bool) error {
@@ -1337,6 +1445,26 @@ func SetRedactModel(on bool) error {
 	defer fileMu.Unlock()
 	s := load()
 	s.RedactModel = on
+	return save(s, false)
+}
+
+// SetRedactModelName keeps the local model the user picked while it is
+// off, for turning it on.
+func SetRedactModelName(name string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s := load()
+	s.RedactModelName = name
+	return save(s, false)
+}
+
+// UseRedactModel turns the local masking model on as name, the model
+// the user picked, once that model is downloaded.
+func UseRedactModel(name string) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s := load()
+	s.RedactModel, s.RedactModelName = true, name
 	return save(s, false)
 }
 
@@ -1386,6 +1514,9 @@ func save(s Settings, recording bool) error {
 	if !slices.Contains(UpdateEveries, s.UpdateEvery) {
 		return fmt.Errorf("magpie checks for updates every %v minutes, not %d", UpdateEveries, s.UpdateEvery)
 	}
+	if !slices.Contains(UpdateChannels, s.UpdateChannel) {
+		return fmt.Errorf("the update channel is %q (stable) or empty (every version), not %q", UpdateStable, s.UpdateChannel)
+	}
 	if m := s.UpdateMirror; m != "" {
 		if u, err := url.Parse(m); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return fmt.Errorf("an update mirror is an http(s) address put before the github.com URL, like https://mirror.example/, not %q", m)
@@ -1393,6 +1524,9 @@ func save(s Settings, recording bool) error {
 	}
 	if s.ImageTimeout < 0 || s.ImageTimeout > ImageTimeoutMost {
 		return fmt.Errorf("image generation is given from 1 to %d minutes, or 0 for %d, not %d", ImageTimeoutMost, ImageTimeoutDefault, s.ImageTimeout)
+	}
+	if s.ClassifyTimeout < 0 || s.ClassifyTimeout > ClassifyTimeoutMost {
+		return fmt.Errorf("a routing group's classifier is given from 1 to %d seconds, or 0 for %d, not %d", ClassifyTimeoutMost, ClassifyTimeoutDefault, s.ClassifyTimeout)
 	}
 	if s.UsageAlert < 0 || s.UsageAlert > 100 {
 		return fmt.Errorf("a usage alert is at a percentage from 1 to 100, or 0 for off, not %d", s.UsageAlert)
@@ -1426,6 +1560,9 @@ func save(s Settings, recording bool) error {
 	if err := CheckProxy(s.Proxy); err != nil {
 		return err
 	}
+	if s.Proxy != "" && s.Proxy != "direct" {
+		s.ProxyCustom = s.Proxy
+	}
 	s.Vision = strings.TrimSpace(s.Vision)
 	if s.Vision != "" && s.Vision != "off" && !strings.Contains(s.Vision, "/") {
 		return fmt.Errorf("the vision model must be a model's id such as openai/gpt-5-mini, or off, not %q", s.Vision)
@@ -1443,7 +1580,7 @@ func save(s Settings, recording bool) error {
 		return fmt.Errorf("the model for Codex's composer predictions must be a model's id such as openai/gpt-5-mini, or off, not %q", s.CodexPredictions)
 	}
 	s.CodexAutoReview = strings.TrimSpace(s.CodexAutoReview)
-	if s.CodexAutoReview != "" && !strings.Contains(s.CodexAutoReview, "/") {
+	if s.CodexAutoReview != "" && s.CodexAutoReview != CodexAutoReviewSession && !strings.Contains(s.CodexAutoReview, "/") {
 		return fmt.Errorf("the model for Codex's auto-review must be a model's id such as openai/gpt-5-mini, not %q", s.CodexAutoReview)
 	}
 	s.CodexSubagentModel = strings.TrimSpace(s.CodexSubagentModel)

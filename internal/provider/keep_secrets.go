@@ -25,6 +25,7 @@ func SecretHeader(name string) bool { return secretHeader.MatchString(name) }
 func KeepSecrets(in, here Provider, keyless bool) Provider {
 	if keyless {
 		in.Key, in.KeyID, in.Keys = here.Key, here.KeyID, slices.Clone(here.Keys)
+		in.KeyName, in.KeyProtocol, in.KeyWeight, in.KeyPlan = here.KeyName, here.KeyProtocol, here.KeyWeight, here.KeyPlan
 		// the headers a copy without keys left out, in a map of its own:
 		// in's may be shared with the list it came in
 		cloned := false

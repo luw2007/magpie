@@ -7,12 +7,14 @@ checks that request hooks have no provider badge. `MAGPIE_GATEWAY_ASSETS` select
 an older asset directory for a failing regression comparison; user settings and
 live gateways are never accessed.
 
-`settings-proxy-auth.test.cjs` checks optional SOCKS5/SOCKS5h usernames and
-passwords in Settings, using the real page with isolated API fixtures. It
-covers saving and reloading, escaped and non-UTF-8 credentials, masked
-addresses/status, clearing authentication, Tab and Escape, mode switches,
-HTTP compatibility, and narrow windows in English and Chinese on Chromium
-and WebKit.
+`settings-proxy-auth.test.cjs` checks a proxy's optional username and
+password in Settings, in fields of their own for SOCKS5/SOCKS5h, HTTP,
+HTTPS and bare host:port proxies alike, using the real page with isolated
+API fixtures. It covers saving and reloading, @ : / % # and spaces in a
+password, escaped and non-UTF-8 credentials, a login saved in the address
+before loading into the fields, masked addresses/status, clearing
+authentication, Tab and Escape, mode switches, and narrow windows in all
+five languages on Chromium and WebKit.
 ## Installed desktop fonts
 
 `fonts.test.cjs` exercises the interface/code font controls with installed
@@ -38,6 +40,14 @@ Browser fixtures never read or write user settings, install fonts or contact
 a live gateway.
 
 ## Gateway Caller Keys
+
+`gateway-keys-empty.test.cjs` checks the Gateway page with no gateway key
+yet, as magpie web on a 390px phone: "No gateway keys yet" sits inside the
+list's card, inset from its edges, in the muted colour and size of Recent
+calls' empty line, in Chromium and WebKit, light and dark, and every
+language. A list that can't be read says why in the same card, still there
+after the page is drawn again; a list read before stays when a later read
+fails, and the error goes to the status line.
 
 `gateway-caller-keys.test.cjs` checks the named caller-key list on the
 Gateway page, including creation, copying, renaming, disabling, enabling,
@@ -337,6 +347,11 @@ why one didn't load, updates one and removes one. The add sheet's
 "look for a plugin" link lead there. English and Chinese, Chromium and WebKit,
 with the API faked.
 
+`plugins-more-discover.test.cjs` checks that the add sheet's "More in
+Plugins" row and its "look for a plugin" link open Plugins on Discover,
+after Built-in or Installed was the tab open last (outloudvi on Discord).
+English and Chinese, Chromium and WebKit, with the API faked.
+
 `plugin-git.test.cjs` checks a plugin installed from a git repository: the
 market's field says it takes a GitHub repo, and Install sends
 `github:owner/repo` as typed; Installed names it by the package its
@@ -393,6 +408,12 @@ folded group, "Shown" keeps one just turned off till the view changes, a
 group's "Show all" comes on hover, "Hide all" at the foot sends every one
 but the model in use, "Show all" there sends none, and Esc or a
 click elsewhere closes it.
+
+`agent-models-group-on.test.cjs` opens Codex's model list with only Codex
+serving, a routing group of the user's off and on, in Chromium and WebKit,
+English and Chinese: Codex's 10 models stay open either way, and the group
+is there to pick (shiqi_40904 on Discord: with a group on, the provider's
+models started folded and looked gone).
 
 `omp-roles.test.cjs` draws omp's subagents, smol and slow roles in Chromium
 and WebKit, English and Chinese: each is a square after the model's picker,
@@ -453,8 +474,17 @@ effort Claude Code asks for" / 「跟随 Claude Code 请求的推理强度」 un
 effort entry opens the effort slider without scrolling the page, Default its
 first stop, a level picked is posted for that tier's `<tier>_effort` alone and
 named in the square's title, and the session's effort stays. Its subagents'
-effort is a square that says what unset means for Claude Code, and a Claude
-Code not through magpie has no levels, no square and no effort entries.
+effort is on the Subagents row, not a square, and a Claude Code not through
+magpie has no levels, no square and no effort entries.
+
+`claude-subagent-effort-row.test.cjs` draws Claude Code's subagent effort in
+Chromium and WebKit, English and Chinese, at 1100px and 560px: it is at the
+right of the Subagents row in Tiers, laid out as the tiers' efforts are (same
+class, column and height), and the old square under New sessions is gone.
+With the subagents on Claude Code's pick it reads Default, is disabled and
+says to set a subagent model first (KorenKrita on Discord: magpie writes no
+effort then); with a model it opens the slider without scrolling the page and
+posts `subagent_effort`.
 
 `gateway-fold.test.cjs` folds Connect on the Gateway page with the view
 scrolled: its fields hide, the head keeps the base URL and a copy button, the
@@ -2075,8 +2105,16 @@ It runs in Chromium and WebKit
 with the real assets and an isolated API fixture:
 
 ```sh
-node --test internal/gui/tests/otel.test.cjs
+node --test internal/gui/tests/otel.test.cjs internal/gui/tests/otel-langfuse.test.cjs
 ```
+
+`otel-langfuse.test.cjs` checks the Langfuse setup: picking Langfuse and giving
+two keys saves Cloud EU's endpoint, the Basic header, the ingestion header,
+metrics off and export on, and nothing is saved on one key alone; Cloud US and
+a self-hosted address change only the endpoint. A Langfuse set up by hand opens
+with its keys filled in, nothing saved on opening, and a changed key keeps its
+other headers, metrics and export choice; another collector's headers aren't
+carried over. Every language at 1100, 520 and 360px, in Chromium and WebKit.
 
 `account-arrange.test.cjs` drags a subscription's accounts and a provider's
 keys by their rows (no handle) in every routing mode, and by Alt+↑/↓: the
@@ -2366,6 +2404,18 @@ is faked.
 
 ```sh
 node --test internal/gui/tests/update-mirror.test.cjs
+```
+
+`update-network.test.cjs` checks the Version row after a download the
+network broke off (`network` in `/api/update`, AIMetaPhD on X): it says
+the download broke off, a network problem, and that Check tries again or
+the release page has it, with no address and no raw error in the row.
+Check asks `/api/update/check` again, and the release page is offered.
+Every language, Chromium and WebKit, at 1100 and 390 wide, no sideways
+scroll; the API is faked.
+
+```sh
+node --test internal/gui/tests/update-network.test.cjs
 ```
 
 `lane-limit.test.cjs` checks each key's and account's own limit on requests

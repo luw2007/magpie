@@ -83,8 +83,14 @@ func TestKeyReplacementPreservesBindingAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k := p.Keys[1]
-	if k.ID != "personal" || k.Key != "new-secret" || k.Name != "Personal" || !k.Off || k.Protocol != Responses || !slices.Equal(k.Models, []string{"actual"}) || !slices.Equal(k.PoolRefs, []string{"personal-pool", "shared-pool"}) {
+	var k KeyAccount
+	for _, candidate := range p.Keys {
+		if candidate.ID == "personal" {
+			k = candidate
+			break
+		}
+	}
+	if k.Key != "new-secret" || k.Name != "Personal" || !k.Off || k.Protocol != Responses || !slices.Equal(k.Models, []string{"actual"}) || !slices.Equal(k.PoolRefs, []string{"personal-pool", "shared-pool"}) {
 		t.Fatalf("replacement lost metadata: %+v", k)
 	}
 	if p.KeyID != "team" {
@@ -102,8 +108,14 @@ func TestKeyReplacementPreservesBindingAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(p.Keys[1].PoolRefs, []string{"personal-pool", "shared-pool"}) || !slices.Equal(p.Keys[1].Models, []string{"actual"}) {
-		t.Fatalf("failed validation mutated binding: %+v", p.Keys[1])
+	for _, candidate := range p.Keys {
+		if candidate.ID == "personal" {
+			k = candidate
+			break
+		}
+	}
+	if !slices.Equal(k.PoolRefs, []string{"personal-pool", "shared-pool"}) || !slices.Equal(k.Models, []string{"actual"}) {
+		t.Fatalf("failed validation mutated binding: %+v", k)
 	}
 	for _, pool := range []string{"personal-pool", "shared-pool"} {
 		if err := DeleteQuotaPool(pool); err == nil {

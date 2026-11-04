@@ -16,9 +16,12 @@ package maskrec
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -33,7 +36,14 @@ const (
 	// keepSnips is how many of the latest records memory keeps, with the
 	// text around their values
 	keepSnips = 400
-	dayForm   = "2006-01-02"
+	// keepSent is how many of the latest requests memory keeps whole, as
+	// the vendor got them, up to sentMax each: the 脱敏 page shows a
+	// request's text from it, its values put back from the masker's
+	// memory, and sentBudget in all
+	keepSent   = 100
+	sentMax    = 4 << 20
+	sentBudget = 64 << 20
+	dayForm    = "2006-01-02"
 )
 
 // Value is one value a request had masked, as often as it had it.
@@ -67,6 +77,14 @@ type Record struct {
 	// Snips: by placeholder, the text around its first place as the
 	// vendor saw it; in memory only
 	Snips map[string]string `json:"snips,omitempty"`
+	// Took is how long masking the request took, in microseconds
+	Took int64 `json:"took,omitempty"`
+	// Back: by placeholder, the places the answer had it put back; in
+	// memory only, told once the answer is done (Restored)
+	Back map[string]int `json:"back,omitempty"`
+	// Sent is the request as the vendor got it; in memory only, for the
+	// latest keepSent, and never in a list (SentOf)
+	Sent string `json:"-"`
 }
 
 // Dir is where the days are kept.
@@ -81,6 +99,15 @@ var store struct {
 	pruned time.Time
 	days   map[string]*dayAgg // a day's file → what it holds, as of its size
 	snips  []Record           // the latest records, with their snips
+	sent   []kept             // the records whose Sent memory keeps, oldest first
+	// sentBytes is their Sent in all
+	sentBytes int
+}
+
+// kept is a record whose Sent memory keeps, and its length.
+type kept struct {
+	key int64
+	n   int
 }
 
 // inTest says Add writes nothing: in a test binary testenv isolated, a
@@ -95,8 +122,21 @@ var ownTest = false
 // placeholder, counted. It returns r as recorded. Errors are swallowed:
 // keeping the record must never break a request.
 func Add(r Record) Record {
+	r, done := Hold(r)
+	done("", "")
+	return r
+}
+
+// Hold is Add for a request whose provider isn't known yet: a group's
+// member that fails passes it to the next, so the one it is planned for
+// may never get it (Max You and Linka on Discord: the records named the
+// group's first member, which no request had reached). r is in memory at
+// once, for its route's badge and the answer's Restored, and goes on disk,
+// where the summary counts it, once done is told the provider and model
+// that had it last ("" keeps r's). Only done's first call counts.
+func Hold(r Record) (Record, func(provider, model string)) {
 	if len(r.Values) == 0 && r.N == 0 {
-		return r
+		return r, func(string, string) {}
 	}
 	r.Values = merged(r.Values)
 	if r.Time.IsZero() {
@@ -109,27 +149,56 @@ func Add(r Record) Record {
 		r.Key = store.last + 1
 	}
 	store.last = r.Key
+	if len(r.Sent) > sentMax {
+		r.Sent = ""
+	}
+	if r.Sent != "" {
+		store.sent = append(store.sent, kept{r.Key, len(r.Sent)})
+		store.sentBytes += len(r.Sent)
+	}
+	for len(store.sent) > keepSent || store.sentBytes > sentBudget {
+		drop := store.sent[0]
+		store.sent = store.sent[1:]
+		store.sentBytes -= drop.n
+		if i := at(drop.key); i >= 0 {
+			store.snips[i].Sent = ""
+		}
+	}
 	store.snips = append(store.snips, r)
 	if len(store.snips) > keepSnips {
 		store.snips = append([]Record(nil), store.snips[len(store.snips)-keepSnips:]...)
 	}
+	r.Sent = ""
+	var once sync.Once
+	return r, func(provider, model string) { once.Do(func() { settle(r, provider, model) }) }
+}
+
+// settle gives r the provider and model that had it, in memory, and
+// writes it to its day.
+func settle(r Record, provider, model string) {
+	r.Provider, r.Model = cmp.Or(provider, r.Provider), cmp.Or(model, r.Model)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if i := at(r.Key); i >= 0 {
+		store.snips[i].Provider, store.snips[i].Model = r.Provider, r.Model
+	}
 	if inTest() {
-		return r
+		return
 	}
 	disk := r
-	disk.Snips = nil
+	disk.Snips, disk.Back = nil, nil
 	b, err := json.Marshal(disk)
 	if err != nil {
-		return r
+		return
 	}
 	dir := Dir()
 	if os.MkdirAll(dir, 0o700) != nil {
-		return r
+		return
 	}
 	path := filepath.Join(dir, r.Time.Local().Format(dayForm)+".jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return r
+		return
 	}
 	before, _ := f.Seek(0, 2)
 	_, err = f.Write(append(b, '\n'))
@@ -144,7 +213,28 @@ func Add(r Record) Record {
 		store.pruned = now
 		prune(dir, now)
 	}
-	return r
+}
+
+// Clear deletes every record kept: each day's file, and what memory has
+// of them (their snips, the requests' text). A day goes whole, never
+// rewritten, so nothing is left half-cleared for a reader; a request still
+// going is written to a new day's file once it is done. A day that can't
+// be removed stays, and is named in the error. What a placeholder stood
+// for is the masker's, in memory alone, and stays there for the answers
+// still to come.
+func Clear() error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var errs []error
+	for _, d := range files(Dir()) {
+		if err := os.Remove(d.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+			continue
+		}
+		delete(store.days, d.path)
+	}
+	store.snips, store.sent, store.sentBytes = nil, nil, 0
+	return errors.Join(errs...)
 }
 
 // merged is vs with one Value for each placeholder, its N the sum, in the
@@ -240,30 +330,73 @@ func read(path string, each func(Record)) int64 {
 	return size
 }
 
-// withSnips is r with the snips memory has for it.
+// at is where memory has the record of key, -1 where it hasn't.
+func at(key int64) int {
+	i := sort.Search(len(store.snips), func(i int) bool { return store.snips[i].Key >= key })
+	if i < len(store.snips) && store.snips[i].Key == key {
+		return i
+	}
+	return -1
+}
+
+// withSnips is r with what memory has for it: its snips and what the
+// answer put back.
 func withSnips(r Record) Record {
-	i := sort.Search(len(store.snips), func(i int) bool { return store.snips[i].Key >= r.Key })
-	if i < len(store.snips) && store.snips[i].Key == r.Key {
-		r.Snips = store.snips[i].Snips
+	if i := at(r.Key); i >= 0 {
+		r.Snips, r.Back = store.snips[i].Snips, store.snips[i].Back
 	}
 	return r
 }
 
-// Filter narrows List: by kind, by finder, by agent or provider; "" is
-// any.
+// Restored tells the record of key what its answer put back: by
+// placeholder, the places. Memory only, as the snips are.
+func Restored(key int64, put map[string]int) {
+	if key == 0 || len(put) == 0 {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if i := at(key); i >= 0 {
+		back := map[string]int{}
+		for p, n := range store.snips[i].Back {
+			back[p] = n
+		}
+		for p, n := range put {
+			back[p] += n
+		}
+		store.snips[i].Back = back
+	}
+}
+
+// SentOf is the request of key as the vendor got it, while memory keeps
+// it.
+func SentOf(key int64) (string, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if i := at(key); i >= 0 && store.snips[i].Sent != "" {
+		return store.snips[i].Sent, true
+	}
+	return "", false
+}
+
+// Filter narrows List: by kind (one, or several split by commas), by
+// finder, by agent or provider, "" is any; Blocked keeps only the requests
+// masking held back.
 type Filter struct {
 	Kind, By, Agent, Provider string
+	Blocked                   bool
 }
 
 func (f Filter) takes(r Record) bool {
-	if f.Agent != "" && r.Agent != f.Agent || f.Provider != "" && r.Provider != f.Provider {
+	if f.Agent != "" && r.Agent != f.Agent || f.Provider != "" && r.Provider != f.Provider || f.Blocked && !r.Blocked {
 		return false
 	}
 	if f.Kind == "" && f.By == "" {
 		return true
 	}
+	kinds := strings.Split(f.Kind, ",")
 	for _, v := range r.Values {
-		if (f.Kind == "" || v.Kind == f.Kind) && (f.By == "" || v.By == f.By) {
+		if (f.Kind == "" || slices.Contains(kinds, v.Kind)) && (f.By == "" || v.By == f.By) {
 			return true
 		}
 	}
@@ -290,6 +423,10 @@ func List(before int64, limit int, f Filter) ([]Record, bool) {
 				day = append(day, r)
 			}
 		})
+		// a record goes on disk once its request is done (Hold), so a
+		// long one comes after later ones: the list is in key order, as
+		// the next page's before needs
+		slices.SortStableFunc(day, func(a, b Record) int { return cmp.Compare(a.Key, b.Key) })
 		for j := len(day) - 1; j >= 0; j-- {
 			if len(out) == limit {
 				return out, true
@@ -316,8 +453,10 @@ func List(before int64, limit int, f Filter) ([]Record, bool) {
 func Get(key int64) (Record, bool) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if i := sort.Search(len(store.snips), func(i int) bool { return store.snips[i].Key >= key }); i < len(store.snips) && store.snips[i].Key == key {
-		return store.snips[i], true
+	if i := at(key); i >= 0 {
+		r := store.snips[i]
+		r.Sent = ""
+		return r, true
 	}
 	day := time.Unix(0, key).Local().Format(dayForm)
 	var got Record

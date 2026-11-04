@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -26,6 +27,11 @@ type KeyAccount struct {
 	// routing is Weighted (#841): one with 3 takes three for every one a
 	// key with 1 takes. None, or 0, counts as 1.
 	Weight int `json:"weight,omitempty"`
+	// Plan, on a preset whose plans are sold on keys of their own
+	// (PresetDef.KeyPlans), is the id of the Region the key is for: its
+	// requests go to that plan's endpoints, and it is asked only for that
+	// plan's models. Empty is the provider's own plan, as before.
+	Plan string `json:"plan,omitempty"`
 }
 
 type KeyInfo struct {
@@ -38,6 +44,7 @@ type KeyInfo struct {
 	PoolRefs []string `json:"poolRefs,omitempty"`
 	Models   []string `json:"models,omitempty"`
 	Weight   int      `json:"weight,omitempty"`
+	Plan     string   `json:"plan,omitempty"`
 	// Rest is why the gateway passes it over now, after a failure, and
 	// until when; nil while it takes requests.
 	Rest *KeyRest `json:"rest,omitempty"`
@@ -92,6 +99,16 @@ func newKeyID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// keyID is the legacy secret fingerprint used by persisted per-key maps.
+func keyID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:5])
+}
+
+// KeyID returns the legacy secret fingerprint. KeyAccount.ID is the stable
+// identity used for selection and stays unchanged when its secret rotates.
+func KeyID(key string) string { return keyID(key) }
+
 // mergeKey lists the constructor's Key among Keys when none of them holds
 // it; Key is never persisted as a mirror.
 func (p *Provider) mergeKey() {
@@ -99,7 +116,7 @@ func (p *Provider) mergeKey() {
 		return
 	}
 	if p.KeyID == "" && strings.TrimSpace(p.Key) != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return strings.TrimSpace(k.Key) == strings.TrimSpace(p.Key) }) {
-		p.Keys = append([]KeyAccount{{Key: strings.TrimSpace(p.Key)}}, p.Keys...)
+		p.Keys = append([]KeyAccount{{Key: strings.TrimSpace(p.Key), Name: p.KeyName, Protocol: p.KeyProtocol, Weight: p.KeyWeight, Plan: p.KeyPlan}}, p.Keys...)
 	}
 }
 
@@ -148,10 +165,11 @@ func (p *Provider) normalizeKeys() {
 		seen[k.ID] = true
 		k.Models = cleanList(k.Models)
 	}
-	p.Key, p.KeyID = "", ""
+	p.Key, p.KeyID, p.KeyName, p.KeyProtocol, p.KeyWeight, p.KeyPlan = "", "", "", "", 0, ""
 	for _, k := range p.Keys {
 		if !k.Off && k.Key != "" {
 			p.Key, p.KeyID = k.Key, k.ID
+			p.KeyName, p.KeyProtocol, p.KeyWeight, p.KeyPlan = k.Name, k.Protocol, k.Weight, k.Plan
 			break
 		}
 	}
@@ -164,7 +182,14 @@ func (p Provider) SelectedKey() KeyAccount {
 			return k
 		}
 	}
-	return KeyAccount{Key: p.Key}
+	return KeyAccount{ID: p.KeyID, Name: p.KeyName, Key: p.Key, Protocol: p.KeyProtocol, Weight: p.KeyWeight, Plan: p.KeyPlan}
+}
+
+// first and setFirst expose the runtime selection to plan-specific views.
+func (p *Provider) first() KeyAccount { return p.SelectedKey() }
+func (p *Provider) setFirst(k KeyAccount) {
+	p.Key, p.KeyID = k.Key, k.ID
+	p.KeyName, p.KeyProtocol, p.KeyWeight, p.KeyPlan = k.Name, k.Protocol, k.Weight, k.Plan
 }
 
 func (p Provider) KeyList() []KeyInfo {
@@ -182,6 +207,7 @@ func (p Provider) KeyList() []KeyInfo {
 			PoolRefs: k.PoolRefs,
 			Models:   k.Models,
 			Weight:   k.Weight,
+			Plan:     k.Plan,
 		})
 	}
 	return out
@@ -397,6 +423,29 @@ func SetKeyProtocol(id, ref string, proto Protocol) error {
 	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].Protocol = proto; return nil })
 }
 
+// SetKeyPlan says which of the preset's plans a key is for; empty follows
+// the provider's own plan.
+func SetKeyPlan(id, ref, plan string) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	plan = strings.TrimSpace(plan)
+	if plan != "" {
+		pr := Preset(p.Preset)
+		if pr == nil || !pr.KeyPlans {
+			return fmt.Errorf("%s's keys are all on one plan", p.Name)
+		}
+		if !slices.ContainsFunc(pr.Regions, func(r Region) bool { return r.ID == plan }) {
+			return fmt.Errorf("%s has no plan %q", pr.Name, plan)
+		}
+		if r := p.regionOf(pr); r != nil && r.ID == plan {
+			plan = ""
+		}
+	}
+	return editKey(id, ref, func(p *Provider, i int) error { p.Keys[i].Plan = plan; return nil })
+}
+
 // SetKeyWeight sets a key's share of the requests under Weighted routing;
 // 0 takes it back to the default, 1.
 func SetKeyWeight(id, keyRef string, weight int) error {
@@ -417,10 +466,12 @@ func SetKeyWeight(id, keyRef string, weight int) error {
 	return editKey(id, keyRef, func(p *Provider, _ int) error { p.Keys[i].Weight = weight; return nil })
 }
 
-// WithKey is p using key k: its endpoints narrowed to k's protocol when k
-// has one. It has none left when p doesn't serve that protocol.
+// WithKey is p using key k: at its plan's endpoints and narrowed to its
+// protocol when it has one.
 func (p Provider) WithKey(k KeyAccount) Provider {
-	p.Key, p.KeyID = k.Key, k.ID
+	p.setFirst(k)
+	p = p.atKeyPlan(k.Plan)
+	p.keyView = true
 	if k.Protocol != "" {
 		if k.Protocol != Chat {
 			p.Chat = ""

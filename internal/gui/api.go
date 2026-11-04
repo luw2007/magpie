@@ -197,6 +197,9 @@ type agentJSON struct {
 	// Launch: the command that starts an agent taking the gateway only
 	// from its environment (agy) on magpie, to copy
 	Launch string `json:"launch,omitempty"`
+	// Typed: what starts it on magpie typed in a new terminal, a function
+	// magpie gave the user's shells (agy); the launch is for one open now
+	Typed string `json:"typed,omitempty"`
 	// Models: how many of the catalog its lists show, for an agent that
 	// picks among it (agent_models.go)
 	Models *modelCountJSON `json:"models,omitempty"`
@@ -214,6 +217,10 @@ type agentJSON struct {
 	// StaleCopies: those copies, each with what it is and when it
 	// started, for the opened row to say which is left to reopen and how
 	StaleCopies []agent.StaleCopy `json:"staleCopies,omitempty"`
+	// AppRestart: its desktop app (Claude Desktop, WorkBuddy) running on
+	// what it read before magpie's last change, for the row's Restart
+	// (agent.AppBehind)
+	AppRestart *agent.AppRun `json:"appRestart,omitempty"`
 	// Joined: connected with its own models still in its list (Codex
 	// signed in with ChatGPT, agent.Agent.Join)
 	Joined bool `json:"joined,omitempty"`
@@ -407,6 +414,10 @@ type settingsJSON struct {
 	// the Vision the user picked when magpie can't find it any more:
 	// VisionAuto describes in its place, and the row says so
 	VisionMissing string `json:"visionMissing,omitempty"`
+	// VisionNotMarked are the custom providers (AddedByAddress) with a model left
+	// out of VisionModels only because nothing says it takes images: the
+	// user can say so in the provider's Names & levels (nexnull on Discord)
+	VisionNotMarked []string `json:"visionNotMarked,omitempty"`
 	// the reasoning levels of the model that describes images now, and the
 	// one it is asked at when one is picked (VisionEffort fitted to them)
 	VisionEfforts   []string `json:"visionEfforts,omitempty"`
@@ -465,6 +476,10 @@ type settingsJSON struct {
 	// the ChatGPT accounts signed in, each of which can have a daily
 	// warm-up time of its own (#957)
 	CodexUsers []string `json:"codexUsers,omitempty"`
+	// the Codexes here that kept the background compaction's table (and
+	// its share) out of the config at the last sync: too old for it
+	// (before 0.163.0-alpha.8), or of no known version (codex_async.go)
+	CodexAsyncHeld []agent.CodexReader `json:"codexAsyncHeld,omitempty"`
 	// whether a WorkBuddy (China) account is signed in, and each one's
 	// last daily check-in
 	WorkBuddy         bool                        `json:"workbuddy"`
@@ -636,6 +651,7 @@ func settingsState() settingsJSON {
 	}
 	s.CodexWarmed, s.ClaudeWarmed = latest(provider.CodexWarmed()), latest(provider.ClaudeWarmed())
 	s.CodexUsers = codexUsers()
+	s.CodexAsyncHeld = agent.CodexAsyncHeld()
 	s.WorkBuddy, s.WorkBuddyCheckins = provider.HasWorkBuddy(), provider.WorkBuddyCheckins()
 	s.Trae, s.TraeCheckins = provider.HasTrae(), provider.TraeCheckins()
 	s.MiniMax, s.MiniMaxCheckins = provider.HasMiniMax(), provider.MiniMaxCheckins()
@@ -651,6 +667,11 @@ func settingsState() settingsJSON {
 				m.Provider, m.PName = "", e.Group
 			}
 			s.VisionModels = append(s.VisionModels, m)
+		} else if e.Group == "" && !e.Images && e.ImageInput == nil && e.Provider.AddedByAddress() && e.Provider.Ready() &&
+			!slices.Contains(s.VisionNotMarked, cmp.Or(e.Provider.Name, e.Provider.ID)) {
+			// unknown, not answered: one its list or the user said no to
+			// (ModelImages) isn't counted
+			s.VisionNotMarked = append(s.VisionNotMarked, cmp.Or(e.Provider.Name, e.Provider.ID))
 		}
 	}
 	s.TitleModels = []modelRef{}
@@ -827,6 +848,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// before the first paint rather than after the settings come
 		list := builtinsState()
 		boot["featuresOff"] = builtinsOff(list)
+		// and where the gateway listens, so the sidebar's line at its foot
+		// is drawn from the start, not held back until providers has come
+		// in (#1519's read waits for the agents); only this process's own,
+		// for one served by another magpie is the providers' read to find
+		if served.Load() != nil {
+			boot["sideGateway"] = map[string]any{"url": gateway.URL(), "running": true, "boot": true}
+		}
 		// and the settings of those the page draws (kernel.js)
 		boot["pluginConfig"] = builtinConfig(list)
 		// on Omarchy the page takes its theme's look before it paints
@@ -967,6 +995,22 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		writeJSON(rw, c)
+	})
+	// quits the agent's desktop app and opens it again, so it reads what
+	// magpie wrote: the row's Restart, after the user said yes to it
+	mux.HandleFunc("POST /api/agents/restart/{id}", func(rw http.ResponseWriter, r *http.Request) {
+		a, err := agent.Find(r.PathValue("id"))
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		if err := a.RestartApp(ctx); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, state())
 	})
 	// what disconnecting an agent changes in its files, line by line, for
 	// the dialog asking it (agent.DisconnectPreview); its files when the
@@ -1182,13 +1226,25 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if _, sent := fields["noAutoDownload"]; !sent {
 			in.NoAutoDownload = cur.NoAutoDownload
 		}
+		// nor the update channel (ssharpcc on X)
+		if _, sent := fields["updateChannel"]; !sent {
+			in.UpdateChannel = cur.UpdateChannel
+		}
 		// nor whether the masked words match in any case
 		if _, sent := fields["redactWordsAnyCase"]; !sent {
 			in.RedactWordsAnyCase = cur.RedactWordsAnyCase
 		}
+		// nor whether a key goes as a made-up one of its form
+		if _, sent := fields["redactShape"]; !sent {
+			in.RedactShape = cur.RedactShape
+		}
 		// nor how long an image is given to be drawn
 		if _, sent := fields["imageTimeout"]; !sent {
 			in.ImageTimeout = cur.ImageTimeout
+		}
+		// nor how long a routing group's classifier is given (#2934)
+		if _, sent := fields["classifyTimeout"]; !sent {
+			in.ClassifyTimeout = cur.ClassifyTimeout
 		}
 		in.AgentOrder, in.AgentsHidden, in.AgentsShown = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown
 		in.Window, in.WindowMaximised = cur.Window, cur.WindowMaximised // the window's own, as it was last resized
@@ -1217,15 +1273,20 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.AllowIPs = cur.AllowIPs                         // set on its own (allowips below)
 		in.FetchPrivate = cur.FetchPrivate                 // in settings.json only
 		in.GitHubToken = cur.GitHubToken                   // set on its own (github-token below), never sent to the page
+		in.ProxyCustom = cur.ProxyCustom                   // set by settings.Save from the proxy, never by the page
 		in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
 		in.RequestArchiveMaxMB = cur.RequestArchiveMaxMB   // in settings.json only
 		in.ClaudeRunsMost = cur.ClaudeRunsMost             // magpie claude-code runs, or settings.json (#2956)
 		in.GatewayConversations = cur.GatewayConversations // Sessions' explicit recording consent
 		in.RedactRules = cur.RedactRules                   // the masking rules, set on their own
 		in.RedactModel = cur.RedactModel                   // set on its own (privacy-model)
+		in.RedactModelName = cur.RedactModelName           // set on its own (privacy-model)
 		in.RedactActions = cur.RedactActions               // set on their own (redact-actions below)
 		in.RedactAllow = cur.RedactAllow                   // set on its own (redact-allow below)
 		in.DisabledModels = cur.DisabledModels             // set on their own (disabled-models below, #1867)
+		// the request archive on this computer: the archive's switch while no
+		// S3 bucket, and its size in settings.json only
+		in.RequestArchiveLocal, in.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 		// used or left is the Usage page's toggle as much as Settings', set on its own
 		in.QuotaLeft = cur.QuotaLeft
 		in.QuotaReads = cur.QuotaReads // set on its own (quota-reads below)
@@ -1234,6 +1295,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.PanelUsageHidden = cur.PanelUsageHidden
 		// and the clients the Usage page's Agents list leaves out, set there
 		in.UsageAgentsHidden = cur.UsageAgentsHidden
+		// and the names models' usage is counted under (magpie model alias)
+		in.UsageAliases = cur.UsageAliases
 		// and the clients it counts as agents, set there too (#1958)
 		in.ClientAgents = cur.ClientAgents
 		// how agents' lists name models, set on its own for the agents to be told
@@ -1333,6 +1396,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// tried again through it, not in six hours (#294), and marked so
 		// before this answers: the page stops asking on the old error
 		if strings.TrimSpace(in.Proxy) != strings.TrimSpace(cur.Proxy) && updates.json().State == "error" && updates.begin() {
+			go updates.run()
+		}
+		// another update channel: the feed is asked again on it, so the
+		// version row and the header's Update follow (a download from
+		// every version is dropped on Stable, run), unless automatic
+		// updates are off and nothing was found
+		if in.UpdateChannel != cur.UpdateChannel && (!in.NoAutoUpdate || updates.json().Latest != "") && updates.begin() {
 			go updates.run()
 		}
 		writeJSON(rw, settingsState())
@@ -1641,7 +1711,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		v := strings.TrimSpace(in.Model)
-		if v != "" {
+		if v != "" && v != settings.CodexAutoReviewSession {
 			// Resolve intentionally accepts arbitrary names under a known
 			// provider. An approval reviewer must be a model or group magpie
 			// actually lists, including providers kept unlisted for routing.
@@ -2340,6 +2410,8 @@ func held(h http.Handler) http.Handler {
 			// a page waits on the session files: the warm-up reading
 			// them reads at full speed meanwhile
 			defer sessions.Ask()()
+			// and what the read threw away goes back once the page rests
+			defer readingPage()()
 		}
 		if !(api && r.Method == http.MethodGet) {
 			// anything that may have written drops what was held, once it
@@ -2390,15 +2462,20 @@ func state() stateJSON {
 			aj.Source = a.Source()
 			aj.Failover = a.FailingOver != nil && a.FailingOver()
 		}
+		aj.AppRestart = a.AppBehind()
 		if a.Import != nil {
 			aj.Import = a.Import()
 			if a.Added != nil {
-				added := a.Added()
-				aj.Added = &added
+				if added, known := a.Added(); known {
+					aj.Added = &added
+				}
 			}
 		}
 		if a.Launch != nil {
 			aj.Launch = a.Launch()
+		}
+		if a.Typed != nil && aj.Launch != "" {
+			aj.Typed = a.Typed()
 		}
 		aj.CLIMissing = a.CLIMissing()
 		if a.Native != nil {
@@ -2452,6 +2529,146 @@ func writeJSON(rw http.ResponseWriter, v any) {
 	_ = json.NewEncoder(rw).Encode(v)
 }
 
+// writeJSONSame is writeJSON for a read the page asks for again and again:
+// the answer's X-Magpie-Tag is a hash of its bytes, and a request whose
+// X-Magpie-Had is that tag gets X-Magpie-Same and no body, which the page
+// reads as the answer it has (api in app.js). The Sessions tab read a long
+// history's ~8 MB list and ~0.7 MB of stats every 15 s, and parsed and
+// compared them whole to find them the same. Not an ETag and a 304:
+// WebView2 is sent no If-None-Match, and Wails turns its 304 into a 505.
+func writeJSONSame(rw http.ResponseWriter, r *http.Request, v any) {
+	var b bytes.Buffer
+	if err := json.NewEncoder(&b).Encode(v); err != nil {
+		fail(rw, err)
+		return
+	}
+	sum := sha256.Sum256(b.Bytes())
+	tag := hex.EncodeToString(sum[:16])
+	rw.Header().Set("X-Magpie-Tag", tag)
+	if r.Header.Get("X-Magpie-Had") == tag {
+		rw.Header().Set("X-Magpie-Same", "1")
+		rw.WriteHeader(http.StatusOK)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	_, _ = rw.Write(b.Bytes())
+}
+
+// sentRows is each row's hash in the last few lists writeJSONRows sent, by
+// the answer's tag, oldest first: a few, for a window and a browser tab or
+// two asking at once.
+var sentRows struct {
+	sync.Mutex
+	tags []string
+	rows map[string][][16]byte
+}
+
+const sentRowsKept = 4
+
+// writeJSONRows is writeJSONSame for an answer that is a long list, key,
+// beside the fields of rest: one asked with the tag of a list sent before
+// that changed since gets X-Magpie-Delta: key, and its list holds only the
+// rows not in that one, each run of rows that was, in its order, written
+// [from, count] of the list the page has. While an agent works, its
+// session's row changes every poll, and the Sessions tab read all ~5000
+// rows (~8 MB) again for it.
+func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, rows []T, rest any) {
+	raw := make([][]byte, len(rows))
+	sums := make([][16]byte, len(rows))
+	for i, row := range rows {
+		b, err := json.Marshal(row)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		raw[i] = b
+		sum := sha256.Sum256(b)
+		sums[i] = [16]byte(sum[:16])
+	}
+	tail, err := json.Marshal(rest)
+	if err != nil {
+		fail(rw, err)
+		return
+	}
+	k, _ := json.Marshal(key)
+	body := func(items [][]byte) []byte {
+		var b bytes.Buffer
+		b.WriteByte('{')
+		b.Write(k)
+		b.WriteString(":[")
+		b.Write(bytes.Join(items, []byte(",")))
+		b.WriteByte(']')
+		if len(tail) > 2 {
+			b.WriteByte(',')
+			b.Write(tail[1:])
+		} else {
+			b.WriteByte('}')
+		}
+		b.WriteByte('\n')
+		return b.Bytes()
+	}
+	whole := body(raw)
+	sum := sha256.Sum256(whole)
+	tag := hex.EncodeToString(sum[:16])
+	rw.Header().Set("X-Magpie-Tag", tag)
+	had := r.Header.Get("X-Magpie-Had")
+	if had == tag {
+		rw.Header().Set("X-Magpie-Same", "1")
+		rw.WriteHeader(http.StatusOK)
+		return
+	}
+	sentRows.Lock()
+	was, ok := sentRows.rows[had]
+	if _, kept := sentRows.rows[tag]; !kept {
+		if sentRows.rows == nil {
+			sentRows.rows = map[string][][16]byte{}
+		}
+		if len(sentRows.tags) == sentRowsKept {
+			delete(sentRows.rows, sentRows.tags[0])
+			sentRows.tags = sentRows.tags[1:]
+		}
+		sentRows.tags = append(sentRows.tags, tag)
+		sentRows.rows[tag] = sums
+	}
+	sentRows.Unlock()
+	rw.Header().Set("Content-Type", "application/json")
+	if !ok || had == "" {
+		_, _ = rw.Write(whole)
+		return
+	}
+	at := make(map[[16]byte][]int, len(was))
+	for j, s := range was {
+		at[s] = append(at[s], j)
+	}
+	var items [][]byte
+	from, n := 0, 0
+	run := func() {
+		if n > 0 {
+			items = append(items, []byte("["+strconv.Itoa(from)+","+strconv.Itoa(n)+"]"))
+		}
+		n = 0
+	}
+	for i, s := range sums {
+		js := at[s]
+		if len(js) == 0 {
+			run()
+			items = append(items, raw[i])
+			continue
+		}
+		j := js[0]
+		at[s] = js[1:]
+		if n > 0 && j == from+n {
+			n++
+			continue
+		}
+		run()
+		from, n = j, 1
+	}
+	run()
+	rw.Header().Set("X-Magpie-Delta", key)
+	_, _ = rw.Write(body(items))
+}
+
 func fail(rw http.ResponseWriter, err error) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(http.StatusBadRequest)
@@ -2493,6 +2710,13 @@ func fail(rw http.ResponseWriter, err error) {
 		} else if admin.Err != nil {
 			out["reason"] = admin.Err.Error()
 		}
+	}
+	// a bun this Windows or processor can't run at all: said, with what
+	// to do, in the reader's language (zgcwkj on Discord)
+	var bun *plugin.BunUnstartableError
+	if errors.As(err, &bun) {
+		out["code"], out["bun"], out["bunWhy"] = "bun_unstartable", bun.Bun, bun.Why
+		out["said"] = bunSaid[bun.Why]
 	}
 	_ = json.NewEncoder(rw).Encode(out)
 }
@@ -2567,4 +2791,12 @@ func countClient(m map[string]string, client, as string) (map[string]string, err
 	}
 	out[strings.ToLower(client)] = as
 	return out, nil
+}
+
+// bunSaid is what the page says for a bun that can't start, by why: an
+// i18n.js key the page's api() puts through t(), kept here so app.js
+// carries one line for it, not both sentences
+var bunSaid = map[string]string{
+	"windows": "Bun, which runs plugins, can't start on this version of Windows: it needs Windows 10 version 1809 or later, or Windows Server 2019 or later. Update Windows to use plugins, or set MAGPIE_BUN to a bun that runs here.",
+	"cpu":     "Bun, which runs plugins, can't start on this computer's processor: it needs an x64 processor with SSE4.2 (Intel or AMD from 2008 on; in a virtual machine, a CPU type that passes it through). Run magpie on such a processor to use plugins, or set MAGPIE_BUN to a bun that runs here.",
 }

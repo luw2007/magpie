@@ -1,11 +1,11 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"slices"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/probelog"
 )
 
 // A plugin's provider (see internal/plugin) is a subscription like the
@@ -115,7 +116,15 @@ func pluginAccounts() []Provider {
 			continue // shown once the move is through (migrate.go)
 		}
 		if ls := pluginLogins(pp); len(ls) > 0 {
-			out = append(out, pluginProvider(pp, ls[0]))
+			// the provider offers what any account switched on serves, as
+			// the requests reach each through its own list (#2554)
+			keys := []string{ls[0].acct.Key}
+			for _, l := range ls[1:] {
+				if l.On {
+					keys = append(keys, l.acct.Key)
+				}
+			}
+			out = append(out, pluginProviderServing(pp, ls[0], keys))
 		}
 	}
 	return out
@@ -317,6 +326,24 @@ func (p Provider) ListError() string {
 	return PluginListError(pp, p.Account.pluginKey)
 }
 
+// pluginServedCatalog is what the accounts at keys serve between them,
+// in the catalog's order: an account the plugin told no list of, or
+// doesn't know, serves all of it.
+func pluginServedCatalog(pp plugin.Provider, keys []string) []catalog.Model {
+	all := pluginCatalog(pp)
+	listed := map[string]bool{}
+	for _, k := range keys {
+		i := slices.IndexFunc(pp.Accounts, func(a plugin.Account) bool { return a.Key == k })
+		if i < 0 || pp.Accounts[i].Models == nil {
+			return all
+		}
+		for _, m := range pp.Accounts[i].Models {
+			listed[m] = true
+		}
+	}
+	return slices.DeleteFunc(all, func(m catalog.Model) bool { return !listed[m.ID] })
+}
+
 // pluginLists is whether a plugin's account serves model, as the plugin
 // last told its list; one it told none of serves all of the provider's.
 func (a *Account) pluginLists(model string) bool {
@@ -335,7 +362,19 @@ func (a *Account) pluginLists(model string) bool {
 // pluginProvider is the provider as one of its accounts, l as the
 // accounts list has it.
 func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
+	return pluginProviderServing(pp, l, nil)
+}
+
+// pluginProviderServing is pluginProvider offering the models the
+// accounts at keys serve between them; nil keys, l's own.
+func pluginProviderServing(pp plugin.Provider, l pluginLogin, keys []string) Provider {
 	acct, user := l.acct, l.User
+	serves := func(cur plugin.Provider) []catalog.Model {
+		if keys == nil {
+			return pluginAccountCatalog(cur, acct.Key)
+		}
+		return pluginServedCatalog(cur, keys)
+	}
 	id := PluginID(pp.ID)
 	name := pp.Name
 	if name == "" {
@@ -357,9 +396,9 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 	}
 	a.models = func() []catalog.Model {
 		if cur, ok := PluginOf(id); ok {
-			return pluginAccountCatalog(cur, acct.Key)
+			return serves(cur)
 		}
-		return pluginAccountCatalog(pp, acct.Key)
+		return serves(pp)
 	}
 	a.fetch = func(ctx context.Context) ([]catalog.Model, error) {
 		ps, err := plugin.Providers(ctx)
@@ -374,7 +413,7 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 				if e := PluginListError(cur, acct.Key); e != "" {
 					return nil, fmt.Errorf("%s couldn't list its models: %s", name, e)
 				}
-				return catalog.Chat(pluginAccountCatalog(cur, acct.Key)), nil
+				return catalog.Chat(serves(cur)), nil
 			}
 		}
 		return nil, fmt.Errorf("%s's plugin no longer lists it", name)
@@ -467,12 +506,15 @@ func pluginFetch(pp plugin.Provider, account string, req *http.Request) (*http.R
 	ctx := req.Context()
 	var body []byte
 	if req.Body != nil {
-		b, err := io.ReadAll(req.Body)
+		// read into the length said: io.ReadAll grows from 512 bytes, so a
+		// 1 MB request was some 3 MB read (#3472)
+		buf := bytes.NewBuffer(make([]byte, 0, max(req.ContentLength, 0)+bytes.MinRead))
+		_, err := buf.ReadFrom(req.Body)
 		req.Body.Close()
 		if err != nil {
 			return nil, err
 		}
-		body = b
+		body = buf.Bytes()
 	}
 	rest := strings.TrimPrefix(req.URL.String(), pluginBase+pp.ID)
 	model := bodyModel(body)
@@ -644,7 +686,26 @@ func firstOf(ss ...string) string {
 // Do sends req, through the account's own transport when it has one (a
 // plugin's), the client the account asks for this request when it asks
 // for one (ZCode's Start Plan: zcodeStartClient), and client otherwise.
+//
+// A request sent for magpie's own test (probelog.With) is written into the
+// request log here, whichever way it goes: a plugin's fetch and a client
+// of the account's own pass no transport that would.
 func (p Provider) Do(client *http.Client, req *http.Request) (*http.Response, error) {
+	if ctx := req.Context(); probelog.Pending(ctx) {
+		start := time.Now()
+		req = req.WithContext(probelog.Taken(ctx))
+		res, err := p.do(client, req)
+		status := 0
+		if err == nil {
+			status = res.StatusCode
+		}
+		probelog.Note(ctx, req.URL.String(), req.Method, start, status, err)
+		return res, err
+	}
+	return p.do(client, req)
+}
+
+func (p Provider) do(client *http.Client, req *http.Request) (*http.Response, error) {
 	if p.Account != nil && p.Account.transport != nil {
 		return p.Account.transport(req)
 	}
