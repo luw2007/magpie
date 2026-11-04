@@ -64,7 +64,7 @@ type inflights struct {
 // add counts r in and answers it with its inflight on its context, and the
 // func that counts it out.
 func (l *inflights) add(r *http.Request) (*http.Request, func()) {
-	f := &inflight{agent: agentOf(r), session: sessionOf(r.Header), start: time.Now()}
+	f := &inflight{agent: callerFrom(r).agent, session: sessionOf(r.Header), start: time.Now()}
 	l.mu.Lock()
 	if l.m == nil {
 		l.m = map[int64]*inflight{}
@@ -100,7 +100,12 @@ func notePhase(ctx context.Context, phase string) (restore func()) {
 	}
 	was, _ := f.phase.Load().(string)
 	f.phase.Store(phase)
-	waited := noteWait(ctx)
+	// masking's phase is named by noteMasking's own wait
+	kind := phase
+	if phase == phaseRedact {
+		kind = ""
+	}
+	waited := noteWait(ctx, kind)
 	return func() { waited(); f.phase.Store(was) }
 }
 

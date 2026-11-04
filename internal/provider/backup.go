@@ -86,7 +86,13 @@ func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pool
 	return added, replaced, store(f)
 }
 
-// Mirror replaces providers and groups, retaining the usage configuration.
+// Mirror makes providers and groups exactly these, retaining the usage
+// configuration and any credentials omitted from the incoming configuration.
+// Which account an agent is kept signed in to (KeepLogin, KeepLoginAs,
+// SwitchOnly), and whether its app is restarted to follow (RestartApp), is
+// this computer's own: one person signs in to a personal account at home and
+// a work account at the office, and sync set each computer to the other's
+// every day.
 func Mirror(ps []Provider, gs []Group) error {
 	f, err := usageConfig()
 	if err != nil {
@@ -113,7 +119,11 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 			continue
 		}
 		if i := slices.IndexFunc(here, func(x Provider) bool { return x.ID == p.ID }); i >= 0 {
-			preserveBackupKeys(&p, here[i], keyed)
+			h := here[i]
+			preserveBackupKeys(&p, h, keyed)
+			p.KeepLogin, p.KeepLoginAs, p.SwitchOnly, p.RestartApp = h.KeepLogin, h.KeepLoginAs, h.SwitchOnly, h.RestartApp
+		} else {
+			p.KeepLoginAs = "" // an account signed in on the other computer
 		}
 		f.Providers = append(f.Providers, p)
 	}

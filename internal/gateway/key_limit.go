@@ -37,7 +37,10 @@ func keyLimited(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		who := access.Caller(r.Context())
 		limits := who.Limits()
-		if len(limits) == 0 || r.Method != http.MethodPost || strings.HasPrefix(r.URL.Path, "/_magpie/") || strings.HasPrefix(r.URL.Path, "/mcp/") || strings.HasSuffix(r.URL.Path, "/count_tokens") {
+		if who.Issuer != nil {
+			limits = append(slices.Clone(limits), who.Issuer.Limits()...)
+		}
+		if !who.Limited() || r.Method != http.MethodPost || strings.HasPrefix(r.URL.Path, "/_magpie/") || strings.HasPrefix(r.URL.Path, "/mcp/") || strings.HasSuffix(r.URL.Path, "/count_tokens") || r.URL.Path == KeysPath {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -45,7 +48,12 @@ func keyLimited(next http.Handler) http.Handler {
 		// a compressed body (#1223) is reserved at its decoded size and model
 		costCap := slices.ContainsFunc(limits, func(l *access.Limit) bool { return l.Cost > 0 })
 		if enc := r.Header.Get("Content-Encoding"); costCap || size < 0 || (enc != "" && !strings.EqualFold(enc, "identity")) {
-			b, status, err := readBoundedRequestBody(w, r, requestLimits{})
+			// a turn on Codex's own path reads to its own limit (codexBackend)
+			var most int64
+			if strings.HasPrefix(r.URL.Path, CodexPath+"/") {
+				most = codexBodyLimit()
+			}
+			b, status, err := readBoundedRequestBody(w, r, requestLimits{body: most})
 			if err != nil {
 				writeError(w, protoOfPath(r.URL.Path), status, err.Error())
 				return
@@ -115,10 +123,20 @@ func protoOfPath(path string) provider.Protocol {
 // what a magpie from before them reads.
 func (s *Server) keyLimit(w http.ResponseWriter, r *http.Request) {
 	who := access.Caller(r.Context())
+	out := map[string]any{"limited": false, "key": who.KeyName}
+	// an issued key is held to the limits of the key it was issued under
+	// too, which count every key issued under it: "issuerLimits"
+	if who.KeyID != "" && who.Issuer != nil && len(who.Issuer.Limits()) > 0 {
+		out["issuerLimits"] = budget.All(access.Key{ID: who.Issuer.KeyID, Name: who.Issuer.KeyName, Limit: who.Issuer.Limit, More: who.Issuer.More}, limitClock())
+	}
+	if !who.Expires.IsZero() {
+		out["expires"] = who.Expires
+	}
 	if who.KeyID == "" || len(who.Limits()) == 0 {
-		writeJSON(w, 200, map[string]any{"limited": false, "key": who.KeyName})
+		writeJSON(w, 200, out)
 		return
 	}
 	all := budget.All(access.Key{ID: who.KeyID, Name: who.KeyName, Limit: who.Limit, More: who.More}, limitClock())
-	writeJSON(w, 200, map[string]any{"limited": true, "key": who.KeyName, "limit": budget.Binding(all), "limits": all})
+	out["limited"], out["limit"], out["limits"] = true, budget.Binding(all), all
+	writeJSON(w, 200, out)
 }

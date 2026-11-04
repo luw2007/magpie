@@ -71,9 +71,21 @@ const settled = page => page.waitForFunction(() => !accountArranging && !account
 // The editor opens with a transform/opacity entrance; geometry read during it
 // is stale by the time the mouse acts on it.
 const still = page => page.waitForFunction(() => document.getAnimations().every(a => a.effect.getComputedTiming().iterations === Infinity || a.playState !== "running"));
+// drawn: the editor's rows as they stay. A signed-in provider's editor is
+// drawn at once and again when its accounts' allowances come in
+// (loginUsageOf), which replaces every row; a row held from the first draw
+// had no box by then (#4468, WebKit on a busy machine). It follows a
+// load, so its first draw has a load's room, not a click's (#4470).
+async function drawn(page) {
+  await rows(page).first().waitFor({ timeout: 60000 });
+  await page.waitForFunction(() => {
+    const agent = providers?.providers.find(p => p.id === editing)?.account?.agent;
+    return !agent || (loginUsage[agent]?.at && !loginUsage[agent].loading);
+  });
+}
 async function open(page, id) {
   await page.goto(`http://magpie.test/?view=providers&edit=${id}`);
-  await rows(page).first().waitFor();
+  await drawn(page);
   await still(page);
 }
 async function points(page) {
@@ -114,6 +126,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const context = await browser.newContext({ viewport: { width: 1000, height: 850 }, reducedMotion: "reduce", hasTouch: true });
     const page = await context.newPage(), f = fixture(), errors = [];
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     page.on("pageerror", e => errors.push(e.message));
     await page.route("**/*", f.route);
     for (const id of ["antigravity", "relay"]) {
@@ -133,7 +146,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await ids(page), [before[1], before[0], ...before.slice(2)]);
         assert.equal(f.posted.filter(p => p.action === "/api/provider/arrange").length, count + 1);
         await checkFirst(page, f, id);
-        await page.reload(); await rows(page).first().waitFor();
+        await page.reload(); await drawn(page);
         await checkFirst(page, f, id);
         const wanted = (await ids(page))[1];
         await rows(page).nth(1).getByRole("button", { name: "Make first", exact: true }).click();

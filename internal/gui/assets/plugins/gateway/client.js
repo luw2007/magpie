@@ -15,10 +15,13 @@ let lang = gwParams.get("lang") || localStorage.getItem("magpie.lang") || "shell
 let snipOS = localStorage.getItem("magpie.snipOS") || "";                               // the shell the Shell and curl snippets are for (#1514)
 let exampleModel = localStorage.getItem("magpie.model") || "";  // the model in the snippets
 let decideModel = localStorage.getItem("magpie.decideModel") || ""; // the System One snippets' decision model
-let connectFolded = false; // Connect folded away under its heading
-try { connectFolded = localStorage.getItem("magpie.gwConnectFolded") === "1"; } catch {}
+// Connect folded away under its heading: folded until it is opened, as it
+// is set up once and seldom read again (the owner)
+let connectFolded = true;
+try { connectFolded = localStorage.getItem("magpie.gwConnectFolded") !== "0"; } catch {}
 const expandedCalls = new Set(); // recent-call ids whose wire bodies are open
 const callBodies = new Map(); // callRow → its bodies, read when it is opened (#1521)
+const wireOpen = new Set(); // recent-call ids whose HTTP headers are open
 // recent calls drawn a page at a time, as many as the plugin's setting
 // says (callsPage)
 let callsPage = 20;
@@ -71,6 +74,7 @@ function renderGatewayView() {
   page.classList.remove("loading");
   page.removeAttribute("aria-busy");
   renderGateway();
+  renderGatewayLan();
   $("#gatewayKeysBlock").hidden = !providers.gateway.lan;
   // not shared, the keys are left out; this line says where they come from,
   // as a tunnel to loopback is refused until sharing is on (DD on Discord)
@@ -132,7 +136,78 @@ function gatewayFixSays(o) {
   return t("The gateway couldn't be served here: {error}", p);
 }
 
-// The status card: dot, state, the URL.
+// gatewaySkewLine: a magpie of another version serves the gateway in this
+// one's place (gui/gateway_older.go). matrix0487 on Discord: the app wrote pi
+// a model its older gateway didn't know, pi said 404 "add a provider in
+// magpie first", and only the Gateway page told of the older magpie. Said
+// over the Agents list, in the panel and the window, until it is gone: an
+// older copy of the app is taken over by itself once idle; any other is
+// the user's to update or quit, here with the Gateway page's own button.
+let gwSkewFix = { busy: false, err: "", pid: 0 };
+function gatewaySkewLine(list) {
+  let box = $("#gwSkew");
+  const o = state.gatewayOther;
+  if (!o || !o.version) {
+    if (box) box.hidden = true;
+    return;
+  }
+  if (!box) {
+    box = el("div", "gw-skew");
+    box.id = "gwSkew";
+    ($("#agentsLead") || list).before(box);
+  }
+  box.hidden = false;
+  if (gwSkewFix.pid !== (o.pid || 0)) gwSkewFix = { busy: false, err: "", pid: o.pid || 0 };
+  const p = { v: o.version, mine: o.mine, n: o.busy || 0 };
+  let head, why, quit = false;
+  if (o.replacing) {
+    head = t("magpie {v}, an older copy of this app, still serves the gateway", p);
+    why = o.busy > 0
+      ? t(o.busy === 1 ? "This magpie ({mine}) takes it over once its {n} request in flight finishes; until then agents' requests go through magpie {v}." : "This magpie ({mine}) takes it over once its {n} requests in flight finish; until then agents' requests go through magpie {v}.", p)
+      : o.busy < 0
+        ? t("This magpie ({mine}) takes it over once it has no request in flight; until then agents' requests go through magpie {v}.", p)
+        : t("This magpie ({mine}) takes it over in a moment.", p);
+  } else if (o.older) {
+    head = t("The gateway is served by magpie {v}, older than this app ({mine})", p);
+    why = o.serves === "serve"
+      ? t("It runs as magpie serve, in a terminal or as the service. Agents' requests go through it without this version's fixes, and models set up here may not reach them. Update that magpie and start it again (magpie daemon restart, for the service), or quit it here and this app serves the gateway.", p)
+      : t("Agents' requests go through it without this version's fixes, and models set up here may not reach them. Quit it here and this app serves the gateway at once.", p);
+    quit = true;
+  } else if (o.newer) {
+    head = t("The gateway is served by magpie {v}, newer than this app ({mine})", p);
+    why = t("Agents' requests go through it, and what this app writes for them may not match it. Update this magpie, or quit the newer one there.", p);
+  } else {
+    head = t("The gateway is served by magpie {v}, a different build from this app ({mine})", p);
+    why = t("Agents' requests go through it, and what this app writes for them may not match it. Quit it there for this app to serve the gateway.", p);
+  }
+  const card = el("div", "deprecation");
+  card.setAttribute("role", "note");
+  const body = el("div", "dep-body");
+  body.append(el("div", "dep-head", head), el("p", "dep-why", why));
+  if (gwSkewFix.err) body.append(el("p", "dep-why gw-skew-err", gwSkewFix.err));
+  card.append(el("span", "dep-dot"), body);
+  if (quit) {
+    const acts = el("div", "dep-acts");
+    const b = el("button", "text action", gwSkewFix.busy ? t("Quitting magpie {v}…", p) : t("Quit magpie {v} and take over", p));
+    b.disabled = b.classList.toggle("busy", gwSkewFix.busy);
+    b.onclick = async () => {
+      gwSkewFix = { busy: true, err: "", pid: o.pid || 0 };
+      gatewaySkewLine(list);
+      let out;
+      try { out = await api("gateway/take-over", {}); } catch (e) { out = { reason: "error", error: e.message }; }
+      gwSkewFix = { busy: false, err: out?.ok ? "" : gatewayFixSays(out || {}), pid: o.pid || 0 };
+      try { state = await api("state"); } catch {}
+      renderAgents();
+    };
+    acts.append(b);
+    card.append(acts);
+  }
+  box.replaceChildren(card);
+}
+
+// The status card: the gateway's mark, its state and what it does, and the
+// button that fixes what stands in its way.
+const GW_GLYPH = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="5" rx="1.5"/><rect x="3" y="11" width="14" height="5" rx="1.5"/></g><circle class="led" cx="6.2" cy="6.5" r="1.1"/><circle class="led" cx="6.2" cy="13.5" r="1.1"/></svg>';
 function renderGateway() {
   const g = providers.gateway;
   const box = $("#gateway");
@@ -140,7 +215,9 @@ function renderGateway() {
   // an older magpie keeping the port sends every agent's request its own
   // way, without this version's fixes (#506): said in place of the counts
   const older = g.running && !g.mine && g.older;
-  const dot = el("span", "dot " + (older ? "old" : g.running ? "on" : ""));
+  // the sidebar's mark, its lights the state: green running, amber not
+  const mark = el("span", "gw-mark " + (older ? "old" : g.running ? "on" : ""));
+  mark.innerHTML = GW_GLYPH;
   const who = el("div", "who");
   const name = el("div", "name", t("Gateway"));
   name.append(el("span", "state", older
@@ -154,18 +231,66 @@ function renderGateway() {
   } else who.append(name, el("div", "sub", g.running
     ? [t(g.models === 1 ? "{n} model" : "{n} models", { n: g.models }), n ? t(n === 1 ? "{n} agent routed through it" : "{n} agents routed through it", { n }) : t("no agent routed through it yet"), t("five APIs, one URL")].join(" · ")
     : t("start it with magpie serve, or open magpie at login")));
-  const fix = gatewayFixButton(g, older);
-  if (fix) who.append(fix);
   if (gatewayFix.err && gatewayFix.when === gatewayFixWhen(g)) who.append(el("div", "sub old err", gatewayFix.err));
+  box.append(mark, who);
+  const fix = gatewayFixButton(g, older);
+  if (fix) box.append(fix);
+}
+
+// Share on local network, set on the page that hands out its keys (the
+// owner): the same setting as Settings › Network and sharing, and every
+// address the gateway answers on, each to copy.
+let gatewayLanBusy = false;
+function renderGatewayLan() {
+  const g = providers.gateway;
+  const box = $("#gatewayLan");
+  box.replaceChildren();
+  const head = el("div", "row gw-share");
+  const choice = segs([["off", t("This computer")], ["on", t("Local network")]], g.lan ? "on" : "off", (v) => {
+    if (gatewayLanBusy || (v === "on") === !!g.lan) return;
+    gatewayLanBusy = true;
+    writingPrefs(api("settings/lan", { on: v === "on" }))
+      .then((ns) => { prefs = ns; if (ns.rekeyed) status(ns.rekeyed, "err"); })
+      .catch((e) => status(t(e.message), "err"))
+      .then(() => loadProviders().catch(() => {}))
+      .finally(() => {
+        gatewayLanBusy = false;
+        if (view !== "gateway" || !providers) return;
+        renderGatewayView();
+        if (providers.gateway.lan) loadGatewayKeys();
+      });
+  });
+  choice.setAttribute("role", "group");
+  choice.setAttribute("aria-label", t("Share on local network"));
+  head.append(el("div", "name grow", t("Share on local network")), choice);
+  box.append(head);
+  const list = el("div", "gw-urls");
+  const line = (label, url) => {
+    const r = el("div", "gw-url");
+    const val = el("span", "gw-url-val");
+    val.append(el("code", "", url), copyBtn(url, t("Gateway URL")));
+    r.append(el("span", "gw-url-label", label), val);
+    list.append(r);
+  };
   // served to other machines' browsers (magpie web), the address shown is
   // the one they reach, MAGPIE_PUBLIC_URL's, not this computer's loopback
   // (#1551)
   const shown = web && g.publicURL || g.url;
-  const url = el("button", "url");
-  url.append(el("code", "", shown));
-  url.title = t("Copy the gateway URL");
-  url.onclick = () => copy(shown, t("Gateway URL"));
-  box.append(dot, who, url);
+  line(t(shown === g.url ? "This computer" : "Public address"), shown);
+  if (g.lan) {
+    const { urls, others, sub } = gwLAN(g);
+    // an internet address on an interface (an ISP's static one) is said
+    // to be one, not listed as this network's, and the one other
+    // containers on this host use (the host's Docker bridge address) is
+    // said to be theirs
+    const far = new Set(g.lanPublic || []), rest = urls.filter((u) => u !== shown);
+    rest.filter((u) => !far.has(u) && !others.includes(u)).forEach((u, i) => line(i ? "" : t("Local network"), u));
+    rest.filter((u) => others.includes(u)).forEach((u, i) => line(i ? "" : t("Other containers on this host"), u));
+    rest.filter((u) => far.has(u) && !others.includes(u)).forEach((u, i) => line(i ? "" : t("On the internet"), u));
+    if (!urls.length) list.append(el("div", "gw-url-none", t("This computer has no local network address right now")));
+    if (sub) list.append(el("div", "gw-url-none", sub));
+  }
+  box.append(list);
 }
 
 // One entry per API the gateway serves: where each SDK's base URL points,
@@ -382,7 +507,7 @@ function renderConnect() {
   // no SDK speaks System One, so it has no shell variables to set
   const langs = f.baseEnv ? langs4() : langs4().filter(([id]) => id !== "shell");
   const snipLang = langs.some(([id]) => id === lang) ? lang : "curl";
-  const urls = [g.url, ...(g.lanURLs || [])];
+  const urls = [g.url, ...gwLAN(g).urls];
   // the address picked is kept (coeo91): an address not offered right now
   // (the network not up yet after a start) shows this computer's, and the
   // pick comes back with it. With none picked, MAGPIE_PUBLIC_URL is where
@@ -570,6 +695,7 @@ function renderActivity() {
   const ids = new Set(g.calls.map(callRow));
   for (const id of callBodies.keys()) if (!ids.has(id)) callBodies.delete(id);
   for (const id of expandedCalls) if (!ids.has(id)) expandedCalls.delete(id);
+  for (const id of wireOpen) if (!ids.has(id)) wireOpen.delete(id);
   const box = $("#activity");
   // a body being read keeps its place as new calls come in
   const kept = new Map();
@@ -623,6 +749,11 @@ function renderActivity() {
       );
       item.dataset.id = id;
       item.append(details);
+      // the headers both ways, folded (wireHeadersView, usage/page.js)
+      if (body.headers) item.append(wireHeadersView(body.headers, wireOpen.has(id), () => {
+        if (wireOpen.has(id)) wireOpen.delete(id); else wireOpen.add(id);
+        renderActivity();
+      }));
     }
     box.append(item);
   }
@@ -660,13 +791,14 @@ magpie.plugin("gateway", (ctx) => {
     html: `
 <div class="list gwcard">
   <div class="row gw" id="gateway"></div>
+  <div id="gatewayLan"></div>
 </div>
 <section id="gatewayKeysBlock" hidden>
   <div class="row-head"><span class="label" data-t>Gateway keys</span><span class="grow"></span><button class="text" id="addGatewayKey" data-t>Add gateway key</button></div>
   <p class="usage-note" data-t>Create a gateway key for each client. Usage is counted separately for each key.</p>
   <section id="gatewayKeys"></section>
 </section>
-<p class="usage-note gw-keys-off" id="gatewayKeysOff" hidden><span data-t>Gateway keys are for other computers, and for a tunnel to this one such as Cloudflare Tunnel: they are added here once Share on local network is on. Agents on this computer need none.</span> <button class="text" id="openLanSettings" data-t>Network and sharing</button></p>
+<p class="usage-note gw-keys-off" id="gatewayKeysOff" hidden data-t>Gateway keys are for other computers, and for a tunnel to this one such as Cloudflare Tunnel: they are added here once Share on local network is on. Agents on this computer need none.</p>
 <div class="row-head"><button class="fold" id="foldConnect" aria-expanded="true" aria-controls="connect"><span class="label" data-t>Connect</span></button><span class="grow"></span><span class="note" id="connectNote"></span></div>
 <section class="list connect" id="connect"></section>
 <div class="row-head"><button class="fold" id="foldModels" aria-expanded="true" aria-controls="gwModels"><span class="label" data-t>Models</span><span class="note" id="modelsCount"></span></button><span class="grow"></span><button class="text" id="copyModels" data-t>Copy all ids</button></div>
@@ -689,7 +821,9 @@ magpie.plugin("gateway", (ctx) => {
         renderGatewayModels();
         backToReader($("#view-gateway"));
       };
-      $("#openLanSettings").onclick = () => { openSettings(); setSetTab("network", true); };
+      new MutationObserver(gatewayKeysTicks).observe($("#view-gateway"), { attributes: true, attributeFilter: ["hidden"] });
+      document.addEventListener("visibilitychange", gatewayKeysTicks);
+      gatewayKeysTicks();
     },
     // nothing read yet: the page's skeleton (#123)
     loading: renderGatewayLoading,
@@ -707,6 +841,8 @@ magpie.plugin("gateway", (ctx) => {
       if (was && !$("#view-gateway").classList.contains("loading") && same({ ...was, gateway: { ...was.gateway, calls: 0 } }, { ...providers, gateway: { ...providers.gateway, calls: 0 } })) {
         if (!same(was.gateway.calls, providers.gateway.calls)) renderActivity();
       } else renderGatewayView();
+      // and what each key has used of its limits, read on open only before
+      refreshGatewayKeys();
     },
     // the recent calls again, a page of them (the setting changed)
     calls() {

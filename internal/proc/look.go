@@ -24,14 +24,20 @@ import (
 // again; within it an answer kept is given without a stat.
 const lookFresh = 2 * time.Second
 
-// lookCoarse is how coarse a folder's modification time can be: the
-// kernel stamps a folder with its clock's tick (a millisecond or ten on
-// Linux, ten on Windows' FAT), so a file written in the same tick as the
-// stamp or a listing was read beside it leaves the folder's time the
-// same and the change unseen, then and forever after. An answer or a
-// listing read while a folder's time is that young is not kept, and read
-// again, until one is read with every folder's time older than the tick.
-const lookCoarse = 20 * time.Millisecond
+// lookSettle is how long after a folder changed its modification time is
+// trusted to show the next change. The clocks that stamp a folder are
+// coarse: Linux's ticks every few milliseconds and Windows's every 15.6ms, so
+// a tool installed in the same tick as the change before it leaves the
+// folder's time as it was, and a stamp taken between the two would keep the
+// first answer until something else changed the folder. A stamp naming a
+// folder changed within lookSettle is taken again at the next lookup, and
+// nothing looked up under it is kept (git treats its "racy" index entries
+// the same way).
+// shortcut: filesystems with timestamp ticks over 100ms need a longer window.
+const lookSettle = 100 * time.Millisecond
+
+// lookNow lets the same-tick regression hold the clock still.
+var lookNow = time.Now
 
 // lookFreshInTests is lookFresh in a test binary testenv isolated: none,
 // so a test that installs a tool finds it at once, unless a test says.
@@ -39,13 +45,9 @@ var lookFreshInTests time.Duration
 
 var looks struct {
 	sync.Mutex
-	gen    int
-	env    string // PATH and PATHEXT the stamp was taken with
-	stamp  string
-	// youngest is the newest folder's time the stamp was taken with: a
-	// stamp taken while it is younger than lookCoarse can't tell a change
-	// made in the same tick, so none of its answers is kept
-	youngest time.Time
+	gen      int
+	env      string // PATH and PATHEXT the stamp was taken with
+	stamp    string
 	checked  time.Time
 	m        map[string]lookAnswer
 }
@@ -81,7 +83,7 @@ func Look(name string) (string, error) {
 // asks again: the reader asked to look for agents again.
 func Forget() {
 	looks.Lock()
-	looks.m, looks.env, looks.stamp, looks.youngest, looks.checked = nil, "", "", time.Time{}, time.Time{}
+	looks.m, looks.env, looks.stamp, looks.checked = nil, "", "", time.Time{}
 	looks.gen++
 	looks.Unlock()
 	forgetListings()
@@ -93,30 +95,30 @@ func looked(key string, ask func() lookAnswer) lookAnswer {
 	looks.Lock()
 	if looks.env != env || looks.checked.IsZero() || time.Since(looks.checked) >= lookWindow() {
 		looks.Unlock()
-		stamp, youngest := lookStamp() // a few stats, not under the lock
+		stamp, settled := lookStamp() // a few stats, not under the lock
 		looks.Lock()
-		if stamp != looks.stamp {
-			looks.m, looks.stamp, looks.youngest = nil, stamp, youngest
+		if !settled {
+			stamp = "" // keeps nothing; the zero checked takes it again next time
+		}
+		if stamp != looks.stamp || stamp == "" {
+			looks.m, looks.stamp = nil, stamp
 		}
 		looks.env, looks.checked = env, time.Now()
-	}
-	// while a folder's time is too young to tell a same-tick change, no
-	// answer is served or kept, so one is asked each time
-	trusted := time.Since(looks.youngest) >= lookCoarse
-	if trusted {
-		if a, ok := looks.m[key]; ok {
-			looks.Unlock()
-			return a
+		if !settled {
+			looks.checked = time.Time{}
 		}
+	}
+	if a, ok := looks.m[key]; ok {
+		looks.Unlock()
+		return a
 	}
 	gen, stamp := looks.gen, looks.stamp
 	looks.Unlock()
 	a := ask()
 	looks.Lock()
-	// an answer asked across a Forget or a change of the folders isn't
-	// kept; nor one asked while a folder's time was young, where a file
-	// written since may be hidden by the clock's tick
-	if looks.gen == gen && looks.stamp == stamp && trusted {
+	// an answer asked across a Forget or a change of the folders, or under
+	// a stamp not settled, isn't kept
+	if looks.gen == gen && looks.stamp == stamp && stamp != "" {
 		if looks.m == nil {
 			looks.m = map[string]lookAnswer{}
 		}
@@ -135,11 +137,12 @@ func lookWindow() time.Duration {
 }
 
 // lookStamp names what the answers depend on: PATH, PATHEXT, and each
-// folder looked in with its modification time; it also says the newest
-// of those times, zero when none of the folders could be stat'ed.
-func lookStamp() (string, time.Time) {
+// folder looked in with its modification time. It isn't settled while a
+// folder changed within lookSettle. A time ahead of the clock is settled:
+// the next change sets it to now, which the stamp tells apart.
+func lookStamp() (string, bool) {
+	now, settled := lookNow(), true
 	var b strings.Builder
-	var newest time.Time
 	b.WriteString(os.Getenv("PATH"))
 	b.WriteByte(0)
 	b.WriteString(os.Getenv("PATHEXT"))
@@ -154,12 +157,12 @@ func lookStamp() (string, time.Time) {
 		if st, err := os.Stat(d); err == nil {
 			b.WriteByte('@')
 			b.WriteString(strconv.FormatInt(st.ModTime().UnixNano(), 36))
-			if st.ModTime().After(newest) {
-				newest = st.ModTime()
+			if d := now.Sub(st.ModTime()); d >= 0 && d < lookSettle {
+				settled = false
 			}
 		}
 	}
-	return b.String(), newest
+	return b.String(), settled
 }
 
 // findDirs are the folders FindTool looks in after PATH.

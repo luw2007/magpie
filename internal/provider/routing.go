@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
@@ -26,7 +27,9 @@ const (
 	LeastUsed = "usage"
 	Pace      = "pace"
 	// Weighted spreads a provider's requests over its keys by each key's
-	// weight (KeyAccount.Weight, #841), smoothly: 3 and 1 go a, a, b, a…
+	// weight (KeyAccount.Weight, #841), or a subscription's over its
+	// accounts by each account's (AccountWeights), smoothly: 3 and 1 go
+	// a, a, b, a…
 	Weighted = "weight"
 	// Benchmark is a group-only routing that picks members by benchmark IQ score.
 	Benchmark = "benchmark"
@@ -38,6 +41,17 @@ const (
 	// lately — first token, then how fast it wrote — first; one not
 	// measured lately gets a turn now and then to be (routes.Fastest).
 	Fastest = "fast"
+	// Cheapest goes by price: the member whose model costs least at the
+	// request's time first — its vendor's peak hours and the provider's
+	// rate windows read then — those alike in their listed order
+	// (routes.Cheapest). A group's only: a provider's keys and accounts
+	// all bill its one price.
+	Cheapest = "cheap"
+	// Drain stays on one key or account until it is used up, then goes
+	// on to the next in the listed order, and stays on that one: one
+	// before it that renews meanwhile doesn't take its requests back
+	// (dzxx0496 on Discord; routes.Drain).
+	Drain = "drain"
 )
 
 // pluginRouting is a routing a plugin serves: "<plugin>/<name>".
@@ -72,6 +86,42 @@ func SetSink(id string, sink bool) error {
 	return Save(*p)
 }
 
+// SetCapStop has a subscription answer 429 while every account is held at
+// its usage cap, rather than go on to its fallbacks (Provider.CapStop), or
+// go on to them again.
+func SetCapStop(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.CapStop = on
+	return Save(*p)
+}
+
+// SetCapCareful has a subscription's capped accounts read again near
+// their cap and held while their usage can't be told
+// (Provider.CapCareful), or go by the last reading again.
+func SetCapCareful(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.CapCareful = on
+	return Save(*p)
+}
+
+// SetCountFree has every model of a provider count as free for the
+// routings that weigh it, or go by its vendor's word again
+// (Provider.CountFree).
+func SetCountFree(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.CountFree = on
+	return Save(*p)
+}
+
 // SetKeepLogin keeps Codex or Claude Code signed in to the account the
 // user made first (Provider.KeepLogin), or lets magpie move it on again.
 // Either way it is no longer kept on one of the user's choosing
@@ -84,7 +134,10 @@ func SetKeepLogin(id string, keep bool) error {
 	if p.Account == nil || p.Account.Agent != p.ID || !slices.Contains(switchedAgents, p.ID) {
 		return fmt.Errorf("magpie doesn't sign %s in to another of its accounts", p.Name)
 	}
-	chosen := p.KeepLogin && p.KeepLoginAs != ""
+	if keep && p.SwitchOnly {
+		return errSwitchOnly(*p)
+	}
+	chosen := p.keepsLogin() && p.KeepLoginAs != ""
 	p.KeepLogin, p.KeepLoginAs = keep, ""
 	if err := Save(*p); err != nil {
 		return err
@@ -95,19 +148,52 @@ func SetKeepLogin(id string, keep bool) error {
 	return nil
 }
 
-// SetSwitchOnly has magpie only move Codex's own sign-in between its
-// accounts (Provider.SwitchOnly), its requests never sent through the
-// gateway for account failover, or lets failover go through it again.
+// SetSwitchOnly has magpie only move Codex's or Claude Code's own sign-in
+// between its accounts (Provider.SwitchOnly): Codex's requests never sent
+// through the gateway for account failover, Claude's accounts serving no
+// request through the gateway (KeptToAgent). Off, both are as before.
 func SetSwitchOnly(id string, on bool) error {
 	p, err := Find(id)
 	if err != nil {
 		return err
 	}
-	if p.Account == nil || p.Account.Agent != p.ID || p.ID != "codex" {
+	if p.Account == nil || p.Account.Agent != p.ID || p.ID != "codex" && p.ID != "claude" {
 		return fmt.Errorf("magpie doesn't route %s's own requests for account failover", p.Name)
 	}
 	p.SwitchOnly = on
 	return Save(*p)
+}
+
+// SetRestartApp has magpie restart the Codex app's app-server when it
+// changes Codex's account by itself, or leave the app on its account till
+// it is restarted (Provider.RestartApp).
+func SetRestartApp(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	if p.ID != "codex" || p.Account == nil || p.Account.Agent != p.ID {
+		return fmt.Errorf("magpie restarts no app of %s's", p.Name)
+	}
+	p.RestartApp = on
+	return Save(*p)
+}
+
+// codexRestartsApp is whether the user had magpie restart the Codex app's
+// app-server for a change it makes by itself (Provider.RestartApp). While
+// providers.json can't be read it is unknown, and the app is left be: a
+// restart missed is the user's to make, one made shows as a crash.
+var codexRestartsApp = func() bool {
+	f, err := read()
+	if err != nil {
+		return false
+	}
+	for _, p := range f.Providers {
+		if p.ID == "codex" {
+			return p.RestartApp
+		}
+	}
+	return false
 }
 
 // SwitchOnly reports whether magpie only moves agent's own sign-in between
@@ -157,12 +243,30 @@ var usedCache struct {
 	// agent; that reading was asked before an account said it was out,
 	// so what it tells is kept only until the next ask reads again
 	stale map[string]bool
+	// read: when each account's allowance was last read well, and whether
+	// the last try failed, by agent/user (UsageRead)
+	read map[string]readState
 }
 
 // firstWait is how long a request waits for an agent's allowances the
 // first time they are asked for, so the first requests after magpie
 // starts are routed by them too; later ones never wait.
 var firstWait = 3 * time.Second
+
+// unwaited counts the callers under Unwaited.
+var unwaited atomic.Int32
+
+// Unwaited has Allowances answer from what is last known, without the
+// first ask's wait, until release: for a caller that only asks whether a
+// model is there, not which account a request goes to. Every agent's model
+// list asks the gateway whether a model sees images, and the migrations at
+// start read Pi's effort, which builds its list: each agent's first ask
+// waited firstWait for its accounts' usage over the network, and magpie's
+// gateway listened ~9 s after start.
+func Unwaited() (release func()) {
+	unwaited.Add(1)
+	return sync.OnceFunc(func() { unwaited.Add(-1) })
+}
 
 // Allowance is an account's allowance windows as last known.
 type Allowance []Limit
@@ -180,6 +284,10 @@ type Limit struct {
 	matches    func(string) bool
 	partial    bool   // of a reading that may leave windows out (QuotaWindow.partial)
 	Name       string // QuotaWindow.Name: which window it is, one reading to the next (WindowCapID)
+	// pool is the windows of the pool a model's own window draws on
+	// (Antigravity's "Gemini · 7 days"), which hold the account at its
+	// caps only (capLimits): routing goes on by the model's own window
+	pool []Limit
 	// ResetRunsOut is when the reset the account spends by itself before
 	// it runs out does (resetRunsOut): spent then, it starts this window
 	// again — at Restarts, which routing takes for the window's renewal
@@ -188,9 +296,15 @@ type Limit struct {
 	// RunsOut is when the soonest of what the window has left is lost,
 	// apart from its reset (QuotaWindow.RunsOutAt): zero when not known.
 	RunsOut time.Time
+	// RunsOutLeft is how much, in Unit, is lost at RunsOut
+	// (QuotaWindow.RunsOut): zero when not told
+	RunsOutLeft float64
 	// Credits: the account goes on past this window on its credits
 	// (QuotaWindow.Credits)
 	Credits bool
+	// Balance is how much is left in Unit, a wallet's reading with no
+	// share (QuotaWindow.Balance); nil when not told
+	Balance *float64
 }
 
 // OnCredits says whether the account goes on past its allowance on its
@@ -206,11 +320,23 @@ func (a Allowance) OnCredits() bool {
 	return false
 }
 
+// WeekUsedUp says whether the allowance's week, a window of a day or more
+// that counts every model, is used up at now, as its last reading says:
+// weekUsedUp's rule (AutoUseCodexReset) on an allowance, credits or none.
+func (a Allowance) WeekUsedUp(now time.Time) bool {
+	for _, l := range a {
+		if l.Span >= 24*time.Hour && l.Model == "" && l.matches == nil && l.Used >= 100 && l.Resets.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
 // Restarts is when an auto-used reset starts the account's windows again,
 // as the Codex reset about to run out is spent (expiringResetSpent):
-// resetExpiryLead before it runs out, or now when the account is held up
+// resetLead before it runs out, or now when the account is held up
 // past then. What they have left then is lost, as at their own reset, so
-// Weekly pace and Smart take it for their renewal when it comes sooner
+// Use before expiry and Smart take it for their renewal when it comes sooner
 // (#717, #718). Zero when none will be.
 func (a Allowance) Restarts(now time.Time) time.Time {
 	for _, l := range a {
@@ -368,6 +494,41 @@ func (a Allowance) Renewal(model string, now time.Time) []time.Time {
 	return out
 }
 
+// Left is how much a wallet that counts model has left, in unit
+// (Limit.Balance): the least of its windows that tell a balance. ok is
+// false when none does. Only balances in the same unit of one provider are
+// compared (routes.Seat.Left).
+func (a Allowance) Left(model string) (left float64, unit string, ok bool) {
+	model = strings.ToLower(model)
+	for _, l := range a {
+		if l.Balance == nil || !l.applies(model) {
+			continue
+		}
+		if !ok || *l.Balance < left {
+			left, unit, ok = *l.Balance, l.Unit, true
+		}
+	}
+	return left, unit, ok
+}
+
+// Lapse is the soonest moment credits left in a window that counts model
+// are lost (Limit.RunsOut), zero when none is told or all have passed.
+// Smart goes by it when the renewals tie: two WorkBuddy free accounts
+// renew together, at the end of the month every one shares, but the
+// credits one was given lapse before the other's, and spent first they
+// aren't lost (zhaocai_83020 on Discord). Renewal already takes it when it
+// comes before the window renews; this tells apart those that come after.
+func (a Allowance) Lapse(model string, now time.Time) time.Time {
+	model = strings.ToLower(model)
+	var t time.Time
+	for _, l := range a {
+		if l.applies(model) && l.RunsOut.After(now) && (t.IsZero() || l.RunsOut.Before(t)) {
+			t = l.RunsOut
+		}
+	}
+	return t
+}
+
 // Full is when an account used up for model can take it again: the last
 // reset of its windows that are full, zero when none is or it isn't known.
 func (a Allowance) Full(model string, share float64, now time.Time) time.Time {
@@ -443,7 +604,14 @@ const FreshPace = 100 / (7 * 24.0)
 // go by what they have used, among the rest as the fresh are. An
 // account whose windows an auto-used reset starts again sooner than they
 // renew (Restarts) goes by that instead, and due is then that time: what
-// it has left is lost there.
+// it has left is lost there. Credits in a budget window that expire
+// before it renews (Limit.RunsOut) are lost sooner still: the window goes
+// by those that expire first, per hour until they do, when that is the
+// more — what expires as a share of the window (RunsOutLeft of Of), or
+// all it has left when the amount isn't told, as Renewal takes it. A
+// WorkBuddy account whose check-in credits expire tomorrow goes ahead of
+// one whose month has more left but nothing expiring (lcyksp on
+// Discord); due is then the expiry.
 func (a Allowance) Pace(model string, now time.Time) (pace float64, due time.Time) {
 	model = strings.ToLower(model)
 	restart := a.Restarts(now)
@@ -486,7 +654,11 @@ func (a Allowance) Pace(model string, now time.Time) (pace float64, due time.Tim
 			until, renews = l.Resets.Sub(now), l.Resets
 		}
 		until, renews = cut(until, renews)
-		if p := (100 - u) / max(until, time.Hour).Hours(); !any || p < pace {
+		p := (100 - u) / max(until, time.Hour).Hours()
+		if q, at, ok := l.expiring(u, now, now.Add(until)); ok && q > p {
+			p, renews = q, at
+		}
+		if !any || p < pace {
 			pace, due, any = p, renews, true
 		}
 	}
@@ -497,6 +669,21 @@ func (a Allowance) Pace(model string, now time.Time) (pace float64, due time.Tim
 		return (100 - used) / weekSpan.Hours(), time.Time{}
 	}
 	return pace, due
+}
+
+// expiring is the pace of what a window loses at RunsOut, when that
+// comes after now and before ends, the window's renewal: the share that
+// expires (RunsOutLeft of Of, at most all), else all it has left (100-u),
+// per hour until then, never fewer than one.
+func (l Limit) expiring(u float64, now, ends time.Time) (pace float64, at time.Time, ok bool) {
+	if !l.RunsOut.After(now) || !l.RunsOut.Before(ends) {
+		return 0, time.Time{}, false
+	}
+	share := 100 - u
+	if l.RunsOutLeft > 0 && l.Of > 0 {
+		share = min(100, 100*l.RunsOutLeft/l.Of)
+	}
+	return share / max(l.RunsOut.Sub(now), time.Hour).Hours(), l.RunsOut, true
 }
 
 // Allowances is each of an agent's accounts' allowance by user, as last
@@ -519,7 +706,7 @@ func Allowances(agent string) map[string]Allowance {
 			defer cancel()
 			share := renewalShare(agent) // read before the lock: it reads providers.json
 			all := map[string]Allowance{}
-			readings, readAt := loginUsageAt(ctx, agent)
+			readings, readAt, states := loginUsageAt(ctx, agent)
 			for user, q := range readings {
 				if q.Error != "" || len(q.Windows) == 0 {
 					continue
@@ -538,7 +725,17 @@ func Allowances(agent string) map[string]Allowance {
 			if c.seen == nil {
 				c.seen = map[string]reading{}
 			}
-			var renewed []string
+			if c.read == nil {
+				c.read = map[string]readState{}
+			}
+			for user, st := range states {
+				key := agent + "/" + strings.ToLower(user)
+				if was := c.read[key].at; st.failed && was.After(st.at) {
+					st.at = was // the last good one's time stands
+				}
+				c.read[key] = st
+			}
+			var renewed, restarts []string
 			for user, a := range all {
 				key := agent + "/" + strings.ToLower(user)
 				if c.renewed[key] > began {
@@ -548,8 +745,13 @@ func Allowances(agent string) map[string]Allowance {
 					at = time.Time{}
 					continue
 				}
-				if was, ok := c.seen[key]; ok && a.renewedFrom(was.a, was.at, share, now) {
-					renewed = append(renewed, user)
+				if was, ok := c.seen[key]; ok {
+					if a.renewedFrom(was.a, was.at, share, now) {
+						renewed = append(renewed, user)
+					}
+					if a.startedAgain(was.a, was.at, share, now) {
+						restarts = append(restarts, user)
+					}
 				}
 				c.seen[key] = reading{a, now}
 			}
@@ -567,12 +769,15 @@ func Allowances(agent string) map[string]Allowance {
 			for _, user := range renewed {
 				tellRenewed(agent, user)
 			}
+			for _, user := range restarts {
+				tellStarted(agent, user)
+			}
 			close(done)
 		}()
 	}
 	_, known := c.m[agent]
 	c.Unlock()
-	if !known && done != nil {
+	if !known && done != nil && unwaited.Load() == 0 {
 		select {
 		case <-done:
 		case <-time.After(firstWait):
@@ -586,6 +791,50 @@ func Allowances(agent string) map[string]Allowance {
 		return lastAllowances(agent)
 	}
 	return m
+}
+
+// UsageRead is when user's allowance under agent was last read well, and
+// whether the last try to read it failed (or was held back); ok is false
+// when it hasn't been tried since magpie started. A careful provider holds
+// an account whose reading is too old or failed (Provider.CapCareful).
+func UsageRead(agent, user string) (at time.Time, failed, ok bool) {
+	c := &usedCache
+	c.Lock()
+	defer c.Unlock()
+	st, ok := c.read[agent+"/"+strings.ToLower(user)]
+	return st.at, st.failed, ok
+}
+
+// ReadUsageNow has agent's accounts users read again now, past the
+// minute their readings are kept and though allowances are read only when
+// asked, and waits, till ctx ends, for a reading begun after it asked. It
+// says whether one came back (UsageRead then tells how it went).
+func ReadUsageNow(ctx context.Context, agent string, users ...string) bool {
+	for _, u := range users {
+		StaleAllowance(agent, u)
+	}
+	c := &usedCache
+	for range 3 {
+		Allowances(agent)
+		c.Lock()
+		done, back := c.loading[agent], !c.at[agent].IsZero()
+		c.Unlock()
+		if done == nil {
+			return back // read already, the first ask waiting for it; or nothing to read it with
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+		c.Lock()
+		back = !c.at[agent].IsZero() // zero: asked before it went stale
+		c.Unlock()
+		if back {
+			return true
+		}
+	}
+	return false
 }
 
 // OnRenewed has f told when an account's usage windows were started again
@@ -606,13 +855,32 @@ var renewedHooks struct {
 	fs []func(agent, user string)
 }
 
+// OnStarted has f told as OnRenewed is, and by the same tellings, but
+// only when a window stands started again in fact: a reading finding one
+// it was full in full no more with its reset gone by, or standing a new,
+// later cycle, or a reset spent on them. What a vendor itself gave the
+// time of waits for that, not for a reading that merely finds its window
+// less than full while the vendor's own word stands (#2718).
+func OnStarted(f func(agent, user string)) {
+	startedHooks.Lock()
+	startedHooks.fs = append(startedHooks.fs, f)
+	startedHooks.Unlock()
+}
+
+var startedHooks struct {
+	sync.Mutex
+	fs []func(agent, user string)
+}
+
 // renewedNow tells those OnRenewed asked, and forgets the account's
 // allowance as last read: its windows are not known till read again, and
 // what holds an account at a share of them (a cap, credits not spent)
-// holds it no more.
+// holds it no more. Those OnStarted asked are told too: a reset spent is
+// a window started again in fact.
 func renewedNow(agent, user string) {
 	forgetAllowance(agent, user)
 	tellRenewed(agent, user)
+	tellStarted(agent, user)
 }
 
 // tellRenewed tells those OnRenewed asked.
@@ -620,6 +888,16 @@ func tellRenewed(agent, user string) {
 	renewedHooks.Lock()
 	fs := renewedHooks.fs
 	renewedHooks.Unlock()
+	for _, f := range fs {
+		f(agent, user)
+	}
+}
+
+// tellStarted tells those OnStarted asked.
+func tellStarted(agent, user string) {
+	startedHooks.Lock()
+	fs := startedHooks.fs
+	startedHooks.Unlock()
 	for _, f := range fs {
 		f(agent, user)
 	}
@@ -768,26 +1046,67 @@ func allowanceOf(ws []QuotaWindow, now time.Time) Allowance {
 			}
 		}
 	}
+	resets := func(w QuotaWindow) time.Time {
+		switch {
+		case w.ResetsAt != nil:
+			return *w.ResetsAt
+		case w.ResetSecs > 0:
+			return now.Add(time.Duration(w.ResetSecs) * time.Second)
+		}
+		return time.Time{}
+	}
 	var a Allowance
+	at := map[string]int{} // a model's own window, by its model
 	for _, w := range ws {
 		if w.Aside || w.Text {
 			continue
 		}
-		l := Limit{Used: w.Used, Span: w.Span, Model: w.Model, Amount: w.Amount, Of: w.Limit, Unit: w.Unit, matches: w.matches, partial: w.partial, Name: w.Name, Credits: w.Credits}
+		l := Limit{Used: w.Used, Span: w.Span, Model: w.Model, Amount: w.Amount, Of: w.Limit, Unit: w.Unit, matches: w.matches, partial: w.partial, Name: w.Name, Credits: w.Credits, Resets: resets(w)}
 		if ids := families[w.Model]; ids != nil && w.Family != "" && w.matches == nil {
 			l.Model = ""
 			l.matches = func(model string) bool { return ids[model] }
 		}
-		switch {
-		case w.ResetsAt != nil:
-			l.Resets = *w.ResetsAt
-		case w.ResetSecs > 0:
-			l.Resets = now.Add(time.Duration(w.ResetSecs) * time.Second)
+		if w.Family != "" && w.Model != "" {
+			at[w.Model] = len(a)
 		}
 		if w.RunsOutAt != nil {
-			l.RunsOut = *w.RunsOutAt
+			l.RunsOut, l.RunsOutLeft = *w.RunsOutAt, w.RunsOut
+		}
+		if w.Balance != nil {
+			// a wallet is known by its balance, with no share invented:
+			// one with nothing left is used up, as the vendor refuses it
+			b := *w.Balance
+			l.Balance = &b
+			if b <= 0 {
+				l.Used = max(l.Used, 100)
+			}
 		}
 		a = append(a, l)
 	}
+	// a pool's own windows, set aside for routing, hold its models at
+	// their caps (pluviophile714 on Discord), under their LineName
+	for _, w := range ws {
+		if !w.PoolWindow() || w.Text {
+			continue
+		}
+		pl := Limit{Used: w.Used, Span: w.Span, Name: w.LineName(), Resets: resets(w)}
+		for _, m := range PoolMembers(ws, w) {
+			if i, ok := at[m.Model]; ok {
+				a[i].pool = append(a[i].pool, pl)
+			}
+		}
+	}
 	return a
+}
+
+// capLimits are the windows of a that count model, each with the windows
+// of the pool it draws on, which hold it at caps only.
+func (a Allowance) capLimits(model string) []Limit {
+	var out []Limit
+	for _, l := range a {
+		if l.applies(model) {
+			out = append(append(out, l), l.pool...)
+		}
+	}
+	return out
 }

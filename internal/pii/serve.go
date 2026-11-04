@@ -3,13 +3,16 @@ package pii
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -163,7 +166,15 @@ type candidate struct {
 // which runs on Metal; then pf-serve on the CPU, which runs anywhere.
 // macOS's was tried on Metal alone: one whose load hung there, or ended,
 // was tried again on Metal by every request (lazyeo, an M2).
+// A CPU without what pf-serve is built for runs pf-serve-base, on the
+// CPU alone: pf-serve-vulkan is built like pf-serve, and would end the
+// same way.
 func candidates(cpu bool) []candidate {
+	if !fullX86() {
+		if _, err := os.Stat(exe("pf-serve-base")); err == nil {
+			return []candidate{{exe("pf-serve-base"), true}}
+		}
+	}
 	var out []candidate
 	if !cpu {
 		if _, err := os.Stat(exe("pf-serve-vulkan")); err == nil {
@@ -180,6 +191,21 @@ func candidates(cpu bool) []candidate {
 func start(cpu bool, stop <-chan struct{}) (*helper, error) {
 	if !Installed() {
 		return nil, ErrNotInstalled
+	}
+	if !strings.HasSuffix(binDir(), "-"+target()) {
+		// only the Intel pf-serve under Rosetta, which may not start at
+		// all: Apple silicon's is fetched first, and one that can't be
+		// leaves the Intel one to try
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		go func() {
+			select {
+			case <-stop:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		ensureServe(ctx)
+		cancel()
 	}
 	upgrades.Add(1)
 	go func() {
@@ -219,7 +245,15 @@ var upgrades sync.WaitGroup
 var errStopped = errors.New("the local masking model was stopped")
 
 func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
-	cmd := proc.Command(path, modelPath())
+	// pf-serve is given the model's name, run in its folder, and never
+	// the whole path: on Windows a C program's argv comes in the ANSI
+	// code page, where ggml's fopen reads UTF-8 and the GPU's weights
+	// are read again through a narrow ifstream, so a folder with a
+	// character outside ASCII (a Chinese user name in C:\Users) failed
+	// to load on every device, its error a path in mojibake. magpie's
+	// own names are ASCII.
+	cmd := proc.Command(path, modelName())
+	cmd.Dir = filepath.Dir(modelPath())
 	// Without GGML_METAL_NO_RESIDENCY, ggml's Metal residency set keeps a
 	// heartbeat that woke an idle pf-serve ~146 times a second for the 10
 	// minutes it stays up after a request, and macOS's Energy Impact
@@ -227,10 +261,14 @@ func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 	// second, and the first request after an idle spell takes 0.1-0.45s
 	// more (51-78ms hot either way).
 	cmd.Env = append(os.Environ(), "GGML_METAL_NO_RESIDENCY=1")
+	// PF_MOE_CHUNK is left at the engine's default (the window, 4096) on
+	// every device: on an RX 470 through Vulkan, interleaved A/B in one
+	// session read the same spans 6-9% faster at 4096 than at 2048 (#3682;
+	// the 1.77x once measured for 2048 was the machine's own 2x swing
+	// between runs hours apart), and on an M4 Pro's Metal 2048 was ~6%
+	// slower. A PF_MOE_CHUNK the user set is inherited through Environ.
 	if cpu {
 		cmd.Env = append(cmd.Env, "PF_DEVICE=cpu")
-	} else if v := moeChunk(path); v != "" {
-		cmd.Env = append(cmd.Env, "PF_MOE_CHUNK="+v)
 	}
 	wait := loadTimeout
 	if !cpu {
@@ -274,32 +312,12 @@ func startOne(path string, cpu bool, stop <-chan struct{}) (*helper, error) {
 		if why == "" {
 			why = h.died()
 		}
+		// the name it was given ("failed to read GGUF: <name>"), as the
+		// path the user can find
+		why = strings.ReplaceAll(why, " "+modelName(), " "+modelPath())
 		return nil, fmt.Errorf("%s: %s", baseName(path), why)
 	}
 	return h, nil
-}
-
-// vulkanMoEChunk is the MoE's token chunk pf-serve-vulkan runs with
-// (privacy-filter.cpp's PF_MOE_CHUNK, src/model.cpp): the expert matmul
-// over a window's tokens in pieces of this many, exactly the same answer
-// either way. Its own default is the window, 4096. On an RX 470/580-class
-// GPU through Vulkan, 2048 read the same texts 1.77x faster at every size
-// from 24 KB to 480 KB (#3682: 480 KB in 90s, not 159s), and was the
-// fastest of 1024 to 3072. On Metal it is a little slower (an M4 Pro: 96
-// KB in 2.00s, 1.87s at 4096), so macOS's pf-serve keeps the default, and
-// the CPU's is the window either way.
-const vulkanMoEChunk = "2048"
-
-// moeChunk is the PF_MOE_CHUNK magpie gives the GPU's pf-serve at path:
-// pf-serve-vulkan's, unless the user set their own, which it inherits.
-func moeChunk(path string) string {
-	if _, set := os.LookupEnv("PF_MOE_CHUNK"); set {
-		return ""
-	}
-	if strings.TrimSuffix(baseName(path), ".exe") == "pf-serve-vulkan" {
-		return vulkanMoEChunk
-	}
-	return ""
 }
 
 func baseName(path string) string {
@@ -381,7 +399,7 @@ func Warm() {
 		go func() {
 			turn <- struct{}{}
 			defer func() { <-turn }()
-			classify([]string{"warm"})
+			classifySafely(classify, []string{"warm"})
 		}()
 	}
 }
@@ -638,9 +656,10 @@ func (h *helper) classify(texts []string) ([][]redact.Found, error) {
 		}
 		for j := 0; j < n && r.err == nil; j++ {
 			start, end := int32(r.u32()), int32(r.u32())
-			r.u32() // the score: pf-serve sends only those over its threshold
+			// pf-serve sends only those over its default threshold, 0.5: Floor
+			score := math.Float32frombits(r.u32())
 			label := string(r.bytes(int(r.u8())))
-			out[i] = append(out[i], redact.Found{Start: int(start), End: int(end), Label: label})
+			out[i] = append(out[i], redact.Found{Start: int(start), End: int(end), Label: label, Score: float64(score)})
 		}
 	}
 	if status != 0 && r.err == nil {

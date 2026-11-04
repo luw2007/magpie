@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -14,7 +15,10 @@ import (
 	"github.com/yetone/magpie/internal/redact"
 )
 
-func person(s, e int) redact.Found { return redact.Found{Start: s, End: e, Label: "private_person"} }
+// person is a name at [s, e), as sure as the fake pf-serve says (main_test.go).
+func person(s, e int) redact.Found {
+	return redact.Found{Start: s, End: e, Label: "private_person", Score: float64(float32(0.98))}
+}
 
 // Short texts go to pf-serve joined, in one request, and what it finds
 // comes back to each text at that text's own offsets; a text seen before
@@ -56,10 +60,11 @@ func TestJoinSplitsAtChunkSize(t *testing.T) {
 	long := strings.Repeat("x", chunkSize)
 	texts := []string{"a", "b", long, "c"}
 	chunks, parts := join(pf.missing(texts, []int{0, 1, 2, 3}, nil))
-	if len(chunks) != 3 || chunks[0] != "a"+sep+"b" || chunks[1] != long || chunks[2] != "c" {
+	// the last text first: TestNewestTextReadFirst
+	if len(chunks) != 3 || chunks[0] != "c" || chunks[1] != long || chunks[2] != "b"+sep+"a" {
 		t.Fatalf("chunks = %d: %.20q", len(chunks), chunks)
 	}
-	if !reflect.DeepEqual(parts, [][]part{{{"a", 0}, {"b", 1 + len(sep)}}, {{long, 0}}, {{"c", 0}}}) {
+	if !reflect.DeepEqual(parts, [][]part{{{"c", 0}}, {{long, 0}}, {{"b", 0}, {"a", 1 + len(sep)}}}) {
 		t.Fatalf("parts = %v", parts)
 	}
 }
@@ -255,6 +260,7 @@ func TestFailedModelHoldsRequestsBackAtOnce(t *testing.T) {
 	classifyTimeout = func(int) time.Duration { return 300 * time.Millisecond }
 	t.Cleanup(func() { classifyTimeout = was })
 	first := findAsync(context.Background(), "hi Alice")
+	waitForStart(t, log)
 	waitFor(t, "the first request reaching pf-serve", func() bool { return len(fakeLines(t, log, "request")) == 1 })
 	queued := findAsync(context.Background(), "another Alice")
 	if r := within10s(t, "the first request", func() found { return <-first }); r.err == nil {
@@ -337,6 +343,38 @@ func TestServeThatCantLoadSaysWhy(t *testing.T) {
 	}
 }
 
+// A model in a folder whose name isn't ASCII loads: on Windows pf-serve's
+// argv is in the ANSI code page and its fopen reads UTF-8, so a Chinese
+// user name in C:\Users failed every load, on the GPU and the CPU alike,
+// with the path in mojibake (AIMetaPhD on X). pf-serve gets the model's
+// name, run in its folder; the stand-in refuses a byte outside ASCII as
+// pf-serve does.
+func TestModelInFolderNotASCIILoads(t *testing.T) {
+	d := filepath.Join(t.TempDir(), "用户 Ünïcode", ".cache", "privacy-filter")
+	log := fakeInstallAt(t, "ok", true, d)
+	got, err := Find([]string{"hi Alice"})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got[0]) != 1 {
+		t.Fatalf("found %v", got)
+	}
+	if m := fakeLines(t, log, "model "); len(m) == 0 || m[0] != "model "+modelName() {
+		t.Fatalf("pf-serve was given %q, want the model's name", m)
+	}
+}
+
+// pf-serve's error names the model by the name it was given; the user
+// reads the whole path, in UTF-8.
+func TestModelErrorNamesWholePath(t *testing.T) {
+	d := filepath.Join(t.TempDir(), "用户")
+	fakeInstallAt(t, "badmodel", false, d)
+	_, err := Find([]string{"hi Alice"})
+	if err == nil || !strings.Contains(err.Error(), "failed to read GGUF: "+modelPath()) {
+		t.Fatalf("err = %v, want %s in it", err, modelPath())
+	}
+}
+
 // Warm starts pf-serve before a request asks, and one that can't start
 // says why in Now; a request that is answered clears it.
 func TestWarm(t *testing.T) {
@@ -404,18 +442,18 @@ func TestCacheKeepsTheLatest(t *testing.T) {
 	}
 }
 
-// pf-serve-vulkan runs its MoE in 2048-token chunks, 1.77x faster than
-// its default 4096 on an RX 470/580-class GPU (#3682); macOS's Metal one
-// and the CPU's keep their default. A PF_MOE_CHUNK the user set is theirs,
-// on every one.
-func TestVulkanServeGetsMoEChunk(t *testing.T) {
+// Every pf-serve keeps the engine's own MoE chunk, the window (4096):
+// on an RX 470 through Vulkan 4096 was 6-9% faster than 2048 (#3682), on
+// Metal 2048 was ~6% slower. A PF_MOE_CHUNK the user set is theirs, on
+// every one.
+func TestServeKeepsMoEChunkUnlessUserSets(t *testing.T) {
 	cases := []struct {
 		name   string
 		vulkan bool
 		user   string // "" unset
 		want   []string
 	}{
-		{"vulkan", true, "", []string{"moechunk pf-serve-vulkan 2048", "moechunk pf-serve "}},
+		{"vulkan", true, "", []string{"moechunk pf-serve-vulkan ", "moechunk pf-serve "}},
 		{"vulkan, user's own", true, "3072", []string{"moechunk pf-serve-vulkan 3072", "moechunk pf-serve 3072"}},
 	}
 	if runtime.GOOS == "darwin" {

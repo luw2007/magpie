@@ -110,6 +110,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		AgentOrder:           []string{"codex"},
 		AgentsHidden:         []string{"goose"},
 		AgentsShown:          []string{"pi"},
+		AgentsHere:           []string{"codex"},
 		Visible:              map[string][]string{"claude": {"anthropic"}},
 		HiddenModels:         map[string][]string{"claude": {"p/m"}, "codex": {"p/n", "group/g"}},
 		DisabledModels:       []string{"*fable*", "p/m"},
@@ -133,7 +134,9 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		ModelWires:           map[string]string{"p/m": "vendor-c/m"},
 		ModelAPIs:            map[string]string{"p/m": "anthropic"},
 		ModelSameAs:          map[string]string{"p/m": "deepseek-v4.1-flash"},
+		ModelIDs:             map[string]string{"p/flash": "deepseek-v4.1-flash-1017"},
 		UsageAliases:         map[string]string{"deepseek-v4.1-flash": "deepseek-flash"},
+		UsageCleared:         []settings.UsageClear{{Provider: "p", Model: "m", At: 1761600000000}},
 		ModelKinds:           map[string]string{"p/m": "video"},
 		RedactRules:          []redact.Rule{{Kind: "prefix", Prefix: "oc_sk_"}},
 		RedactActions:        map[string]string{"API_KEY": "block", "EMAIL": "warn"},
@@ -153,6 +156,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		UsageOrder:           []string{"kimi", "codex"},
 		PanelUsageHidden:     []string{"deepseek"},
 		UsageAgentsHidden:    []string{"curl"},
+		UsageCardsHidden:     []string{"stepfun|balance"},
 		ClientAgents:         map[string]string{"hermes-codex-thread-bridge": "codex"},
 		PlainNames:           true,
 		PlainOwnNames:        true,
@@ -165,9 +169,13 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexSubagentModel:   "codex/gpt-6-astra",
 		DesktopSubagentModel: "fake/m2",
 		ChinaMirror:          true,
+		NPMRegistry:          "https://npm.corp.example",
 		CodexAutoReset:       []string{"me@example.com"},
 		CodexAutoResetOnly:   map[string]string{"me@example.com": "expiring"},
+		CodexResetLead:       180,
 		CodexNoCredits:       []string{"me@example.com"},
+		CodexCreditsLast:     []string{"two@example.com"},
+		CodexCreditsFirst:    []string{"three@example.com"},
 		CodexWarmAtOf:        map[string]string{"me@example.com": "09:00"},
 		TextSize:             125,
 		PageWidth:            1600,
@@ -175,24 +183,40 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		UpdateMirror:         "https://mirror.example/",
 		Window:               []int{900, 700},
 		WindowMaximised:      true,
+		WindowAt:             []int{-1440, 120},
 		FullContext:          true,
 		DesktopLongest:       true,
 		GuideHidden:          true,
 		GatewayMode:          "off",
 		QuotaReads:           "asked",
+		SearchAll:            true,
 		NoAccountDiscovery:   true,
 		RedactModel:          true,
 		RedactModelName:      "astrlink-guard",
+		RedactModelScore:     map[string]float64{"astrlink-guard": 0.9},
+		RedactRouteTo:        "fake/m1",
 	}
+	was.RedactModelOff, was.RedactModelAuto = true, true
 	was.DesktopSubagentEffort = "high"
+	was.ReplyModel = settings.ReplyMember // memberModel, its mirror, is kept with it
 	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
 	was.ClaudeRunsMost = 3
 	was.RequestArchiveLocal, was.RequestArchiveLocalMB = true, 256
 	was.ProxyCustom = "http://me:secret@proxy.example:8080"
+	was.PanelShortcut = "Ctrl+Alt+K"
+	was.SearcherThen = []string{"fake/m1", "fake/m2"} // set in its own row
+	was.RouterNote = "Los Angeles"                    // the Library's servers/hub-note
+	was.BusyLoad = 150                                // the Routing page's busy-load
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}
 	if err := settings.SetGatewayConversations(true); err != nil {
+		t.Fatal(err)
+	}
+	// only SetSessionReads writes the agents whose sessions are read
+	if err := settings.SetSessionReads(func(*settings.SessionReads) *settings.SessionReads {
+		return &settings.SessionReads{Asked: true, Agents: map[string]bool{"claude": true, "codex": false}}
+	}); err != nil {
 		t.Fatal(err)
 	}
 	was = settings.Load()

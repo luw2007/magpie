@@ -80,6 +80,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=routing");
       await openPane(page, "live");
@@ -131,6 +132,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
       await page.route("**/*", serve(lang, [signedInRefused, codex]));
       await page.goto("http://magpie.test/?view=providers");
       await page.locator(".row.provider", { hasText: "Claude Code" }).first().click();

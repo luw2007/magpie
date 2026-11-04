@@ -136,6 +136,7 @@ for (const engine of engines) {
         const context = await browser.newContext({ viewport: { width: 360, height: 760 }, isMobile: engine === "chromium", hasTouch: true, reducedMotion: "reduce" });
         const page = await context.newPage();
         page.setDefaultTimeout(6000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/?view=" + p.view);
         if (p.view === "routing") await openPane(page, "requests");

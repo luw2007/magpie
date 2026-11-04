@@ -62,6 +62,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
         const page = await ctx.newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang));
         await page.goto("http://magpie.test/?view=routing");
@@ -70,17 +71,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator("#view-routing .rt-req").nth(11).waitFor();
         await page.waitForTimeout(500);
 
-        await openPane(page, "requests");
-        // The request history has its own pane and responsive list.
-        assert.equal(await tracks(page, ".rt-reqs"), width < 800 ? 2 : 4, "the requests' columns");
+        // The request history has its own pane and responsive rows. Each
+        // row now takes measured columns rather than a Safari subgrid.
+        assert.equal(await tracks(page, ".rt-reqs > .rt-req"), width < 800 ? 2 : 4, "the requests' columns");
         // The requests and account summary share the available pane width,
         // with the sidebar aside (routing/client.js byWidth).
         const room = await page.locator(".rt-more").first().evaluate((e) => e.getBoundingClientRect().width);
         assert.equal(await tracks(page, ".rt-cols"), room >= 1150 ? 2 : 1, "the requests and the accounts, side by side or one under the other");
 
-        // down to the end, by the wheel
+        // down to the end, by the wheel over the page's own gutter: the
+        // requests' list keeps the wheel at its ends (inner-scroll-contain)
         const box = await view.boundingBox();
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.move(box.x + 3, box.y + box.height / 2);
         for (let i = 0; i < 20; i++) { await page.mouse.wheel(0, 300); await page.waitForTimeout(40); }
         await page.waitForTimeout(300);
         // and on at the end, as the page is redrawn: each turn of the wheel

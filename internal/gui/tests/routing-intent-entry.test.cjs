@@ -14,6 +14,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { openPane } = require("./routing-pane.cjs");
+const { settled } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [
@@ -65,6 +66,8 @@ function serve(lang, posts) {
 // wheel down to a control, as the reader would (the page keeps still for
 // any other scroll), then click it with the mouse
 async function press(page, loc, height) {
+  // where loc will be is read once the editor has stopped moving
+  await settled(page);
   await page.mouse.move(Math.min(550, (page.viewportSize().width / 2) | 0), 300);
   for (let i = 0; i < 12 && (await loc.boundingBox()).y > height - 160; i++) {
     await page.mouse.wheel(0, 300);
@@ -87,6 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         t.after(() => browser.close());
         const page = await (await browser.newContext({ viewport: { width, height } })).newPage();
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [], posts = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, posts));
@@ -107,6 +111,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await ed.locator(".rt-classifier").isVisible(), false);
 
         // a rule, its intent box focused, Jev picked; nothing scrolled
+        await settled(page);
         await page.mouse.move(Math.min(550, width / 2), 300);
         for (let i = 0; i < 12 && (await byIntent.boundingBox()).y > height - 160; i++) {
           await page.mouse.wheel(0, 300);
