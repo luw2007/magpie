@@ -8,8 +8,6 @@
 name: notes-mirror
 
 on:
-  schedule:
-    - cron: '53 * * * *'
   workflow_dispatch:
 
 permissions:
