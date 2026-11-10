@@ -13,6 +13,12 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
 const { openPane } = require("./routing-pane.cjs");
+// the rows a group's editor folds under Advanced, opened
+const openAdvanced = async (page) => {
+  const d = page.locator(".rt-gedit .rt-gadv");
+  await d.waitFor({ state: "attached" });
+  if (!(await d.evaluate((e) => e.open))) await d.locator(":scope > summary").click();
+};
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [
@@ -94,7 +100,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction(() => !document.querySelector(".rt-gedit"));
         return posts.filter((p) => p.path === "/api/groups/save").at(-1).body;
       };
-      const open = async () => { await card.locator("button", { hasText: w.edit }).click(); await row.waitFor().catch((e) => { throw new Error(errors.join(" / ") || e.message); }); };
+      const open = async () => { await card.locator("button", { hasText: w.edit }).click(); await openAdvanced(page); await row.waitFor().catch((e) => { throw new Error(errors.join(" / ") || e.message); }); };
 
       await open();
       assert.equal(await row.locator(".opt.on").textContent(), w.largest);

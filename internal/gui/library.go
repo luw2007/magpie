@@ -14,6 +14,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/mcpauth"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -31,6 +32,36 @@ type libraryJSON struct {
 	// Problems are every one still standing, the page's list of what an
 	// agent couldn't be given: not only those a chip can carry
 	Problems []library.Problem `json:"problems,omitempty"`
+	// SubagentModels are what a subagent's model may be set to: the models
+	// and routing groups Codex's lists show, the only agent that takes one
+	// (library.Subagent.Model). CodexSubagentModel is the model the
+	// gateway puts every Codex subagent on when set on the Agents page,
+	// which a subagent's own then gives way to.
+	SubagentModels     []subagentModel `json:"subagentModels"`
+	CodexSubagentModel string          `json:"codexSubagentModel,omitempty"`
+}
+
+// subagentModel is a model a subagent may be set to run on.
+type subagentModel struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Note  string `json:"note,omitempty"`
+	Group bool   `json:"group,omitempty"`
+}
+
+func subagentModels() []subagentModel {
+	out := []subagentModel{}
+	for _, e := range provider.CodexSubagentModels() {
+		m := subagentModel{ID: e.ID, Name: e.Name, Note: e.Provider.Name, Group: e.Group != ""}
+		if a := e.Provider.Account; a != nil && a.User != "" {
+			m.Note = a.User
+		}
+		if m.Group {
+			m.Note = ""
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func libraryView(res *library.Result) (libraryJSON, error) { return libraryRead(res, false) }
@@ -51,7 +82,8 @@ func libraryRead(res *library.Result, glance bool) (libraryJSON, error) {
 	}
 	v, err := read(p)
 	home, _ := os.UserHomeDir()
-	return libraryJSON{View: v, Result: res, Home: home, Problems: p}, err
+	return libraryJSON{View: v, Result: res, Home: home, Problems: p,
+		SubagentModels: subagentModels(), CodexSubagentModel: provider.CodexSubagentModel()}, err
 }
 
 // instructionsJSON answers a change to the instructions: what the page's
@@ -143,6 +175,8 @@ func revealable(v *library.View) []string {
 
 func libraryRoutes(mux *http.ServeMux, w Windows) {
 	browserRoutes(mux, w)
+	memoryRoutes(mux)
+	memoryDistillRoutes(mux)
 	mux.HandleFunc("GET /api/library", func(rw http.ResponseWriter, r *http.Request) {
 		v, err := libraryRead(nil, r.URL.Query().Get("glance") == "1")
 		if err != nil {
@@ -242,6 +276,50 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			Regrouped int `json:"regrouped"`
 		}{v, n})
 	})
+	// Pi's extensions and packages, for each Pi here (this computer's and
+	// each WSL distro's): switched on or off as Pi itself does it, and
+	// copied from one Pi to another
+	mux.HandleFunc("GET /api/library/pi", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, library.ReadPiExtensions())
+	})
+	mux.HandleFunc("POST /api/library/pi", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Pi, Ext, Pkg string
+			On           bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		var v *library.PiExtensions
+		var err error
+		switch {
+		case in.Ext != "" && in.Pkg == "":
+			v, err = library.SetPiExtension(in.Pi, in.Ext, in.On)
+		case in.Pkg != "" && in.Ext == "":
+			v, err = library.SetPiPackage(in.Pi, in.Pkg, in.On)
+		default:
+			err = errors.New("name one extension or one package")
+		}
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	mux.HandleFunc("POST /api/library/pi/copy", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ From, To, Ext, Pkg string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.CopyPi(in.From, in.To, in.Ext, in.Pkg)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
 	// RTK:which agents have its hook, switching one on or off, and
 	// installing rtk when the page is asked to
 	mux.HandleFunc("GET /api/library/rtk", func(rw http.ResponseWriter, r *http.Request) {
@@ -313,6 +391,35 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		} else {
 			v, err = library.InstallRTK()
 		}
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	// billion-context: which agents have its plugin, switching one on or
+	// off, and installing bili when the page is asked to
+	mux.HandleFunc("GET /api/library/bili", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, library.ReadBili())
+	})
+	mux.HandleFunc("POST /api/library/bili", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent string
+			On    bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.SetBili(in.Agent, in.On)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, v)
+	})
+	mux.HandleFunc("POST /api/library/bili/install", func(rw http.ResponseWriter, r *http.Request) {
+		v, err := library.InstallBili()
 		if err != nil {
 			fail(rw, err)
 			return
@@ -498,6 +605,9 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			// what the router says of itself to the agents, this
 			// computer's own (settings.RouterNote)
 			err = settings.SetRouterNote(in.Note)
+		case "servers/hub-tools":
+			// every tool given whole, not on demand (settings.RouterAllTools)
+			err = settings.SetRouterAllTools(in.On)
 		case "servers/hub-open":
 			// the hub added to another app through its install link,
 			// built here: the page names the app, never the link
@@ -508,6 +618,15 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		case "servers/tools":
 			// the tools its agents leave out (nf1qaz2w on Discord)
 			res, err = library.ServerTools(in.Name, in.Names)
+		case "servers/plugin-on":
+			// a plugin's tools off for every agent, or on again, from its
+			// row on the Plugins page (Name is the plugin's)
+			res, err = library.PluginServerOn(in.Name, in.On)
+		case "servers/on":
+			// off for every agent, project and app at the router's
+			// address, kept with its settings, or on again as it was
+			// (swang20201 on X)
+			res, err = library.ServerOn(in.Name, in.On)
 		case "servers/agents-all":
 			res, err = library.EveryServerAgents(in.Agents, in.On)
 		case "servers/agents-some":
@@ -595,6 +714,12 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		case "skills/where":
 			// each agent's own folder, or ~/.agents/skills too (skills_shared.go)
 			res, err = library.SetSkillsWhere(in.How)
+		case "skills/router":
+			// magpie's one skill listing the rest (skill_router.go)
+			res, err = library.SetSkillRouter(in.On)
+		case "skills/router-direct":
+			// a skill kept out of the router, each agent's own link
+			res, err = library.SkillRouterHow(in.Name, in.On)
 		case "skills/keep-own":
 			res, err = library.KeepAgentSkills(oneOrMore(in.Name, in.Names), in.Agent)
 		case "market/server":
@@ -607,6 +732,8 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveProject(in.Dir, in.Keep)
 		case "projects/skill":
 			res, err = library.ProjectSkill(in.Dir, in.Name, in.Agents)
+		case "projects/skills":
+			res, err = library.ProjectSkills(in.Dir, in.Names, in.Agents)
 		case "projects/server":
 			res, err = library.ProjectServer(in.Dir, in.Name, in.Agents)
 		case "projects/copy":

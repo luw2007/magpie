@@ -161,7 +161,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // enough groups of the user's that the editor, last in the list,
       // opens below the window
       await page.route("**/*", serve(lang, posts, 12));
-      await page.goto("http://magpie.test/?view=routing");
+      await page.goto("http://magpie.test/?view=groups");
       const btn = page.locator(".rt-gtplbtn");
       await btn.waitFor();
       await page.waitForTimeout(500);

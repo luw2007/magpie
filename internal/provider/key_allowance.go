@@ -171,7 +171,8 @@ func KeyAllowance(p Provider) (Allowance, bool) {
 	// last till the user asks, or the key says it is out (#1518)
 	if !e.loading && time.Since(e.at) > age && (e.refused || !readsAsked()) {
 		e.loading = true
-		go readKeyAllowance(p, id, c.gen)
+		gen := c.gen
+		goRead(func() { readKeyAllowance(p, id, gen) })
 	}
 	return e.a, len(e.a) > 0
 }
@@ -210,7 +211,7 @@ func readKeyAllowance(p Provider, id string, gen int) {
 	}
 	if e.stale {
 		e.stale, e.loading, e.at = false, true, time.Time{}
-		go readKeyAllowance(p, id, gen)
+		goRead(func() { readKeyAllowance(p, id, gen) })
 	}
 	c.Unlock()
 	if renewed {
@@ -246,7 +247,8 @@ func keyWindows(ctx context.Context, p Provider) (keyReading, error) {
 	q := p
 	if saved, err := Find(p.ID); err == nil {
 		q = *saved
-		q.Key = p.Key
+		q.setFirst(p.SelectedKey())
+		q = q.atKeyPlan(p.KeyPlan)
 	}
 	var r keyReading
 	var err error

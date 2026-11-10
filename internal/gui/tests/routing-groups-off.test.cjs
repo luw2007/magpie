@@ -5,9 +5,11 @@
 // so and has a button that turns them on (plugins/builtin {id:"groups"}),
 // after which the groups and New group are back and the note is gone. With
 // them on, there is no note. English and Chinese, Chromium and WebKit, wide
-// and narrow, and every language has the strings. The page opens on Live,
-// so each test opens the Routing groups pane before it reads the note or
-// the groups there.
+// and narrow, and every language has the strings.
+// yyddbds on Discord: with them off, the sidebar has no Routing groups
+// tab and a kept address opens Routing. Its Groups pane says why they
+// are off; the providers' accounts remain in its Pools pane. Turned on,
+// the tab is back and the standalone groups page opens.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -20,6 +22,7 @@ const models = [
   { id: "a/m", name: "m", providerName: "A", icon: "generic" },
   { id: "b/m", name: "m", providerName: "B", icon: "generic" },
 ];
+const pools = [{ provider: "a", name: "A", icon: "generic", kind: "key", who: ["k1", "k2"], routing: "", affinity: "" }];
 const mine = { id: "mine", name: "Mine", members: ["a/m", "b/m"], ready: true, memberInfo: [{ id: "a/m", ready: true }, { id: "b/m", ready: true }] };
 
 function serve(lang, start, posts) {
@@ -42,7 +45,7 @@ function serve(lang, start, posts) {
       return json({ mine: true, now: new Date().toISOString(), seq: 1, totals: { requests: 0, rerouted: 0, errors: 0 }, routes: [] });
     }
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
-    if (url.pathname === "/api/groups") return json({ models, pools: [], deciders: [], found: true, groups: [mine] });
+    if (url.pathname === "/api/groups") return json({ models, pools: [], deciders: [], found: true, groups: [mine], pools });
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true, url: "http://127.0.0.1:3999" } });
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
@@ -60,6 +63,10 @@ const keys = [
   "Turn on routing groups", "Routing groups are on",
   "Routing groups are off in Plugins › Built-in: the groups magpie finds, one model several providers serve, still route, but your own can't be made or changed here.",
 ];
+
+// the pages' tabs a reader sees, the sidebar's or the header's
+const tabs = (page) => page.evaluate(() => [...document.querySelectorAll("#nav button[data-view]")].filter((b) => !b.hidden && b.offsetParent && getComputedStyle(b).display !== "none").map((b) => b.dataset.view));
+const shown = (page) => page.evaluate(() => [...document.querySelectorAll("main.view")].filter((v) => !v.hidden).map((v) => v.id));
 
 async function open(engine, width, t, name) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
@@ -79,24 +86,34 @@ async function open(engine, width, t, name) {
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
     const w = words[lang];
-    for (const width of [900, 420]) {
-      test(`${engine} ${lang} ${width}px: with routing groups off, the Routing page says so and turns them on`, async (t) => {
+    // the sidebar from 1024 points, the header's tabs under it, and narrow
+    for (const width of [1200, 900, 420]) {
+      test(`${engine} ${lang} ${width}px: with routing groups off, their tab is gone, and Routing says so and turns them on`, async (t) => {
         const page = await open(engine, width, t, `${engine}-${lang}-${width}-routing-groups-off.png`);
         const errors = [], posts = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, false, posts));
-        await page.goto("http://magpie.test/?view=routing");
-        // the page opens on Live: the note, the groups and New group are the
-        // Groups pane's
+        await page.goto("http://magpie.test/?view=groups");
         await openPane(page, "groups");
 
-        const note = page.locator(".rt-gsec .rt-goff");
+        const note = page.locator("#view-routing .rt-gsec .rt-goff");
         await note.waitFor();
+        assert.deepEqual(await shown(page), ["view-routing"], "an address kept for the groups' page opens Routing");
+        if (width >= 800) {
+          const ts = await tabs(page);
+          assert(ts.includes("routing"), ts.join());
+          assert(!ts.includes("groups"), `no Routing groups tab: ${ts.join()}`);
+        }
+        assert.equal(await page.locator("#rtToGroups").isVisible(), false, "nor Routing's way to the page");
+        // the providers' own accounts are still to be set, in Routing's Pools pane
+        await openPane(page, "pools");
+        await page.locator("#view-routing .rt-pool[data-provider=\"a\"]").waitFor({ state: "visible" });
+        await openPane(page, "groups");
         const text = await note.innerText();
         assert(text.includes(w.why), text);
         const btn = note.locator("button", { hasText: w.on });
         assert(await btn.isVisible());
-        assert.equal(await page.locator("#rtNewGroup").isVisible(), false, "New group is off with them");
+        assert.equal(await page.locator(".rt-gnew").isVisible(), false, "New group is off with them");
         assert.equal(await page.locator(".rt-group", { hasText: "Mine" }).isVisible(), false);
         assert(await note.evaluate((n) => n.getBoundingClientRect().right <= innerWidth + 1), "the note fits the window");
         assert(await btn.evaluate((b) => b.getBoundingClientRect().right <= innerWidth + 1), "so does its button");
@@ -104,23 +121,28 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await btn.click();
         await note.waitFor({ state: "hidden" });
         assert.deepEqual(posts, [{ id: "groups", on: true }]);
-        await page.locator(".rt-group", { hasText: "Mine" }).waitFor({ state: "visible" });
-        await page.locator("#rtNewGroup").waitFor({ state: "visible" });
+        // on, the groups' page opens, with them and New group, its tab back
+        await page.locator("#view-groups .rt-group", { hasText: "Mine" }).waitFor({ state: "visible" });
+        await page.locator("#view-groups .rt-gnew").waitFor({ state: "visible" });
+        assert.deepEqual(await shown(page), ["view-groups"]);
+        if (width >= 1024) assert((await tabs(page)).includes("groups"), "the tab is back");
+        await page.locator("#view-groups .rt-pool[data-provider=\"a\"]").waitFor({ state: "visible" });
         await page.waitForFunction((m) => document.querySelector("#status").textContent.includes(m), w.done);
         assert.deepEqual(errors, []);
       });
     }
 
     test(`${engine} ${lang}: with routing groups on, there is no note`, async (t) => {
-      const page = await open(engine, 900, t, `${engine}-${lang}-routing-groups-on.png`);
+      const page = await open(engine, 1200, t, `${engine}-${lang}-routing-groups-on.png`);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, true, []));
-      await page.goto("http://magpie.test/?view=routing");
-      await openPane(page, "groups");
+      await page.goto("http://magpie.test/?view=groups");
       await page.locator(".rt-group", { hasText: "Mine" }).waitFor({ state: "visible" });
       assert.equal(await page.locator(".rt-goff").isVisible(), false);
-      assert(await page.locator("#rtNewGroup").isVisible());
+      assert(await page.locator(".rt-gnew").isVisible());
+      assert.deepEqual(await shown(page), ["view-groups"]);
+      assert((await tabs(page)).includes("groups"), "the tab is there");
       assert.deepEqual(errors, []);
     });
   }
@@ -128,7 +150,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
   test(`${engine}: the note's strings are in every language`, async (t) => {
     const page = await open(engine, 900, t, `${engine}-routing-groups-off-i18n.png`);
     await page.route("**/*", serve("en", false, []));
-    await page.goto("http://magpie.test/?view=routing");
+    await page.goto("http://magpie.test/?view=groups");
     await openPane(page, "groups");
     await page.locator(".rt-goff").waitFor();
     const missing = await page.evaluate((ks) => ["zh", "zh-TW", "ja", "de"].flatMap((l) => ks.filter((k) => !I18N[l]?.[k]).map((k) => `${l}: ${k}`)), keys);

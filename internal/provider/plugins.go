@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/probelog"
 	"github.com/yetone/magpie/internal/settings"
@@ -54,6 +54,13 @@ const (
 // out of time. The plugin host takes it off whatever the plugin sends on
 // (host.js), as it does the two above.
 const FallbackHeader = "X-Magpie-Fallback"
+
+// WaitHeader tells a magpie's gateway how many seconds its client waits
+// for the answer: a model test asking a remote magpie sends its own wait,
+// and the gateway takes no retry pause or patience round that would end
+// past it, so the test is told the error rather than running out of time
+// (plugins#827). Like every X-Magpie- header it goes no further.
+const WaitHeader = "X-Magpie-Wait"
 
 // SessionToPluginHeader and SubagentToPluginHeader tell a plugin's fetch
 // the session the agent named (sessionOf: Claude Code's
@@ -254,7 +261,7 @@ func pluginProtocol(provider string, m plugin.Model) Protocol {
 	return Chat
 }
 
-var gptN = regexp.MustCompile(`^gpt-(\d+)`)
+var gptN = lazyre.New(`^gpt-(\d+)`)
 
 // copilotAPI is OpenCode's shouldUseCopilotResponsesApi: GPT-5 and after,
 // but for gpt-5-mini, on Responses.
@@ -386,7 +393,7 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		// pick (laomao04_65777 on Discord); a custom provider's same id
 		// borrows them (effortsOf)
 		if len(c.Efforts) == 0 && (m.Reasoning || PluginServes(pp.ID) || pp.ID == "cline") {
-			c.Efforts = borrowedEfforts(m.ID)
+			c.Efforts, c.EffortsBorrowed = borrowedEfforts(m.ID), true
 		}
 		// OpenCode's price of a model it has none for is 0, as the
 		// plugins give a plan's models: a price is only one above it
@@ -780,12 +787,12 @@ const SignInHeader = "X-Magpie-Sign-In"
 // provider supported" (#2887), and Azure OpenAI's DeploymentNotFound, whose
 // message "The API deployment for this resource does not exist" a relay
 // passes on as a 400 (its 404 fails over by its status already).
-var ModelUnserved = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
+var ModelUnserved = lazyre.New(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|has no provider supported|deployment[ _]?not[ _]?found|deployment.{0,60}does ?n[o']t exist|模型.{0,12}(不存在|不支持|无权|未开通)`)
 
 // signInWords are words of a refusal about the sign-in itself, which a
 // model named beside them doesn't make the model's: "model gpt-x: invalid
 // token" is the token.
-var signInWords = regexp.MustCompile(`(?i)token|api.?key|credential|sign.?in|log.?in|expired|session|令牌|密钥|登录|过期`)
+var signInWords = lazyre.New(`(?i)token|api.?key|credential|sign.?in|log.?in|expired|session|令牌|密钥|登录|过期`)
 
 // modelOnly401 says a 401 a plugin answered without SignInHeader is about
 // the model, not the account's sign-in: its body says the model isn't
@@ -932,7 +939,8 @@ func firstOf(ss ...string) string {
 
 // Do sends req, through the account's own transport when it has one (a
 // plugin's), the client the account asks for this request when it asks
-// for one (ZCode's Start Plan: zcodeStartClient), and client otherwise.
+// for one (ZCode's Start Plan: zcodeStartClient), and client otherwise,
+// following a redirect only to the request's own origin (Keyed).
 //
 // A request sent for magpie's own test (probelog.With) is written into the
 // request log here, whichever way it goes: a plugin's fetch and a client
@@ -974,7 +982,8 @@ func (p Provider) do(client *http.Client, req *http.Request) (*http.Response, er
 		}
 	}
 	req.Header.Del(ConversationHeader)
-	return client.Do(req)
+	// the account's credential goes to its own origin only (redirect.go)
+	return Keyed(client).Do(req)
 }
 
 // pluginsOff is the plugins' own ids of the plugin providers switched off

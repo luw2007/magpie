@@ -90,7 +90,7 @@ function serve(lang, posts, route) {
 async function open(t, engine, lang, width, folder) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   t.after(() => browser.close());
-  const page = await (await browser.newContext({ viewport: { width, height: 1400 } })).newPage();
+  const page = await (await browser.newContext({ viewport: { width, height: 1400 }, reducedMotion: "reduce" })).newPage();
   page.setDefaultTimeout(5000);
   page.setDefaultNavigationTimeout(60000);
   const errors = [], posts = [];
@@ -99,7 +99,7 @@ async function open(t, engine, lang, width, folder) {
   await page.goto("http://magpie.test/?view=routing");
   await openPane(page, "groups");
   const group = page.locator(".rt-group").first();
-  await group.waitFor();
+  await group.waitFor({ state: "attached" });
   return { page, group, errors, posts };
 }
 
@@ -129,6 +129,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const said = await page.evaluate(() => document.documentElement.innerText);
       assert(said.includes(w.cond), `the pause's folders are told: ${said.slice(0, 2000)}`);
       if (w.aside) assert(said.includes(w.aside), `the paused reason: ${said.slice(0, 2000)}`);
+      await page.evaluate(() => window.show("groups"));
+      await group.waitFor();
 
       await openPane(page, "groups");
       // the group's rule, in words
@@ -196,6 +198,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await openPane(page, "live");
       await page.waitForFunction((s) => document.documentElement.innerText.includes(s), w.none);
       await openPane(page, "groups");
+      await group.waitFor();
       await press(page, group.locator("button", { hasText: w.edit }));
       const row = page.locator(".rt-gedit .rt-rule").first();
       const xf = row.locator(".rt-cond.xf");

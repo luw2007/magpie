@@ -57,9 +57,16 @@ type Project struct {
 // (getProjectSkillsDir, @qoder-ai/qodercli 1.1.69, whose .agents/skills
 // a setting can turn off), CodeBuddy Code .codebuddy/skills
 // (getProjectSkillsDir, @tencent-ai/codebuddy-code 2.164.0) and Command
-// Code .commandcode/skills (commandcode.ai/docs/skills). MiMo Code, Crush,
-// ZCode, DeepSeek Harness and oh-my-pi say of no project folder magpie can
-// rely on.
+// Code .commandcode/skills (commandcode.ai/docs/skills). DeepSeek Harness
+// reads <projectRoot>/.dsh/skills and <projectRoot>/.agents/skills, the
+// project root being the nearest folder up from where it runs with a .git
+// in it, else that folder itself (the provider's roots and findProjectRoot,
+// @deepseek-ai/dsh-skill-filesystem 0.2.1-rc.5, mounted by dsh-base's
+// cordis.patch.yml in every profile; the same since 0.0.1-rc.3), so it is
+// given the shared one. A project folder inside a repository but not at
+// its root isn't read by dsh: run there, it looks in the repository's
+// root (#5172). MiMo Code, Crush,
+// ZCode and oh-my-pi say of no project folder magpie can rely on.
 var projectSkillsDirs = map[string]string{
 	"claude":      ".claude/skills",
 	"codex":       ".agents/skills",
@@ -74,6 +81,7 @@ var projectSkillsDirs = map[string]string{
 	"grok":        ".agents/skills",
 	"droid":       ".agents/skills",
 	"cline":       ".agents/skills",
+	"dsh":         ".agents/skills",
 	"qoder":       ".qoder/skills",
 	"qoder-cn":    ".qoder/skills",
 	"codebuddy":   ".codebuddy/skills",
@@ -393,6 +401,16 @@ func RemoveProject(dir string, keep bool) (*Result, error) {
 			l.Projects = slices.DeleteFunc(l.Projects, func(x *Project) bool { return x == p })
 			return nil
 		}
+		// a folder that's gone has nothing of magpie's on disk to take
+		// back: the records of what it placed and wrote go with the
+		// entry, as a skill's do when its folder is gone already (#3510).
+		// A folder that couldn't be looked at (no permission, a drive
+		// that answers with an error) isn't known to be gone: its records
+		// stay, and the removal goes as before.
+		if fi, err := os.Stat(p.Dir); errors.Is(err, os.ErrNotExist) || err == nil && !fi.IsDir() {
+			l.Projects = slices.DeleteFunc(l.Projects, func(x *Project) bool { return x == p })
+			return nil
+		}
 		p.Skills, p.Servers = nil, nil
 		l.syncProject(p, &Result{})
 		if len(p.Placed) == 0 && len(p.Wrote) == 0 {
@@ -405,13 +423,26 @@ func RemoveProject(dir string, keep bool) (*Result, error) {
 // ProjectSkill sets which agents get a library skill in a project; none
 // takes it out of the project.
 func ProjectSkill(dir, name string, agents []string) (*Result, error) {
+	return ProjectSkills(dir, []string{name}, agents)
+}
+
+// ProjectSkills sets which agents get each of some library skills in a
+// project, in one write: the skills a project's card picks from its menu
+// (POM_JUMPING on X). The project's other skills stay as they are; none
+// takes these out of it.
+func ProjectSkills(dir string, names, agents []string) (*Result, error) {
 	return change(func(l *Library) error {
 		p := l.project(dir)
 		if p == nil {
 			return fmt.Errorf("no project %s", dir)
 		}
-		if l.skill(name) == nil {
-			return fmt.Errorf("no skill called %s", name)
+		if len(names) == 0 {
+			return fmt.Errorf("no skills given")
+		}
+		for _, name := range names {
+			if l.skill(name) == nil {
+				return fmt.Errorf("no skill called %s", name)
+			}
 		}
 		var ids []string
 		for _, id := range agents {
@@ -420,14 +451,16 @@ func ProjectSkill(dir, name string, agents []string) (*Result, error) {
 			}
 			ids = set(ids, id, true)
 		}
-		if len(ids) == 0 {
-			delete(p.Skills, name)
-			return nil
+		for _, name := range names {
+			if len(ids) == 0 {
+				delete(p.Skills, name)
+				continue
+			}
+			if p.Skills == nil {
+				p.Skills = map[string][]string{}
+			}
+			p.Skills[name] = slices.Clone(ids)
 		}
-		if p.Skills == nil {
-			p.Skills = map[string][]string{}
-		}
-		p.Skills[name] = ids
 		return nil
 	})
 }

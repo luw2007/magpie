@@ -127,6 +127,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await head.getAttribute("data-go"), "pool:relay");
         await openPane(page, "live");
 
+        // the pool starts in its own Routing pane: the chip opens it,
+        // with the pool in sight
         const view = page.locator("#view-routing");
         const pool = page.locator('.rt-pool[data-provider="relay"]');
         await pool.waitFor({ state: "attached" });
@@ -136,21 +138,25 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const within = (e) => { const r = e.getBoundingClientRect(); return r.height > 0 && r.top >= v.top && r.bottom <= v.bottom; };
           return p.contains(document.activeElement) && within(p.firstElementChild) && within(document.activeElement); });
         assert.equal(await pool.isVisible(), false, "the pool starts in its own pane");
+        const back = async () => {
+          await openPane(page, "live");
+          await view.evaluate((v) => { v.scrollTop = 0; });
+          await pool.evaluate((p) => p.classList.remove("rt-found"));
+        };
 
         // a click takes the reader there: in view, marked, its routing focused
         await chip.click();
         await page.waitForFunction(() => document.querySelector('.rt-pool[data-provider="relay"]')?.classList.contains("rt-found"));
+        assert.equal(await pool.isVisible(), true, "the pools pane opened");
         assert.equal(await inView(), true);
         assert.equal(await page.evaluate(() => document.activeElement?.closest(".rt-pool")?.dataset.provider), "relay");
         assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("on")), true);
         assert.equal((await page.evaluate(() => document.activeElement.textContent)).trim(), smart[lang]);
 
-        await openPane(page, "live");
         // a press held over the head's redraw is still a click (#2151): the
         // chip is not written over under the pointer, which WebKit takes
         // for a press that never ends where it began
-        await view.evaluate((v) => { v.scrollTop = 0; });
-        await pool.evaluate((p) => p.classList.remove("rt-found"));
+        await back();
         const box = await chip.boundingBox();
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
         await page.mouse.down();
@@ -161,11 +167,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await inView(), true);
 
         // the keyboard does the same after returning to Live
-        await openPane(page, "live");
-        await view.evaluate((v) => { v.scrollTop = 0; });
+        await back();
         await chip.focus();
         await page.keyboard.press("Enter");
-        await pool.waitFor();
+        await page.waitForFunction(() => document.querySelector('.rt-pool[data-provider="relay"]')?.classList.contains("rt-found"));
         assert.equal(await inView(), true);
         // nothing is drawn wider than the window
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

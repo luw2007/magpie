@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"github.com/yetone/magpie/internal/desktopdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -177,7 +177,7 @@ const claudeEffortEnv = "CLAUDE_CODE_EFFORT_LEVEL"
 // claudeNameRe finds the Claude model an id names, as Claude Code matches it
 // to its settings: claude-opus-5-5 in claude-opus-5-5[1m], in a dated id or
 // under a provider's prefix (anthropic/…).
-var claudeNameRe = regexp.MustCompile(`claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:[^0-9]|$)`)
+var claudeNameRe = lazyre.New(`claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:[^0-9]|$)`)
 
 // claudeName is the Claude model a model id names, "" for another vendor's,
 // an alias (opus) or none. A version written with a dot (claude-opus-4.6)
@@ -217,9 +217,10 @@ func claudeEffortsFor(model string) []string {
 
 // claudeTopEffort is the models the effortLevel at the top of the user's
 // settings.json applies to: Opus 5, Fable 5.1 and those before them. Opus
-// 5.5 and every Claude model after it (any Claude Code doesn't know) read
-// only modelSettings.<model>.effortLevel (2.1.251 on); another vendor's
-// reads the top one.
+// 5.5, Fable 5.2 and every Claude model after them (any Claude Code doesn't
+// know) read only modelSettings.<model>.effortLevel (2.1.251 on; 2.1.321's
+// list of models that read the top one ends at Fable 5.1 and Mythos 5.1);
+// another vendor's reads the top one.
 var claudeTopEffort = []string{
 	"claude-opus-4", "claude-sonnet-4", "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5",
 	"claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-8",
@@ -303,8 +304,11 @@ const claudeCapsEnv = "CLAUDE_CODE_MODEL_CAPABILITIES"
 // Behind a gateway whose model doesn't answer, it classifies locally anyway
 // and names the gateway in a notice, "this session isn't eligible because
 // your requests go through 127.0.0.1:3425…" (1EFLOPS on X, Claude Code on
-// Codex). Anthropic's page on it says to set it to 0 for a gateway that
-// can't run the checks: magpie does while none of the models Claude Code
+// Codex), or, where Anthropic has turned its local classifier off (2.1.312
+// and later), asks for approval of each action the check would judge,
+// whichever the value (gateway/automode.go). Anthropic's page on it says
+// to set it to 0 for a gateway that can't run the checks: magpie does
+// while none of the models Claude Code
 // can reach through it is reviewed (claudeReviewed), and leaves it unset
 // while one is. One the user set is theirs.
 const claudeReviewEnv = "CLAUDE_CODE_AUTO_MODE_SERVER"
@@ -429,10 +433,14 @@ func claudeCapabilities(first []string, own, desktop bool) string {
 	}
 	if desktop {
 		shown, _ := provider.CatalogFor("claude-desktop")
+		again := gateway.DesktopTierAliases()
 		for _, e := range shown {
-			// one named as a Claude model Claude Code knows on its own
-			if id := gateway.DesktopID(e); claudeName(id) == "" {
-				add(id, e.Efforts)
+			// one named as a Claude model Claude Code knows on its own;
+			// a model picked for two tiers is listed for the second too
+			for _, id := range append([]string{gateway.DesktopID(e)}, again[e.ID]...) {
+				if claudeName(id) == "" {
+					add(id, e.Efforts)
+				}
 			}
 		}
 	}
@@ -613,6 +621,15 @@ func tierEfforts(model string) []string {
 
 func claude(home string) *Agent { return claudeIn(here(home)) }
 
+// claudeRouted says the Claude Code at a place, its settings.json at path,
+// sends its requests to magpie's gateway: its ANTHROPIC_BASE_URL is the
+// gateway, or a proxy to it where magpie has answered (#1985,
+// claudeProxied). Whatever its model and however it signs in to magpie.
+func claudeRouted(at place, path string) bool {
+	u, _ := edit.GetJSON(path, "env.ANTHROPIC_BASE_URL")
+	return u == at.gw() || claudeProxied(at, path, u)
+}
+
 // claudeIn is Claude Code as it lives at a place: this machine's home, or
 // a WSL distro's (see wsl.go), its settings.json naming the gateway as it
 // reaches it from there.
@@ -634,7 +651,7 @@ func claudeIn(at place) *Agent {
 	model := jsonGet(path, "model")
 	// routed: on magpie's gateway, or on a proxy to it where magpie has
 	// answered (#1985, claudeProxied), which a pick keeps (gwAt)
-	routed := func() bool { u := env("ANTHROPIC_BASE_URL"); return u == at.gw() || claudeProxied(at, path, u) }
+	routed := func() bool { return claudeRouted(at, path) }
 	gwAt := func() string {
 		if u := env("ANTHROPIC_BASE_URL"); claudeProxied(at, path, u) {
 			return u
@@ -934,7 +951,7 @@ func claudeIn(at place) *Agent {
 		main := mainModel()
 		n := provider.CompactSet(main)
 		long := false
-		if s := settings.Load(); n == 0 && !claudeModel(main) && !provider.ClaudeGroup(main) {
+		if s := settings.Load().ForAgent("claude"); n == 0 && !claudeModel(main) && !provider.ClaudeGroup(main) {
 			n, long = s.Compact(), true
 			// magpie's default gives way to an autoCompactWindow the user
 			// set in Claude Code (/autocompact, its settings), which the env
@@ -1210,7 +1227,7 @@ func claudeIn(at place) *Agent {
 	// model's, tiers' and those /model offers (pickerRefs), each with its
 	// own window under the largest. A model Claude Code knows as Claude's has its own window.
 	desktopPlan := func(main string, tiers map[string]string) (top, def int, entries map[string]int) {
-		s := settings.Load()
+		s := settings.Load().ForAgent("claude")
 		// the user's own top-level autoCompactWindow
 		cur, userTop := edit.GetJSON(path, "autoCompactWindow")
 		userTop = userTop && !defaultOurs()
@@ -1242,9 +1259,12 @@ func claudeIn(at place) *Agent {
 		if desktopOn() {
 			shown, _ := provider.CatalogFor("claude-desktop")
 			behaves, _ := gateway.DesktopBehavesAs()
+			again := gateway.DesktopTierAliases()
 			for _, e := range shown {
-				if id := gateway.DesktopID(e); claudeName(id) == "" {
-					models = append(models, claudeBudget{id: id, window: e.Context, long: gateway.DesktopListed1M(e), compact: work(e.ID), behaves: behaves[id] != ""})
+				for _, id := range append([]string{gateway.DesktopID(e)}, again[e.ID]...) {
+					if claudeName(id) == "" {
+						models = append(models, claudeBudget{id: id, window: e.Context, long: gateway.DesktopListed1M(e), compact: work(e.ID), behaves: behaves[id] != ""})
+					}
 				}
 			}
 		}
@@ -2843,7 +2863,12 @@ func StandIn(agent, model string) string {
 		// a Codex in a WSL distro is known by the same client
 		return wslCodexStandIn()
 	}
-	if m := claudeStandIn(filepath.Join(here(home).claudeDir(), "settings.json"), model); m != "" || runtime.GOOS != "windows" {
+	if m := claudeStandIn(filepath.Join(here(home).claudeDir(), "settings.json"), model); m != "" {
+		return m
+	}
+	// a claude-magpie session, its settings.json not on magpie, is on
+	// the launch file's models (claude_launch.go)
+	if m := claudeLaunchStandIn(model); m != "" || runtime.GOOS != "windows" {
 		return m
 	}
 	// a Claude Code in WSL is known by the same User-Agent

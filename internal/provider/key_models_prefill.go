@@ -71,7 +71,7 @@ func PrefillNewKeys(ctx context.Context, before map[string]map[string]bool, ids 
 		}
 		for _, k := range keys {
 			id := k.ID
-			if before[p.ID][id] || p.AccountModels[accountKey(id)] != nil {
+			if before[p.ID][id] || p.AccountModels[accountKey(id)] != nil || p.AccountModelsAll[accountKey(id)] {
 				continue
 			}
 			jobs = append(jobs, job{p, k})
@@ -154,7 +154,7 @@ func PrefillNewKeys(ctx context.Context, before map[string]map[string]bool, ids 
 		}
 		changed := 0
 		for kid, ms := range keys {
-			if am[accountKey(kid)] != nil || !p.HasKeyID(kid) {
+			if am[accountKey(kid)] != nil || p.AccountModelsAll[accountKey(kid)] || !p.HasKeyID(kid) {
 				continue
 			}
 			am[accountKey(kid)] = ms

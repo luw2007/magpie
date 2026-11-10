@@ -8,13 +8,13 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -31,7 +31,7 @@ import (
 // this one tells it not to.
 const skipSignature = "skip_thought_signature_validator"
 
-var unsafeToolID = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+var unsafeToolID = lazyre.New(`[^a-zA-Z0-9_-]`)
 
 // antigravityBaseOf is the model an id of Antigravity's own is one level
 // of; a var so tests can stand in for it.
@@ -341,7 +341,13 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	}
 	names := map[string]string{}
 	var contents []map[string]any
-	for _, m := range dropSecondAnswers(r.Messages) {
+	msgs := dropSecondAnswers(r.Messages)
+	if ag {
+		// a model turn that carried its call written out in the text goes
+		// as the answer it repeated (dropPseudoCalls)
+		msgs = dropPseudoCalls(msgs, r.Tools)
+	}
+	for _, m := range msgs {
 		role := "user"
 		if m.Role == "assistant" {
 			role = "model"
@@ -790,7 +796,7 @@ func thinkingConfig(r *Request, model string, claude bool, at string) map[string
 
 // geminiVersion is the major version in a Gemini model's id, as the id
 // names it: gemini-4-argon, models/gemini-3.8-flash, gemini-2.5-pro.
-var geminiVersion = regexp.MustCompile(`(?:^|/)gemini-(\d+)`)
+var geminiVersion = lazyre.New(`(?:^|/)gemini-(\d+)`)
 
 // geminiGeneration is the generation of Gemini model names, 0 for an id
 // that names none (a non-Gemini model, or an alias such as
@@ -1113,15 +1119,25 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 						out["maxItems"] = 0
 					}
 				case "enum":
-					// Google takes string enums only
+					// Google takes string enums only, and none of them
+					// blank: Portainer's "" (no operation running) turned
+					// the whole turn away ("enum[3]: cannot be empty",
+					// #5235). A blank value is left out; an enum with
+					// nothing else in it is left out whole.
 					if es, ok := v.([]any); ok {
 						strs := make([]any, 0, len(es))
+						all := true
 						for _, e := range es {
-							if s, ok := e.(string); ok {
+							s, ok := e.(string)
+							if !ok {
+								all = false
+								break
+							}
+							if strings.TrimSpace(s) != "" {
 								strs = append(strs, s)
 							}
 						}
-						if len(strs) == len(es) {
+						if all && len(strs) > 0 {
 							out[k] = strs
 						}
 					}
@@ -1132,7 +1148,7 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				}
 			}
 			if c, ok := x["const"]; ok {
-				if s, ok := c.(string); ok {
+				if s, ok := c.(string); ok && strings.TrimSpace(s) != "" {
 					out["enum"] = []any{s}
 				}
 			}
@@ -1357,7 +1373,10 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		return nil
 	}
 	if ch.Error != nil {
-		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data))})
+		// at the status it names, Google's code: a 400 INVALID_ARGUMENT
+		// is the request's fault, never asked again nor the account's
+		// (sse_bare.go)
+		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data)), Status: namedStatus([]byte(data))})
 		return nil
 	}
 	c := ch.geminiChunk

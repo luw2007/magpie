@@ -139,7 +139,7 @@ var turnRules = struct {
 // ruleKey is the conversation a group's rules keep a turn's decision for:
 // the agent's session and the conversation's first words (firstWords).
 func ruleKey(g provider.Group, in http.Header, req *Request) string {
-	return provider.GroupPrefix + g.ID + "|" + conversationID(in, nil) + "|" + firstWords(req)
+	return provider.GroupPrefix + g.ID + "|" + affinityID(in, nil) + "|" + firstWords(req)
 }
 
 // firstWords tells an agent's subagents from it: they share its session
@@ -195,7 +195,10 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 	turn, within := turnIn(req)
 	now := ruleClock()
 	size := estimate(req)
-	q := provider.RuleRequest{Tokens: size, Thinking: req.Thinking, Effort: req.Effort, Agent: agent, At: now}
+	q := provider.RuleRequest{Tokens: size, Thinking: req.Thinking, Effort: req.Effort, Off: req.ThinkOff, Agent: agent, At: now, Subagent: req.subagent}
+	if provider.RulesReadMessage(g.Rules) {
+		_, q.Message = lastSaid(req, len(req.Messages)) // the user's own words, as the turn began
+	}
 	for _, m := range req.Messages {
 		if slices.ContainsFunc(m.Parts, func(p Part) bool { return p.Kind == Image }) {
 			q.Images = true
@@ -337,6 +340,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			t0 := time.Now()
 			v, cached, err := classify(ask, g.Classifier, intents, prev, effort, text)
 			classifiedFor(g.ID, g.Classifier, err)
+			v.Intent = intentOf(v, g) // the group's own sure of an intent (#5101)
 			c.Intent, c.Said, c.Cached, c.Ms = v.Intent, v.Said, cached, int(time.Since(t0).Milliseconds())
 			if effort {
 				c.Effort, c.Score = v.Effort, v.Score

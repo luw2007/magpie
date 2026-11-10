@@ -73,6 +73,19 @@ func AccessKeyVendor(p Provider) string {
 	return ""
 }
 
+// AsksAccessKey is whose account access key p's editor and Usage page
+// ask for: AccessKeyVendor's for a preset's provider, and for a custom
+// one only once it has one saved. A custom provider is the user's own
+// address and key, sent as typed, whatever host it is on: one at
+// tokenhub.tencentmaas.com/plan was asked for a SecretId and SecretKey
+// it never needs (ysm119 on Discord).
+func AsksAccessKey(p Provider) string {
+	if p.Preset == "" && p.AccessKeyID == "" && p.SecretAccessKey == "" {
+		return ""
+	}
+	return AccessKeyVendor(p)
+}
+
 // tencentPlanRegion is the cloud API region of the enterprise plan p's
 // endpoint is on: ap-guangzhou for tokenhub.tencentmaas.com/plan (which
 // is 个人版's too), ap-singapore for tokenhub-intl.tencentmaas.com/plan;
@@ -82,6 +95,12 @@ func tencentPlanRegion(p Provider) (string, bool) {
 		return "", false
 	}
 	for _, base := range []string{p.Chat, p.Responses, p.Anthropic} {
+		// both hosts below hold it: every other base, asked for each
+		// provider on each Providers page, isn't parsed (ToLower makes
+		// no copy of a base already lower-case)
+		if !strings.Contains(strings.ToLower(base), "tencentmaas.com") {
+			continue
+		}
 		u, err := url.Parse(base)
 		if err != nil || !strings.HasPrefix(strings.TrimSuffix(u.Path, "/")+"/", "/plan/") {
 			continue
@@ -119,7 +138,9 @@ func tencentPlanQuotas(ctx context.Context) []SubscriptionQuota {
 			continue
 		}
 		if p.AccessKeyID == "" || p.SecretAccessKey == "" {
-			keyless = append(keyless, job{p, region})
+			if AsksAccessKey(p) != "" {
+				keyless = append(keyless, job{p, region})
+			}
 			continue
 		}
 		keyed[region] = true
@@ -380,7 +401,7 @@ func tencentAPICall(ctx context.Context, secretID, secretKey, region, action str
 	req.Header.Set("X-TC-Region", region)
 	req.Header.Set("X-TC-Timestamp", strconv.FormatInt(now.Unix(), 10))
 	req.Header.Set("Authorization", tc3Sign(secretID, secretKey, tcAPIService, tcAPIHost, action, body, now))
-	res, err := http.DefaultClient.Do(req)
+	res, err := Keyed(http.DefaultClient).Do(req)
 	if err != nil {
 		return nil, err
 	}

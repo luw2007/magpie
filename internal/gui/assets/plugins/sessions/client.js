@@ -86,15 +86,31 @@ magpie.plugin("sessions", (ctx) => {
   // another config folder): such sessions are grouped by that, not under
   // "No folder" with the agent's own (lc on Discord).
   const GW = "\x00gateway";
-  const groupOf = (s) => s.cwd || (s.gateway ? GW : "");
-  const groupName = (k) => k === GW ? t("Seen through the gateway") : k ? baseName(k) : t("No folder");
+  // A session its agent ran with no project of its own, in a folder the
+  // agent made for that one session: ZCode keeps ~/.zcode/workspace/
+  // draft-<id> or <ms>-<uuid> (its host, 3.17.2), one for each session
+  // started without a project.
+  // One "folder" each was 40 folders of one session, and they are no
+  // projects of the reader's (flandern1211_58540 on Discord): one group of
+  // their own, not "No folder", keeps them apart from sessions whose agent
+  // recorded no folder.
+  const DRAFTS = "\x00drafts";
+  const zcodeDraft = (s) => {
+    const home = (data?.home || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!home || s.agent !== "zcode" || !s.cwd) return false;
+    const c = s.cwd.replace(/\\/g, "/");
+    return c === home + "/.zcode/workspace" || c.startsWith(home + "/.zcode/workspace/");
+  };
+  const groupOf = (s) => zcodeDraft(s) ? DRAFTS : s.cwd || (s.gateway ? GW : "");
+  const groupName = (k) => k === GW ? t("Seen through the gateway")
+    : k === DRAFTS ? t("Draft sessions") : k ? baseName(k) : t("No folder");
 
   // A folder an app or the system made, not a project of the reader's: the
   // disk's root, a temp folder, or one under a hidden folder of a home
   // (~/.some-agent/…). They go under a fold of their own after the
   // projects (yetone: "/", "T" and folders named by UUIDs led the list).
   const scratch = (k) => {
-    if (!k || k === GW) return false;
+    if (!k || k === GW || k === DRAFTS) return false;
     const p = k.replace(/\\/g, "/").replace(/\/+$/, "");
     return p === "" || /^[a-z]:$/i.test(p)
       || /^\/(private\/)?(tmp|var\/tmp|var\/folders)(\/|$)/.test(p)
@@ -268,22 +284,31 @@ magpie.plugin("sessions", (ctx) => {
     const wrap = page.querySelector(".sm-switch");
     const tabs = wrap.querySelector(".sm-agents");
     const pick = wrap.querySelector(".sm-agent-pick");
+    const filter = page.querySelector(".sm-filter");
     const fit = () => {
+      filter.style.flexBasis = "";
       const room = parseFloat(getComputedStyle(wrap).width);
       if (!room) return;
       const focused = document.activeElement;
       // Measure the actual labels, including language, font and text zoom,
       // rather than guessing a breakpoint or a number of agents.
       tabs.hidden = false;
-      const compact = tabs.scrollWidth > Math.floor(room);
+      // the search gives way to the tabs, down to its least, before the menu
+      // takes them (Settings › came into the head beside them)
+      // (a narrow window's head is a grid, where it can't)
+      const over = tabs.scrollWidth - Math.floor(room);
+      const fw = getComputedStyle(filter.parentElement).display === "flex" ? filter.offsetWidth : 0;
+      const compact = over > 0 && (!fw || fw - over < 110);
+      if (over > 0 && !compact) filter.style.flexBasis = Math.ceil(fw - over) + "px";
       tabs.hidden = compact || !data?.agents.length;
       pick.hidden = !compact || !current();
       if (!compact && pick.classList.contains("open")) closeProtoMenu();
       if (compact && tabs.contains(focused)) pick.focus({ preventScroll: true });
       else if (!compact && focused === pick) tabs.querySelector(".on")?.focus({ preventScroll: true });
     };
+    // the head, not the tabs' box, which the search's width changes
     fitObserver = new ResizeObserver(fit);
-    fitObserver.observe(wrap);
+    fitObserver.observe(page.querySelector(".sm-head"));
     fit();
     if (keepFocus) (pick.hidden ? tabs.querySelector(".on") : pick)?.focus({ preventScroll: true });
   }
@@ -365,7 +390,9 @@ magpie.plugin("sessions", (ctx) => {
   // this card comes first: the agents found here, each with its own
   // switch, off; Allow selected reads those picked, and Allow all every
   // agent, those found later too. Settings › Privacy changes it later.
-  const consentApplies = () => data?.reads && data.reads.asked === false;
+  // In gateway mode no agent's files here are read (reads.gateway), so
+  // there is nothing to ask.
+  const consentApplies = () => data?.reads && data.reads.asked === false && !data.reads.gateway;
 
   function consentCard() {
     const found = data.reads.found || [];
@@ -495,7 +522,14 @@ magpie.plugin("sessions", (ctx) => {
     tr.append(svg(TRASH, 13, 1.4), el("span", "", t("Trash")));
     if (data?.trash.length) tr.append(el("em", "", String(data.trash.length)));
     tr.onclick = () => { trashOn = !trashOn; selecting = false; picked.clear(); draw(); };
-    h.append(q, sel, tr);
+    // which agents' history is read is Settings › Privacy's (the scattered
+    // settings audit after netube99 on X); gateway mode reads none there
+    const go = el("button", "text sm-toset");
+    go.type = "button";
+    go.append(el("span", "", t("Settings")), " ›");
+    go.hidden = !!data?.reads?.gateway;
+    go.onclick = (e) => openSettingsAt(e, "privacy", "#sessionReadsList .row");
+    h.append(q, sel, tr, go);
     return h;
   }
 
@@ -514,7 +548,10 @@ magpie.plugin("sessions", (ctx) => {
     if (!data.agents.length) {
       if (consentApplies()) return box;
       const e = el("div", "empty-state");
-      e.append(el("b", "", t("No sessions yet")), el("span", "", t("Claude Code's, Codex's, Hermes's, OpenCode's and Pi's sessions on this computer show up here, by the folder they ran in.")));
+      e.append(el("b", "", t("No sessions yet")), el("span", "", data.reads?.gateway
+        // gateway mode lists no session of this computer's agents
+        ? t("The sessions of agents on other computers that use this gateway show up here, by the folder they ran in.")
+        : t("Claude Code's, Codex's, Hermes's, OpenCode's and Pi's sessions on this computer show up here, by the folder they ran in.")));
       box.append(e);
       return box;
     }
@@ -723,7 +760,7 @@ magpie.plugin("sessions", (ctx) => {
       openedFor = data.agent;
       opened.clear();
       drawnIn.clear();
-      const first = list.find((s) => !scratch(groupOf(s))) || list[0];
+      const first = list.find((s) => !scratch(groupOf(s)) && groupOf(s) !== DRAFTS) || list[0];
       if (first) opened.add(groupOf(first));
     }
     nest(list);
@@ -750,11 +787,19 @@ magpie.plugin("sessions", (ctx) => {
       return;
     }
     const q = query.trim();
-    // the projects in one list, and the folders apps and the system made
-    // folded under them
-    const all = [...groups].filter(([k]) => !scratch(k));
+    // the projects in one list, the folders apps and the system made
+    // folded under them, and the folders agents made one session each
+    // (DRAFTS) after the projects: they are no projects, but the reader
+    // looks for the sessions in them, so not folded away either
+    const all = [...groups].filter(([k]) => !scratch(k) && k !== DRAFTS);
     const rest = [...groups].filter(([k]) => scratch(k));
-    if (all.length) tree.append(folderList(el("div", "list sm-folders"), all, FOLDERS, q));
+    const temp = groups.get(DRAFTS);
+    if (all.length || temp) {
+      const box = el("div", "list sm-folders");
+      if (all.length) folderList(box, all, FOLDERS, q);
+      if (temp) box.append(folder(DRAFTS, temp, q));
+      tree.append(box);
+    }
     if (rest.length) tree.append(othersBox(rest, q));
     toFocus();
   }
@@ -785,7 +830,7 @@ magpie.plugin("sessions", (ctx) => {
     words.append(el("span", "name", t("Other folders")), el("span", "sm-latest", t("Temporary folders, the disk's root and apps' hidden folders")));
     fold.append(svg(CHEV_R, 10, 1.6), words);
     fold.onclick = () => { othersOpen = !open; redrawList(); };
-    r.append(fold, el("span", "note", t(rest.length === 1 ? "{n} folder" : "{n} folders", { n: rest.length })));
+    r.append(fold, el("span", "note", t(rest.length === 1 ? "{n} folder" : "{n} folders", { n: rest.length })), folderSlot());
     box.append(r);
     if (open) folderList(box, rest, OTHERS, q);
     return box;
@@ -872,7 +917,7 @@ magpie.plugin("sessions", (ctx) => {
     const fold = el("button", "fold");
     fold.type = "button";
     fold.setAttribute("aria-expanded", String(open));
-    const path = cwd === GW ? "" : cwd;
+    const path = cwd === GW || cwd === DRAFTS ? "" : cwd;
     const line = el("span", "sm-fline");
     line.append(el("span", "name", groupName(cwd)));
     const where = path ? whereOf(path) : "";
@@ -891,7 +936,7 @@ magpie.plugin("sessions", (ctx) => {
     when.append(el("span", "note", t(members.length === 1 ? "{n} session" : "{n} sessions", { n: members.length })));
     r.append(fold, when);
     const acts = [];
-    const allInFolder = (data.sessions || []).filter((s) => s.cwd === cwd);
+    const allInFolder = (data.sessions || []).filter((s) => groupOf(s) === cwd);
     if (data.agent === "claude" && path && allInFolder.every((s) => !s.read_only && !s.gateway)
       && new Set(allInFolder.map((s) => s.wsl || "")).size === 1) {
       acts.push({ name: "Relocate project", icon: MOVE, run: () => askRelocate(cwd, allInFolder[0].wsl || "") });
@@ -913,7 +958,7 @@ magpie.plugin("sessions", (ctx) => {
       };
       r.append(more);
       r.oncontextmenu = (e) => { e.preventDefault(); openRowMenu(more, acts); };
-    }
+    } else r.append(folderSlot());
 
     r.title = path;
     g.append(r);
@@ -950,6 +995,34 @@ magpie.plugin("sessions", (ctx) => {
     return b;
   }
 
+  // lanes says which of a row's controls some session of the list has, so
+  // a row without one keeps its room and every row's columns line up
+  const laneOf = new WeakMap();
+  function lanes() {
+    const list = data?.sessions || [];
+    let l = laneOf.get(list);
+    if (!l) {
+      const resume = list.some((s) => s.resume);
+      l = { resume, term: resume && !!data.terminal, carry: list.some((s) => s.carry?.length) };
+      laneOf.set(list, l);
+    }
+    return l;
+  }
+  // slot is a control's room, unseen and out of reach
+  function slot(tag, cls, text) {
+    const b = el(tag, "sm-slot " + cls, text);
+    b.setAttribute("aria-hidden", "true");
+    b.inert = true;
+    b.tabIndex = -1;
+    return b;
+  }
+  const folderSlot = () => slot("span", "copy sm-folder-slot");
+  // undeletableText is why a session magpie lists can't be deleted
+  function undeletableText(s, a) {
+    if (s.undeletable === "cursor-editor") return t("Cursor's editor keeps this chat in its own database, which it holds open while it runs: delete it in Cursor.");
+    return t("This {agent} session is read only, so magpie can't delete it.", { agent: a.name });
+  }
+
   function item(s, depth = 0) {
     const a = current();
     const wrap = el("div", "sess-item sm-item" + (detail === s.id ? " open" : ""));
@@ -980,13 +1053,21 @@ magpie.plugin("sessions", (ctx) => {
       sub.prepend(p, " ");
     }
     who.append(sub);
+    // a draft session's folder is a name its agent made: the row says
+    // nothing of it otherwise (the group of them is one)
+    if (zcodeDraft(s)) r.title = s.cwd;
     const hit = hitOf(s);
     if (hit) who.append(hitLine(hit));
     // what it spent, as the Usage page's list shows it
     r.append(who, ...sessSpent(s));
+    const lane = lanes();
     if (s.resume) {
       const res = el("button", "sess-resume", t("Resume"));
       res.type = "button";
+      // as wide whichever it says
+      res.dataset.wide = t("Resume");
+      res.dataset.wide2 = t("Copied");
+
       res.title = t("Copy the command that resumes it: {cmd}", { cmd: s.resume });
       res.onclick = async (e) => {
         e.stopPropagation();
@@ -997,7 +1078,7 @@ magpie.plugin("sessions", (ctx) => {
         res.copiedT = setTimeout(() => { res.textContent = t("Resume"); res.classList.remove("done"); }, 1400);
       };
       r.append(res);
-      if (data.terminal) {
+      if (lane.term) {
         const term = el("button", "copy sess-term");
         term.type = "button";
         term.title = t("Open in session terminal");
@@ -1008,15 +1089,34 @@ magpie.plugin("sessions", (ctx) => {
         };
         r.append(term);
       }
+    } else if (lane.resume) {
+      const res = slot("button", "sm-slot-resume", t("Resume"));
+      res.dataset.wide = t("Resume");
+      res.dataset.wide2 = t("Copied");
+      r.append(res);
+      if (lane.term) r.append(slot("span", "copy sm-slot-icon"));
     }
     if (s.carry?.length) r.append(carryPick(s));
-    if (a?.deletable && s.deletable) {
+    else if (lane.carry) {
+      const b = slot("button", "sess-pick sm-slot-carry");
+      b.append(el("span", "", t("Continue in")), svg(CHEV, 11, 1.6));
+      r.append(b);
+    }
+    // every session of an agent magpie deletes from has a delete; one it
+    // can't delete says why on it (ysm119 on Discord: some Cursor rows had
+    // none, and every column after it moved)
+    if (a?.deletable) {
       const del = el("button", "copy sm-del");
       del.type = "button";
-      del.title = t("Delete");
-      del.setAttribute("aria-label", t("Delete"));
+      const why = s.deletable ? "" : undeletableText(s, a);
+      del.title = why || t("Delete");
+      del.setAttribute("aria-label", why ? t("Delete") + ": " + why : t("Delete"));
       del.append(svg(TRASH, 13, 1.4));
-      del.onclick = (e) => { e.stopPropagation(); askDelete([s.id]); };
+      if (why) {
+        del.classList.add("off");
+        del.setAttribute("aria-disabled", "true");
+        del.onclick = (e) => { e.stopPropagation(); status(why, "err"); };
+      } else del.onclick = (e) => { e.stopPropagation(); askDelete([s.id]); };
       r.append(del);
     }
     // only the session opened and the one closed are drawn again
@@ -1397,7 +1497,7 @@ magpie.plugin("sessions", (ctx) => {
       : folders ? t("Delete all {n} sessions in {k} folders?", { n: list.length, k: folders })
       : t("Delete {n} sessions?", { n: list.length })));
     ed.append(h);
-    if (folder && folder !== GW) ed.append(el("p", "sub sm-ask-path", folder));
+    if (folder && folder !== GW && folder !== DRAFTS) ed.append(el("p", "sub sm-ask-path", folder));
     const names = el("ul", "sm-ask-list");
     for (const s of list.slice(0, 5)) names.append(el("li", "", s.title || s.id));
     if (list.length > 5) names.append(el("li", "more", t("+{n} more", { n: list.length - 5 })));

@@ -82,6 +82,43 @@ func TestProjectSkillsLinked(t *testing.T) {
 	}
 }
 
+// A project's card picks some of the library's skills in one write
+// (POM_JUMPING on X): only those go in, and the skills the project had
+// keep their agents; a name the library doesn't have changes nothing.
+func TestProjectSkillsPickSome(t *testing.T) {
+	h, proj := projectLib(t)
+	skill(t, filepath.Join(h, "src", "xlsx"), "xlsx", "Sheets")
+	ok(t)(InstallSkills(filepath.Join(h, "src"), []string{"xlsx"}, nil))
+	ok(t)(ProjectSkill(proj, "pdf", []string{"codex"}))
+
+	ok(t)(ProjectSkills(proj, []string{"docx"}, []string{"claude", "codex"}))
+	v, _ := Read(nil)
+	if got := v.Projects[0].Skills; len(got) != 2 || !slices.Equal(got["pdf"], []string{"codex"}) || !slices.Equal(got["docx"], []string{"claude", "codex"}) {
+		t.Errorf("skills: %+v", got)
+	}
+	for _, e := range []string{".claude/skills/docx", ".agents/skills/docx", ".agents/skills/pdf"} {
+		if !isLink(t, filepath.Join(proj, e)) {
+			t.Errorf("%s isn't placed", e)
+		}
+	}
+	for _, e := range []string{".claude/skills/pdf", ".claude/skills/xlsx", ".agents/skills/xlsx"} {
+		gone(t, filepath.Join(proj, e))
+	}
+
+	if _, err := ProjectSkills(proj, []string{"xlsx", "nope"}, []string{"claude"}); err == nil {
+		t.Error("a skill the library hasn't was taken")
+	}
+	gone(t, filepath.Join(proj, ".claude/skills/xlsx"))
+
+	ok(t)(ProjectSkills(proj, []string{"docx"}, nil))
+	v, _ = Read(nil)
+	if got := v.Projects[0].Skills; len(got) != 1 || !slices.Equal(got["pdf"], []string{"codex"}) {
+		t.Errorf("skills after: %+v", got)
+	}
+	gone(t, filepath.Join(proj, ".claude/skills/docx"))
+	gone(t, filepath.Join(proj, ".agents/skills/docx"))
+}
+
 func TestProjectGitignoreMadeAndTakenAway(t *testing.T) {
 	_, proj := projectLib(t)
 	os.Remove(filepath.Join(proj, ".gitignore"))
@@ -248,5 +285,69 @@ func TestRemoveSkillWhoseFolderIsGone(t *testing.T) {
 	ok(t)(RemoveSkill("pdf"))
 	if v, _ := Read(nil); slices.ContainsFunc(v.Skills, func(s SkillView) bool { return s.Name == "pdf" }) {
 		t.Error("pdf still listed")
+	}
+}
+
+// #3510: a project whose folder was deleted outside magpie comes off the
+// list when it's removed: there's nothing of magpie's on disk to take
+// back, so the records of what it placed go with the entry, and the
+// removal says nothing failed. keep takes a gone project off the list as
+// it always did (#514).
+func TestRemoveProjectWhoseFolderIsGone(t *testing.T) {
+	_, proj := projectLib(t)
+	ok(t)(ProjectSkill(proj, "pdf", []string{"claude", "codex"}))
+	if v, _ := Read(nil); len(v.Projects) != 1 || len(v.Projects[0].Placed) == 0 {
+		t.Fatalf("projects: %+v", v.Projects)
+	}
+	if err := os.RemoveAll(proj); err != nil {
+		t.Fatal(err)
+	}
+	r, err := RemoveProject(proj, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Problems) != 0 {
+		t.Errorf("the removal said: %+v", r.Problems)
+	}
+	if v, _ := Read(nil); len(v.Projects) != 0 {
+		t.Errorf("projects: %+v", v.Projects)
+	}
+	if v, _ := Read(nil); len(v.Skills) != 2 {
+		t.Errorf("skills: %+v", v.Skills)
+	}
+
+	_, proj = projectLib(t)
+	ok(t)(ProjectSkill(proj, "docx", []string{"claude"}))
+	if err := os.RemoveAll(proj); err != nil {
+		t.Fatal(err)
+	}
+	ok(t)(RemoveProject(proj, true))
+	if v, _ := Read(nil); len(v.Projects) != 0 {
+		t.Errorf("kept projects: %+v", v.Projects)
+	}
+}
+
+// A project folder that can't be looked at isn't known to be gone (#3510):
+// removing it without keep leaves its records of what magpie placed, so
+// they can still be taken back once the folder answers again.
+func TestRemoveProjectWhoseFolderCantBeRead(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("a folder's permissions don't hide it here")
+	}
+	_, proj := projectLib(t)
+	ok(t)(ProjectSkill(proj, "pdf", []string{"claude"}))
+	parent := filepath.Dir(proj)
+	if err := os.Chmod(parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o755) })
+	if _, err := os.Stat(proj); err == nil || os.IsNotExist(err) {
+		t.Fatalf("stat of the hidden folder = %v, want a permission error", err)
+	}
+	if _, err := RemoveProject(proj, false); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := Read(nil); len(v.Projects) != 1 || len(v.Projects[0].Placed) == 0 {
+		t.Errorf("projects: %+v", v.Projects)
 	}
 }

@@ -150,10 +150,20 @@ test("compat.js is the first of the page's own scripts", async () => {
   // in now for one account is pressed, autobackup.js when Settings draws
   // Sync, scrollends.js on the window's first scroll, profilerename.js
   // when a saved profile's Rename is pressed, keyspend.js when the
-  // provider editor draws a key's row, syncfiles.js when Sync's Export or
-  // Import opens; the checks above
+  // provider editor draws a key's row, syncfiles.js when Sync's server form,
+  // Export or Import opens, agentcompact.js when an agent sheet holds Long
+  // conversations, balfound.js when the editor draws a relay's balance
+  // with no Balance URL, passerrors.js when it draws a key provider's
+  // Errors, keybalance.js when it draws a key whose vendor tells no
+  // balance, modellimits.js when it draws a model's row, notices.js when
+  // About's Open-source licenses opens, videogen.js when Settings draws
+  // Image generation, provlinks.js when Settings' search first wants its
+  // provider links, pageshare.js when a plugin's page shares a picture,
+  // panelfirst.js when the panel's Usage tab's account count is pressed,
+  // panelarrange.js when its Allowances tab's Arrange is;
+  // the checks above
   // still read them
-  for (const f of await scripts()) if (!["webfonts.js", "cfgblocked.js", "signsheets.js", "ruleedit.js", "ratewindows.js", "traywindows.js", "autoresetown.js", "registry.js", "navlamp.js", "whatsnew.js", "claudemode.js", "ctxtext.js", "resetask.js", "quotaall.js", "quitask.js", "checkinnow.js", "autobackup.js", "scrollends.js", "profilerename.js", "settingshints.js", "keyspend.js", "syncfiles.js"].includes(f)) assert(all.includes(f), f + " is not loaded by index.html");
+  for (const f of await scripts()) if (!["webfonts.js", "cfgblocked.js", "signsheets.js", "ruleedit.js", "ratewindows.js", "traywindows.js", "autoresetown.js", "registry.js", "navlamp.js", "whatsnew.js", "claudemode.js", "ctxtext.js", "resetask.js", "quotaall.js", "quitask.js", "checkinnow.js", "autobackup.js", "scrollends.js", "profilerename.js", "settingshints.js", "keyspend.js", "syncfiles.js", "agentcompact.js", "balfound.js", "passerrors.js", "keybalance.js", "modellimits.js", "notices.js", "videogen.js", "provlinks.js", "setfeats.js", "pageshare.js", "panelfirst.js", "panelarrange.js"].includes(f)) assert(all.includes(f), f + " is not loaded by index.html");
 });
 
 // In WebKit with what Safari 15.0 lacks taken away, every page is drawn with

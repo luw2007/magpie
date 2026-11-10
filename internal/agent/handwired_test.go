@@ -138,8 +138,8 @@ func TestPiConnectedBeforeStaysConnected(t *testing.T) {
 // Every agent whose magpie is a provider of its own config (Spelled) holds
 // a provider magpie didn't put there as the user's, as Pi does.
 func TestHandWiredMagpieProviderSiblings(t *testing.T) {
-	ids := []string{"agy", "opencode", "openchamber", "mimocode", "deveco", "pi", "aside", "omo", "prime-agent", "goose", "zed", "vscode",
-		"crush", "dsh", "commandcode", "fx", "omp", "hermes", "morph", "kimi", "empryo", "minimax-code", "droid",
+	ids := []string{"agy", "opencode", "openchamber", "mimocode", "deveco", "pi", "aside", "omo", "prime-agent", "mu", "goose", "zed", "vscode",
+		"crush", "dsh", "ds-bot", "commandcode", "fx", "omp", "hermes", "morph", "kimi", "empryo", "nanobot", "miniq", "minimax-code", "droid",
 		"qoder", "qoder-cn", "grok", "atomcode", "cline", "snow"}
 	for _, id := range ids {
 		t.Run(id, func(t *testing.T) {
