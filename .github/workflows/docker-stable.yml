@@ -10,8 +10,6 @@ name: Docker stable
 # the feed can't be read the tag stays where it was.
 
 on:
-  schedule:
-    - cron: '23 * * * *'
   # a release's image is pushed: an urgent one is Stable at once
   workflow_run:
     workflows: [Docker]
