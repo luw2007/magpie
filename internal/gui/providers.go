@@ -1037,7 +1037,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		if imageSet {
 			images = said
 		}
-		window := p.WindowOf(m)
+		window := p.WindowIn(m, set)
 		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), ListedOutput: provider.OutputWithin(provider.ListedWindow(m), p.ReplyLimitIn(m, settings.Settings{})), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own, Best: newest[m.ID]}
 		list, listed, free := pricer.Prices(set, m.ID)
 		j.Zero = !m.Free && free
@@ -1438,6 +1438,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	tuneRoutes(mux)
 	groupRoutes(mux)
 	localHostsRoutes(mux)
+	catalogModelsRoutes(mux)
 	// how each key's or account's requests stand under its limit on
 	// requests at once (#892), read every two seconds while a provider's
 	// rows are shown; empty when the gateway runs elsewhere
