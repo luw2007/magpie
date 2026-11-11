@@ -346,6 +346,106 @@ function renderMTLS(s) {
   }
 }
 
+// renderHTTPS: HTTPS for other computers (zhangly1 on X: Claude on another
+// computer on the LAN needed magpie at https://), under Share on local
+// network. On, other computers get the certificate imported here, or one
+// magpie's own CA signs; then the CA's row saves it to Downloads, and the
+// rows under it say how another computer fetches and trusts it. Asked of
+// its own route (https.go), as Browser access is; drawn while magpie
+// answers other computers or the switch is on.
+let httpsState = null;
+function httpsSays(m) {
+  if (/^this page is open from another computer/.test(m)) return t("This page is open from another computer: turn HTTPS on or off from the computer magpie runs on");
+  if (/^a certificate but no private key/.test(m)) return t("A certificate but no private key: choose the key’s file too");
+  if (/^a private key but no certificate/.test(m)) return t("A private key but no certificate: choose the certificate’s file too");
+  if (/^the private key belongs to none/.test(m)) return t("The private key belongs to none of the certificates");
+  if (/^the private key has a passphrase/.test(m)) return t("The private key has a passphrase: choose one without");
+  if (/^no PEM certificate or key/.test(m)) return t("No PEM certificate or key in the files chosen");
+  return t(m);
+}
+function renderHTTPS(s, asked) {
+  const box = $("#httpsList");
+  if (!box) return;
+  if (!asked) api("settings/https").then((h) => { httpsState = h; renderHTTPS(prefs, true); }).catch(() => {});
+  const h = httpsState;
+  if (!s || !h || (!s.lan && !s.onNetwork && !h.on)) return void box.replaceChildren();
+  const post = (what, body) => writingPrefs(api("settings/https" + what, body))
+    .then((nh) => {
+      httpsState = nh; renderHTTPS(prefs, true);
+      if (nh.saved) status(t("Saved to {path}", { path: nh.saved }), "ok", 4000);
+    })
+    .catch((e) => { status(httpsSays(e.message), "err"); renderHTTPS(prefs, true); });
+  const rows = [];
+  const row = (cls, name, sub, ...tools) => {
+    const r = el("div", "row pref " + cls);
+    const who = el("div", "who");
+    who.append(el("div", "name", name));
+    if (sub) who.append(sub instanceof Node ? sub : el("div", "sub", sub));
+    const val = el("div", "val");
+    val.append(...tools);
+    r.append(who, val);
+    rows.push(r);
+    return r;
+  };
+  row("https-row", "HTTPS",
+    h.served && !h.on ? t("Already served over https:// by Require a client certificate or --tls-cert") : t("Other computers call magpie at https://; this computer can still use http://"),
+    segs([["off", t("Off")], ["on", t("On")]], h.on ? "on" : "off", (v) => post("", { on: v === "on" })));
+  if (h.served) {
+    const c = h.cert;
+    const until = c && new Date(c.until).toLocaleDateString(intlLang(), { year: "numeric", month: "short", day: "numeric" });
+    const from = !c ? "" : c.from === "files" ? "--tls-cert " + c.file : c.from === "imported" ? t("Your certificate") : t("Signed by magpie’s CA");
+    const sub = h.certError ? el("div", "sub err", t(h.certError))
+      : el("div", "sub", [from, (c.names || []).join(", "), t("Until {date}", { date: until })].filter(Boolean).join(" · "));
+    sub.title = sub.textContent;
+    const tools = [];
+    if (!h.files) {
+      const file = el("input");
+      file.type = "file";
+      file.multiple = true;
+      file.accept = ".pem,.crt,.cer,.key,application/x-pem-file,application/x-x509-ca-cert";
+      file.hidden = true;
+      file.onchange = async () => {
+        const files = await Promise.all([...file.files].map((f) => f.text()));
+        file.value = "";
+        if (files.length) post("/import", { files });
+      };
+      const pick = el("button", "text", t("Import…"));
+      pick.type = "button";
+      pick.onclick = () => file.click();
+      tools.push(file, pick);
+      if (c?.from === "imported") {
+        const x = el("button", "text", t("Remove"));
+        x.type = "button";
+        x.onclick = () => post("/remove", {});
+        tools.push(x);
+      }
+    }
+    row("https-cert", t("Certificate"), sub, ...tools);
+  }
+  if (h.ca) {
+    const save = el("button", "text", t("Save"));
+    save.type = "button";
+    save.onclick = () => post("/ca", {});
+    const sub = el("div", "sub wraps", t("Trust it once on each computer that calls magpie · SHA-256 {fp}", { fp: h.ca }));
+    row("https-ca", t("magpie’s CA"), sub, save);
+    // the address picked under Share on local network, else the first
+    const at = (h.caURLs || []).find((u) => u.startsWith(lanSelectedURL + "/")) || h.caURLs?.[0];
+    const steps = [
+      at && [t("Download"), "curl -kO " + at],
+      ["macOS", "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain magpie-ca.crt"],
+      ["Windows", "certutil -addstore -f Root magpie-ca.crt"],
+      ["Linux", "sudo cp magpie-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates"],
+      [t("Claude Code and other Node apps"), "NODE_EXTRA_CA_CERTS=/path/to/magpie-ca.crt"],
+    ];
+    for (const [name, cmd] of steps.filter(Boolean)) {
+      const code = el("code", "sub https-cmd", cmd);
+      code.title = cmd;
+      row("https-step", name, code, copyBtn(cmd, name, t("Copied")));
+    }
+  }
+  box.replaceChildren(...rows);
+}
+
 // renderLAN: the gateway shared on the local network, for agents on other
 // machines. Gateway keys and connection examples live together in Gateway.
 let lanSelectedURL = "", lanProtocol = "openai";
@@ -509,6 +609,58 @@ function renderLAN(s) {
     update();
   }
   if (sub) row(head || t("In a container"), sub, "").classList.add("lan-container");
+  renderJoin(s, box);
+}
+
+// renderJoin: Join with a password (EV_John_Liu on X), under the shared
+// address. With a password set, another computer opens <address>/join,
+// types it, and gets a gateway key of its own, named for it in Gateway
+// keys, and the setup for its agents. Only a hash is kept: the field is
+// always empty, and a password typed in it replaces the one set.
+let joinDraft = { value: "", err: "" };
+function renderJoin(s, box) {
+  const d = joinDraft;
+  const set = (password) => writingPrefs(api("settings/join", { password }))
+    .then((ns) => { prefs = ns; joinDraft = { value: "", err: "" }; renderSettings(); status(t("Saved"), "ok", 1500); })
+    .catch((e) => { d.err = t(e.message); status(d.err, "err"); renderSettings(); });
+  const r = el("div", "row pref rule-row join-row");
+  const who = el("div", "who");
+  who.append(el("div", "name", t("Join with a password")),
+    el("div", "sub" + (d.err ? " err" : ""), d.err || t("Other computers open the join link and type this password to get a gateway key of their own and the setup for their agents")));
+  const field = input(d.value, s.joinOn ? t("New password") : t("Password"));
+  field.type = "password";
+  field.className = "words rule-match join-pw";
+  field.setAttribute("aria-label", t("Password"));
+  field.autocomplete = "new-password";
+  field.spellcheck = false;
+  const go = el("button", "text", t("Set"));
+  go.type = "button";
+  go.onclick = () => {
+    d.value = field.value;
+    if (!d.value) return field.focus();
+    set(d.value);
+  };
+  field.oninput = () => { d.value = field.value; };
+  field.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") go.onclick(); };
+  const val = el("div", "val rule-add");
+  val.append(field, go);
+  if (s.joinOn) {
+    const off = el("button", "text join-off", t("Turn off joining"));
+    off.type = "button";
+    off.onclick = () => set("");
+    val.append(off);
+  }
+  r.append(who, val);
+  box.append(r);
+  if (!s.joinOn || !lanSelectedURL) return;
+  const link = lanSelectedURL + "/join";
+  const lr = el("div", "row pref join-link-row");
+  const lw = el("div", "who");
+  lw.append(el("div", "name", t("Join link")));
+  const lv = el("div", "val");
+  lv.append(el("code", "", link), copyBtn(link, t("Join link")));
+  lr.append(lw, lv);
+  box.append(lr);
 }
 
 // renderWebPage: Browser access, the app's own page served to a browser

@@ -54,6 +54,8 @@ var Vars = []string{
 	"STEP_CODING_AGENT_DIR", "STEPCODE_CONFIG_DIR",
 	// MothX's config folder ($MOTHX_DIR/settings.json)
 	"MOTHX_DIR",
+	// Shelley's socket ($SHELLEY_SOCKET), which magpie tells it through
+	"SHELLEY_SOCKET",
 	// PenguinHarness's data root and the Project its CLI works in
 	// ($PENGUIN_HOME/$PENGUIN_PROJECT_ID/.project_config.toml)
 	"PENGUIN_HOME", "PENGUIN_PROJECT_ID",
@@ -78,6 +80,11 @@ var Vars = []string{
 	"LIVEAGENT_HOME", "K_BRAIN_HOME",
 	// OpenMausBot's data folder (its config.json), ~/.openmausbot without it
 	"OMB_DATA_DIR",
+	// Avibe's home (its config/config.json and its control socket), ~/.avibe without it
+	"AVIBE_HOME",
+	// Kun's data folder (its runtime.json and model-connections.v2.json),
+	// ~/.kun/data without it
+	"KUN_DATA_DIR",
 	// AstrBot's root, the folder holding its data/ (else ~/.astrbot, the desktop app's)
 	"ASTRBOT_ROOT",
 	// jcode's folder, ~/.jcode without it
@@ -96,6 +103,8 @@ var Vars = []string{
 	"ALMA_DATA_DIR",
 	// miniQ's data folder, its settings.json and daemon.json in it
 	"MINIQ_DATA_DIR",
+	// Paimon's config folder, its config.json in it
+	"PAIMON_CONFIG_HOME",
 	// Craft Agents' config folder, its config.json in it
 	"CRAFT_CONFIG_DIR",
 	// Reasonix Studio and its native CLI share this config home

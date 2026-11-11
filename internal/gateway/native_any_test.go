@@ -188,7 +188,7 @@ func TestNativeAnyRecordsUsage(t *testing.T) {
 	if plain == nil || plain.Provider != "vendor" || plain.Input != 0 || plain.Output != 0 {
 		t.Fatalf("models record %+v in %+v", plain, recs)
 	}
-	if chat == nil || chat.Model != "m" || chat.Input != 7 || chat.Output != 3 || chat.ProviderKeyID != provider.KeyID("vk") {
+	if chat == nil || chat.Model != "m" || chat.Input != 7 || chat.Output != 3 || chat.ProviderKeyID != savedGatewayKeyID(t, "vendor", "vk") {
 		t.Fatalf("chat record %+v in %+v", chat, recs)
 	}
 }

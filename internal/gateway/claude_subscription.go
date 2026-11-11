@@ -61,6 +61,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/claudetui"
 	"github.com/yetone/magpie/internal/edit"
@@ -780,7 +781,7 @@ func (c claudeCLI) asRoot(env []string) []string {
 // claudeEnvVars are the variables magpie sets for a Claude Code run, which
 // one in WSL is handed (wslrun's Env).
 var claudeEnvVars = []string{"ENABLE_CLAUDEAI_MCP_SERVERS", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-	"DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
+	"DISABLE_TELEMETRY", "DO_NOT_TRACK", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER", "ANTHROPIC_BETAS",
 	"CLAUDE_CODE_EXTRA_BODY", "DISABLE_PROMPT_CACHING"}
 
 // env is env for a run in config directory configDir ("" for the account
@@ -1012,7 +1013,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"magpie": map[string]any{"command": exe, "args": []string{claudetui.MCPCommand, callbackPath, toolsPath, filepath.Join(tmp, "listed")}},
 	}})
-	args := claudeCLIArgs(model, string(mcpConfig), req.Effort, req.WebSearch)
+	args := claudeCLIArgs(claudeRunName(model), string(mcpConfig), req.Effort, req.WebSearch)
 	if req.ThinkOff {
 		// the client turned thinking off, as Claude Code's auto mode
 		// classifier and its small asks do: a run at Claude Code's own
@@ -1214,7 +1215,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		cmd = binary.command(context.Background(), args...)
 	}
 	cmd.Dir = work
-	env, err := binary.proxied(ctx, cleanClaudeEnvTTL(os.Environ(), prefix.runTTL()))
+	env, err := binary.proxied(ctx, claudeRunEnv(os.Environ(), prefix.runTTL()))
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -3521,6 +3522,43 @@ func messageWords(msgs []Message) []string {
 	return out
 }
 
+// claudeKnownLong are the Claude models Claude Code (2.1.316) knows, and
+// runs to their 1M window by their own ids.
+var claudeKnownLong = []string{
+	"claude-fable-5", "claude-fable-5-1", "claude-mythos-5", "claude-mythos-5-1",
+	"claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+}
+
+// claudeGenRe is a Claude model's id, its generation in the first group.
+var claudeGenRe = lazyre.New(`^claude-(?:opus|sonnet|haiku|fable|mythos)-([0-9]+)(?:-[0-9]+)?$`)
+
+// claudeRunName is the name a run asks Claude Code for model by. A Claude
+// model of the 5 generation or later that Claude Code doesn't know (Fable
+// 5.2 on 2.1.316) it holds to 200K, and turned away a longer conversation
+// before Anthropic was asked ("Prompt is too long"), while magpie tells
+// the agent the model's 1M window: Codex, which compacts at 272K, never
+// compacted and failed every turn past 200K instead (magicalaciw18 on X).
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS isn't read for a Claude name; "[1m]" is,
+// and Anthropic serves these models to 1M on a subscription as they are.
+// One Claude Code knows keeps its id, as does every 4 generation one, whose
+// 1M a subscription without usage credits is refused even a short turn
+// on (claude-sonnet-4-6[1m]: "Usage credits required for 1M context"),
+// and one whose window magpie knows to be less.
+func claudeRunName(model string) string {
+	id := strings.ToLower(model)
+	m := claudeGenRe.Regexp().FindStringSubmatch(id)
+	if m == nil || slices.Contains(claudeKnownLong, id) {
+		return model
+	}
+	if gen, _ := strconv.Atoi(m[1]); gen < 5 {
+		return model
+	}
+	if w := catalog.ContextOf(model); w > 0 && w < 1000000 {
+		return model
+	}
+	return model + "[1m]"
+}
+
 // claudeCLIArgs runs Claude Code with none of its own tools but, when the
 // client offered a web search (Claude Code's own WebSearch tool asks for
 // Anthropic's), its WebSearch, which searches as the subscription does.
@@ -3712,6 +3750,53 @@ func cleanClaudeEnvTTL(env []string, ttl string) []string {
 		// Request.cacheTTL) are the same: Anthropic refuses a 1h mark after
 		// a 5m one
 		"CLAUDE_CODE_PROMPT_CACHE_TTL="+ttl)
+}
+
+// claudeQuietVars are the variables that keep Claude Code from fetching
+// its feature flags: with any of them set (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+// DISABLE_TELEMETRY or DO_NOT_TRACK; 2.1.316's privacy level, "default" only
+// with none) it reads none, and every flag is its default.
+var claudeQuietVars = []string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY", "DO_NOT_TRACK"}
+
+// claudeRunEnv is the environment a bridge's run (a caller's turns) starts
+// Claude Code in: cleanClaudeEnvTTL's, but with Claude Code's network as a
+// plain claude has it, so it reads its feature flags for the account. One of
+// them, tengu_curious_tower, is Message Threads: a turn sends only what came
+// after the last reply instead of the whole history, every image in it again
+// (#5963, nylesssssssss; 681KB a turn with a 3MB image, 3KB with threads).
+// Nothing is forced: an account Anthropic hasn't given threads goes whole,
+// as its own claude does. Updates and error reports stay off, which the
+// flags don't need. The quiet variables stay as the user set them, in
+// magpie's environment or in their Claude Code's settings.json env (the run
+// reads no settings of the user's: --setting-sources ""), since they are the
+// user's telemetry choice for Claude Code.
+//
+// The one-off runs (the model test, the warm-up, /usage) keep
+// cleanClaudeEnv's CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: they have no
+// history to send, and an interactive one would otherwise send a model
+// request of its own as it starts (probeQuotaStatus, #5582). A turn's
+// interactive run sends that request too, right before the turn's own,
+// which opens the five-hour window anyway.
+func claudeRunEnv(env []string, ttl string) []string {
+	out := slices.DeleteFunc(cleanClaudeEnvTTL(env, ttl), func(e string) bool {
+		k, _, _ := strings.Cut(e, "=")
+		return slices.Contains(claudeQuietVars, k)
+	})
+	settings := filepath.Join(claudeConfigDir(), "settings.json")
+	for _, k := range claudeQuietVars {
+		v, _ := edit.GetJSON(settings, "env."+k)
+		if v == "" {
+			for _, e := range env {
+				if w, ok := strings.CutPrefix(e, k+"="); ok {
+					v = w
+				}
+			}
+		}
+		if v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return append(out, "DISABLE_AUTOUPDATER=1", "DISABLE_ERROR_REPORTING=1")
 }
 
 type lockedWriter struct{ run *subscriptionRun }

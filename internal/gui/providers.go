@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,6 +38,7 @@ type modelJSON struct {
 	Name    string   `json:"name"`              // the user's name for it, if they gave one
 	Default string   `json:"default,omitempty"` // its own name, when the user gave it another
 	Plain   string   `json:"plain,omitempty"`   // a remote magpie's model's name there alone, when Name has its provider there after it (catalog.Model's)
+	By      string   `json:"by,omitempty"`      // a remote magpie's model's provider there, the first in a chain (catalog.Model's)
 	Kept    []string `json:"kept,omitempty"`    // the reasoning levels the user keeps of Efforts, when not all
 	Efforts []string `json:"efforts,omitempty"`
 	Given   bool     `json:"given,omitempty"` // its levels aren't known: Efforts are those it can be given, Kept those it was
@@ -159,6 +162,9 @@ type providerJSON struct {
 	// asked as usual after a quota refusal or a 429, never set aside for
 	// it (provider.LimitRestOff)
 	LimitRestOff bool `json:"limitRestOff"`
+	// a Remote magpie's models named by the provider serving each there
+	// (provider.UpstreamProviders, lcc580 on X)
+	UpstreamProviders bool `json:"upstreamProviders,omitempty"`
 	// DeepSeek's own API sent an agent's images inline on every turn, not
 	// once by file id (provider.ImageFilesOff, #5407); TakesImageFiles:
 	// it is DeepSeek's own API, so the editor offers it
@@ -304,6 +310,10 @@ type providerJSON struct {
 	// UseFirst: Smart puts it ahead of the other providers serving the
 	// same model (provider.Provider.UseFirst), set on its own with usefirst
 	UseFirst bool `json:"useFirst,omitempty"`
+	// NoStandIn: never a fallback for, or a routing group's next after,
+	// another provider's model (provider.Provider.NoStandIn), set on its
+	// own with standin
+	NoStandIn bool `json:"noStandIn,omitempty"`
 	// KeepLogin: magpie keeps Codex or Claude Code signed in to the first
 	// account rather than moving it on when that runs low (#524)
 	KeepLogin bool `json:"keepLogin,omitempty"`
@@ -626,8 +636,10 @@ type gatewayJSON struct {
 	// callers from elsewhere, a container's host among them, need one
 	OnNetwork bool `json:"onNetwork,omitempty"`
 	Running   bool `json:"running"`
-	Mine      bool `json:"mine"`   // this process serves it
-	Window    bool `json:"window"` // the magpie serving it shows its routing
+	Mine      bool `json:"mine"` // this process serves it
+	// Paused: the user paused it (gatewaypause.go), and nothing serves it
+	Paused bool `json:"paused,omitempty"`
+	Window bool `json:"window"` // the magpie serving it shows its routing
 	// Version is another magpie's, serving it, and Older says it is older
 	// than this one: agents' requests are then sent as that version sends
 	// them, without this one's fixes (#506)
@@ -822,9 +834,9 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		ID: p.ID, Name: p.Name, Icon: p.Icon, IconFrom: p.IconFrom, Preset: p.Preset, Host: p.Host(),
 		Chat: p.Chat, Responses: p.Responses, Anthropic: p.Anthropic, Gemini: p.Gemini, Decide: p.Decide, BaseAPI: p.BaseAPI, ModelTest: p.ModelTest(), TestsAs: p.TestClients(), DecideTest: p.AsksDecideModels(), MarksKinds: p.MarksKinds(),
 		Catalog: p.Catalog, Website: p.Website, KeysURL: p.KeysURL,
-		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
+		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
-		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
+		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate,
 		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
 		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
@@ -1043,6 +1055,9 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			j.Name = n
 		} else {
 			j.Plain = m.Plain
+		}
+		if p.IsRemoteMagpie() {
+			j.By = m.By
 		}
 		if api, ok := p.ModelAPI(m.ID); ok {
 			j.API = string(api)
@@ -1353,6 +1368,7 @@ func providersState() providersJSON {
 		}
 		s.Gateway.Groups = append(s.Gateway.Groups, g)
 	}
+	s.Gateway.Paused = pausedNow()
 	if gw := served.Load(); gw != nil {
 		s.Gateway.Running, s.Gateway.Mine, s.Gateway.Window = true, true, true
 		// the calls without their bodies, which only an opened row reads
@@ -1622,6 +1638,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// LimitRestOff is whether a quota refusal or a 429 leaves it
 			// asked as usual; a save that leaves it out keeps it
 			LimitRestOff *bool `json:"limitRestOff"`
+			// UpstreamProviders, on a Remote magpie, names its models by the
+			// provider serving each there; a save that leaves it out keeps it
+			UpstreamProviders *bool `json:"upstreamProviders"`
 			// ImageFilesOff is whether DeepSeek's own API is sent an
 			// agent's images inline (#5407); a save that leaves it out
 			// keeps it, as `magpie provider set <id> image-files=off` set it
@@ -2086,6 +2105,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if req.LimitRestOff != nil {
 					in.LimitRestOff = *req.LimitRestOff
 				}
+				if req.UpstreamProviders != nil {
+					in.UpstreamProviders = *req.UpstreamProviders && in.IsRemoteMagpie()
+				}
 				if req.ImageFilesOff != nil {
 					in.ImageFilesOff = *req.ImageFilesOff
 				}
@@ -2139,6 +2161,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.LimitRestOff = *req.LimitRestOff
 				} else if old != nil {
 					in.LimitRestOff = old.LimitRestOff
+				}
+				if req.UpstreamProviders != nil {
+					in.UpstreamProviders = *req.UpstreamProviders && in.IsRemoteMagpie()
+				} else if old != nil {
+					in.UpstreamProviders = old.UpstreamProviders
 				}
 				// DeepSeek's images sent inline, set here or with `magpie
 				// provider set <id> image-files=off` (#5407)
@@ -2323,6 +2350,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.KeepSelf = old.KeepSelf                                    // keepself
 					in.CapStop, in.CapCareful = old.CapStop, old.CapCareful       // capstop, capcareful
 					in.UseFirst = old.UseFirst                                    // usefirst
+					in.NoStandIn = old.NoStandIn                                  // standin
 					in.Off = old.Off                                              // and this with off and on
 					if in.Contexts == nil {
 						in.Contexts = old.Contexts // a save that doesn't say
@@ -2674,6 +2702,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
+		case "standin":
+			// never a fallback for another model's request, so a local
+			// model's request can't reach a vendor that bans for it
+			// (sonnnnnnnnnnnna on X), or one again
+			if err := provider.SetNoStandIn(in.ID, in.NoStandIn); err != nil {
+				fail(rw, err)
+				return
+			}
 		case "delete":
 			var err error
 			if moved, err = agent.Reseat(func() error { return provider.Delete(in.ID) }); err != nil {
@@ -2901,7 +2937,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		defer cancel()
 		// and each account's daily check-in, for its row's Check in now
 		agent := r.URL.Query().Get("agent")
-		writeJSON(rw, provider.LoginCheckins(agent, provider.WithCapped(provider.LoginUsage(ctx, agent))))
+		writeJSON(rw, provider.LoginCheckins(agent, provider.WithCapped(provider.LoginUsageShown(ctx, agent))))
 	})
 	// Switching the account an agent is signed in to, among those magpie
 	// remembers, and forgetting one.
@@ -3221,6 +3257,55 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			Providers providersJSON              `json:"providers"`
 		}{res, providersState()})
 	})
+	// ChatGPT and Claude accounts taken out as a file Sub2API, CLIProxyAPI
+	// or magpie imports (heyiwei5 and Rk1ngggg on X). The file holds live
+	// sign-ins: it is written 0600 into Downloads, never sent to the page,
+	// and its tokens are never logged.
+	mux.HandleFunc("POST /api/signin/export", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent, Format string
+			Users         []string
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		res, err := provider.ExportLogins(in.Agent, in.Format, in.Users)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		dir := downloads()
+		stamp := time.Now().Format("2006-01-02")
+		if in.Format == provider.ExportCLIProxy {
+			// one file an account, in a folder of their own
+			base := filepath.Join(dir, "magpie-cliproxyapi-"+in.Agent+"-"+stamp)
+			dir = base
+			for i := 2; ; i++ {
+				if _, err := os.Stat(dir); err != nil {
+					break
+				}
+				dir = fmt.Sprintf("%s-%d", base, i)
+			}
+		} else {
+			res.Files[0].Name = "magpie-sub2api-" + in.Agent + "-" + stamp + ".json"
+		}
+		paths, err := provider.WriteExport(res, dir)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		shown := dir
+		if len(paths) == 1 {
+			shown = paths[0]
+		}
+		_ = w.OpenFolder(dir) // saved either way; the path is in the answer
+		writeJSON(rw, struct {
+			Path     string                     `json:"path"`
+			Accounts []string                   `json:"accounts"`
+			Skipped  []provider.ImportedAccount `json:"skipped"`
+		}{tilde(shown), res.Accounts, res.Skipped})
+	})
 	// StepFun's Step Plan windows: the session the user copied from their
 	// browser with magpie's bookmarklet, the provider's own (two on one
 	// site can be two accounts, #2384), on the provider's platform
@@ -3345,8 +3430,8 @@ func typed(p, in provider.Provider, proxy *string, insecureTLS, http1 *bool) pro
 			}
 		}
 	}
-	if v := in.Vertex.Normal(); v != nil && p.IsVertex() && v.Project != "" {
-		p.Vertex = v
+	if v := in.Vertex.Normal(); p.IsVertex() && (v != nil && v.Project != "" || in.Vertex != nil && p.Key != "") {
+		p.Vertex = v // with a key the project may be none: express mode
 	}
 	for _, f := range []struct {
 		to *string

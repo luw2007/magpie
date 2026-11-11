@@ -736,7 +736,7 @@ function routingPage(part) {
   // from its vendor does — relays list each key its own group's models
   // or the user set the account or key to serve other models only (#474)
   // or it is held at the usage cap the user set on the account
-  const unlistedWord = (w) => w.heldOwn ? t("another account is named for this model in {group}", { group: w.heldBy }) : w.heldBy ? t("not an account {group} may use", { group: w.heldBy }) : w.held ? t("not an account the gateway key may use") : w.noCredits ? t("held: its allowance used up, set not to spend credits") : w.capped ? t("held at its {cap}% usage cap", { cap: w.capped }) : w.barred ? t("set to serve other models, not {model}", { model: w.model }) : w.kind === "key" ? t("{name}'s list for this key has no {model}", { name: w.name, model: w.model }) : t("its plan doesn't list {model}", { model: w.model });
+  const unlistedWord = (w) => w.heldOwn ? t("another account is named for this model in {group}", { group: w.heldBy }) : w.heldBy ? t("not an account {group} may use", { group: w.heldBy }) : w.held ? t("not an account the gateway key may use") : w.noCredits ? t("held: its allowance used up, set not to spend credits") : w.capped ? t("held at its {cap}% usage cap", { cap: w.capped }) : w.standIn ? t("set never to be another model's fallback") : w.barred ? t("set to serve other models, not {model}", { model: w.model }) : w.kind === "key" ? t("{name}'s list for this key has no {model}", { name: w.name, model: w.model }) : t("its plan doesn't list {model}", { model: w.model });
   // noURLWord: its keys are all set to a protocol its provider has no URL
   // for, so it went out on the URLs it has (#1702)
   const noURLWord = (w) => t("key set to {api} only, no {api} URL · sent on the others", { api: API[w.noURL] || w.noURL });
@@ -1082,6 +1082,8 @@ function routingPage(part) {
     ? t("{who} is left out: a usage window is used up, and the account is set not to spend its credits, so it counts as used up until that window renews.", { who: who(x) })
     : x.capped
     ? t("{who} is left out: a usage window is at {n}, past the {cap}% cap set on the account, so it counts as used up until that window renews.", { who: who(x), n: pct(x.used), cap: x.capped })
+    : x.standIn
+    ? t("{who} is left out: it is set never to be a fallback for another model.", { who: who(x) })
     : x.barred
     ? t("{who} is left out: it is set to serve other models, not {model}.", { who: who(x), model: x.model })
     : x.kind === "key"
@@ -1183,6 +1185,7 @@ function routingPage(part) {
         : t("{who} answered this conversation last, but the provider goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.", { who: last, first: who(r.order[0]), n: a.turn });
       case "main": return t("{who}, a fallback, answered this conversation last, but the provider's own {first} is ready again, so turn {n} goes back to it.", { who: last, first: who(r.order[0]), n: a.turn });
       case "back": return t("{who} took this conversation while {first}, listed ahead of it in the group, couldn't; {first} is ready again, so turn {n} goes back to it.", { who: last, first: who(r.order[0]), n: a.turn });
+      case "hours": return t("{who} answered this conversation last, by rule {rule}, but the rule's hours are over, so turn {n} goes where the group routes it.", { who: last, rule: r.rule?.ended, n: a.turn });
       case "no-cache": return t("{who} answered this conversation last, but the vendor then read only {r} tokens of it from its cache and wrote {w} — not worth staying for.", { who: last, r: tokens(a.cacheRead || 0), w: tokens(a.cacheWrite || 0) });
       case "cold": return t("{who} answered this conversation {d} ago, longer than the 5 minutes a vendor keeps a prompt cached — so routing decides afresh.", { who: last, d: ago });
       case "off": return t("Affinity is off: each request is routed afresh, whoever answered its conversation before.");
@@ -1409,10 +1412,14 @@ function routingPage(part) {
     }
     return -new Date().getTimezoneOffset() === server ? "" : t("server time, {offset}", { offset: utcText(server) });
   }
-  // "9:5" is no time; "9:05" is 09:05
+  // "9:5" is no time; "9:05" is 09:05. What a phone's number pad or a
+  // Chinese keyboard types counts too (MinglunZhu on X): "22", "2200",
+  // "930", "22：00", "22.00", "22点", "22点30".
   const clockOf = (s) => {
-    const m = /^\s*(\d{1,2}):(\d{2})\s*$/.exec(s || "");
-    return m && +m[1] < 24 && +m[2] < 60 ? m[1].padStart(2, "0") + ":" + m[2] : "";
+    const v = String(s || "").replace(/[\uff10-\uff19]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0)).trim();
+    const m = /^(\d{1,2})(?:[:：.．h時时点點]\s*(\d{2})?分?)?$/i.exec(v) || /^(\d{1,2})(\d{2})$/.exec(v);
+    const h = m?.[1], mm = m?.[2] ?? "00";
+    return m && +h < 24 && +mm < 60 ? h.padStart(2, "0") + ":" + mm : "";
   };
 
   // how the reasoning a try was sent at came to be
@@ -2619,7 +2626,7 @@ function routingPage(part) {
   // account's plan; and the provider of a key or account named as one of
   // another provider's on the stage is (twin), so two providers' Key-01
   // rows, each of the same model, are told apart (iamleehom on Discord)
-  const rowSub = (w, twin) => w.fallback ? w.name : w.kind === "provider" ? "" : twin ? [w.name || w.provider, w.plan].filter(Boolean).join(" · ") : w.plan || "";
+  const rowSub = (w, twin) => w.fallback ? w.name : w.kind === "provider" ? "" : twin ? [w.name || w.provider, planName(w.plan)].filter(Boolean).join(" · ") : planName(w.plan) || "";
 
   // sync puts the staged routes on the stage: each agent on the left, and
   // the accounts they weighed, each route's in the order it weighed them —
@@ -4917,7 +4924,7 @@ function routingPage(part) {
       const name = el("div", "nm");
       // a provider's own row: its model, the provider's name is the heading
       if (w.kind === "provider") name.append(el("b", "", w.model || w.name));
-      else name.append(el("b", "", who(w)), el("span", "", w.plan || (w.kind === "key" ? t("API key") : "")));
+      else name.append(el("b", "", who(w)), el("span", "", planName(w.plan) || (w.kind === "key" ? t("API key") : "")));
       let st, cls = "", asOf = "";
       const resting = a.rest && at(a.rest.until) > n;
       // its models resting alone, while the account answers its others:
@@ -6469,7 +6476,7 @@ function routingPage(part) {
       const all = mergeQuotas(subs);
       const ws = (familyWindows(all.windows) || []).slice(0, 3);
       if (!ws.length) continue;
-      const figs = ws.map((w) => t(w.name) + (w.plan ? " · " + w.plan : "") + " " + quotaText(w)).join(" · ");
+      const figs = ws.map((w) => t(w.name) + (w.plan ? " · " + planName(w.plan) : "") + " " + quotaText(w)).join(" · ");
       const text = t("{name}, {n} accounts: {windows}", { name: i.name || i.provider, n: subs.length, windows: figs });
       const line = el("div", "mem rt-gquota", all.unknown ? text + " · " + t("{n} couldn't be read", { n: all.unknown }) : text);
       line.dataset.provider = i.provider;
@@ -7655,11 +7662,11 @@ function routingPage(part) {
             const free = accts.filter((a) => !used(a.id) && a.id !== mine?.id);
             ab.onclick = (ev) => pickFrom("account", ab, ev, [
               { value: "", label: t("Any account"), note: t("any the group allows") },
-              ...accts.map((a) => ({ value: a.id, label: a.name, note: [a.plan, used(a.id) && t("in the group already")].filter(Boolean).join(" · ") })),
+              ...accts.map((a) => ({ value: a.id, label: a.name, note: [planName(a.plan), used(a.id) && t("in the group already")].filter(Boolean).join(" · ") })),
               ...(free.length ? [{ value: "+", label: t("Also on another account…"), note: t("a member of its own, tried after this one") }] : []),
             ], (v) => {
               if (v === "+") {
-                pickFrom("account", ab, ev, free.map((a) => ({ value: a.id, label: a.name, note: a.plan || "" })), (a) => {
+                pickFrom("account", ab, ev, free.map((a) => ({ value: a.id, label: a.name, note: planName(a.plan) || "" })), (a) => {
                   if (!a) return;
                   d.members.splice(i + 1, 0, memberId(model, fixed, bare(a)));
                   rematch(); draw(); drawRules();
@@ -7786,7 +7793,7 @@ function routingPage(part) {
         b.title = on.length ? t("This group spends only {accounts} of {provider}", { accounts: on.map(nameOf).join(", "), provider: pname }) : t("This group may spend every account of {provider}", { provider: pname });
         b.setAttribute("aria-label", `${pname}: ${b.textContent}`);
         b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "account", label: "account", value: "", menu: true, multi: true,
-          options: all.map((a) => ({ value: a.id, label: a.name, note: a.plan || "" })), picked: (v) => d.accounts.includes(v), onPick: (v) => {
+          options: all.map((a) => ({ value: a.id, label: a.name, note: planName(a.plan) || "" })), picked: (v) => d.accounts.includes(v), onPick: (v) => {
             if (!v) return;
             d.accounts = d.accounts.includes(v) ? d.accounts.filter((x) => x !== v) : [...d.accounts, v];
             drawAccounts();
@@ -8100,6 +8107,9 @@ function routingPage(part) {
     // a condition taken off is the value saved for none, as before
     const condNone = { intent: "", tokens: 0, images: false, effort: "", compact: false, agents: [], folders: [], exceptFolders: [], time: null };
     const addCond = (r, k) => {
+      // a new rule's intent box left empty gives way to the condition
+      // picked instead (MinglunZhu on X: hours took an × and a +)
+      if (k !== "intent" && !r.intent?.trim()) openedOf(r).delete("intent");
       openedOf(r).add(k);
       if (k === "images" || k === "compact") r[k] = true;
       if (k === "subagent") setWhere(r, "subagent", { op: "is" });

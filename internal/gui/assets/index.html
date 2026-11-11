@@ -236,6 +236,10 @@
         <div class="who"><div class="name" data-t>Open at login</div></div>
         <div id="loginSegs"></div>
       </div>
+      <div class="row pref app-only" id="gatewayPauseRow">
+        <div class="who"><div class="name" data-t>Gateway</div><div class="sub" data-t>Paused, agents are disconnected and use their own settings</div></div>
+        <div id="gatewayPauseSegs"></div>
+      </div>
       <div class="row pref app-only" id="quitAskRow">
         <div class="who"><div class="name" data-t>Ask before quitting</div><div class="sub" data-t>While agents go through magpie, Quit names them and asks first</div></div>
         <div id="quitAskSegs"></div>
@@ -332,6 +336,14 @@
         <div class="who"><div class="name" data-t>Task done alert</div><div class="sub" id="turnDoneSub"></div></div>
         <div id="turnDoneSegs"></div>
       </div>
+      <div class="row pref" id="barkRow">
+        <div class="who"><div class="name" data-t>Bark</div></div>
+        <div id="barkBox" class="bark-box"></div>
+      </div>
+      <div class="row pref" id="barkDailyRow" hidden>
+        <div class="who"><div class="name" data-t>Bark daily summary</div></div>
+        <div id="barkDailySegs" class="warm-at"></div>
+      </div>
     </div>
   </section>
   <section class="set-page" id="setPage-network" role="tabpanel" aria-labelledby="setTab-network">
@@ -359,6 +371,7 @@
     <div class="list prefs" id="lanList"></div>
     <div class="list prefs" id="allowList"></div>
     <div class="list prefs" id="mtlsList"></div>
+    <div class="list prefs" id="httpsList"></div>
     <div class="row-head"><span class="label" data-t>Web pages</span></div>
     <div class="list prefs" id="corsList"></div>
     <div class="row-head" id="webPageHead"><span class="label" data-t>Browser access</span></div>
@@ -424,7 +437,7 @@
   <button class="text" id="quit" data-t>Quit</button>
 </footer>
 
-<div class="modal" id="modal" hidden><div class="dialog"></div></div>
+<div class="modal" id="modal" hidden><div class="dialog"></div><div class="modal-grip" style="--wails-draggable:drag"></div></div>
 
 <div id="pop" class="pop" hidden>
   <div class="search">

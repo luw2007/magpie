@@ -226,6 +226,10 @@ type distro struct {
 	// Versions is what the CLIs of wslKinds that ask (version) said their
 	// versions are at the last probe, by the kind's id
 	Versions map[string]string `json:"versions,omitempty"`
+	// Paths is where the probe found each command in the distro, by name
+	// ("opencode": /home/me/.opencode/bin/opencode); a distro probed
+	// before this has none until it is probed again
+	Paths map[string]string `json:"paths,omitempty"`
 	// OmpProfiles are the named omp profiles the probe found under
 	// ~/.omp/profiles there: each is an agent of its own (omp#<name>).
 	// Kept so a stopped distro lists them without being started.
@@ -699,6 +703,8 @@ var wslKinds = []wslKind{
 	// no bin: nanobot is other tools' name too
 	{id: "nanobot", name: "nanobot", dir: ".nanobot", in: nanobotIn,
 		restart: newNotice("{agent} in WSL {distro}: its gateway and WebUI take this at their next reply; restart an open `nanobot agent` chat to use it there.")},
+	{id: "paimon", name: "Paimon", dir: ".config/paimon", bin: "paimon", in: paimonIn,
+		restart: newNotice("{agent} in WSL {distro} reads its model at start-up — restart open paimon sessions there to use this.")},
 	{id: "miniq", name: "miniQ", dir: ".local/share/miniq", bin: "miniq", in: miniqIn,
 		restart: newNotice("{agent} in WSL {distro}: magpie tells its running daemon; if it still answers with the old model, restart miniQ there.")},
 	// Ante ships macOS and Linux builds alone, and suggests WSL on Windows,
@@ -1857,6 +1863,12 @@ func parseProbe(name, out string) *distro {
 	for bin, path := range bins {
 		if !onWindowsDrive(path, win) {
 			d.Has["bin:"+bin] = true
+			if strings.HasPrefix(path, "/") {
+				if d.Paths == nil {
+					d.Paths = map[string]string{}
+				}
+				d.Paths[bin] = path
+			}
 		}
 	}
 	if d.Gateway == "" {

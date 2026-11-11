@@ -13,6 +13,7 @@
 // is written. Every language, at a wide and a narrow window.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
+const { openPage } = require("./reader.cjs");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
@@ -113,8 +114,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator("#prefs").click();
         await page.locator("#plainNamesSegs .opt.on").waitFor();
         await picked(page.locator("#plainNamesSegs .opt.on"), await tr("Off"));
-        await page.locator('#nav button[data-view="routing"]').click();
-        await openPane(page, "groups");
+        const tab = page.locator('#nav button[data-view="groups"]');
+        if (await tab.isVisible()) await tab.click();
+        else { await openPage(page, "routing"); await openPane(page, "groups"); }
         await picked(page.locator(".rt-gnames .opt.on"), await tr("Off"));
         assert.deepEqual(posts, [], "nothing is written");
         assert.deepEqual(errors, []);

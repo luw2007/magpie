@@ -1049,7 +1049,13 @@ func (s *Server) routes() *routeMux {
 	// another magpie looking for it at a new address (remote_prove.go)
 	mux.HandleFunc("POST "+provider.RemoteProvePath, s.prove)
 	mux.HandleFunc("GET "+KeyPagePath, s.keyPage)
+	mux.HandleFunc("GET "+CAPath, s.caFile)
 	mux.HandleFunc("GET "+keyPageData, s.keyInfo)
+	// the join page, where another computer that knows the join password
+	// gets a gateway key of its own (join.go)
+	mux.HandleFunc("GET "+JoinPagePath, s.joinPage)
+	mux.HandleFunc("GET "+joinData, s.joinOpen)
+	mux.HandleFunc("POST "+joinData, s.joinKey)
 	// the Claude Code processes the Claude subscription runs, for magpie
 	// claude-code runs (loopback only)
 	mux.HandleFunc("GET "+ClaudeRunsPath, s.claudeRuns)
@@ -1699,6 +1705,10 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 					// magpie that is this one's remote too doesn't take
 					// back its own models (catalog's magpie_via.go)
 					m["magpie_via"] = catalog.ViaHere(viaOf(e))
+					// the provider serving it, the first in a chain of
+					// magpies, for one that names its models by it
+					// (provider.UpstreamNames, lcc580 on X)
+					m["magpie_by"] = e.ServedBy()
 				}
 				if ts := tiers[e.ID]; len(ts) > 0 {
 					m["service_tiers"] = ts
@@ -1753,9 +1763,12 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 			m["kind"], m["magpie_label"] = "decision", labels[i]
 			m["native_endpoints"] = []string{"/v1/systemone"}
 			m["magpie_via"] = catalog.ViaHere(viaOf(e))
+			m["magpie_by"] = e.ServedBy()
 			data = append(data, m)
 		}
 	}
+	// the names the calling key gives models, where the models were
+	aliasNames(r, data)
 	// ?format=text: the ids one a line, to paste into a client that takes
 	// its models typed by hand, one a line, and asks no list of its own
 	// (ZCode's custom provider), from a browser on another computer with
@@ -1790,7 +1803,11 @@ func (s *Server) model(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, 200, scienceObject(e, provider.LabelsFor(ScienceID, []provider.Entry{e})[0]))
 				return
 			}
-			writeJSON(w, 200, pricedModelObject(r, e))
+			o := pricedModelObject(r, e)
+			if name, ok := access.Caller(r.Context()).AliasOf(e.ID); ok {
+				o["id"] = name
+			}
+			writeJSON(w, 200, o)
 			return
 		}
 	}
@@ -3046,7 +3063,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// spend its credits
 	var resetFirst *AutoReset
 	if len(cands) == 0 && len(pl.held) > 0 && strings.TrimSpace(r.Header.Get(AccountHeader)) == "" &&
-		(strictHeld != nil || !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.Held && w.Capped == 0 })) {
+		(strictHeld != nil || !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.Held && w.Capped == 0 && !w.StandIn })) {
 		// every account there is is held, and one held only as it won't
 		// spend its credits is out of its allowance at the vendor's own
 		// 100%: one that spends its resets by itself, its week used up,
@@ -3058,7 +3075,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 	}
 	if len(cands) == 0 && (strictHeld != nil || slices.ContainsFunc(pl.left, func(w Weighed) bool { return w.Capped > 0 }) &&
-		!slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.Held && w.Capped == 0 })) {
+		!slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.Held && w.Capped == 0 && !w.StandIn })) {
 		// every account there is is held at its usage cap: used up, as far
 		// as routing goes, until a window renews — or the one a strict
 		// conversation stays on is
@@ -3102,7 +3119,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		return
 	}
 	if len(cands) == 0 && slices.ContainsFunc(pl.left, func(w Weighed) bool { return w.HeldBy != "" }) &&
-		!slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.Held && w.Capped == 0 }) {
+		!slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.Held && w.Capped == 0 && !w.StandIn }) {
 		// every one left was held by a group in the group, or a group a
 		// fallback reached, held to other accounts
 		call.Status, call.Error = 403, "every account outside the group's accounts"
@@ -3110,7 +3127,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		turnedAway()
 		return
 	}
-	if len(cands) == 0 && len(pl.left) > 0 && !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred }) {
+	if len(cands) == 0 && slices.ContainsFunc(pl.left, func(w Weighed) bool { return w.Barred }) && !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.StandIn }) {
 		// every account or key there is was set not to serve the model
 		call.Status, call.Error = 403, "every account barred"
 		writeError(w, from, 403, barredError(call.Model, pl.left))
@@ -3134,7 +3151,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	if isGroup {
 		inOrder = routingOf(g.Routing) == provider.Ordered
 	}
-	cands, pl, aff, stuck := affine(scope, mode, rotate, spread, inOrder, r.Header, from, body, plain, cands, pl)
+	cands, pl, aff, stuck := affine(scope, mode, rotate, spread, inOrder, hit != nil && hit.Ended > 0, r.Header, from, body, plain, cands, pl)
 	// a strict conversation left with its own account of several: its
 	// failure rests the account as it would with the others still there,
 	// for new conversations to go elsewhere meanwhile (#1797)
@@ -3337,12 +3354,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	roomFor, roomCap := "", 0
 	// the key or subscription account the last try went to (#557)
 	providerKeyID, providerKeyName, providerAccount := "", "", ""
-	var other *Try                    // the first failure that wasn't an allowance run out
-	var forbade []forbidden           // the plain 403s and 5xx rested so far (forbiddenAlike)
-	sameRefusal := false              // the last try's 5xx was a mate's word for word: the request's
-	autoReset := resetFirst != nil    // a Codex or Claude reset looked at, once a request
-	creditsAsked := map[string]bool{} // Codex accounts asked again onto their credits, once each (creditsAgain)
-	regionAsked := map[string]int{}   // a provider's model refused for where the request came from, times this request (#5182)
+	var other *Try                          // the first failure that wasn't an allowance run out
+	var forbade []forbidden                 // the plain 403s and 5xx rested so far (forbiddenAlike)
+	sameRefusal := false                    // the last try's 5xx was a mate's word for word: the request's
+	autoReset := resetFirst != nil          // a Codex or Claude reset looked at, once a request
+	creditsAsked := map[string]bool{}       // Codex accounts asked again onto their credits, once each (creditsAgain)
+	emptied := map[string]map[string]bool{} // a provider's model's accounts whose reply said nothing, this request (emptyAccounts)
+	regionAsked := map[string]int{}         // a provider's model refused for where the request came from, times this request (#5182)
 	// the subscription/model pairs an account refused as a model it doesn't
 	// serve, for the accounts whose own list lacks it to be asked next
 	// (unlistedNext); none for a request pinned to an account, a
@@ -4847,6 +4865,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			continue
 		}
 		if !last && hw.failed() && strings.Contains(call.Error, emptyReply) {
+			// said by a second account of the model, it is about the
+			// request and no account: the rest of that model's accounts
+			// are not asked (emptyAccounts); other providers and models
+			// still are
+			ek := c.p.ID + "\x00" + c.model
+			if emptied[ek] == nil {
+				emptied[ek] = map[string]bool{}
+			}
+			emptied[ek][c.who()] = true
+			if len(emptied[ek]) >= emptyAccounts {
+				cands = append(cands[:i+1:i+1], notMates(cands[i+1:], c)...)
+				last = i == len(cands)-1
+			}
+		}
+		if !last && hw.failed() && strings.Contains(call.Error, emptyReply) {
 			// a reply that said nothing is a failure of the model or
 			// request, not the account (#1221): the account doesn't rest,
 			// and mates of the same model, likely to end empty too, are
@@ -5630,6 +5663,12 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	if relay && !keep && customOff() {
 		relay, ownAPI = false, true
 	}
+	// and a backend that turned a request for one body away because it
+	// only streams (stream_only.go) is asked streamed, translated
+	streamOnly := (from == provider.Chat || from == provider.Responses) && !streamOf(body) && !s.fits(p.ID, streamOnlyRefused(model), from)
+	if relay && !keep && streamOnly {
+		relay, ownAPI = false, true
+	}
 	if keep && relayable {
 		relay, ownAPI = true, false
 	}
@@ -5650,7 +5689,7 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 		// the model isn't served on the client's own API: speak another;
 		// or it turned the custom tools away just now: speak it translated,
 		// except a compaction, which a translation would leave out
-		if customOff() {
+		if customOff() || !s.fits(p.ID, streamOnlyRefused(model), from) && !streamOf(body) {
 			if keep {
 				return writeError(w, from, status, msg), msg
 			}
@@ -6806,6 +6845,14 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// and from then on
 			res.Body.Close()
 			s.markUnfit(p.ID, customToolRefused(model), proto)
+			return res.StatusCode, p.Name + ": " + provider.APIError(b, res.Status), false
+		}
+		if gather == nil && refusesWhole(proto, body, b) {
+			// a backend that only streams (stream_only.go): the request
+			// is translated on the same API, which asks it streamed and
+			// gives the client one body, and so from then on
+			res.Body.Close()
+			s.markUnfit(p.ID, streamOnlyRefused(model), proto)
 			return res.StatusCode, p.Name + ": " + provider.APIError(b, res.Status), false
 		}
 		fs := refusedOptional(res.StatusCode, b, body)
@@ -8081,7 +8128,14 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			p.Chat = strings.TrimSuffix(p.Chat, "/v1")
 			path = "/beta" + path
 		}
-		res, err := s.forward(ctx, p, to, path, p.Prepare(body), in)
+		fctx := ctx
+		if p.IsPlugin() && req.Effort != "" {
+			// the effort picked, which a plugin's model with variants is
+			// told in X-Magpie-Effort: the body says only what Gemini's
+			// thinkingConfig can, and loses minimal and xhigh
+			fctx = provider.WithEffort(ctx, req.Effort)
+		}
+		res, err := s.forward(fctx, p, to, path, p.Prepare(body), in)
 		if err != nil || res.StatusCode < 400 {
 			if dropped && err == nil {
 				// it was the key: not sent there again
@@ -9383,19 +9437,20 @@ var pingEvery = time.Minute
 
 // keepThroughSilence keeps a translated reply's client alive while its
 // upstream, its 200 and stream begun, says nothing at all: keep is
-// called every keepaliveEvery, until stop, while the upstream was last
+// called every every (keepaliveEvery, read by the caller on its
+// request's own goroutine, since this one can outlive it), until stop, while the upstream was last
 // heard (heard, at each event or comment it sends) less than
 // translatedQuietLongest ago. keep is called holding lock, which the
 // caller holds around everything else it writes to the client. Before,
 // such a reply sent its client nothing until the upstream spoke, and
 // Claude Code's watchdog ended it (youyo.p on Discord).
-func keepThroughSilence(lock sync.Locker, keep func()) (heard, stop func()) {
+func keepThroughSilence(every time.Duration, lock sync.Locker, keep func()) (heard, stop func()) {
 	var mu sync.Mutex
 	last := time.Now()
 	done, over := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(over)
-		tick := time.NewTicker(keepaliveEvery)
+		tick := time.NewTicker(every)
 		defer tick.Stop()
 		for {
 			select {

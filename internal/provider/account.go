@@ -229,15 +229,21 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 	// own header, below, still has the last word
 	OpenCodeSession(req.Header, req.URL.String())
 	if p.IsVertex() {
-		// a Google token, which goes nowhere but the project's own address
+		// a Google token, which goes nowhere but the project's own address (a key,
+		// nowhere but where the provider is asked)
 		if base := p.vertexBase(); base == "" || !strings.HasPrefix(req.URL.String(), base+"/") {
 			return fmt.Errorf("%s is asked only at Vertex AI, at its project's address", p.Name)
 		}
-		tok, err := p.vertexAccessToken(ctx)
-		if err != nil {
-			return err
+		if p.Key != "" {
+			// an API key (express mode), in the header Google's docs name
+			req.Header.Set("x-goog-api-key", p.Key)
+		} else {
+			tok, err := p.vertexAccessToken(ctx)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Authorization", "Bearer "+tok)
 		}
-		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	for k, v := range AuthHeaders(p, proto) {
 		req.Header.Set(k, v)
@@ -1578,6 +1584,8 @@ func copilotProvider(app copilotApp, plan string) Provider {
 		if err != nil {
 			return nil, err
 		}
+		// with what the other accounts' plans add (copilot_pool.go)
+		ms = copilotPoolModels(ctx, acct.User, ms)
 		return ms, catalog.SaveLive("copilot", copilotBase, ms)
 	}
 	// each model is served on some of these: the newest GPT models on

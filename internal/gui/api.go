@@ -10,7 +10,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +33,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/autostart"
+	"github.com/yetone/magpie/internal/bark"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
@@ -149,9 +149,6 @@ var cliBehindVal string
 
 // Version is the build's version string, shown in Settings.
 var Version = "dev"
-
-//go:embed assets
-var assets embed.FS
 
 // Windows is what the API needs from the host application.
 type Windows interface {
@@ -427,6 +424,9 @@ type settingsJSON struct {
 	MTLSCerts []mtlsCert `json:"mtlsCerts,omitempty"`
 	MTLSErr   string     `json:"mtlsError,omitempty"`
 	MTLSSaved string     `json:"mtlsSaved,omitempty"`
+	// JoinOn: a password is set to join with (join.go); the password
+	// itself is never sent
+	JoinOn bool `json:"joinOn,omitempty"`
 	// Dir is the data folder beside a portable magpie (#508)
 	Portable bool `json:"portable,omitempty"`
 	// Log is the log the desktop app writes (applog), as shown; "" for a
@@ -453,7 +453,9 @@ type settingsJSON struct {
 	// it is served by magpie web, where the mode can be set
 	GatewayOn  bool   `json:"gatewayOn,omitempty"`
 	GatewayWhy string `json:"gatewayWhy,omitempty"`
-	Web        bool   `json:"web,omitempty"`
+	// GatewayPaused: the user paused the gateway (gatewaypause.go)
+	GatewayPaused bool `json:"gatewayPaused,omitempty"`
+	Web           bool `json:"web,omitempty"`
 	// the proxy vendor requests go through now, and where it came from:
 	// settings, environment, system, off or none
 	ProxyNow    string `json:"proxyNow"`
@@ -544,6 +546,8 @@ type settingsJSON struct {
 	// the token set in Settings was refused by GitHub (401): it is still
 	// shown, masked, while requests go without a token (#3926)
 	GitHubTokenRefused bool `json:"githubTokenRefused,omitempty"`
+	// whether a Bark device key is set; never the key (EV_John_Liu on X)
+	BarkKeySet bool `json:"barkKeySet,omitempty"`
 	// where other machines reach the gateway while it is shared
 	LANURLs []string `json:"lanURLs,omitempty"`
 	// LANURLs are a container's own addresses, not the host's: the page
@@ -827,6 +831,7 @@ func settingsState() settingsJSON {
 	if s.LAN || s.OnNetwork || s.MTLS {
 		s.MTLSCerts, s.MTLSErr = mtlsCerts()
 	}
+	s.JoinOn = access.JoinOn()
 	if s.LAN || gateway.OnNetwork() {
 		s.PublicURL = gateway.PublicURL()
 		s.PublicKind = gateway.URLKind(s.PublicURL)
@@ -834,7 +839,9 @@ func settingsState() settingsJSON {
 	s.WSL = runtime.GOOS == "windows"
 	s.Web = webPage.Load()
 	s.GatewayOn, s.GatewayWhy = gatewayMode(s.Web)
+	s.GatewayPaused = pausedNow()
 	s.LANKey = "" // the retained credential belongs on disk, not in UI state
+	s.BarkKeySet, s.BarkKey = strings.TrimSpace(s.BarkKey) != "", ""
 	// the GitHub token, masked, and where the library's requests take one
 	// from: Settings, or the environment variable named
 	own := strings.TrimSpace(s.GitHubToken)
@@ -1240,6 +1247,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		if !wired {
+			resumeOnWire(a)
+		}
 		s := state()
 		if a.Notice != nil && (!f.Live || !wired && a.Wired()) {
 			s.Notice = a.Notice()
@@ -1448,6 +1458,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			var c agent.Connection
 			c, err = a.ConnectHow()
 			how = &c
+			if err == nil {
+				resumeOnWire(a)
+			}
 		case "disconnect":
 			err = a.Disconnect()
 		default:
@@ -1528,6 +1541,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	backupRoutes(mux, w)
 	dataFolderRoutes(mux, w)
 	mtlsRoutes(mux, w)
+	joinRoutes(mux)
+	httpsRoutes(mux, w)
 	uninstallRoutes(mux, w)
 	archiveRoutes(mux)
 	libraryRoutes(mux, w)
@@ -1536,6 +1551,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	cliBehindRoutes(mux)
 	configRepairRoutes(mux, !isWeb(w))
 	gatewayFixRoutes(mux)
+	gatewayPauseRoutes(mux)
 	gatewayModeRoutes(mux)
 	if !isWeb(w) {
 		appPageRoutes(mux)
@@ -1676,6 +1692,31 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			}
 		}
 		writeJSON(rw, settingsState())
+	})
+	// every agent's own telemetry off, over each agent's row (OipsAnthony
+	// on X): saved, the agents' files follow at once; an agent that
+	// couldn't is named in refused, the switch saved all the same
+	mux.HandleFunc("POST /api/settings/agent-telemetry", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Off bool `json:"off"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		var out struct {
+			settingsJSON
+			Refused string `json:"refused,omitempty"`
+		}
+		if err := agent.SetTelemetryAll(in.Off); err != nil {
+			if settings.Load().AgentTelemetryOff != in.Off {
+				fail(rw, err)
+				return
+			}
+			out.Refused = err.Error()
+		}
+		out.settingsJSON = settingsState()
+		writeJSON(rw, out)
 	})
 	// whether agents' sign-ins are read and served as subscriptions
 	// (#1535): saved, the accounts read before are forgotten at once
@@ -2698,6 +2739,56 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// the Bark target every alert also goes to, and the time of the daily
+	// summary (EV_John_Liu on X). A field left out stays; the key, "" takes it
+	// away. The key is written and never read back by the page.
+	mux.HandleFunc("POST /api/settings/bark", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Server *string `json:"server"`
+			Key    *string `json:"key"`
+			Daily  *string `json:"daily"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		if in.Server != nil {
+			s.BarkServer = *in.Server
+		}
+		if in.Key != nil {
+			s.BarkKey = *in.Key
+		}
+		if in.Daily != nil {
+			s.BarkDaily = *in.Daily
+		}
+		if err := settings.CheckBark(s.BarkServer, s.BarkKey, s.BarkDaily); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// a push to the saved Bark target, to see that it arrives
+	mux.HandleFunc("POST /api/bark/test", func(rw http.ResponseWriter, r *http.Request) {
+		s := settings.Load()
+		t := barkTarget(s)
+		if !t.On() {
+			fail(rw, fmt.Errorf("no Bark device key is set"))
+			return
+		}
+		title, body := barkTestText(trayLang(s.Lang, systemLang))
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if err := bark.Push(ctx, t, title, body); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"ok": true})
+	})
 	// the GitHub download mirror updates come through (#893), the same
 	// setting `magpie update mirror` sets: a full https:// prefix, or ""
 	// for GitHub itself. The feed and its checksums are never the mirror's.
@@ -2971,9 +3062,9 @@ func held(h http.Handler) http.Handler {
 			// 5x the CPU.
 			defer tightenGC()()
 		}
-		if !(api && r.Method == http.MethodGet) {
+		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" {
 			// anything that may have written drops what was held, once it
-			// has answered with it
+			// has answered with it (a page's word of input writes nothing)
 			defer provider.Changed()
 		}
 		h.ServeHTTP(rw, r)
@@ -3040,7 +3131,18 @@ func state() stateJSON {
 			}
 		}
 		if a.Telemetry != nil {
+			// Settings › Privacy's switch for every agent reaches one
+			// found since as it is seen
+			all := agent.TelemetryAllOff()
+			var allErr error
+			if all {
+				allErr = agent.KeepTelemetryOff(a)
+			}
 			st, err := a.Telemetry.Get()
+			st.All = all
+			if allErr != nil && err == nil {
+				st.AllError = allErr.Error()
+			}
 			if err != nil {
 				st.Error = err.Error()
 			}

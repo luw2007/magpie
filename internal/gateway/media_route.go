@@ -122,8 +122,8 @@ func candidateOf(p provider.Provider, model string) candidate {
 		if own, err := provider.Find(p.ID); err == nil && own.Account != nil && !strings.EqualFold(own.Account.User, p.Account.User) {
 			c.rest = p.ID + "@" + p.Account.User
 		}
-	case p.Key != "" && len(p.KeysOn()) > 1:
-		c.rest = p.ID + "#" + provider.KeyID(p.Key)
+	case p.KeyID != "" && len(p.KeysOn()) > 1:
+		c.rest = p.ID + "#" + p.KeyID
 	}
 	return c
 }

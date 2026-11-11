@@ -114,7 +114,21 @@ var desktopApps = map[string]desktopApp{
 	// with its "/" taken out (getWindowsInstallationDirName; the README's
 	// own path); guid is the UUID v5 of the appId, as dsh's above.
 	"craft-agents": {id: "com.lukilabs.craft-agent", names: []string{"Craft Agents.app"}, win: filepath.Join("@craft-agentelectron", "Craft Agents.exe"), guid: "61dc82ee-e3b9-557b-98c4-20b9178a0f78"},
-	"penguin":      {id: "com.prismshadow.penguinharness", names: []string{"PenguinHarness.app"}, win: filepath.Join("PenguinHarness", "PenguinHarness.exe"), guid: "8bb9acb7-2bdc-596b-9669-7b014ab1c47f"},
+	// Tuanjie Cowork (2.1.6-stable: Tuanjie Cowork.app,
+	// dev.codelycowork.desktop, a Tauri app) reads ~/.codely on its own
+	// (tuanjiecowork.go). Its Windows build is a Tauri NSIS installer, whose
+	// per-user folder isn't under %LOCALAPPDATA%\Programs, so on Windows
+	// it is found by its ~/.codely folder alone.
+	"tuanjie-cowork": {id: "dev.codelycowork.desktop", names: []string{"Tuanjie Cowork.app"}},
+	// Kun (electron-builder.config.cjs, 0.4.5: appId
+	// com.xingyuzhong.deepseekgui from its DeepSeek GUI days, productName
+	// Kun, package kun-gui). Its Windows installer is a per-user assisted
+	// NSIS one, so it goes to %LOCALAPPDATA%\Programs\Kun unless the user
+	// picks another folder; guid is the UUID v5 of the appId, as dsh's
+	// above. Its deb installs /opt/Kun, with the kun:// scheme.
+	"kun": {id: "com.xingyuzhong.deepseekgui", names: []string{"Kun.app"}, win: filepath.Join("Kun", "Kun.exe"), guid: "af3c880c-15f8-5a1f-a7e8-6e299ab90803",
+		onLinux: &linuxApp{dirs: []string{"/opt/Kun"}, exe: "kun-gui", name: "Kun", scheme: "kun"}},
+	"penguin": {id: "com.prismshadow.penguinharness", names: []string{"PenguinHarness.app"}, win: filepath.Join("PenguinHarness", "PenguinHarness.exe"), guid: "8bb9acb7-2bdc-596b-9669-7b014ab1c47f"},
 	// The CodeBuddy IDE (Tencent's VS Code fork, 4.12.2: CodeBuddy.app,
 	// com.tencent.codebuddy, from codebuddy.ai; CodeBuddy CN.app,
 	// com.tencent.codebuddycn, from codebuddy.cn) reads the CodeBuddy Code

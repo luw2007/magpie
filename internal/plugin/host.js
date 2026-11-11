@@ -728,10 +728,11 @@ function asked(input, init) {
 // MAGPIE_ONLY are the headers magpie tells a plugin's fetch where the agent
 // that asked works (WorkDirHeader and WorkGitHeader in internal/provider),
 // that a queue needn't be waited out (FallbackHeader), and the session and
-// subagent the agent named (SessionToPluginHeader, SubagentToPluginHeader):
+// subagent the agent named (SessionToPluginHeader, SubagentToPluginHeader)
+// and the effort asked of a model with variants (EffortHeader):
 // for the plugin to read, never for its vendor, so a plugin that sends on
 // the headers it was given sends them nowhere.
-const MAGPIE_ONLY = ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent"]
+const MAGPIE_ONLY = ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent", "x-magpie-effort"]
 
 function unsaid(input, init) {
   if (input instanceof Request && MAGPIE_ONLY.some((k) => input.headers.has(k))) {
@@ -2059,7 +2060,8 @@ function mdev() {
       const st = fs.statSync(modelsDevPath, { throwIfNoEntry: false })
       const mtime = st ? st.mtimeMs : 0
       if (modelsDev === undefined || (mtime > 0 && mtime !== modelsDevMtime) || (Object.keys(modelsDev).length === 0 && mtime > 0)) {
-        // a file caught half written (catalog.Sync writes it in place)
+        // a file caught half written (an older magpie's catalog.Sync wrote
+        // it in place; it goes through a rename now)
         // reads as unknown: keep what was read before, rather than list the
         // providers without models.dev, and read it again next time
         const md = readJSON(modelsDevPath)
@@ -2479,8 +2481,18 @@ function methods(auth) {
     label: m.label,
     ...byLang(m.labels, "labels"),
     ...(m.type === "api" && m.keyless === true && typeof m.authorize === "function" ? { keyless: true } : {}),
+    ...(keyAsked(m) ? { keyAsked: true } : {}),
     ...(m.type === "api" && shown(m.placeholder, 200) ? { placeholder: shown(m.placeholder, 200) } : {}),
   }))
+}
+
+// keyAsked is whether an "api" method's own questions ask its key: it has
+// prompts and an authorize that turns their answers into the key, as
+// inkstone's and Devin's session-token method do. magpie asks no key of
+// its own beside them; one typed there went nowhere (authorize gets the
+// answers only), so the user gave the same token twice.
+function keyAsked(m) {
+  return m.type === "api" && Array.isArray(m.prompts) && m.prompts.length > 0 && typeof m.authorize === "function"
 }
 
 // iconOf is the picture a plugin gives its provider, magpie's own field
@@ -2728,17 +2740,34 @@ function validate(provider, index, key, value) {
 // save keeps a successful sign-in as OpenCode's CLI does, at key (or, for
 // a sign-in the plugin says is another provider's, a new account of
 // that one). It gives the provider and where the account is kept.
-async function save(provider, key, result, inputs, apiKey) {
+async function save(provider, key, result, inputs, apiKey, method) {
   const id = result.provider ?? provider
   if (id !== provider) key = freshKey(id)
   if ("refresh" in result) {
     const { type: _t, provider: _p, refresh, access, expires, ...extra } = result
     await setAuth(key, { type: "oauth", refresh, access, expires, ...extra })
   } else if ("key" in result || apiKey) {
-    const md = { ...(inputs && Object.keys(inputs).length ? inputs : {}), ...(result.metadata ?? {}) }
+    const md = { ...plainAnswers(provider, method, inputs), ...(result.metadata ?? {}) }
     await setAuth(key, { type: "api", key: result.key ?? apiKey, ...(Object.keys(md).length ? { metadata: md } : {}) })
   }
   return { provider: id, account: await settle(id, key) }
+}
+
+// plainAnswers are the answers to an "api" method's questions that the
+// account's metadata keeps beside what its authorize gave: a choice
+// (select) only. A typed answer may be the token or key itself (inkstone's
+// apiKey and uaaToken, Cloudflare's token), and the key is kept as the
+// account's key already; copied into metadata it sat there a second time,
+// in plain text. A plugin that wants a typed answer kept puts it in its
+// result's metadata, as every one in magpie-community/plugins does.
+function plainAnswers(provider, method, inputs) {
+  if (!inputs || typeof inputs !== "object") return {}
+  const prompts = authOf(provider).methods[method]?.prompts ?? []
+  const out = {}
+  for (const [k, v] of Object.entries(inputs)) {
+    if (prompts.some((p) => p?.key === k && p.type === "select")) out[k] = v
+  }
+  return out
 }
 
 // signInKey is where a sign-in goes: the account named, else a new one.
@@ -2827,7 +2856,9 @@ async function apiKey({ provider, method, inputs, key, account, proxy }, signal)
   const r = await signingIn(signal, proxy ?? "", provider, at, () => m.authorize(inputs ?? {}, { signal }))
   if (signal?.aborted) throw abortedSignIn()
   if (!r || r.type !== "success") return failed(r)
-  return { ok: true, ...(await save(provider, at, r, inputs, key)) }
+  // nothing to keep: no key typed, and the plugin's authorize gave none
+  if (!("key" in r) && !("refresh" in r) && !key) return { ok: false, error: `${provider}'s sign-in gave no key` }
+  return { ok: true, ...(await save(provider, at, r, inputs, key, method)) }
 }
 
 // ---- renewing a sign-in ------------------------------------------------------
@@ -3137,7 +3168,12 @@ async function load({ provider, account, proxy }) {
 //       "credits"), span? (seconds the window runs), model? (a
 //       word in the ids of the only models it counts), models? / notModels?
 //       (the ids it counts, or all but these; a bare id and its id@size
-//       count as one), aside? (using it up doesn't
+//       count as one), family? (the model family a model's own window
+//       belongs to: "Gemini"), pool? (the group of models sharing one
+//       allowance: "Gemini", "Claude & GPT"; on the group's own windows,
+//       with no family, and on each of its models' — the GUI shows the
+//       group's windows in place of its models', as for magpie's built-in
+//       Antigravity), aside? (using it up doesn't
 //       stop the account), runsOutAt? (ISO or ms: when the soonest
 //       credits left in it are lost, apart from its reset, as WorkBuddy's
 //       packages end) / runsOut? (how many are lost then), balance?
@@ -3204,6 +3240,8 @@ async function usageOf(provider, account, signal) {
       model: text(w?.model),
       models: ids(w?.models),
       notModels: ids(w?.notModels),
+      family: text(w?.family),
+      pool: text(w?.pool),
       aside: !!w?.aside,
       runsOutAt: when(w?.runsOutAt),
       runsOut: Math.max(0, num(w?.runsOut)),

@@ -187,7 +187,7 @@ code { font: var(--code-style, normal) var(--code-weight, 400) 11.5px var(--code
    they read a size bigger than a line logo beside them, so they are drawn at
    the size Alma's and Cindy's tiles have of their own. icon-tile.test.cjs
    measures every file in icons/ and keeps this list whole. */
-.ic:is([data-icon="aihubmix-color"], [data-icon="atomcode"], [data-icon="cherryin-color"], [data-icon="codebuddy-color"], [data-icon="codex-color"], [data-icon="crush"], [data-icon="geminicli-color"], [data-icon="hanako"], [data-icon="hunyuan-color"], [data-icon="kilo"], [data-icon="kimi-code-desktop"], [data-icon="kiro-color"], [data-icon="lody"], [data-icon="mistermorph-color"], [data-icon="mlx-serve"], [data-icon="monica-color"], [data-icon="nanobot-color"], [data-icon="openbot"], [data-icon="penguin-color"], [data-icon="phala-color"], [data-icon="pipellm-color"], [data-icon="qoder"], [data-icon="snow"], [data-icon="targon-color"], [data-icon="typesafe"], [data-icon="workbuddy-color"], [data-icon="yuanbao-color"], [data-icon="zcode"], [data-icon="zoo-code"]) > * { width: 82%; height: 82%; }
+.ic:is([data-icon="aihubmix-color"], [data-icon="atomcode"], [data-icon="avibe"], [data-icon="cherryin-color"], [data-icon="codebuddy-color"], [data-icon="codex-color"], [data-icon="crush"], [data-icon="geminicli-color"], [data-icon="hanako"], [data-icon="hunyuan-color"], [data-icon="kilo"], [data-icon="kimi-code-desktop"], [data-icon="kiro-color"], [data-icon="lody"], [data-icon="mistermorph-color"], [data-icon="mlx-serve"], [data-icon="monica-color"], [data-icon="nanobot-color"], [data-icon="openbot"], [data-icon="penguin-color"], [data-icon="phala-color"], [data-icon="pipellm-color"], [data-icon="qoder"], [data-icon="snow"], [data-icon="targon-color"], [data-icon="typesafe"], [data-icon="workbuddy-color"], [data-icon="yuanbao-color"], [data-icon="zcode"], [data-icon="zoo-code"]) > * { width: 82%; height: 82%; }
 .ic.generic { color: var(--muted); }
 /* maskSpan's shelf: a hidden user of every mask picture loaded, so a logo drawn again paints at once (#1847) */
 .mask-shelf { position: fixed; top: 0; left: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
@@ -339,24 +339,43 @@ body:not(.side-nav) #nav button[data-view="groups"], body.side-nav .rt-togroups 
 .top.packed .seg { min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .top.packed .seg::-webkit-scrollbar { display: none; }
 /* magpie web on a phone, or a browser as narrow (phoneWeb): the magpie and
-   the icons in a row, the tabs at their size in a row of their own under
-   them, sliding sideways when they don't fit (they were squeezed into the
-   room between, too small to read or tap) */
+   the icons in the header, the pages a tab bar at the foot, as an iPhone
+   app's: each tab its mark over its word, five at most, the fifth More
+   when there are more (phonetabs.js). A strip that slid sideways hid the
+   pages past its edge (geraldpppppp on X) */
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
+  body.web:not(.panel) { --tabbar: calc(50.5px + env(safe-area-inset-bottom)); padding-bottom: var(--tabbar); }
   body.web .top {
-    height: auto; min-height: 48px; flex-wrap: wrap; gap: 4px 8px;
-    padding: calc(6px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+    height: auto; min-height: 48px; gap: 4px 8px;
+    padding: calc(6px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
   }
   body.web .top .brand, body.web .top .actions { min-height: 40px; align-items: center; }
-  body.web .top #nav {
-    position: relative; left: auto; top: auto; transform: none;
-    order: 3; flex: 0 0 100%; min-width: 0; max-width: 100%;
-    overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none;
+  body.web:not(.panel) .top #nav {
+    position: fixed; z-index: 15; left: 0; right: 0; top: auto; bottom: 0; transform: none;
+    display: flex; height: var(--tabbar); padding: 0 max(4px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left));
+    border-radius: 0; border-top: .5px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    -webkit-backdrop-filter: saturate(1.6) blur(20px); backdrop-filter: saturate(1.6) blur(20px);
   }
-  body.web .top #nav::-webkit-scrollbar { display: none; }
-  body.web .top #nav button { flex: none; height: 40px; padding: 0 14px; font-size: 14px; }
+  body.web:not(.panel) .top #nav > :is(.thumb, .tb-over), body.web:not(.side-nav, .panel) .top #nav > [data-view="groups"] { display: none; }
+  body.web:not(.panel) .top #nav > button {
+    flex: 1 1 0; min-width: 0; height: 50px; padding: 5px 2px 3px; border-radius: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    font-size: 10.5px; font-weight: 500; line-height: 1.1; color: var(--muted);
+  }
+  body.web:not(.panel) .top #nav > button.on { color: var(--fg); }
+  body.web:not(.panel) .top #nav > button > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.web:not(.panel) .top #nav .nav-ic { display: block; flex: none; width: 23px; height: 23px; }
+  body.web:not(.panel) .top #nav > button.has-dot::after { top: 5px; right: calc(50% - 17px); }
   body.web .top .actions { gap: 4px; }
+  /* a status line comes up over the bar, not under it */
+  html body.web:not(.panel) :is(.foot .status:not(:empty):not(.lift), .status.lift) { bottom: calc(var(--tabbar) + 10px); }
 }
+/* More's menu: each page with its tab's mark */
+.nav-more-menu .pm-head { display: none; }
+.nav-more-menu .pm-item { align-items: center; gap: 10px; padding: 9px 10px; }
+.nav-more-menu .nav-ic { display: block; flex: none; width: 20px; height: 20px; color: var(--fg-2); }
+.nav-more-menu .pm-name { font-size: 14px; }
 @keyframes update-in { from { opacity: 0; max-width: 0; margin-right: 0; padding: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -456,6 +475,8 @@ body.side-nav #nav button.has-dot::after { top: 50%; right: 10px; margin-top: -3
    drawn again then (Installed gets its count) marked the selection a third
    of a row up, over Discover (#1787) */
 .nav-sub > button { position: relative; z-index: 1; flex: none; display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12.5px; color: var(--ctl-fg); text-align: left; white-space: nowrap; transition: color .2s var(--ease); }
+.nav-sub > button > :is(svg, .nav-s-ic) { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--muted); transition: color .2s var(--ease); }
+.nav-s:hover:not(.cur) > svg, .nav-s.cur > svg { color: inherit; }
 .nav-sub > button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nav-sub > button > em { margin-left: auto; font-style: normal; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* an update waiting, in the sidebar's dot colour, as the words the dot means */
@@ -1004,8 +1025,8 @@ body.panel .row.pref.flash { border-radius: 10px; }
 .quota-windows.brief { row-gap: 5px; }
 .quota-windows.brief .quota-reset { display: none; }
 .quota-windows.brief .quota-labels { margin-bottom: 3px; }
-.subscription-account .plan { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); text-transform: capitalize; }
-.subscription-head .plan { margin-left: auto; font-size: 10.5px; color: var(--muted); text-transform: capitalize; }
+/* a plan gives its room up before the account's name does (visamzh on X) */
+.subscription-account .plan, .subscription-head .plan { margin-left: auto; flex: 0 100 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--muted); text-transform: capitalize; }
 .quota-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 14px; }
 /* when one window's names wrap, the bars beside it still line up: its
    names are as tall as the tallest beside them (fitQuota). The windows
@@ -1413,6 +1434,21 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-strip .meter { height: 5px; margin-top: 8px; border-radius: 3px; background: var(--pill); overflow: hidden; }
 .led-strip .meter i { display: block; height: 100%; border-radius: 3px; background: var(--green); }
 .led-trend { padding: 10px 14px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.led-speed { margin-top: 10px; padding: 10px 14px 6px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.led-speed[hidden] { display: none; }
+.led-spd-t { font-size: 13px; font-weight: 600; }
+.led-spd-scroll { max-height: 280px; overflow: auto; }
+.led-spd { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.led-spd th, .led-spd td { padding: 5px 0 5px 12px; text-align: right; white-space: nowrap; }
+.led-spd th:first-child, .led-spd td:first-child { padding-left: 0; text-align: left; }
+.led-spd td.nm { width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.led-spd thead th { position: sticky; top: 0; background: var(--card); z-index: 1; font-weight: 400; }
+.led-spd tbody td { border-top: 1px solid var(--line-2); }
+.led-spd td.faint { color: var(--faint); }
+.led-spd-h { padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; }
+.led-spd-h:hover, .led-spd-h.on { color: var(--fg); }
+.led-spd th[aria-sort="descending"] .led-spd-h::after { content: " ↓"; }
+.led-spd th[aria-sort="ascending"] .led-spd-h::after { content: " ↑"; }
 .led-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
 .led-bar .grow { flex: 1; }
 .led-by { font-size: 11.5px; color: var(--muted); }
@@ -2067,7 +2103,7 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .pq-pick:active { transform: scale(.97); }
 /* the account used first: ticked before its name */
 .pq-first { flex: none; display: inline-grid; place-items: center; width: 12px; height: 12px; margin-right: 3px; color: var(--accent); }
-.pq-gnote { flex: none; margin-left: auto; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+.pq-gnote { flex: 0 100 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
 .pq-gnote.ends { color: var(--amber); }
 /* used or left: a quiet pill at the right, over the rings; lit a moment
    when it turns */
@@ -2846,7 +2882,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 :where(html[data-fonts]) .key.acct { font-style: var(--ui-style, inherit); font-weight: var(--ui-weight, inherit); font-stretch: var(--ui-stretch, 100%); }
 .acct { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12.5px; }
 .acct .n { font-weight: 500; }
-.acct .plan { color: var(--muted); font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: var(--pill-hover); }
+.acct .plan { flex: 0 100 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: var(--pill-hover); }
 /* a subscription's accounts: the one in use first, a way to add another */
 /* a column, not a grid: WebKit kept a grid row at its height from before its readings wrapped, so they ran under the next account (the owner, after a refresh) */
 .accts { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--card); overflow: hidden; }
@@ -3107,6 +3143,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 #gatewayKeys .klf-days[hidden] { display: none; }
 #gatewayKeys .klf-models { grid-column: 1 / -1; }
 #gatewayKeys .klf .klf-pick > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor .headers.aliases .pair .alias-pick { flex: 6; max-width: none; min-width: 0; height: 27px; justify-content: space-between; }
+.editor .headers.aliases .pair input:first-child { flex: 4; }
 #gatewayKeys .klf-used { display: flex; align-items: center; gap: 8px; min-width: 0; }
 #gatewayKeys .klf-used .key-limit { flex: 1 1 auto; }
 #gatewayKeys .klf-used .klf-reset { flex: none; }
@@ -3384,10 +3422,15 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .tile .nm .badge { flex: none; }
 .tile .have { flex: none; width: 6px; height: 6px; border-radius: 3px; background: var(--green); }
 .tile .cnt { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.sheet .custom-foot { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 10px 2px 0; border-top: 1px solid var(--line-2); }
-.sheet .custom-foot .custom { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 6px; border-radius: 8px; color: var(--accent); font-size: 13px; }
-.sheet .custom-foot .custom:hover, .sheet .custom-foot .custom.on { background: var(--accent-soft); }
-.sheet .custom-foot .hint { font-size: 12px; color: var(--muted); }
+.sheet .row-head .custom { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
+.sheet .row-head .custom:hover, .sheet .row-head .custom.on { color: var(--accent); background: var(--accent-soft); }
+/* narrow: the search and Custom provider on a line of their own */
+@media (max-width: 760px) {
+  .sheet .row-head { flex-wrap: wrap; height: auto; row-gap: 8px; }
+  .sheet .row-head::after { content: ""; order: 1; flex-basis: 100%; }
+  .sheet .row-head .find { order: 2; flex: 1; width: auto; min-width: 0; }
+  .sheet .row-head .custom { order: 2; }
+}
 /* the provider editor, in a dialog */
 /* the label column is as wide as its longest label, so that label starts
    at the padding and the fields end the same way on the right (the
@@ -3534,19 +3577,19 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    which #929 left widening the whole page until its last agent's
    filter was only reachable by dragging the page sideways, and Plugins'
    kinds on GitHub, wider than a 420px window in Japanese */
-.segs.regions, .connect .segs, .pm-ghbar .segs { max-width: 100%; overflow-x: auto; }
+.segs.regions, .connect .segs, .pm-bar .segs { max-width: 100%; overflow-x: auto; }
 /* no scrollbar-width here: Chromium (WebView2) then drops every
    ::-webkit-scrollbar rule and draws Windows' classic bar, arrows and all,
    under the strip; the app's thin thumb instead, slimmer still */
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar { height: 6px; }
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { height: 6px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
 /* on a Mac they scroll with no bar, as a Mac's own tab strips do: the
    system's overlay bar showed over the options' lower half for a moment
    after each scroll, and a click there went to the bar, which paged the
    strip sideways and picked nothing (#1620) */
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-ghbar .segs) { scrollbar-width: none; }
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-ghbar .segs)::-webkit-scrollbar { display: none; }
-.segs.regions .opt, .connect .segs .opt, .pm-ghbar .segs .opt { flex: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs) { scrollbar-width: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { display: none; }
+.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt { flex: none; }
 /* a custom provider's five Base URL APIs wrap to a second row where the
    editor is too narrow for them (#1346); the thumb follows the row */
 .segs.base-apis { max-width: 100%; flex-wrap: wrap; }
@@ -4136,9 +4179,13 @@ input.words.remote-key { width: 160px; }
 .warm-at.times > :not(.warm-times) { flex: none; }
 .warm-at .warm-times { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 8px; min-width: 0; }
 .warm-at .warm-time { display: inline-flex; align-items: center; gap: 2px; }
+.bark-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; min-width: 0; max-width: 100%; }
+.bark-box input.words { width: 180px; }
+.bark-box code { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .warm-at .warm-rm, .warm-at .warm-add { min-width: 24px; height: 27px; padding: 0 6px; font-size: 14px; line-height: 1; }
 .row.pref .sub .warn { color: var(--amber); }
 .row.pref .sub.wraps { white-space: normal; }
+.row.pref code.sub.https-cmd { display: block; font-size: 11px; user-select: text; -webkit-user-select: text; overflow-wrap: anywhere; }
 .row.pref .login-allow-open { font: inherit; color: var(--accent); padding: 0; background: none; border: 0; cursor: pointer; }
 .row.pref .login-allow-open:hover { text-decoration: underline; }
 /* the field's clock and picker in the page's own palette */
@@ -4262,7 +4309,8 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 /* ---------- modal ---------- */
 .modal {
   position: fixed; inset: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: center; padding: 28px 24px;
+  --grip-h: var(--top-h, 46px);
+  display: flex; align-items: center; justify-content: center; padding: max(28px, var(--grip-h)) 24px;
   background: rgba(0, 0, 0, .28);
   -webkit-backdrop-filter: blur(8px) saturate(1.1); backdrop-filter: blur(8px) saturate(1.1);
 }
@@ -4275,7 +4323,20 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 .modal.out { pointer-events: none; }
 /* open, it holds its place from a top app.js gives it (holdModal) */
 .modal.held { align-items: flex-start; }
-.modal .dialog { position: relative; }
+.modal .dialog { position: relative; z-index: 1; }
+/* the scrim covers the title bar, so the window is still dragged from the
+   top strip while a dialog is open; the dialog lies over it and stays no-drag
+   (the strip is after it in the markup, app.js keeps the dialog the first child).
+   The modal's padding is at least the strip's height, so a tall dialog never
+   lies over the strip's middle (the strip was only free at the sides, and the
+   bar's middle is where a window is taken). */
+.modal-grip { position: absolute; z-index: 0; top: 0; left: 0; right: 0; height: var(--grip-h); }
+body.window.mac .modal { --grip-h: calc(50px / var(--zoom, 1)); }
+/* On the Mac the scrim begins under the bar, and the bar itself (the header,
+   the sidebar's top) is inert while a dialog is open (modalBackground), so
+   nothing there drags: the strip reaches up over it. (A fixed child wouldn't:
+   the scrim's backdrop-filter is its containing block.) */
+body.window.mac .modal-grip { top: calc(-1 * var(--grip-h)); }
 .modal .dialog {
   width: min(600px, 100%); min-width: 0; max-height: 100%; overflow-y: auto;
   border-radius: 14px; background: var(--card);
@@ -4331,7 +4392,7 @@ html.theming, html.theming *, html.theming *::before, html.theming *::after {
 /* Keep native window chrome outside the scrim and dialog. In particular, the
    macOS traffic lights must never sit on top of modal content. */
 body.window.mac .modal { top: calc(50px / var(--zoom, 1)); padding: 16px 24px 24px; }
-body.window .modal { padding: 16px 24px 24px; }
+body.window .modal { padding: max(16px, var(--grip-h)) 24px 24px; }
 body.panel .modal { padding: 16px 12px; }
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes content-in { from { opacity: .5; transform: translateY(2px); } }
@@ -4365,7 +4426,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .view {
     --view-left: max(12px, env(safe-area-inset-left));
     --view-right: max(12px, env(safe-area-inset-right));
-    padding: 2px max(0px, calc(var(--view-right) - var(--bar, 0px))) max(12px, env(safe-area-inset-bottom)) var(--view-left);
+    padding: 2px max(0px, calc(var(--view-right) - var(--bar, 0px))) 12px var(--view-left); /* the tab bar keeps the home indicator clear */
   }
   body.web .foot .status { min-width: 0; overflow-wrap: anywhere; }
   body.web .row-head { height: auto; min-height: 40px; flex-wrap: wrap; gap: 4px; }
@@ -4379,7 +4440,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .segs .thumb { border-radius: 6px; }
   body.web .segs .opt { height: 28px; padding: 0 11px; font-size: 13px; }
   body.web .segs .opt::after { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
-  body.web :is(.segs.regions, .connect .segs, .pm-ghbar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
+  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
   body.web .text { padding: 8px 10px; }
   body.web .copy { min-width: 44px; }
   body.web .fields { width: 100%; grid-template-columns: minmax(0, 1fr) minmax(0, 124px); }
@@ -5115,6 +5176,7 @@ input[type="checkbox"]:disabled { opacity: .45; }
 .ag-manage-state { flex: none; }
 .ag-manager > .bar { flex-wrap: wrap; }
 .ag-manage-result { font-size: 13px; overflow-wrap: anywhere; }
+.modal .editor.alias-ask > .ebody { grid-template-columns: minmax(0, 1fr); }
 .modal .editor.ag-manager > .ebody { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; }
 
 /* a disabled model's pattern, as typed (#1867): an id or a glob */
@@ -5185,6 +5247,6 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 .sess-pick.led-more svg { transform: none; }
 .sess-tools .led-rename { flex: none; width: 180px; height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12px; }
 /* Settings › About › Open-source licenses: the notices, as written */
-.notices-text { margin: 0; font: 11px/1.5 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.notices-text { grid-column: 1 / -1; min-width: 0; margin: 0; font: 11px/1.5 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
 .client-cert { display: grid; gap: 6px; min-width: 0; }
 .client-cert input { width: 100%; min-width: 0; }

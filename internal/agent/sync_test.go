@@ -41,6 +41,8 @@ func syncHome(t *testing.T) string {
 	t.Setenv("DS_BOT_HOME", "")
 	t.Setenv("DS_BOT_SHELL_DATA", "")
 	t.Setenv("OMB_DATA_DIR", "")
+	t.Setenv("AVIBE_HOME", "")
+	t.Setenv("KUN_DATA_DIR", "")
 	t.Setenv("OMO_CODING_AGENT_DIR", "")
 	t.Setenv("SENPI_CODING_AGENT_DIR", "")
 	t.Setenv("PRIME_AGENT_CODING_AGENT_DIR", "")
@@ -48,6 +50,7 @@ func syncHome(t *testing.T) string {
 		t.Setenv(k, "")
 	}
 	t.Setenv("MOTHX_DIR", "")
+	t.Setenv("SHELLEY_SOCKET", "")
 	t.Setenv("PENGUIN_HOME", "")
 	t.Setenv("PENGUIN_PROJECT_ID", "")
 	t.Setenv("PI_CODING_AGENT_DIR", "")

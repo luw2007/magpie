@@ -43,6 +43,21 @@ FrierenF on Discord). A run as anyone else has its env as before. Only the
 bridge's run gets it; the warm-up and `/usage` runs don't skip
 permissions.
 
+A run asks Claude Code for the model by `claudeRunName`. A Claude model
+of the 5 generation or later that Claude Code doesn't know (Fable 5.2 on
+2.1.316) is asked for by its `[1m]` name. By its own name Claude Code
+assumed a 200K window for it and turned a longer conversation away before
+Anthropic was asked ("Prompt is too long", `blocking_limit`), while magpie
+tells agents the model's 1M window: Codex, compacting at 272K, never
+compacted and failed every turn past 200K (magicalaciw18 on X).
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` is not read for a Claude name. The models
+Claude Code knows at 1M (`claudeKnownLong`) keep their names, since a new
+name misses the prompt cache once. Every 4 generation model keeps its name
+too: `claude-sonnet-4-6[1m]` is refused even a short turn on an account
+without usage credits ("Usage credits required for 1M context"). The
+reply, the saved session and the logs keep the model as asked; only
+Claude Code's `--model` has the mark.
+
 Every Claude Code magpie starts for the subscription (a turn's run, the
 warm-up and model test `askClaude`, `/usage`, and the sign-in's
 `auth login` and `auth status`) is given its proxy through one helper,
@@ -573,6 +588,25 @@ interactive, so its `/usage` asks the usage endpoint alone
 `provider.parseClaudeUsage` reads. Only a sign-in without that scope (a
 setup-token, which magpie never reads, or an API key) gets the session's
 cost instead. `TestClaudeUsageStartsNoInteractiveRun` holds it.
+
+A turn's run (`claudeRunEnv`) is not given
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, which the one-off runs above
+keep (`cleanClaudeEnv`). With it, or `DISABLE_TELEMETRY` or
+`DO_NOT_TRACK`, Claude Code 2.1.316 reads none of its feature flags, and
+one of them (`tengu_curious_tower`) is Message Threads: a turn sends only
+what came after the last reply. Without it every turn sent the whole
+history again, every image in it (#5963, nylesssssssss: with a ~3 MB PNG,
+672 KB on each of four turns; 737, 6, 3 and 3 KB with the flags read, on
+a real Team account behind a counting proxy). Nothing forces threads:
+`CLAUDE_CODE_TETHER_LIVE`, which turns them on whatever the account's
+flag says, is never set, and an account Anthropic hasn't given threads
+sends whole, as its own `claude` does. Updates and error reports stay off
+(`DISABLE_AUTOUPDATER`, `DISABLE_ERROR_REPORTING`); Claude Code's own
+telemetry goes as a plain `claude`'s does, unless the user turned it off:
+a quiet variable set in magpie's environment or in their Claude Code's
+`settings.json` env is given to the run as they set it, and the run then
+reads no flags. An interactive run sends Claude Code's quota request as it
+starts, right before the turn's own. `TestClaudeRunReadsItsFlags` holds it.
 
 The helper still takes a typed `/usage`, and nothing of magpie's sends it
 now: it is told `{"type":"command","command":"/usage"}`, types it, waits for the

@@ -72,7 +72,18 @@ func (p Provider) available() []catalog.Model {
 		if p.Account != nil && p.Account.unusable != nil {
 			// a model the list offers that the account was refused
 			// (Copilot's, copilot_refused.go)
-			live = slices.DeleteFunc(slices.Clone(live), func(m catalog.Model) bool { return p.Account.unusable(m.ID) })
+			// unless another of its accounts on lists it (copilot_pool.go),
+			// read only once a model was refused
+			var others map[string]bool
+			live = slices.DeleteFunc(slices.Clone(live), func(m catalog.Model) bool {
+				if !p.Account.unusable(m.ID) {
+					return false
+				}
+				if others == nil && p.Account.Agent == "copilot" {
+					others = copilotOthersList(p.Account.User)
+				}
+				return !others[m.ID]
+			})
 		}
 		switch p.ID {
 		case "cursor":
@@ -1222,6 +1233,9 @@ func (p Provider) planModels(ms []catalog.Model) []catalog.Model {
 	}
 	if p.IsVertex() && p.Vertex != nil {
 		models = vertexModels(p.Vertex.Location) // each location serves its own
+	}
+	if p.VertexExpress() {
+		models = vertexExpressModels()
 	}
 	if pr.Only == "" && (len(models) == 0 || len(ms) > 0) {
 		return ms
@@ -3120,7 +3134,10 @@ type Entry struct {
 	Default string `json:"default,omitempty"` // the model's own name, when the user gave it another
 	// Plain is a remote magpie's model's name there alone, when Name is
 	// its label there with that magpie's provider after it (catalog.Model's)
-	Plain      string   `json:"-"`
+	Plain string `json:"-"`
+	// By is the provider a remote magpie's list names as serving the
+	// model there, the first in a chain of magpies (catalog.Model's)
+	By         string   `json:"-"`
 	Efforts    []string `json:"efforts,omitempty"`
 	Provider   Provider `json:"-"`                // a group's: its first member's
 	Group      string   `json:"group,omitempty"`  // set on a routing group (group.go)
@@ -3467,6 +3484,9 @@ func entryFor(p Provider, m catalog.Model, s settings.Settings) Entry {
 		e.Name, e.Default = n, name
 	} else {
 		e.Plain = m.Plain
+	}
+	if p.IsRemoteMagpie() {
+		e.By = m.By
 	}
 	// a model that thinks still does with the levels the user kept or
 	// none at all; one its source says nothing of thinks as most of the

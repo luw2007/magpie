@@ -56,7 +56,7 @@ line; agents connected to magpie lose it when it quits.
 - **Providers with one field.** Pick a preset (Anthropic, OpenAI, Gemini,
   Amazon Bedrock and its Mantle endpoint, DeepSeek, Kimi, GLM, MiniMax, StepFun, LongCat, Qwen, Baidu Qianfan, Tencent Cloud Token Plan,
   Huawei Cloud MaaS, Volcengine Ark, Mistral, Groq, Nous Portal, xAI, OpenRouter, Together,
-  Fireworks, SiliconFlow, NVIDIA NIM, ModelScope, AiHubMix, PipeLLM, 302.AI, Ollama, LM Studio…),
+  Fireworks, Fireworks Nexus, SiliconFlow, NVIDIA NIM, ModelScope, AiHubMix, PipeLLM, 302.AI, Ollama, LM Studio…),
   paste a key, done. Custom vendors need a name and a base URL. magpie never
   reads keys from your shell environment.
 - **Real model lists, nothing compiled in.** With a key in hand magpie asks
@@ -66,7 +66,10 @@ line; agents connected to magpie lose it when it quits.
   doesn't list is named as the other providers serving it name it, so
   glm-5-turbo reads GLM-5-Turbo under Zhipu as under ZCode; an Azure
   deployment keeps its own name), and refreshes itself in the
-  background once it goes stale. Choose which models each provider exposes,
+  background once it goes stale. Where models.dev can't be reached, the
+  last copy fetched keeps answering, a first run answers from the copy
+  magpie ships with, and a failed fetch is tried again within minutes,
+  through the proxy set in Settings. Choose which models each provider exposes,
   or expose them all — a model released this morning is in the picker on
   the next refresh.
 - **Each agent's own model list.** Under an agent's name on the Agents page,
@@ -114,7 +117,7 @@ line; agents connected to magpie lose it when it quits.
 | Zoo Code (VS Code) | VS Code's `Code/User/settings.json` (and each profile's): `zoo-code.autoImportSettingsPath` names `globalStorage/zoocodeorganization.zoo-code/settings/magpie-import.json` beside it | model (one provider profile `magpie`, OpenAI Compatible, imported by Zoo Code at start-up) |
 | Copilot (JetBrains) | `byok.json` in `~/.config/github-copilot` (`$XDG_CONFIG_HOME/github-copilot` when set, `%USERPROFILE%\AppData\Local\github-copilot` on Windows), the Copilot language server's own file, which Xcode's and Eclipse's Copilot read too | provider (a `magpie` custom endpoint provider beside the user's: every magpie model at the gateway's `/v1/chat/completions`, sent with `magpie-copilot-jetbrains`; a model hidden in Manage Models stays hidden through a sync; off removes magpie's three keys alone). Found by the `github-copilot-intellij` plugin in a JetBrains IDE or Android Studio. Listed after the IDE restarts, and only while Copilot is signed in to GitHub on a plan with Bring Your Own Key (Free, Pro, Pro+; Business and Enterprise when the organisation allows it); the model is picked in Copilot Chat |
 | JetBrains Air | `acp.json` in `~/Library/Application Support/JetBrains/Air` (`~/.config/JetBrains/Air` on Linux, `%APPDATA%\JetBrains\Air` on Windows) + `magpie-opencode.json` beside it | model (a `Magpie` ACP agent: OpenCode's `opencode acp` on magpie's provider alone, its models and routing groups in Air's model menu; needs OpenCode installed) |
-| Air (JetBrains IDEs) | `~/.jetbrains/acp.json` (`%USERPROFILE%\.jetbrains\acp.json` on Windows; the Air plugin in 2026.2+ IDEs, shared with AI Assistant's custom agents) + `magpie-opencode.json` beside it | model (the same `Magpie` ACP agent as the Air app's, in Air's agent menu in the IDE; needs OpenCode installed) |
+| Air (JetBrains IDEs) | `~/.jetbrains/acp.json` (`%USERPROFILE%\.jetbrains\acp.json` on Windows; the Air plugin in 2026.2+ IDEs, shared with AI Assistant's custom agents) + `magpie-opencode.json` beside it | model (the same `Magpie` ACP agent as the Air app's, in Air's agent menu in the IDE; needs OpenCode installed; a `Magpie (WSL <distro>)` agent too for each running WSL distro that has OpenCode, for WSL projects) |
 | Copilot CLI  | `~/.copilot/settings.json`        | model           |
 | Crush        | `~/.config/crush/crush.json`      | large, small    |
 | DeepSeek Harness (dsh) | `~/.dsh/profiles/*/cordis.patch.yml` (`$DSH_HOME`; a custom provider, Magpie, its key `MAGPIE_GATEWAY_KEY` in `~/.dsh/.env` and dsh's own key store `~/.dsh/.credentials.yaml`, which the desktop app reads; on one of magpie's models its `web-search-deepseek` row also goes to the gateway, which searches with the model or Settings › Web search, unless dsh has a `DEEPSEEK_API_KEY` or a row of your own), or `~/.dsh/config.yaml` before dsh 0.1.5 | model, effort |
@@ -131,6 +134,7 @@ line; agents connected to magpie lose it when it quits.
 | Empryo       | `~/.empryo/config.json` | defaultModel (a `magpie` provider at the gateway in `providers`) |
 | nanobot      | `~/.nanobot/config.json` | model (`agents.defaults`: provider `magpie`, model `magpie/<id>` and its context window; a `magpie` provider at the gateway in `providers`. A `modelPreset` that would go over it is stashed and put back on off. Its gateway and WebUI take a change at their next reply) |
 | miniQ        | `~/.local/share/miniq/settings.json` (`%LOCALAPPDATA%\miniq` on Windows, `$MINIQ_DATA_DIR` or the folder `miniq-data-dir.json` names) | model (`provider`: `baseUrl` at the gateway's `/v1`, miniQ's own key, `model` the catalog id, `apiProtocol` `chat_completions`; the user's provider is stashed whole and put back on off. A running daemon is told through its `settings.update` RPC) |
+| Paimon       | `~/.config/paimon/config.json` (`$PAIMON_CONFIG_HOME`) | model (`model` `litellm:<id>`, `providers.litellm` at the gateway with magpie's key, and `compaction.context_window` the model's window; what the user had in all three is stashed and put back on off. Paimon reads it at start-up) |
 | Ante         | `~/.ante/catalog.json` and `settings.json` (`$ANTE_HOME`) | provider, model (a `magpie` provider on OpenAiCompatible, with no auth of magpie's: the gateway lets this machine in with any token and Ante counts a provider with none as authenticated; magpie's models in Ante's model picker, and Ante started on magpie, which is what its settings' `provider` decides) |
 | AstrBot      | `data/cmd_config.json` under `$ASTRBOT_ROOT`, else `~/.astrbot` (the desktop app's) | model (a `magpie` entry in `provider_sources` and magpie's models in `provider`, the user's own entries kept; the default chat model in `agent_runner.config.model.provider_id`, or `provider_settings.default_provider_id` on AstrBot before 4.28's agent runner; restart AstrBot after connecting; Docker installs aren't reached) |
 | QwenPaw      | each agent's `agent.json` in its workspace (`~/.qwenpaw/workspaces/<agent>`, the agents listed in `config.json`), under `$QWENPAW_WORKING_DIR`, else a legacy `~/.copaw`, else `~/.qwenpaw` | model (a `magpie` custom provider in `providers/custom/magpie.json` under QwenPaw's secret folder, `$QWENPAW_SECRET_DIR` or `~/.qwenpaw.secret`, OpenAI Chat at the gateway with magpie's models; the agent's `active_model` set to it, what was there put back on Disconnect; one row per agent, `qwenpaw` the default and `qwenpaw#<id>` the others; an agent on an ACP backend isn't listed; restart QwenPaw after the first connect), effort (the agent's `thinking_level`; magpie's models with reasoning levels are declared `thinking_param_style: "effort"` so QwenPaw applies it) |
@@ -152,14 +156,19 @@ line; agents connected to magpie lose it when it quits.
 | OpenPencil   | `openpencil/settings.json` in the config folder: `~/Library/Application Support` (macOS), `$XDG_CONFIG_HOME` or `~/.config` (Linux), `%APPDATA%` (Windows) | provider (a `magpie` entry in its `builtin_agents`, magpie's models in its chat's model picker; the user's entries and settings kept; refused while OpenPencil runs, as it writes the file back when it quits) |
 | OpenBot      | `OpenBot/openbot-custom-providers-v1.json` in the app data folder: `~/Library/Application Support` (macOS), `%APPDATA%` (Windows), `$XDG_CONFIG_HOME` or `~/.config` (Linux) | provider (a keyless `magpie` endpoint at `/agent/openbot/v1`, magpie's models in its model picker; the user's endpoints kept; OpenBot reads it at start, so restart it) |
 | Craft Agents | `~/.craft-agent/config.json` (or `$CRAFT_CONFIG_DIR`) | model (a keyless `pi_compat` connection `magpie` at `/agent/craft-agents/v1`, made the default; the user's connections and default kept and put back on off; new sessions use it) |
+| Obsidian     | Copilot for Obsidian 4+'s `.obsidian/plugins/copilot/data.json` in each vault `obsidian.json` lists (`~/Library/Application Support/obsidian`, `%APPDATA%\obsidian`, `$XDG_CONFIG_HOME/obsidian`, Flatpak, Snap) | provider (a keyless `magpie` provider at `/agent/obsidian/v1`, magpie's models in Copilot's chat picker and the default; the user's settings kept; reload Copilot or restart Obsidian) |
+| Tuanjie Cowork | `~/.codely/settings.json` | model (a `magpie` entry in `customModelProviders`, the gateway's `/v1` with Cowork's own key, and a `magpie` entry in `customModels` on `wireApi` `chat`; the user's providers and models kept; pick "<model> (magpie)" in Cowork's model menu once, restarting Cowork if it isn't listed yet) |
 | NewMax       | `newmax.db` (SQLite, the row `app` of its `settings` table) in `$NEWMAX_USER_DATA_DIR`, else `~/.newmax` (every OS) | provider (a `magpie-gateway` entry in its `providers` and `providerOrder`, magpie's models in its model picker; the rest of the row kept byte for byte; refused while NewMax runs, as it writes its settings back whenever one changes) |
 | LiveAgent    | `config.json` (JSONC, K-brain's) in `$LIVEAGENT_HOME`, else `$K_BRAIN_HOME`, else the folder `~/.liveagent/data-dir.json` points to, else `~/.liveagent` (every OS) | provider (`magpie`, `magpie-responses` and `magpie-anthropic` entries in its `providers`, each model on the one of the API it is served on natively: Chat Completions and Responses at the gateway's `/v1` as OpenAI providers whose request format the user can switch in LiveAgent and magpie keeps, Anthropic Messages at its root; magpie's models in its model picker; a model or provider of magpie's deleted in LiveAgent stays out; a default still K-brain's own demo model becomes magpie's first; refused while LiveAgent or its `k-brain` backend runs, as it writes its settings back whenever one changes) |
 | T3 Code      | `~/.t3/userdata/settings.json` (`$T3CODE_HOME/userdata`) | provider (a `magpie` provider instance on Claude Code, magpie's models as its custom models; a `magpie-codex` instance on Codex, whose `launchArgs` are Codex's own `-c` overrides to magpie and a `magpie-codex-models.json` catalog beside the settings. The harness is picked in T3's model picker) |
 | OpenMausBot  | `~/.openmausbot/config.json` (`$OMB_DATA_DIR`) | provider (a `magpie` engine in `instances`: OpenMausBot's own Claude endpoint shape, Claude Code with `ANTHROPIC_BASE_URL` at the gateway and magpie's models as its `endpointModels`, in its own `CLAUDE_CONFIG_DIR` under `providers/magpie`. With no `instances` saved, OpenMausBot's default engines are written beside it. OpenMausBot reads it when it starts) |
+| Avibe        | `~/.avibe/config/config.json` (`$AVIBE_HOME`; `~/.vibe_remote` from before 3.0), changed through its control socket `state/dispatch.sock` (Windows: `runtime/control-ipc/endpoint.json`) while it runs | provider (a `magpie` model source on its Models page: custom vendor, OpenAI chat completions at the gateway's `/v1`, with Avibe's own key; Avibe lists magpie's models from the gateway and adds the source to Vibey's, Claude Code's, Codex's and OpenCode's routes. Avibe has to be running to connect or disconnect it) |
+| Kun          | `~/.kun/data/model-connections.v2.json` (`$KUN_DATA_DIR`), changed through its runtime's admin API (`baseUrl` and `runtimeToken` of `runtime.json` in the same folder) while it runs | model (a `magpie` connection in Settings > Providers: HTTP, OpenAI chat completions at the gateway's `/v1`, with Kun's own key and the models picked for Kun; the model picked is Kun's default. Kun has to be running to connect or disconnect it) |
 | OpenHanako   | `~/.hanako/provider-catalog.json` + `agents/<id>/config.yaml` (`$HANA_HOME`; its local API while it runs) | model (the primary agent's; magpie's models as a provider) |
 | AtomCode     | `~/.atomcode/config.toml` (`$ATOMCODE_HOME`) | model, effort (a `magpie` provider account, one model table per catalog model as its own sign-in writes) |
 | Snow CLI     | `~/.snow/profiles/magpie.json` (`$SNOW_CONFIG_DIR`), made the active profile and copied to `config.json` | model (the user's other profiles' models too; Snow App takes the profile in with "Sync Snow CLI API config") |
 | Alma         | Alma's local API (`localhost:23001`, while Alma runs; alma-server's data in `$ALMA_DATA_DIR`, `$XDG_DATA_HOME/alma` or `~/.local/share/alma` on Linux) | model (Alma's default; magpie's models as a provider), and Image Generation's model when it is Auto: the one magpie draws with |
+| Shelley      | Shelley's local socket (`~/.config/shelley/shelley.sock`, `$XDG_CONFIG_HOME/shelley`, `$SHELLEY_SOCKET`; while `shelley serve` runs) | model (the default profile's; magpie's models as Shelley custom models of type `openai` at the gateway's `/v1` with Shelley's own key, one per model picked; the profile's model and thinking level are stashed and put back on Disconnect, and magpie's custom models go) |
 | Lody | Its own confirmation dialog (`lody://provider/import`) | adds selected Claude, Codex, Pi, DSH, Kimi Code, Grok and Bub Providers on the local machine; no settings edited by magpie |
 
 Provider-scoped agents (OpenCode, MiMo Code, DevEco Code, Pi, OmO, StepCode, MothX, PenguinHarness, Aside, Goose, Crush, omp, Hermes Agent) take `provider/model`.
@@ -952,6 +961,40 @@ port, as the agents, MCP servers and status checks magpie wires here do,
 since no certificate for the server's name covers loopback. A container or
 a WSL distro calling through its NAT address is another computer, and uses
 `https://`. Gateway keys, sharing and allowed addresses work as over HTTP.
+
+**HTTPS on the local network.** Without a certificate of your own, turn
+on Settings → Network and sharing → HTTPS (or `magpie https on`; zhangly1
+on X: Claude on another computer needed magpie at `https://`). magpie
+serves other computers `https://` with a certificate its own CA (the mTLS
+one, in `~/.config/magpie/mtls`) signs for this computer's names, its
+addresses and the name the client dialled; this computer keeps plain
+`http://`. Each computer that calls magpie trusts the CA once: Save under
+magpie's CA puts `magpie-ca.crt` in Downloads, and the gateway serves it
+to any address the share lets in, without a key, at
+`https://<this computer>:<port>/magpie-ca.crt` (`curl -kO`, then check its
+SHA-256 against the one Settings and `magpie https` show). Then:
+
+```sh
+# macOS
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain magpie-ca.crt
+# Windows, as administrator
+certutil -addstore -f Root magpie-ca.crt
+# Debian, Ubuntu
+sudo cp magpie-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates
+# Claude Code and other Node apps, which keep their own list
+export NODE_EXTRA_CA_CERTS=/path/to/magpie-ca.crt
+```
+
+Windows' own `curl.exe` checks revocation, which a private CA has none
+of, so it needs `--ssl-no-revoke`; Node, browsers and Claude Code don't.
+
+To serve a certificate of your own instead (one your network's CA, or a
+public one, signed), Import… under Certificate (or `magpie https import
+cert.pem key.pem`): PEM, the certificate with its chain and an
+unencrypted key, in one file or several. It is kept in
+`~/.config/magpie/https` and read again when it changes; Remove goes back
+to magpie's CA. `--tls-cert` comes before both. A page open from another
+computer can't turn HTTPS on or off under itself.
 
 **Client certificates (mTLS).** A magpie open to the internet can also
 ask every other computer for a client certificate it issued itself
@@ -2449,7 +2492,8 @@ forwarding header (frp's `tcp`, `ssh -R`, socat, an nginx `proxy_pass`
 without `X-Forwarded-For`) reaches it from loopback, so magpie can't tell
 it from an agent on this computer and never answers it as one;
 `MAGPIE_TRUST_PROXY=1` doesn't change that. The page's sign-in cookie is
-no gateway key, and the page and its `/api` still need the page's key.
+no gateway key, and the page and its `/api` still need the page's key (or
+on a LazyCat box the box's sign-in, see [LazyCat](#lazycat)).
 Agents on this computer call the gateway's own port (`127.0.0.1:3425`),
 which needs no key from loopback. Ollama's `/api/*` and Claude Desktop's
 `/api/hello` are the page's own namespace on that port, so a client of
@@ -3259,6 +3303,11 @@ make release-windows  # dist/: the Windows app, amd64 and arm64 (cross-compiles)
 make release-linux    # dist/: the Linux app for this machine's arch
 ```
 
+The release targets and `make app` pack the UI's files into one zip first
+(`make assets-pack`, `build/assetpack`; embedded by `-tags packedassets`),
+which takes about 6 MB off each binary. `make build`, `make cli` and the
+tests embed the tree as it is.
+
 Linux needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev` for the app build
 (the Makefile adds the `gtk3` tag; with plain `go build`, pass `-tags gtk3`);
 Windows uses the WebView2 runtime that ships with the OS.
@@ -3500,6 +3549,102 @@ Watchtower to update at most daily (with Renovate, pin its digest);
 `stable` is the desktop app's Stable channel, one a week. `0.1.N` is one
 release, `0.1` the newest of its line, and `edge` every change on `main`.
 
+#### LazyCat
+
+On a [LazyCat](https://lazycat.cloud) box (懒猫微服) magpie runs as an
+app's service with `magpie web`. With `MAGPIE_WEB_SIGN_IN=lazycat` the page
+takes the box's own sign-in for its key: the box's administrators open
+magpie from the box's app list (`https://magpie.<box>.heiyu.space`), signed
+in to the box, with nothing to paste. The page sets them no cookie of its
+own, so signing out of the box signs them out of the page; a browser signed
+in with the key's link keeps its cookie. A manifest (`lzc-manifest.yml`) for
+it:
+
+```yaml
+application:
+  subdomain: magpie
+  upstreams:
+    - location: /
+      backend: http://magpie:3430/
+  # the gateway's client routes (clientPrefixes, internal/gateway/oneport.go),
+  # for agents that aren't signed in to the box: the gateway checks them as
+  # everywhere
+  public_path:
+    - /v1
+    - /v1beta
+    - /models
+    - /chat/completions
+    - /responses
+    - /messages
+    - /images
+    - /embeddings
+    - /rerank
+    - /decisions
+    - /audio
+    - /videos
+    - /muse-code/models
+    - /backend-api/codex
+    - /alpha/search
+    - /mcp
+    - /me
+    - /join
+    - /magpie-ca.crt
+services:
+  magpie:
+    image: ghcr.io/yetone/magpie:0.1.N
+    command: web --addr 0.0.0.0:3430 --no-open
+    environment:
+      - MAGPIE_WEB_SIGN_IN=lazycat
+    binds:
+      # the app's own folder, which the box keeps across updates and the
+      # image's user (uid 65532) can write: a folder the box makes for a
+      # bind, as /lzcapp/var/config, is root's alone
+      - /lzcapp/var:/config
+```
+
+The box's ingress sends a browser that isn't signed in to the box's login
+page, and puts on every request it passes the app who sent it, in place of
+whatever the caller sent: the account (`X-HC-User-ID`), its role
+(`X-HC-User-Role`) and what sent it (`X-HC-Source`, `client` for a
+browser). The page takes an account whose role is `ADMIN`, from a browser,
+each named once, for a request the page itself made or a browser opening
+the page in a tab of its own (its Fetch Metadata: `Sec-Fetch-Site`
+`same-origin` or `none`, or a navigation to the page from another): the
+box's sign-in is the box's cookie, which a browser may send with a request
+another app's page on the box makes. Another account, a request another app
+or the box itself sent, one with no account, one another page made and one
+from a browser that doesn't say where it came from are turned away and told
+why; the link with the key, in the app's log, still signs a browser in.
+`magpie web` won't start with `MAGPIE_WEB_SIGN_IN=lazycat` without
+`LAZYCAT_APP_DOMAIN`, which LazyCat sets in an app's containers, so the
+setting isn't taken somewhere else by mistake; that is all magpie can check
+of where it runs. The setting says the box's ingress is the only way to the
+page's port. The box's sign-in stands in for no gateway key: the gateway's
+client routes ask for theirs as everywhere. magpie sends none of the box's
+`X-HC-*` headers on to a vendor, the ChatGPT backend or an MCP server,
+unless a provider's `PassHeaders` names one.
+
+A `public_path` entry opens its path and what is under it to callers that
+aren't signed in to the box (`/v1` opens `/v1/chat/completions`, not
+`/v1x`). Keep `/` out of it, so a browser that isn't signed in is sent to
+the box's login page. Let nothing but the box's ingress reach the page's
+port (3430): not a TCP ingress (`application.ingress`) or the box's LAN port
+forwarding. There the box passes every header as the caller wrote it, and
+anyone who reaches that port could say they are the box's administrator.
+magpie turns away a peer on a public address whatever it sends, but it
+can't tell a private one from the ingress: LazyCat's docs
+(developer.lazycat.cloud/en/http-request-headers.html) say the ingress sets
+`X-HC-*` after authenticating and clears them when it fails, and name no
+address for it.
+Another app's container reaches the app through the ingress alone, unless
+its manifest puts it in the box's own network (`network_mode: host`, as
+some of the box's own apps are): from there, as from the box itself, the
+page's port can be reached, so such an app is trusted as the box's
+administrators are. The gateway's port (3425) can be published: the
+gateway checks what reaches it as everywhere, and the box's sign-in
+stands in for none of it. magpie takes the app's address from
+`LAZYCAT_APP_DOMAIN`, so `MAGPIE_PUBLIC_URL` isn't needed.
+
 ### Developing
 
 ```sh
@@ -3529,9 +3674,11 @@ magpie tray                     # menu bar icon only (use this in your login ite
 magpie tui                      # the same thing, in the terminal; serves the gateway while open when no other magpie does
 magpie web                      # the app's window in a browser (WSL, a server over SSH); --lan, --addr, --no-open, --gateway, --tls-cert/--tls-key
                                 # (a new key each run; MAGPIE_WEB_KEY keeps one, for a page run as a service)
+                                # (in a LazyCat app, MAGPIE_WEB_SIGN_IN=lazycat lets the box's administrators in without it)
                                 # (behind a reverse proxy, MAGPIE_WEB_URL=https://<the page there> prints the link through it)
 magpie serve                    # the gateway alone, no window; --web[=host:port] serves the page too, from the same process
                                 # --tls-cert <file> --tls-key <file>: https:// for other computers (see HTTPS under sharing)
+magpie https                    # https:// for other computers: on, off, import <files>, remove, ca [--out]
 magpie mtls                     # other computers need a client certificate magpie issued: on, off, issue <device>, revoke <device>, list
 magpie daemon install           # run magpie serve as a service (systemd, launchd); --web, --lan, --addr serve the page too; --tls-cert/--tls-key, --no-tls
 magpie ls                       # list every agent and its current settings
@@ -4128,10 +4275,19 @@ and models to look after first, by magpie's own ids only:
   many times a day the add sheet showed it, its row was opened, its key
   page was opened and a provider was added from it (at most 20 of each,
   5 adds), kept in `~/.cache/magpie/partner-counts.json` for at most 14
-  days and sent the day after as `magpie partner` events.
+  days and sent the day after as `magpie partner` events;
+- to usemagpie.ai, not PostHog, which of the plugins Discover lists are
+  installed and on (npm names, or `github:owner/repo` for a repository
+  tagged `magpie-plugin`; never a folder, a private repository or an
+  unlisted package), with the same id, so Discover can say how many use
+  each (the ids that reported it in 7 days). A like on a plugin's page
+  goes there too, only for a plugin installed here, and is kept in
+  `~/.config/magpie/plugin-likes.json`. The code is
+  [internal/stats/plugins.go](../internal/stats/plugins.go) and
+  [site/pluginstats.js](../site/pluginstats.js).
 
 No names, base URLs, accounts, keys, prompts or usage go. Turn that part off
-in Settings → Privacy → Share the agents, providers and models I use; the
+in Settings → Privacy → Share the agents, providers, models and plugins I use; the
 day's event then has the id, version and system only. Turn it all off in
 Settings → Privacy → Count me as a user, or with `DO_NOT_TRACK=1` or
 `MAGPIE_NO_STATS=1`. Builds from source never send it. The code is

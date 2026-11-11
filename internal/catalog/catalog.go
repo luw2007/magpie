@@ -85,6 +85,12 @@ type Model struct {
 	// provider after it (magpie_label): the name Provider in model names
 	// Off has here (ARNO on Discord).
 	Plain string `json:",omitempty"`
+	// By, on a model of another magpie's list, is the provider that
+	// magpie names as serving it (magpie_by): its own provider's name, or,
+	// for a model it has from a magpie further on, the one there, the
+	// first in the chain. Its Remote magpie's upstream names (Provider's
+	// UpstreamProviders) say it after the model (lcc580 on X).
+	By string `json:",omitempty"`
 	// Via, on a model of another magpie's list, is the magpies it passes
 	// through to its vendor, that one last (magpie_via.go)
 	Via []string `json:",omitempty"`
@@ -99,6 +105,14 @@ type Model struct {
 	// Fast is set on a model Codex may ask for priority processing (its
 	// Fast mode): one a ChatGPT account serves.
 	Fast bool `json:",omitempty"`
+	// Seals is set on a model whose provider seals a multi-agent V2
+	// lead's subagent tasks as the ChatGPT backend does: one of no sign-in
+	// on the Responses API (a relay of that backend, Sub2API or CPA,
+	// #1109; OpenAI's own API), or a group with such a member. With
+	// "subagents on any model" (settings.CodexAgentsV1) its Codex entry
+	// says V1 as the ChatGPT account's do (codexcat.Entries; brethhbbm on
+	// X: relay/gpt-6-astra kept its subagents).
+	Seals bool `json:",omitempty"`
 	// Tiers, in one ChatGPT account's own model list, are the service
 	// tiers its plan offers on the model ("priority", "ultrafast"); in
 	// another magpie's, the tiers it offers its Codex on the model
@@ -628,12 +642,20 @@ func load() map[string]mdProvider {
 func loadGen() (map[string]mdProvider, int) {
 	loadMu.Lock()
 	defer loadMu.Unlock()
+	loadUsed()
 	if !loaded {
 		loaded = true
 		func() {
-			for _, p := range []string{CachePath(), opencodeCache()} {
-				b, err := os.ReadFile(p)
-				if err != nil {
+			// magpie's own copy, OpenCode's, then the one magpie ships
+			// with (bundled.go): a file that can't be read or parsed is
+			// passed over for the next, never read as no catalog
+			for _, read := range []func() ([]byte, error){
+				func() ([]byte, error) { return os.ReadFile(CachePath()) },
+				func() ([]byte, error) { return os.ReadFile(opencodeCache()) },
+				func() ([]byte, error) { return bundledCatalog(), nil },
+			} {
+				b, err := read()
+				if err != nil || b == nil {
 					continue
 				}
 				var m map[string]mdProvider
@@ -856,11 +878,9 @@ func syncLock(ctx context.Context, onlyIfMissing bool) error {
 	if err := json.Unmarshal(b, &probe); err != nil || len(probe) == 0 {
 		return fmt.Errorf("models.dev: unexpected payload")
 	}
-	p := CachePath()
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(p, b, 0o644); err != nil {
+	// written whole through a rename: a reader never sees it half
+	// written, and a failed write keeps the last good copy
+	if err := writeWhole(CachePath(), b, time.Time{}); err != nil {
 		return err
 	}
 	// the lab catalog beside it is best effort: without it the provider

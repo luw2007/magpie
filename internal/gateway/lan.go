@@ -616,7 +616,16 @@ func lanGuard(next http.Handler) http.Handler {
 		}
 		// the key page itself is the same bytes for everyone, so it is
 		// opened before the key it asks for is typed; its data isn't
-		if remote && keyPageOpen(r) {
+		// magpie's CA, too: public, and fetched before the computer
+		// asking trusts magpie's https:// (https.go)
+		if remote && (keyPageOpen(r) || caFileOpen(r)) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// so is the join page, and its route carries a password, not a
+		// key: the handler judges the password, the browser that sent it
+		// and how often it is tried (join.go)
+		if remote && (joinPageOpen(r) || joinAsked(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -822,6 +831,8 @@ func identifyCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool
 	}
 	if ok {
 		r = r.WithContext(access.WithIdentity(r.Context(), who))
+		// the names the key gives models, before any route reads one
+		r = aliasRequest(r, who)
 	}
 	r.Header = r.Header.Clone()
 	r.Header.Set("Authorization", "Bearer "+Token)

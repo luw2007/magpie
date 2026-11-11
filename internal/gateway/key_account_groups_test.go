@@ -33,7 +33,8 @@ func TestGatewayKeyAccountGroupsKeyedRoutes(t *testing.T) {
 	group := func(ks ...string) []string {
 		var out []string
 		for _, k := range ks {
-			out = append(out, map[byte]string{'k': "relay", 'o': "office", 'j': "jev"}[k[0]]+"/"+provider.KeyID(k))
+			pid := map[byte]string{'k': "relay", 'o': "office", 'j': "jev"}[k[0]]
+			out = append(out, pid+"/"+keyAccountID(t, pid, k))
 		}
 		return out
 	}

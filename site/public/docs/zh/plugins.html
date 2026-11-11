@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>插件开发 · magpie 文档</title>
+<title>插件开发：用 OpenCode 插件或 pi 扩展包添加供应商 · magpie 文档</title>
 <meta name="description" content="如何编写 magpie 插件：magpie 调用哪些 OpenCode 插件钩子、运行哪些 pi 扩展包，如何把它们变成带账号、模型、请求和用量的供应商，以及怎么测试、发布和上架。">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#fafafa">
@@ -39,6 +39,54 @@
 <meta property="og:image" content="https://usemagpie.ai/img/og.png">
 <meta property="og:url" content="https://usemagpie.ai/docs/zh/plugins">
 <meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "TechArticle",
+   "headline": "编写插件",
+   "description": "如何编写 magpie 插件：magpie 调用哪些 OpenCode 插件钩子、运行哪些 pi 扩展包，如何把它们变成带账号、模型、请求和用量的供应商，以及怎么测试、发布和上架。",
+   "inLanguage": "zh-CN",
+   "url": "https://usemagpie.ai/docs/zh/plugins",
+   "about": {
+    "@type": "SoftwareApplication",
+    "name": "magpie",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Windows, Linux"
+   },
+   "publisher": {
+    "@type": "Organization",
+    "name": "magpie",
+    "url": "https://usemagpie.ai/"
+   }
+  },
+  {
+   "@type": "BreadcrumbList",
+   "itemListElement": [
+    {
+     "@type": "ListItem",
+     "position": 1,
+     "name": "magpie",
+     "item": "https://usemagpie.ai/zh/"
+    },
+    {
+     "@type": "ListItem",
+     "position": 2,
+     "name": "文档",
+     "item": "https://usemagpie.ai/docs/zh/start"
+    },
+    {
+     "@type": "ListItem",
+     "position": 3,
+     "name": "编写插件",
+     "item": "https://usemagpie.ai/docs/zh/plugins"
+    }
+   ]
+  }
+ ]
+}
+</script>
 </head>
 <body>
 
@@ -554,6 +602,7 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     amount: 370, limit: 1000, unit: <span class="s">"credits"</span>, <span class="c">// 按数量计时，窗口自己的用量</span>
     model: <span class="s">"opus"</span>,              <span class="c">// 只统计 id 含这个词的模型</span>
     models: [], notModels: [],  <span class="c">// 或恰好这些 id，或除这些外的全部</span>
+    family: <span class="s">"Gemini"</span>, pool: <span class="s">"Gemini"</span>, <span class="c">// 模型所属系列，和共用一份额度的分组：卡片显示分组自己的窗口（不带 model 和 family），代替其中各模型的</span>
     aside: false,               <span class="c">// true：用完也不影响账号使用</span>
     runsOutAt: <span class="s">"2026-10-05T00:00:00Z"</span>, runsOut: 120, <span class="c">// 剩余额度中最早作废的一笔何时作废、作废多少</span>
     balance: 6291,              <span class="c">// 预付钱包：剩余多少（按 unit 计），不写 used 和 limit</span>

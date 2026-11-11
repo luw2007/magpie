@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Library · magpie docs</title>
+<title>Library: MCP servers, skills, hooks and subagents for every coding agent · magpie</title>
 <meta name="description" content="How magpie's Library works: where it writes instructions, MCP servers, skills, hooks and subagents for each agent, and how subagent models are picked.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#fafafa">
@@ -39,6 +39,54 @@
 <meta property="og:image" content="https://usemagpie.ai/img/og.png">
 <meta property="og:url" content="https://usemagpie.ai/docs/library">
 <meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "TechArticle",
+   "headline": "Library",
+   "description": "How magpie's Library works: where it writes instructions, MCP servers, skills, hooks and subagents for each agent, and how subagent models are picked.",
+   "inLanguage": "en",
+   "url": "https://usemagpie.ai/docs/library",
+   "about": {
+    "@type": "SoftwareApplication",
+    "name": "magpie",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Windows, Linux"
+   },
+   "publisher": {
+    "@type": "Organization",
+    "name": "magpie",
+    "url": "https://usemagpie.ai/"
+   }
+  },
+  {
+   "@type": "BreadcrumbList",
+   "itemListElement": [
+    {
+     "@type": "ListItem",
+     "position": 1,
+     "name": "magpie",
+     "item": "https://usemagpie.ai/"
+    },
+    {
+     "@type": "ListItem",
+     "position": 2,
+     "name": "Docs",
+     "item": "https://usemagpie.ai/docs/start"
+    },
+    {
+     "@type": "ListItem",
+     "position": 3,
+     "name": "Library",
+     "item": "https://usemagpie.ai/docs/library"
+    }
+   ]
+  }
+ ]
+}
+</script>
 </head>
 <body>
 
@@ -248,7 +296,7 @@ magpie library sync     # write it into the agents again</pre>
       <li>Never a file, entry or skill of yours with the same name. The page shows the clash and lets you choose.</li>
       <li>Anything it replaces goes to the backups first.</li>
     </ul>
-    <p>Projects can get skills and MCP servers too, in the project’s own folders (such as <code>.claude/skills</code>, <code>.agents/skills</code>, <code>.mcp.json</code> or <code>.codex/config.toml</code>).</p>
+    <p>Projects can get skills and MCP servers too, in the project’s own folders (such as <code>.claude/skills</code>, <code>.agents/skills</code>, <code>.mcp.json</code> or <code>.codex/config.toml</code>). From a terminal, <code>magpie library project add .</code> adds the folder you are in, <code>magpie library project skill add . pdf docx</code> gives it skills, <code>magpie library project skill rm . pdf</code> takes one away, and <code>magpie library project skills .</code> lists them.</p>
   </article>
 </main>
 

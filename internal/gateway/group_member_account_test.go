@@ -20,7 +20,7 @@ import (
 // other account under the same member.
 func TestGroupMemberAccountsInOrder(t *testing.T) {
 	relay, other := groupAccountsSetup(t)
-	work, mine := provider.KeyID("sk-work"), provider.KeyID("sk-mine")
+	work, mine := keyAccountID(t, "relay", "sk-work"), keyAccountID(t, "relay", "sk-mine")
 	// work first, though the provider's own first key is sk-mine
 	if err := provider.SaveGroup(provider.Group{Name: "Chain", Routing: provider.Ordered,
 		Members: []string{"relay/m#" + work, "relay/m#" + mine, "other/m"}}); err != nil {
@@ -88,7 +88,7 @@ func TestGroupMemberAccountsInOrder(t *testing.T) {
 // error, the other key unasked, on every route.
 func TestGroupMemberAccountNeverSpills(t *testing.T) {
 	relay, _ := groupAccountsSetup(t)
-	if err := provider.SaveGroup(provider.Group{Name: "Pinned", Routing: provider.Ordered, Members: []string{"relay/m#" + provider.KeyID("sk-work")}}); err != nil {
+	if err := provider.SaveGroup(provider.Group{Name: "Pinned", Routing: provider.Ordered, Members: []string{"relay/m#" + keyAccountID(t, "relay", "sk-work")}}); err != nil {
 		t.Fatal(err)
 	}
 	h := New().Handler()
@@ -131,7 +131,7 @@ func TestGroupMemberAccountSaved(t *testing.T) {
 	if err := provider.Save(*p); err != nil {
 		t.Fatal(err)
 	}
-	work := provider.KeyID("sk-work")
+	work := keyAccountID(t, "relay", "sk-work")
 	if err := provider.SaveGroup(provider.Group{Name: "Named", Members: []string{"relay/m#Company", "relay/m"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestGroupMemberAccountsDraw(t *testing.T) {
 		Keys: []provider.KeyAccount{{Key: "sk-work"}}, Models: []string{"gpt-image-1"}}); err != nil {
 		t.Fatal(err)
 	}
-	work, mine := provider.KeyID("sk-work"), provider.KeyID("sk-mine")
+	work, mine := keyAccountID(t, "art", "sk-work"), keyAccountID(t, "art", "sk-mine")
 	if err := provider.SaveGroup(provider.Group{Name: "Easel", Routing: provider.Ordered,
 		Members: []string{"art/gpt-image-1#" + work, "art/gpt-image-1#" + mine}}); err != nil {
 		t.Fatal(err)

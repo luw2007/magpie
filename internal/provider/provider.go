@@ -84,7 +84,6 @@ type Provider struct {
 	KeyWeight   int      `json:"-"`
 	KeyPlan     string   `json:"-"`
 
-
 	// Base URLs, one per protocol the vendor serves natively. magpie appends
 	// the usual paths: chat/responses bases end in /v1 (OpenAI style),
 	// the Anthropic base is the root (what ANTHROPIC_BASE_URL takes).
@@ -152,6 +151,16 @@ type Provider struct {
 	// goes with the others that are. Off, the default, Smart goes as it
 	// always has (routes.Seat.Lead).
 	UseFirst bool `json:"useFirst,omitempty"`
+
+	// NoStandIn keeps another model's request off it (sonnnnnnnnnnnna on
+	// X): a request that went first to a provider not so marked, such as
+	// a local uncensored model that is down or out of room, is never sent
+	// on to it as a fallback or a routing group's next member, so text
+	// written for that model can't get a vendor's account banned. One
+	// that goes first to it, or to another provider so marked, still
+	// moves on as ever. Off, the default, it stands in for any. See
+	// gateway.standInsOut.
+	NoStandIn bool `json:"noStandIn,omitempty"`
 
 	// Affinity is how long a conversation stays with the key or account
 	// that answered it, so the vendor's prompt cache it filled is read
@@ -338,6 +347,15 @@ type Provider struct {
 	// once through DeepSeek's Files API, for a day, and the turns name it
 	// by its file id (gateway's deepseek_files.go, #5407).
 	ImageFilesOff bool `json:"imageFilesOff,omitempty"`
+
+	// UpstreamProviders, on a Remote magpie, `upstream-providers=on`, names each
+	// of its models in the agents' lists by the provider serving it on
+	// the other magpie, the first in a chain of them: "Claude Sonnet 5 ·
+	// Office › RelayA", whatever that magpie's own Provider in model names
+	// is, so one model from two of its providers is told apart here
+	// (lcc580 on X). Off, the default, names each as that magpie's list
+	// does. The ids stay as they are: office/relaya/claude-sonnet-5.
+	UpstreamProviders bool `json:"upstreamProviders,omitempty"`
 
 	// PromptAsWritten, on Antigravity's subscription, has the system prompt
 	// go to Google exactly as the agent wrote it. By default the few lines
@@ -1068,6 +1086,7 @@ func accountSettings(a, pk Provider) Provider {
 	a.AccountCaps, a.AccountWindowCaps, a.AccountWindowAmounts = pk.AccountCaps, pk.AccountWindowCaps, pk.AccountWindowAmounts
 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
 	a.UseFirst = pk.UseFirst
+	a.NoStandIn = pk.NoStandIn
 	a.AccountNames = pk.AccountNames
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.MaxAccounts = pk.MaxAccounts
@@ -1195,10 +1214,30 @@ func Slug(name string) string {
 
 // Save adds or replaces a provider.
 func Save(p Provider) error {
-	// a key given a Vertex AI provider is refused here, before normalize
-	// drops it: it would never be sent
-	if p.IsVertex() && (strings.TrimSpace(p.Key) != "" || len(p.Keys) > 0) {
-		return errors.New("Google Vertex AI is asked with your Google credentials, not an API key")
+	if p.IsVertex() {
+		// Vertex AI takes one API key. Key/KeyID are a runtime view of Keys,
+		// so do not count that view again when its persisted entry is present.
+		key, keys, active := strings.TrimSpace(p.Key), 0, false
+		hasRuntime := false
+		for _, k := range p.Keys {
+			if strings.TrimSpace(k.Key) == "" {
+				continue
+			}
+			keys++
+			hasRuntime = hasRuntime || k.ID == p.KeyID || strings.TrimSpace(k.Key) == key
+			active = active || !k.Off
+		}
+		if key != "" && !hasRuntime {
+			keys++
+			active = true
+		}
+		if keys > 1 {
+			return errors.New("Google Vertex AI takes one API key")
+		}
+		// A base URL with no active key is refused before normalize drops it.
+		if p.Vertex != nil && strings.TrimSpace(p.Vertex.BaseURL) != "" && !active {
+			return errors.New("a base URL is for an API key: Google credentials are sent only to Google's own address")
+		}
 	}
 	if id := strings.ToLower(strings.TrimSpace(p.ID)); id != "" {
 		for _, q := range load().Providers {
@@ -1261,7 +1300,7 @@ func Save(p Provider) error {
 			return fmt.Errorf("%q is the id of the %s subscription; pick another name", p.ID, p.ID)
 		}
 		if p.IsVertex() {
-			if err := p.Vertex.check(); err != nil {
+			if err := p.Vertex.check(p.Key != ""); err != nil {
 				return err
 			}
 		} else if !hasEndpoint(p) {
@@ -1523,6 +1562,7 @@ func AddCopy(p Provider, from string) (string, error) {
 	}
 	p.Searches = p.Searches || src.Searches
 	p.Unredacted = p.Unredacted || src.Unredacted
+	p.NoStandIn = p.NoStandIn || src.NoStandIn
 	p.CountFree = p.CountFree || src.CountFree
 	if p.Billing == "" {
 		p.Billing = src.Billing
@@ -1820,14 +1860,28 @@ func normalize(p Provider) Provider {
 	if !p.IsVertex() {
 		p.Vertex = nil
 	} else {
-		// asked only at the address its project and location make, with a
-		// Google token that no other address is to be sent, and never with
-		// a key: one put in providers.json by hand is dropped, so it stands
-		// in for neither that token nor a project, and the provider as
-		// found still saves
+		// asked only at the address its project and location make (or its
+		// BaseURL, with a key), with a Google token that no other address
+		// is to be sent: the URLs of a provider put in providers.json by
+		// hand are dropped. It has one key, or none.
 		p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide = "", "", "", "", ""
-		p.Key, p.KeyID, p.Keys = "", "", nil
-		p.KeyName, p.KeyProtocol, p.KeyWeight, p.KeyPlan = "", "", 0, ""
+		// A file from before stable key identities may still carry the old
+		// bare key beside a Keys list. Vertex takes one: keep the selected
+		// entry, including its stable ID and usage bindings.
+		if len(p.Keys) > 1 {
+			i := slices.IndexFunc(p.Keys, func(k KeyAccount) bool { return k.ID == p.KeyID })
+			if i < 0 {
+				i = 0
+			}
+			p.Keys = []KeyAccount{p.Keys[i]}
+			p.normalizeKeys()
+		}
+		if p.Key == "" && p.Vertex != nil && p.Vertex.BaseURL != "" {
+			// no key to go with it: Google's token must not go there
+			v := *p.Vertex
+			v.BaseURL = ""
+			p.Vertex = v.Normal()
+		}
 	}
 	p.remoteMagpieEndpoints()
 	for _, u := range []*string{&p.Chat, &p.Responses, &p.Anthropic, &p.Gemini, &p.Decide, &p.Website, &p.KeysURL} {
@@ -2096,7 +2150,7 @@ func (p Provider) Base(proto Protocol) string {
 		// Vertex AI's partner models, on Google's OpenAI-compatible chat
 		// completions at the project (VertexPartner)
 		if p.IsVertex() {
-			if b := p.vertexBase(); b != "" {
+			if b := p.vertexBase(); b != "" && !p.VertexExpress() {
 				return b + "/endpoints/openapi"
 			}
 			return ""
@@ -2108,6 +2162,9 @@ func (p Provider) Base(proto Protocol) string {
 		// Vertex AI's Claude models, on Anthropic's Messages API at the
 		// project, each at a path of its own (VertexClaudeRequest)
 		if p.IsVertex() {
+			if p.VertexExpress() {
+				return "" // express mode serves Gemini alone
+			}
 			return p.vertexBase()
 		}
 		return p.Anthropic

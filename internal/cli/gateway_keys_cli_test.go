@@ -676,10 +676,11 @@ func TestGatewayKeyAccountGroupsCLI(t *testing.T) {
 	if err := settings.Save(settings.Settings{LAN: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Chat: "http://127.0.0.1:1/v1", Keys: []provider.KeyAccount{{Key: "sk-1", Name: "First"}, {Key: "sk-2", Name: "Second"}}}); err != nil {
+	// the keys' stable ids: a group's accounts keep them, though typed by name
+	k1, k2 := "k1", "k2"
+	if err := provider.Save(provider.Provider{ID: "relay", Name: "Relay", Chat: "http://127.0.0.1:1/v1", Keys: []provider.KeyAccount{{ID: k1, Key: "sk-1", Name: "First"}, {ID: k2, Key: "sk-2", Name: "Second"}}}); err != nil {
 		t.Fatal(err)
 	}
-	k1, k2 := provider.KeyID("sk-1"), provider.KeyID("sk-2")
 	call := func(args ...string) (string, error) {
 		var out bytes.Buffer
 		err := gatewayKeysTo(&out, append([]string{"gateway-key"}, args...))

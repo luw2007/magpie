@@ -53,6 +53,7 @@ func init() {
 	// and when Codex is connected or disconnected, or its route otherwise
 	// changes, so a running app sends where its config now says
 	provider.CodexAppRoute = codexAppRoute
+	provider.CodexBeforeAppEnd = codexRetagOpenThreads
 	// but not when Codex's account is switched while its provider takes
 	// no ChatGPT account: the app-server goes by none
 	provider.CodexNoAccount = codexNoAccount
@@ -296,6 +297,7 @@ func onMachine(home, cfg string) []*Agent {
 		empryo(home),
 		nanobot(home),
 		miniq(home),
+		paimon(home),
 		ante(home),
 		astrbot(home),
 		qwenpaw(home),
@@ -316,16 +318,21 @@ func onMachine(home, cfg string) []*Agent {
 		openPencil(home, cfg),
 		openBot(home, cfg),
 		craftAgents(home),
+		obsidian(home, cfg),
+		tuanjieCowork(home),
 		newMax(home),
 		liveAgent(home),
 		raycast(home),
 		kiroCrew(home),
 		t3code(home),
 		openMausBot(home),
+		avibe(home),
+		kun(home),
 		hanako(home),
 		atomcode(home),
 		snow(home),
 		alma(),
+		shelley(home),
 		cindy(),
 		aionui(),
 		cherryStudio(home),

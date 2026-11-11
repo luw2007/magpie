@@ -145,8 +145,15 @@ func claudeDesktop(home string) *Agent {
 		ID: "claude-desktop", Name: "Claude Desktop", Icon: "claude-color", Aliases: []string{"claude-app"},
 		Dir: p.dir, Path: p.config,
 		detect: func() bool {
-			// its own data (%APPDATA%\Claude on Windows, or the MSIX
-			// package's), the folder magpie writes or Claude-3p
+			// on Windows Desktop's uninstall leaves %APPDATA%\Claude
+			// behind, its claude_desktop_config.json in it (alien_jambob on
+			// X: Desktop uninstalled and still listed), so there only its
+			// program says it is here; one still on magpie stays listed
+			// too, to be turned off
+			if desktopdir.OS == "windows" {
+				return desktopInstalled(home) || desktopWiredAny(ps)
+			}
+			// its own data, the folder magpie writes or Claude-3p
 			for _, s := range sets {
 				for _, d := range s.All() {
 					if isDir(d) {
@@ -155,11 +162,7 @@ func claudeDesktop(home string) *Agent {
 				}
 			}
 			// the isolated Desktop's folder
-			if iso && isDir(ps[0].dir3p) {
-				return true
-			}
-			// installed on Windows and not yet opened: none of them yet
-			return desktopdir.Installed(desktopdir.OS, home, os.Getenv)
+			return iso && isDir(ps[0].dir3p)
 		},
 		Notice: func() string {
 			if iso {
@@ -169,7 +172,7 @@ func claudeDesktop(home string) *Agent {
 				return noticeClaudedesktopIsolatedOff.String()
 			}
 			if desktopWiredAny(ps) {
-				return noticeClaudedesktop1.String() + " " + noticeClaudedesktop3.String()
+				return noticeClaudedesktop1.String() + " " + noticeClaudedesktop3.String() + " " + noticeClaudedesktop5.String()
 			}
 			return noticeClaudedesktop2.String() + " " + noticeClaudedesktop4.String()
 		},
@@ -262,6 +265,38 @@ func claudeDesktop(home string) *Agent {
 			return joinErrs(errs)
 		},
 	}
+}
+
+// desktopInstalled reports whether Desktop's program is installed on this
+// Windows, whatever folders it has (desktopdir.Installed: Squirrel's
+// claude.exe or the MSIX's package folder), or opened yet (#1482): or
+// whether the AppX registry has its package, the Store's or the one its
+// setup.exe installs, for a package folder not made yet.
+func desktopInstalled(home string) bool {
+	if desktopdir.Installed(desktopdir.OS, home, os.Getenv) {
+		return true
+	}
+	for _, pkg := range windowsStorePackages() {
+		// name_version_architecture_resourceid_publisher: the main
+		// package, with no resource id
+		f := strings.Split(pkg, "_")
+		if len(f) == 5 && f[3] == "" && (f[0] == "Claude" || f[0] == "AnthropicPBC.Claude") {
+			return true
+		}
+	}
+	return false
+}
+
+// DesktopApp is Claude Desktop as the library knows it, with its file at
+// path in dir: on Windows listed only while its program is installed
+// (desktopInstalled), as the folder its uninstall leaves behind is no sign
+// of it; elsewhere by that folder, as any agent is.
+func DesktopApp(home, dir, path string) *Agent {
+	a := &Agent{ID: "claude-desktop", Name: "Claude Desktop", Icon: "claude-color", Dir: dir, Path: path}
+	if desktopdir.OS == "windows" {
+		a.detect = func() bool { return desktopInstalled(home) }
+	}
+	return a
 }
 
 // desktopRead are the sets of Desktop's folders whose wiring counts: the
@@ -1127,6 +1162,14 @@ var (
 	// (xgddm88 on X: 之前的工程和会话记录全没了).
 	noticeClaudedesktop3 = newNotice("Chats and projects from your Anthropic sign-in stay in Desktop's own profile, not shown on magpie; nothing is deleted, and turning this off brings them back.")
 	noticeClaudedesktop4 = newNotice("Your chats and projects from before are back there.")
+	// and how to go on with them on magpie (Jacky_yyyyyyyy on X): Desktop's
+	// own importer, which magpie's profile turns on (desktopSeedImport).
+	// With claudeAiImport.enabled, 2.7032 and 4.16336 offer it in 3p mode
+	// under Settings → Import: Claude.ai's chats and projects (a sign-in
+	// to Claude.ai there, or its data export zip) and the Code and Cowork
+	// sessions of the signed-in profile, copied in under new ids, the
+	// originals left alone.
+	noticeClaudedesktop5 = newNotice("To go on with them on magpie, open Settings → Import in Desktop: it can copy in your Claude.ai chats and projects and this computer's earlier sessions, and leaves the originals as they are.")
 	// the isolated Desktop (#5671): magpie's is its own app, and the
 	// user's Claude.app stays signed in with Anthropic
 	noticeClaudedesktopIsolated    = newNotice("Open Claude Magpie from Applications to use Claude Desktop on magpie. Your own Claude Desktop stays signed in with Anthropic.")

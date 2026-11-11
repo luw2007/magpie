@@ -29,7 +29,7 @@ var keySlotFree = []string{
 	"POST " + RestartPath, "POST " + provider.RemoteUpdatePath, "POST /v1/messages/count_tokens",
 	"POST " + claudeMCPPath + "{token}", "/mcp/{name}", "/mcp/run/{name}", SearchMCPPath, VisionMCPPath,
 	ImageMCPPath, BrowserMCPPath, MemoryMCPPath, ImageMCPFiles + "{name}", ToolsMCPPath, ToolsMCPOne + "{plugin}",
-	HubMCPPath + "{agent}", HubMCPAll, "/",
+	HubMCPPath + "{agent}", HubMCPAll, "/", "POST " + joinData,
 }
 
 // Every route is judged for a key's MaxConcurrency: held (keySlotRoutes)
@@ -222,8 +222,16 @@ func TestKeyConcurrencyKeepsStreamAlive(t *testing.T) {
 		return res
 	}
 	first := post("first")
-	if line, _ := bufio.NewReader(first.Body).ReadString('\n'); !strings.Contains(line, "from first") {
-		t.Fatalf("first = %q", line)
+	// keepHeldAfter is 10ms here, so a slow first chunk (under -race on CI)
+	// can come after a ": keepalive" comment: the first data line is the one
+	// about the vendor's reply.
+	r := bufio.NewReader(first.Body)
+	line, err := r.ReadString('\n')
+	for err == nil && (strings.HasPrefix(line, ":") || strings.TrimSpace(line) == "") {
+		line, err = r.ReadString('\n')
+	}
+	if !strings.Contains(line, "from first") {
+		t.Fatalf("first = %q (%v)", line, err)
 	}
 	// the second has its headers while it waits, nothing sent upstream
 	second := post("second")

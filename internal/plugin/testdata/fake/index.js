@@ -260,7 +260,7 @@ export const FakePlugin = async ({ client }) => ({
         // where magpie said the agent works, as the plugin read it; its own
         // headers go on too, as a plugin that sends on what it got sends
         // them, for the host to take off
-        for (const k of ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent"]) if (h.has(k)) h.set("x-saw-" + k.slice(9), h.get(k))
+        for (const k of ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent", "x-magpie-effort"]) if (h.has(k)) h.set("x-saw-" + k.slice(9), h.get(k))
         // $FAKE_QUEUE: that model is queued at the vendor, as Qoder's free
         // models are: waited out (here until magpie gives up) unless magpie
         // said it needn't be, then said at once with the queue's 503
@@ -415,8 +415,12 @@ export const FakePlugin = async ({ client }) => ({
         await client.auth.set({ path: { id: ID }, body: { ...auth, refresh: auth.refresh + "+" } })
       }
       // fake-1 costs the plan nothing, as a WorkBuddy model of x0.00
-      // credits ($FAKE_NO_FREE: a list with no free model, as ZCode's is)
+      // credits ($FAKE_NO_FREE: a list with no free model, as ZCode's was
+      // before 0.1.58 and a coding-plan-only account's is)
       if (!process.env.FAKE_NO_FREE) p.models["fake-1"].free = true
+      // $FAKE_ZCODE_FREE: the Start Plan's trial entries marked free, as
+      // zcode 0.1.58 on lists them (plugins#438)
+      if (process.env.FAKE_ZCODE_FREE) for (const id of ["GLM-5.3-Flash-Trial", "GLM-5.3-Trial"]) if (p.models[id]) p.models[id].free = true
       // fake-claude's credits are a number, discounted; fake-gemini's as
       // WorkBuddy's picker writes them
       if (p.models["fake-claude"]) Object.assign(p.models["fake-claude"], { rate: 0.5, rateWas: 1 })

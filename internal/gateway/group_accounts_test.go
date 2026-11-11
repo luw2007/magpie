@@ -101,6 +101,24 @@ func groupAccountsSetup(t *testing.T) (relay, other *keyedUpstream) {
 	return relay, other
 }
 
+// keyAccountID is the stable id the provider saved secret's key as: what a
+// group's account or a member's account is kept by (provider.ResolveAccount),
+// not the legacy provider.KeyID fingerprint of the secret.
+func keyAccountID(t *testing.T, pid, secret string) string {
+	t.Helper()
+	p, err := provider.Find(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range p.Keys {
+		if k.Key == secret {
+			return k.ID
+		}
+	}
+	t.Fatalf("%s has no key for the secret %q", p.Name, secret)
+	return ""
+}
+
 func askGroup(h http.Handler, secret, path, body string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", path, strings.NewReader(body))
@@ -132,7 +150,7 @@ func groupRoutes(model string) [][2]string {
 // setting is served as before, by the provider's first key.
 func TestGroupAccountsHoldEveryRoute(t *testing.T) {
 	relay, _ := groupAccountsSetup(t)
-	work := "relay/" + provider.KeyID("sk-work")
+	work := "relay/" + keyAccountID(t, "relay", "sk-work")
 	if err := provider.SaveGroup(provider.Group{Name: "Work", Members: []string{"relay/m"}, Routing: provider.Ordered, Accounts: []string{work}}); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +216,7 @@ func TestGroupAccountsHoldEveryRoute(t *testing.T) {
 // it holds its own members the same way.
 func TestGroupAccountsFallBackWithinTheGroup(t *testing.T) {
 	relay, other := groupAccountsSetup(t)
-	work := "relay/" + provider.KeyID("sk-work")
+	work := "relay/" + keyAccountID(t, "relay", "sk-work")
 	relay.refuse = map[string]bool{"sk-work": true}
 	if err := provider.SaveGroup(provider.Group{Name: "Alone", Members: []string{"relay/m"}, Routing: provider.Ordered, Accounts: []string{work}}); err != nil {
 		t.Fatal(err)
@@ -265,7 +283,7 @@ func TestGroupAccountsFallBackWithinTheGroup(t *testing.T) {
 // that share an account are served by it.
 func TestGroupAccountsAndAKeysAccounts(t *testing.T) {
 	relay, _ := groupAccountsSetup(t)
-	work, mine := "relay/"+provider.KeyID("sk-work"), "relay/"+provider.KeyID("sk-mine")
+	work, mine := "relay/"+keyAccountID(t, "relay", "sk-work"), "relay/"+keyAccountID(t, "relay", "sk-mine")
 	if err := provider.SaveGroup(provider.Group{Name: "Work", Members: []string{"relay/m"}, Routing: provider.Ordered, Accounts: []string{work}}); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +325,7 @@ func TestGroupAccountsSaved(t *testing.T) {
 	if err := provider.SaveGroup(provider.Group{Name: "Bad", Members: []string{"relay/m"}, Accounts: []string{"nothing"}}); err == nil {
 		t.Fatal("an entry with no provider was saved")
 	}
-	work := "relay/" + provider.KeyID("sk-work")
+	work := "relay/" + keyAccountID(t, "relay", "sk-work")
 	if err := provider.SaveGroup(provider.Group{Name: "Work", Members: []string{"relay/m"}, Accounts: []string{work, work}}); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +336,7 @@ func TestGroupAccountsSaved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(text, provider.KeyID("sk-work")) {
+	if strings.Contains(text, work) {
 		t.Fatalf("shared with its accounts: %s", text)
 	}
 	// one shared with accounts in it (by hand, or an older magpie's)

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/dirent"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -58,6 +59,13 @@ import (
 // (its model or effort pick) and not the model list is in route, or a
 // pick would restart it.
 var CodexAppRoute func() (route string, out, known bool)
+
+// CodexBeforeAppEnd is set by the agent package: it is called with Codex's
+// home just before the app's app-server is ended for a change of where
+// Codex goes, to put the chats the app has open onto the provider Codex is
+// on now. The app-server that starts in its place resumes them on their
+// row's provider, and Codex refuses a chat of another one.
+var CodexBeforeAppEnd func(home string)
 
 // CodexNoAccount is set by the agent package: whether the provider Codex's
 // config names takes no ChatGPT account at all (a [model_providers] table
@@ -635,6 +643,9 @@ func codexAppStep(ctx context.Context, now time.Time, busy func() (int, time.Tim
 		}
 		log.Printf("codex: a Codex turn left open on the used-up account has done nothing for %s; restarting the Codex app's app-server past it", codexTurnStuckAfter)
 	}
+	if CodexBeforeAppEnd != nil {
+		CodexBeforeAppEnd(home)
+	}
 	var ended []int
 	c.Lock()
 	defer c.Unlock()
@@ -701,6 +712,9 @@ func codexTurnOpen(home string, now, since time.Time) bool {
 // written in the last d. A sessions folder that can't be read counts as
 // written: a turn cut short costs more than a restart a little later.
 func codexSessionsQuietFor(home string, now time.Time, d time.Duration) bool {
+	if quiet, ok := codexSessionsQuietListed(filepath.Join(home, "sessions"), now, d); ok {
+		return quiet
+	}
 	quiet := true
 	err := filepath.WalkDir(filepath.Join(home, "sessions"), func(path string, e fs.DirEntry, err error) error {
 		if err != nil {
@@ -726,6 +740,50 @@ func codexSessionsQuietFor(home string, now time.Time, d time.Duration) bool {
 		return nil
 	})
 	return quiet && err == nil
+}
+
+// codexSessionsQuietListed is codexSessionsQuietFor read with one listing
+// a folder (dirent.Each) where the system has one, not a listing and an
+// lstat() a file: Codex idle runs it on every look while Codex is idle,
+// over every session file of the history, and each walk allocated a
+// listing, a path and an lstat's answer a file. Nothing is made for a
+// file now, only a path for each folder. ok is false where a folder can't
+// be read so (no bulk listing, Windows, an error), and the caller walks
+// the folder itself.
+func codexSessionsQuietListed(dir string, now time.Time, d time.Duration) (quiet, ok bool) {
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return true, true
+	}
+	quiet = true
+	since := now.Add(-d).UnixNano()
+	var in func(dir string) bool
+	in = func(dir string) bool {
+		var sub []string // folders, read after this one's listing is done
+		if !dirent.Each(dir, func(name string, s dirent.Stat) bool {
+			switch {
+			case s.Mode == fs.ModeDir:
+				sub = append(sub, filepath.Join(dir, name))
+			case s.Mod > since && strings.HasSuffix(name, ".jsonl"):
+				quiet = false
+			}
+			return quiet
+		}) {
+			return false
+		}
+		for _, f := range sub {
+			if !quiet {
+				break
+			}
+			if !in(f) {
+				return false
+			}
+		}
+		return true
+	}
+	if !in(dir) {
+		return false, false
+	}
+	return quiet, true
 }
 
 // sessionFileInfo is the session file at path's own time and size, never

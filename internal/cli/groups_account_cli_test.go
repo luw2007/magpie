@@ -19,11 +19,13 @@ func TestGroupMembersOnAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.Keys = []provider.KeyAccount{{Key: "ka2", Name: "Work"}}
+	// both keys are the provider's saved keys, by their stable ids: a bare
+	// Key is a runtime view and is not saved beside them
+	p.Keys = []provider.KeyAccount{{ID: "ka", Key: "ka"}, {ID: "ka2", Key: "ka2", Name: "Work"}}
 	if err := provider.Save(*p); err != nil {
 		t.Fatal(err)
 	}
-	work, mine := provider.KeyID("ka2"), provider.KeyID("ka")
+	work, mine := "ka2", "ka"
 	g, err := addGroup("Chain", []string{"models=a/m#Work,m:high#" + mine + ",b/gpt-5.5", "routing=order"})
 	if err != nil {
 		t.Fatal(err)
