@@ -1048,6 +1048,7 @@ body.panel .row.pref.flash { border-radius: 10px; }
 /* a window's whole (WindowHolds): a line of its own under the reset */
 .quota-reset .quota-holds { flex-basis: 100%; display: flex; flex-wrap: wrap; column-gap: 4px; min-width: 0; }
 .quota-reset .quota-holds > span { white-space: normal; min-width: 0; }
+.quota-reset .quota-holds-cost { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .quota-reset .quota-holds-why { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
 .quota-track { height: 4px; border-radius: 2px; background: var(--pill); overflow: hidden; }
 .quota-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
@@ -2799,6 +2800,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .badge.path.direct { background: var(--pill); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
 .badge.ctx { background: var(--pill); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); letter-spacing: .02em; }
 .badge.wsl { background: var(--pill); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); letter-spacing: .02em; text-transform: none; }
+/* how a provider bills, plan or pay as you go (EV_John_Liu on X): grey, a fact */
+.badge.bill { background: var(--pill); color: var(--muted); letter-spacing: .02em; text-transform: none; }
 /* a model's credit rate (0.5×): grey, a fact to pick by; a discount's price before it struck through */
 .badge.rate { background: var(--pill); color: var(--muted); letter-spacing: .02em; text-transform: none; font-variant-numeric: tabular-nums; display: inline-flex; gap: 3px; }
 .badge.rate s { font-weight: 500; opacity: .75; }
@@ -3727,6 +3730,14 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .mnhead { position: sticky; top: -1px; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 2px 8px; background: var(--card); }
 .mnhead b { flex: 1; min-width: 0; font-size: 11.5px; font-weight: 600; color: var(--muted); }
 .mnhead .text.action { flex: none; padding: 2px 7px; font-size: 11.5px; }
+/* a long list's search and Expand (soilzhu80 on X): open, the list is as
+   tall as its rows and the editor scrolls, its head held at the top */
+.mnhead { flex-wrap: wrap; }
+.mnhead.finds b { flex: none; }
+.mnhead .mbig { margin-left: auto; }
+.mnhead .mfind { flex: 1 1 140px; min-width: 0; max-width: 260px; padding: 3px 8px; font-size: 12px; }
+.mnames.open { max-height: none; overflow-y: visible; }
+.mnames > .mnone { padding: 4px 8px; }
 /* how the agents' lists will call them, and the setting that says so (#868) */
 .msuffix { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 2px 8px 4px; font-size: 12px; }
 .msuffix .hint { font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
@@ -3754,6 +3765,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .mname .mprice > span { flex: none; }
 .mname .mpart { display: flex; align-items: center; gap: 4px; flex: none; }
 .mname .mpart input { width: 72px; height: 25px; font-size: 11.5px; }
+.price-ask-parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px 10px; margin: 4px 0 8px; }
+.price-ask-unit { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.price-ask-parts .mpart { display: flex; flex-direction: column; align-items: stretch; gap: 3px; font-size: 12px; color: var(--muted); }
+.price-ask-parts .mpart input { width: 100%; min-width: 0; }
+.price-ask-bad { color: var(--red); margin: 0 0 6px; }
 .mname .mtier { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; flex: 1 1 100%; min-width: 0; }
 .mname .mtier[hidden], .mname .mtier-add[hidden] { display: none; }
 .mname .mtier-add { font-size: 11.5px; padding: 0; }
@@ -4046,6 +4062,8 @@ input.words.compact-num { flex: none; width: 76px; font-variant-numeric: tabular
 input.words.rule-kind { flex: none; width: 110px; }
 input.words.gateway-port { flex: none; width: 110px; font-variant-numeric: tabular-nums; }input.words.rule-match { flex: 1 1 auto; width: auto; min-width: 0; }
 input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; min-width: 0; }
+input.words.remote-url { width: 280px; }
+input.words.remote-key { width: 160px; }
 /* a search API that signs in as a plugin's provider, in the key's place */
 .search-signs { flex: 1 1 120px; min-width: 0; font-size: 12px; color: var(--fg-2); overflow-wrap: anywhere; }
 /* a search API's base URL (#1580): on a line of its own under the key */
@@ -4752,6 +4770,17 @@ body.window .row.agent .who.with-models { flex-wrap: wrap; row-gap: 0; }
 .am-ri .rn { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .am-ri .c { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .am-ri:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+/* a provider's tick beside it: every model of it on, some, or none
+   (coolAndyHe on X) */
+.am-rr { display: flex; align-items: center; gap: 2px; }
+.am-rr .am-ri { flex: 1 1 auto; min-width: 0; width: auto; }
+.am-rk { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--accent-fg); cursor: pointer; }
+.am-rk::before { content: ""; position: absolute; width: 13px; height: 13px; box-sizing: border-box; border: 1.5px solid var(--faint); border-radius: 4px; transition: background-color .12s ease, border-color .12s ease; }
+.am-rk > svg { position: relative; }
+.am-rk.on::before, .am-rk.part::before { background: var(--accent); border-color: var(--accent); }
+.am-rk:disabled { cursor: default; opacity: .45; }
+.am-rk:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+@media (hover: hover) and (pointer: fine) { .am-rk:hover:not(:disabled)::before { border-color: var(--accent); } }
 .am-gh { display: flex; align-items: center; margin: 6px 2px 0; }
 .am-fold { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: none; color: var(--muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .am-fold > .ic, .am-fold > svg { width: 14px; height: 14px; flex: none; }
