@@ -164,6 +164,7 @@ func sourceAccountQuota(ctx context.Context, source UsageSource, credential stri
 		w.Name, w.Span = "7 days", 7*24*time.Hour
 		windows = append(windows, w)
 	}
+	now := time.Now()
 	seen := map[string]bool{}
 	for _, w := range windows {
 		if w.Name == "" || math.IsNaN(w.Utilization) || math.IsInf(w.Utilization, 0) || w.Utilization < 0 || w.Utilization > 100 || w.ResetsAt.IsZero() {
@@ -177,10 +178,12 @@ func sourceAccountQuota(ctx context.Context, source UsageSource, credential stri
 			continue
 		}
 		seen[identity] = true
-		reset := w.ResetsAt
-		q.Windows = append(q.Windows, QuotaWindow{Name: w.Name, Used: w.Utilization, ResetsAt: &reset, Span: w.Span})
+		var reset *time.Time
+		if source.Type != "sub2api" || account.Platform != "openai" || w.Utilization != 0 || w.ResetsAt.After(now) {
+			reset = &w.ResetsAt
+		}
+		q.Windows = append(q.Windows, QuotaWindow{Name: w.Name, Used: w.Utilization, ResetsAt: reset, Span: w.Span})
 	}
-	now := time.Now()
 	q.AsOf = &now
 	q.Status = quotaStatus(q, now)
 	return q

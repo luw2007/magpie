@@ -313,6 +313,11 @@ that the upstream does not list are named against all listed names and ids;
 listed models keep their `Available` names unchanged
 ([`Exposed`](../../internal/provider/models.go)).
 
+For a sub2api OpenAI account, an expired window reported at zero has already
+reset; its old reset timestamp is omitted while the reported usage remains
+available. Other expired measurements remain stale. Sub2api account discovery
+and quota collection are in [`usage_sources_collect.go`](../../internal/provider/usage_sources_collect.go).
+
 ## Google proxy usage accounts and shared keys
 
 A `google-proxy` usage source reads quota through the proxy's management API.
