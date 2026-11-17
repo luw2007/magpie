@@ -24,7 +24,22 @@ func TestProviderSaveKeyPriceRates(t *testing.T) {
 		Keys: []provider.KeyAccount{{Name: "Premium", Key: "sk-premium"}}}); err != nil {
 		t.Fatal(err)
 	}
-	half, premium := provider.KeyID("sk-half"), provider.KeyID("sk-premium")
+	p, err := provider.Find("relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var half, premium string
+	for _, key := range p.Keys {
+		switch key.Key {
+		case "sk-half":
+			half = key.ID
+		case "sk-premium":
+			premium = key.ID
+		}
+	}
+	if half == "" || premium == "" {
+		t.Fatal("saved keys missing")
+	}
 	mux := http.NewServeMux()
 	providerRoutes(mux, nil)
 	post := func(extra string) int {

@@ -516,7 +516,7 @@ function renderAgents() {
     const wide = (f) => f.label === "model" || f.label === "large" || f.label === "executor" || f.label === "planner";
     // a field with nothing to pick and nothing set isn't drawn (#1499)
     const none = (f) => (f.key === "effort" || toggled(f) || f.label === "subagents" || f.label === "gateway" || f.label === SUB_EFFORT || f.label === SUB_MODEL || f.label === AUTO_MODE || f.label === ADVISOR || f.label === MEMORIES || f.label === COMPACT_MODEL || f.label === "sign-in" || f.key === "small" || asideAccount(a, f)) && !f.options.length && !f.value;
-    const shownFields = a.fields.filter((f) => !grouped(a, f) && !none(f) && !codexOwnSub(a, f) && !codexRowed(a, f) && !hermesBot(f) && !ompAdvisorKey(f) && !protocolField(f));
+    const shownFields = a.fields.filter((f) => !(kimiSub(a) && f.key.startsWith("subagent_")) && !grouped(a, f) && !none(f) && !codexOwnSub(a, f) && !codexRowed(a, f) && !hermesBot(f) && !ompAdvisorKey(f) && !protocolField(f));
     const tiers = tierMenu(a);
     if (tiers) shownFields.push(tiers);
     const sorted = shownFields.sort((x, y) => wide(y) - wide(x) || extra(x) - extra(y));
@@ -1493,12 +1493,14 @@ function expandLink(a) {
     const want = open ? null : a.id;
     const own = want && agentPrefsOf(a);
     const compact = own && own.includes("fullContextRow") && !window.agentCompactFill;
+    // and Kimi Code's Subagents line (kimisub.js) is there to measure
+    const kim = want && kimiSub(a) && !window.kimiSubLine;
     // sheet measures once: its settings are read first (#5360, chiperman)
-    if (own && (!prefs || compact)) {
+    if ((own && (!prefs || compact)) || kim) {
       const label = [...b.childNodes];
       b.disabled = true;
       saving(b, t("Loading…"));
-      try { await Promise.all([!prefs && loadSettings(), compact && import("./agentcompact.js")]); }
+      try { await Promise.all([own && !prefs && loadSettings(), compact && import("./agentcompact.js"), kim && import("./kimisub.js")]); }
       catch (e) { if (request === agentExpandRequest && b.isConnected) statusErr(e); return; }
       finally { b.disabled = false; doneSaving(b); b.replaceChildren(...label); }
       if (request !== agentExpandRequest || !b.isConnected || view !== "agents") return;
@@ -2251,6 +2253,10 @@ function connectPanel(a, { fields, fieldBtn }) {
       kv(t("Claude models"), line(t("claude-* models need a Claude subscription in magpie"), add));
     }
   }
+  // Kimi Code's subagents ([secondary_model]; XiaoLing_Arisa on X): their
+  // line, drawn by kimisub.js, which Details imports before it first opens
+  // (a row drawn open from the start imports it here)
+  if (kimiSub(a)) { const v = kv(t("Subagents")), d = () => v.append(kimiSubLine(a, line, fieldBtn)); window.kimiSubLine ? d() : import("./kimisub.js").then(d, () => {}); }
   // which of magpie's models it lists, by whose they are
   if (a.models) {
     const chips = line();
@@ -3973,6 +3979,9 @@ const MEMORIES = "memories";
 // the model magpie puts every Codex (or Claude Desktop) subagent on,
 // whatever its lead asked for (willz on Discord, #1633)
 const SUB_MODEL = "subagent model";
+// Kimi Code's subagents: their model, pool and effort are one line of the
+// opened row (kimisub.js), never squares
+const kimiSub = (a) => a.fields.some((f) => f.key == "subagent_pool");
 // Claude Code's auto mode square: the model its client-side auto mode
 // classifier runs on (CLAUDE_CODE_AUTO_MODE_MODEL); unset, Claude Code's own
 // pick, not the model's
@@ -4834,7 +4843,7 @@ function openPicker(agent, field, anchor, ev, only) {
     const note = agent.id === "reasonix" && ["model", "planner"].includes(field.key) ? "restore the previous {field} selection"
       : PICKS_ITSELF.includes(agent.id) && field.key === "model" ? "clears the default model; {agent} picks one on its own"
       : field.label === MEMORIES ? MEMORIES_DEFAULT
-      : field.label === SUB_MODEL ? "each subagent on the model {agent}'s lead asks for"
+      : field.label === SUB_MODEL ? (kimiSub(agent) ? "each subagent on the lead's model" : "each subagent on the model {agent}'s lead asks for")
       : field.label === AUTO_MODE ? "the model {agent} picks for its auto mode classifier"
       : field.label === ADVISOR ? "no advisor"
       : field.label === COMPACT_MODEL ? "each compaction on the session's model"
@@ -8049,7 +8058,7 @@ function advancedSet(d, p) {
     [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
     !!d.rateWindows?.length ||
     !!(d.searches || d.authHeader || d.passUserAgent === false || d.unredacted || d.countFree || d.billing || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff || d.noBalanceProbe || d.http1 || d.socket || d.imageFilesOff || d.passErrors || d.clientCert || d.serverCA || d.serverPin || d.resolve) ||
-    !!d.fallback?.length || !!(p?.balanceToken?.set || p?.connectAgents);
+    !!d.fallback?.length || !!(p?.balanceToken?.set || p?.connectAgents || p?.maxImages);
 }
 function priceRateError(ed) {
   shown(ed.querySelector("input.price-rate"))?.focus(NO_SCROLL);
@@ -8266,7 +8275,7 @@ function accountProxiesOfDraft() {
 
 // a key's own price rate (@tnt12231 on X), in keyrates.js, and any other
 // part keyrates.js draws for a provider with two or more keys (f)
-const keyRateField = (p, f = "keyPriceRateField", at = el("span")) => p?.keyList?.length > 1 ? (import("./keyrates.js").then(() => at.replaceWith(...window[f](p)), () => {}), [at]) : [];
+const keyRateField = (p, f = "keyPriceRateField", at = el("span")) => p?.keyList?.length > 1 ? (import("./keyrates.js").then(() => at.isConnected && at.replaceWith(...window[f](p)), () => {}), [at]) : [];
 
 // headers as ordered [name, value, json?] rows that survive a redraw; headersOf folds them back
 function headerRows(obj) {
@@ -9698,7 +9707,7 @@ function drawEditor(p, presetID) {
     // that take 872K (#120)
     const cx = input(draft.contexts || "", t("e.g. 128k · or gpt-6=1m, comma separated"));
     advIn.append(...field(t("Context window"), contextPicks(p, cx), t("How long a request the models take, told to the agents; empty leaves it to the vendor and models.dev")));
-    advIn.append(...outputField());
+    advIn.append(...outputField(p));
     advIn.append(...compactField(p));
     if (p.carriesCompaction) advIn.append(...nativeCompactionField(() => true)[0]);
     advIn.append(...field(t("Fallback"), renderFallback(p), fallbackHint(p)));
@@ -9734,6 +9743,8 @@ function drawEditor(p, presetID) {
       if (ox.error) return outputError(ed, ox.error);
       const cpx = parseContexts(draft.compacts || "");
       if (cpx.error) return compactError(ed, cpx.error);
+      const maxImages = self.maxImagesOf?.(ed);
+      if (maxImages === false) return;
       const proxy = proxyOfDraft();
       if (proxy === null) return proxyError(ed);
       const own = accountProxiesOfDraft();
@@ -9755,7 +9766,7 @@ function drawEditor(p, presetID) {
       if (priceTypedError(ed)) return;
       const picked = accountModelsDraft(p);
       if (picked === false) return pickError();
-      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), bestInFamily: bestChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, hiddenVideomakers: draft.hiddenVideomakers, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, maxAccounts, ...queue, priceRate, rateWindows, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, unredacted: !!draft.unredacted, countFree: !!draft.countFree, billing: draft.billing || "", ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
+      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), bestInFamily: bestChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, hiddenVideomakers: draft.hiddenVideomakers, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, maxImages, proxy, accountProxies: own.map, maxConcurrency, maxAccounts, ...queue, priceRate, rateWindows, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, unredacted: !!draft.unredacted, countFree: !!draft.countFree, billing: draft.billing || "", ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
       saving(saveBtn, t("Saving…"));
       saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
     bar.append(cancel, saveBtn);
@@ -10219,7 +10230,7 @@ function drawEditor(p, presetID) {
     // models.dev says: one for all of them, and model=size for one
     const cx = input(draft.contexts || "", t("e.g. 128k · or gpt-6=1m, comma separated"));
     if (!decideOnly(p || pr)) advIn.append(...field(t("Context window"), contextPicks(p, cx), t("How long a request the models take, told to the agents; empty leaves it to the vendor and models.dev")));
-    if (!decideOnly(p || pr)) advIn.append(...outputField());
+    if (!decideOnly(p || pr)) advIn.append(...outputField(p));
     if (!decideOnly(p || pr)) {
       advIn.append(...compactField(p));
       const [row, refresh] = nativeCompactionField(carriesCompaction);
@@ -10455,6 +10466,7 @@ function drawEditor(p, presetID) {
       const cpx = parseContexts(draft.compacts || "");
       if (cpx.error) return compactError(ed, cpx.error);
       body.compacts = cpx.map;
+      if ((body.maxImages = self.maxImagesOf?.(ed)) === false) return;
     }
     body.proxy = proxyOfDraft();
     if (body.proxy === null) return proxyError(ed);
@@ -10589,11 +10601,14 @@ function sizePicks(box, key, ns, p, after = () => {}) {
   return wrap;
 }
 
-// outputField: the editor's Max output, set as the window is (ARNO, #875)
-function outputField() {
+// outputField: the editor's Max output, set as the window is (ARNO, #875),
+// and under it Images per request (#6849) from maximages.js
+function outputField(p, at = el("span")) {
   const ox = input(draft.outputs || "", t("e.g. 32k · or gpt-6=128k, comma separated"));
   ox.classList.add("outputs");
-  return field(t("Max output"), sizePicks(ox, "outputs", [8e3, 16e3, 32e3, 64e3, 128e3], null, limitsSaid), t("The most a reply may hold, told to the agents as their max tokens and sent as max_tokens on Anthropic's API when the agent names none; empty leaves it to the vendor and models.dev"));
+  at.hidden = 1;
+  import("./maximages.js").then(() => at.isConnected && at.replaceWith(...maxImagesField(p)), () => {});
+  return [...field(t("Max output"), sizePicks(ox, "outputs", [8e3, 16e3, 32e3, 64e3, 128e3], null, limitsSaid), t("The most a reply may hold, told to the agents as their max tokens and sent as max_tokens on Anthropic's API when the agent names none; empty leaves it to the vendor and models.dev")), at];
 }
 
 // nativeCompactionField: Codex's own compaction on the provider (#1099),
@@ -21672,7 +21687,7 @@ function renderReplies(s, keep) {
     [...waits, ["", t("No limit")]], ra, (v) => savePrefs({ ...keep, retryAfterCap: v === "" ? null : Number(v) }));
   // #2934
   const k = waitRow("classifyTimeoutRow", t("Intent classifier timeout"), t("How long a routing group's classifier is given to say which intent a turn is. The turn waits for it before it goes anywhere, and past it goes on without its answer. A slow classifier may need longer"),
-    [8, 15, 30, 60], s.classifyTimeout > 0 ? s.classifyTimeout : 8, "{n} s", (n) => savePrefs({ ...keep, classifyTimeout: n }));
+    [8, 15, 30, 60], s.classifyTimeout > 0 ? s.classifyTimeout : 15, "{n} s", (n) => savePrefs({ ...keep, classifyTimeout: n }));
   // the agent's instructions as a Claude run's system prompt (off unless on)
   const c = segRow("claudeLeanRow", t("Short Claude system prompt"),
     t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk"),
