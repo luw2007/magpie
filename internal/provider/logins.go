@@ -19,6 +19,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -63,8 +64,13 @@ type Login struct {
 	// spent, and signs it back in to once it has room again (#408).
 	Returns bool `json:"returns,omitempty"`
 	// Token is a Claude account added by a setup-token: magpie's
-	// requests use it, Claude Code itself can't be signed in to it.
+	// requests use it, and Claude Code itself only through its
+	// settings.json (Uses).
 	Token bool `json:"token,omitempty"`
+	// Uses is the setup-token account Claude Code itself uses now, its
+	// token put in its settings.json by magpie (claude_token_env.go). The
+	// account Claude Code's stored sign-in is (Active) stays as it is.
+	Uses bool `json:"uses,omitempty"`
 	// AccessOnly is a ChatGPT account kept access token only
 	// (codex_access_only.go): magpie never renews its sign-in, nor signs
 	// Codex in to it.
@@ -225,7 +231,9 @@ func parseLogins(b []byte) ([]savedLogin, error) {
 		// a Max 20x saved before it was named Ultra
 		if out[i].Agent == "claude" && out[i].Plan == "max" {
 			if c, ok := parseClaudeCredentials(out[i].Auth); ok {
-				out[i].Plan = claudePlan(out[i].Plan, c.OAuth.RateLimitTier)
+				var acct map[string]any
+				_ = json.Unmarshal(out[i].Profile, &acct)
+				out[i].Plan = claudePlanShown(out[i].Plan, c.OAuth.RateLimitTier, claudeShownPlan(acct))
 			}
 		}
 	}
@@ -291,7 +299,14 @@ func unreadBytes(path string) []byte {
 	return b
 }
 
-func writeLogins(ls []savedLogin) error {
+func writeLogins(ls []savedLogin) error { return writeLoginsTold(ls, true) }
+
+// writeLoginsTold writes the accounts, and with tell has every catalog
+// built anew (Changed). Without it the write moved only when accounts
+// were last seen, which nothing built from the accounts reads: told, an
+// idle magpie built every catalog again each seenEvery, ~42 MB for dsh's
+// round alone. A reader still finds the file's new time and size.
+func writeLoginsTold(ls []savedLogin, tell bool) error {
 	if settings.AccountDiscoveryOff() {
 		return errAccountDiscoveryOff
 	}
@@ -308,14 +323,29 @@ func writeLogins(ls []savedLogin) error {
 	if err != nil {
 		return err
 	}
-	defer Changed() // an account added, switched or gone: All builds anew
+	if tell {
+		defer Changed() // an account added, switched or gone: All builds anew
+	}
 	beforeLoginsWrite()
+	b = append(b, '\n')
+	if fileHolds(loginsPath(), b, 0o600) {
+		// the bytes are on the disk already (#6289): no new generation, no
+		// new mtime, and what filememo parsed stays
+		lastLoginsMu.Lock()
+		lastLogins, loginsKnown = slices.Clone(ls), true
+		lastLoginsMu.Unlock()
+		return nil
+	}
 	// the file there now is kept first: as its last good generation, or
 	// copied aside when it doesn't read, never written over unkept
 	if err := lastgood.Keep(loginsPath(), validLogins, 0o600); err != nil {
 		return err
 	}
-	if err := writePrivate(loginsPath(), append(b, '\n')); err != nil {
+	write := writePrivate
+	if !tell {
+		write = writePrivateQuiet
+	}
+	if err := write(loginsPath(), b); err != nil {
 		return err
 	}
 	lastLoginsMu.Lock()
@@ -352,7 +382,19 @@ func sortLogins(ls []savedLogin) {
 // an agent reading it at that moment sees either version, never half; the
 // new one is on the disk before it is renamed over the old (#1505).
 func writePrivate(path string, b []byte) error {
-	defer filememo.Forget()        // read again, where a request holds it
+	if fileHolds(path, b, 0o600) { // the file has these bytes (#6289): nothing moves
+		return nil
+	}
+	defer filememo.Forget() // read again, where a request holds it
+	return writePrivateQuiet(path, b)
+}
+
+// writePrivateQuiet is writePrivate with nothing read forgotten: a
+// request holding the file reads the old bytes for up to a second.
+func writePrivateQuiet(path string, b []byte) error {
+	if fileHolds(path, b, 0o600) {
+		return nil
+	}
 	path, err := edit.Target(path) // a symlink stays, its target written
 	if err != nil {
 		return err
@@ -361,6 +403,33 @@ func writePrivate(path string, b []byte) error {
 		return err
 	}
 	return steady.WriteFile(path, b, 0o600)
+}
+
+// fileHolds reports whether path is a file of exactly b, with the mode
+// the write would give it. A read that fails is "no": it is written.
+// writeChanged is steady.WriteFile for a file that is left alone, mtime
+// and all, when it already holds b (#6289).
+func writeChanged(path string, b []byte, perm os.FileMode) error {
+	if fileHolds(path, b, perm) {
+		return nil
+	}
+	return steady.WriteFile(path, b, perm)
+}
+
+func fileHolds(path string, b []byte, perm os.FileMode) bool {
+	path, err := edit.Target(path)
+	if err != nil {
+		return false
+	}
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() != int64(len(b)) {
+		return false
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != perm {
+		return false
+	}
+	old, err := os.ReadFile(path)
+	return err == nil && bytes.Equal(old, b)
 }
 
 func upsertLogin(ls []savedLogin, l savedLogin) []savedLogin {
@@ -807,12 +876,13 @@ func liveLogin(agent string) (savedLogin, bool) {
 		if signedOut {
 			return savedLogin{}, false
 		}
-		l := savedLogin{Agent: agent, Plan: c.OAuth.plan(), Auth: b}
+		l := savedLogin{Agent: agent, Auth: b}
 		var acct map[string]any
 		if l.User, acct = claudeSignedInUser(c.OAuth.SubscriptionType, plan, user); acct != nil {
 			l.Profile, _ = json.Marshal(acct)
 			l.HeldAs = claudeProfileKey(l.Profile)
 		}
+		l.Plan = claudeLivePlan(c, "", acct)
 		if l.User == "" {
 			return savedLogin{}, false
 		}
@@ -989,7 +1059,9 @@ func rememberLogins(force bool) {
 			}
 		}
 		if !ok {
-			if agent == "claude" && claudeLoggedOut(ls) {
+			// half-written as Claude Code rewrites it on Windows: unknown,
+			// not a sign-out (claudeSignInUnsure)
+			if agent == "claude" && !claudeSignInUnsure() && claudeLoggedOut(ls) {
 				changed = true
 			}
 			continue
@@ -1008,7 +1080,7 @@ func rememberLogins(force bool) {
 	// seconds above don't hold for: one that would only move Seen on, and
 	// that recently, writes nothing (#1674)
 	if changed && !onlySeenMoved(was, ls, now) {
-		_ = writeLogins(ls)
+		_ = writeLoginsTold(ls, !sameButSeen(was, ls))
 	}
 }
 
@@ -1019,6 +1091,20 @@ const seenEvery = 10 * time.Minute
 // onlySeenMoved says next is was with nothing changed but the times
 // accounts were last seen, each of them less than seenEvery before now.
 func onlySeenMoved(was, next []savedLogin, now time.Time) bool {
+	return seenApart(was, next, func(a, b time.Time) bool {
+		return !a.IsZero() && now.Sub(a) < seenEvery && !b.Before(a)
+	})
+}
+
+// sameButSeen says that next differs from was in when accounts were last
+// seen alone, however long ago.
+func sameButSeen(was, next []savedLogin) bool {
+	return seenApart(was, next, func(a, b time.Time) bool { return !a.IsZero() })
+}
+
+// seenApart says that next is was with Seen moved, each move one that
+// let allows.
+func seenApart(was, next []savedLogin, let func(was, next time.Time) bool) bool {
 	if len(was) != len(next) {
 		return false
 	}
@@ -1036,7 +1122,7 @@ func onlySeenMoved(was, next []savedLogin, now time.Time) bool {
 			return false
 		}
 		if !b[i].Seen.Equal(a[i].Seen) {
-			if a[i].Seen.IsZero() || now.Sub(a[i].Seen) >= seenEvery || b[i].Seen.Before(a[i].Seen) {
+			if !let(a[i].Seen, b[i].Seen) {
 				return false
 			}
 			b[i].Seen = a[i].Seen
@@ -1155,6 +1241,16 @@ func loginsNow(agent string) []Login {
 	}
 	var out []Login
 	ls := readLogins()
+	if _, ok := active["claude"]; !ok && claudeSignInUnsure() {
+		// read as Claude Code writes it: the account it held is still its own
+		if u := claudeHeldUser(ls); u != "" {
+			active["claude"] = u
+		}
+	}
+	tokenUser := ""
+	if agent == "" || agent == "claude" {
+		tokenUser = claudeTokenUserIn(ls, claudeTokenInUse())
+	}
 	standIn := ""
 	if _, ok := active["claude"]; !ok {
 		// the one the provider is listed on (claudeStandInAccount), a
@@ -1196,6 +1292,7 @@ func loginsNow(agent string) []Login {
 		if l.Agent == "claude" {
 			lg.Lapsed = claudeSignedOut(l)
 			lg.Token = claudeSetupToken(l.Auth) != ""
+			lg.Uses = lg.Token && strings.EqualFold(tokenUser, l.User)
 		} else {
 			// the one in use too, its sign-in revoked (#1793)
 			lg.Lapsed = revokedLapse(l)
@@ -1421,8 +1518,34 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 		// whichever refreshed first would sign the other out
 		return "", fmt.Errorf("%s is signed in to Codex in %s: run Codex there (CODEX_HOME=%s codex) to use it, or turn it on for magpie's requests", target.User, home, home)
 	}
-	if agent == "claude" && claudeSetupToken(target.Auth) != "" {
-		return "", fmt.Errorf(errClaudeTokenSwitch, target.User)
+	// the setup-token account Claude Code itself uses now, if magpie has
+	// it use one (claude_token_env.go): its stored sign-in is then not
+	// the one it is on
+	tokenFrom := ""
+	if agent == "claude" {
+		tokenFrom = claudeTokenUserIn(ls, claudeTokenInUse())
+	}
+	if tok := claudeSetupToken(target.Auth); agent == "claude" && tok != "" {
+		// no sign-in to put in its store: Claude Code is given the token
+		// in its settings.json's env, over its stored sign-in, which stays
+		if why := claudeSignedOut(*target); why != "" {
+			return "", fmt.Errorf("%s: %s", target.User, why)
+		}
+		if strings.EqualFold(tokenFrom, target.User) {
+			return "", nil
+		}
+		from = tokenFrom
+		if from == "" {
+			if live, ok := liveLogin(agent); ok {
+				from = live.User
+			}
+		}
+		if err := setClaudeEnvToken(tok); err != nil {
+			return "", err
+		}
+		loginsSeenAt.Store(0)
+		forgetAccountCaches()
+		return from, nil
 	}
 	if agent == "codex" && target.AccessOnly {
 		return "", fmt.Errorf(errCodexAccessOnlySwitch, target.User)
@@ -1464,7 +1587,17 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 	}
 	if live, ok := liveLogin(agent); ok {
 		if strings.EqualFold(live.User, want.User) {
-			return "", nil
+			if tokenFrom == "" {
+				return "", nil
+			}
+			// signed in to it still: the setup-token goes, and Claude
+			// Code is on its sign-in again
+			if err := setClaudeEnvToken(""); err != nil {
+				return "", err
+			}
+			loginsSeenAt.Store(0)
+			forgetAccountCaches()
+			return tokenFrom, nil
 		}
 		from = live.User
 		// the credentials being replaced, as fresh as the agent has them;
@@ -1487,6 +1620,15 @@ func switchSavedLogin(agent, user string) (from string, _ error) {
 		// there that couldn't be read
 		err = saveCodexLogin(codexHome(), want.Auth)
 	case "claude":
+		// magpie's setup-token out of its settings.json first, or Claude
+		// Code would stay on that over the sign-in; one that can't be
+		// taken out (settings.json unreadable) leaves it where it is
+		if err = setClaudeEnvToken(""); err != nil {
+			break
+		}
+		if tokenFrom != "" {
+			from = tokenFrom
+		}
 		if err = putClaudeLogin(want); err == nil {
 			// Claude Code's own now: its only holder
 			forgetClaudeDir(want.User)
@@ -1574,6 +1716,18 @@ func ForgetLogin(agent, user string) error {
 	if pp, ok := pluginOfAgent(agent); ok {
 		return forgetPluginLogin(pp, user)
 	}
+	if agent == "claude" {
+		// nor while a run is in the account's own directory: magpie's own
+		// (a /usage, a warm-up) ends first, and another magpie process's
+		// is refused past the wait (#4532's run marks) — the removal here
+		// would take the directory from under that run (#3254)
+		mu := claudeDirRun(user)
+		mu.Lock()
+		defer mu.Unlock()
+		if err := waitClaudeRuns(user); err != nil {
+			return err
+		}
+	}
 	switch agent {
 	case "copilot":
 		return forgetCopilotLogin(user)
@@ -1627,8 +1781,10 @@ func nextOnForget(agent, user string) string {
 	return ""
 }
 
-// switchable is an account an agent can be signed in to: not a Claude
-// setup-token one (errClaudeTokenSwitch), nor a ChatGPT account Codex
+// switchable is an account magpie signs an agent in to by itself: not a
+// Claude setup-token one, which Claude Code is switched to by the user
+// alone (claude_token_env.go: its allowance can't be read, so magpie
+// can't tell when to move off or back), nor a ChatGPT account Codex
 // keeps in another folder (codexHeldIn).
 func switchable(l Login) bool { return !l.Token && !l.AccessOnly && l.home == "" }
 
@@ -1681,9 +1837,10 @@ func forgetLogin(agent, user string) (signedOut bool, err error) {
 	}
 	out := ls[:0]
 	found := false
+	var gone savedLogin
 	for _, l := range ls {
 		if l.Agent == agent && strings.EqualFold(l.User, user) {
-			found = true
+			found, gone = true, l
 			continue
 		}
 		out = append(out, l)
@@ -1695,6 +1852,11 @@ func forgetLogin(agent, user string) (signedOut bool, err error) {
 		return false, fmt.Errorf("no saved %s account %q", agent, user)
 	}
 	if agent == "claude" {
+		// a setup-token Claude Code uses: taken out of its settings.json,
+		// and Claude Code is on its own sign-in again
+		if err := claudeTokenGone(gone); err != nil {
+			return false, fmt.Errorf("removing %s, which Claude Code uses: %w", user, err)
+		}
 		forgetClaudeDir(user)
 	}
 	return signedOut, writeLogins(out)

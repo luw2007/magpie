@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/yetone/magpie/internal/plugin"
 )
@@ -68,6 +69,7 @@ func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pool
 		}
 		preserveBackupKeys(&p, f.Providers[i], keyed)
 		p.KeepSelf = f.Providers[i].KeepSelf
+		p.ThisDevice = p.ThisDevice || f.Providers[i].ThisDevice
 		f.Providers[i] = p
 		replaced++
 	}
@@ -95,7 +97,8 @@ func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pool
 // whether a Remote magpie that is this magpie is used anyway (KeepSelf), is
 // this computer's own: one person signs in to a personal account at home and
 // a work account at the office, and sync set each computer to the other's
-// every day.
+// every day. A provider kept on this computer (ThisDevice) is neither
+// replaced nor removed by sync.
 func Mirror(ps []Provider, gs []Group) error {
 	f, err := usageConfig()
 	if err != nil {
@@ -111,6 +114,56 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 	if err != nil {
 		return err
 	}
+	// Keep the pool and source dependencies of providers that stay here.
+	// Compare every incoming occurrence before backupUsage merges by ID.
+	pools = slices.Clone(pools)
+	sources = slices.Clone(sources)
+	for _, p := range f.Providers {
+		if !p.ThisDevice {
+			continue
+		}
+		for _, k := range p.Keys {
+			for _, ref := range k.PoolRefs {
+				i := slices.IndexFunc(f.QuotaPools, func(q QuotaPool) bool { return q.ID == ref })
+				if i < 0 {
+					return fmt.Errorf("provider %s key %s references missing pool %s", p.ID, k.ID, ref)
+				}
+				local := f.QuotaPools[i]
+				found := false
+				for _, incoming := range pools {
+					if incoming.ID == ref {
+						found = true
+						if incoming.Name != local.Name || incoming.SourceRef != local.SourceRef || !slices.Equal(incoming.AccountIDs, local.AccountIDs) {
+							return fmt.Errorf("pool %s conflicts with this-device provider %s", ref, p.ID)
+						}
+					}
+				}
+				if !found {
+					pools = append(pools, local)
+				}
+				i = slices.IndexFunc(f.Sources, func(s UsageSource) bool { return s.ID == local.SourceRef })
+				if i < 0 {
+					return fmt.Errorf("pool %s references missing source %s", ref, local.SourceRef)
+				}
+				source := f.Sources[i]
+				found = false
+				for _, incoming := range sources {
+					if incoming.ID == source.ID {
+						found = true
+						if incoming.Credential == "" && incoming.CredentialEnv == "" {
+							incoming.Credential = source.Credential
+						}
+						if incoming != source {
+							return fmt.Errorf("source %s conflicts with this-device provider %s", source.ID, p.ID)
+						}
+					}
+				}
+				if !found {
+					sources = append(sources, source)
+				}
+			}
+		}
+	}
 	if err = backupUsage(&f, sources, pools, true); err != nil {
 		return err
 	}
@@ -121,7 +174,11 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 		if p.ID == "" || p.ID != Slug(p.ID) || p.ID == "magpie" {
 			continue
 		}
-		if i := slices.IndexFunc(here, func(x Provider) bool { return x.ID == p.ID }); i >= 0 {
+		i := slices.IndexFunc(here, func(x Provider) bool { return x.ID == p.ID })
+		if p.ThisDevice || (i >= 0 && here[i].ThisDevice) {
+			continue
+		}
+		if i >= 0 {
 			h := here[i]
 			preserveBackupKeys(&p, h, keyed)
 			p.KeepLogin, p.KeepLoginAs, p.SwitchOnly, p.RestartApp = h.KeepLogin, h.KeepLoginAs, h.SwitchOnly, h.RestartApp
@@ -131,6 +188,11 @@ func MirrorConfiguration(ps []Provider, gs []Group, sources []UsageSource, pools
 			p.KeepSelf = false // kept on the other computer, of a magpie that isn't this one
 		}
 		f.Providers = append(f.Providers, p)
+	}
+	for _, h := range here {
+		if h.ThisDevice {
+			f.Providers = append(f.Providers, h)
+		}
 	}
 	f.Groups = slices.DeleteFunc(slices.Clone(gs), func(g Group) bool { return g.ID == "" || g.ID != GroupSlug(g.ID) })
 	if err = validateBackupReferences(f); err != nil {
@@ -190,6 +252,32 @@ func preserveBackupKeys(p *Provider, h Provider, keyed bool) {
 		}
 	}
 	p.normalizeKeys()
+	// Retain history only for credentials that survived with their identity.
+	retained := make(map[string]bool)
+	for _, k := range p.Keys {
+		if k.Key != "" && slices.ContainsFunc(h.Keys, func(local KeyAccount) bool {
+			return strings.EqualFold(local.ID, k.ID) && local.Key == k.Key
+		}) {
+			retained[strings.ToLower(k.ID)] = true
+		}
+	}
+	if len(retained) > 0 && len(h.KeyFingerprints) > 0 {
+		p.KeyFingerprints = maps.Clone(p.KeyFingerprints)
+	}
+	for fingerprint, id := range h.KeyFingerprints {
+		if !retained[strings.ToLower(id)] && !(id == "" && len(retained) > 0) {
+			continue
+		}
+		if p.KeyFingerprints == nil {
+			p.KeyFingerprints = make(map[string]string)
+		}
+		if incoming, exists := p.KeyFingerprints[fingerprint]; exists && !strings.EqualFold(incoming, id) {
+			// An empty identity marks a conflict and bills at the provider rate.
+			p.KeyFingerprints[fingerprint] = ""
+		} else {
+			p.KeyFingerprints[fingerprint] = id
+		}
+	}
 }
 
 func backupUsage(f *file, sources []UsageSource, pools []QuotaPool, mirror bool) error {
@@ -296,8 +384,8 @@ func withoutSecretOptions(opts map[string]any) map[string]any {
 // AddPlugins installs the plugins another computer has (Carried) that
 // aren't here, the way Settings → Plugins adds one, and hands each a
 // deprecated built-in it serves (HandOver). It never takes a plugin away
-// or changes one already here: a plugin removed on one computer stays on
-// the others. It returns the specs added and why the others couldn't be.
+// or changes one already here; a removal is davsync's, which tracks the
+// plugins both sides had at the last sync. It returns the specs added and why the others couldn't be.
 func AddPlugins(ctx context.Context, es []plugin.Entry) (added []string, failed map[string]error) {
 	here := map[string]bool{}
 	for _, e := range plugin.Load().Plugins {
@@ -364,3 +452,27 @@ func notSignedIn(ps []Provider, have map[string]bool) []string {
 // model picks and settings alone, with no endpoint or key of its own: it
 // is signed in to, never given a key.
 func OnlyPicks(p Provider) bool { return !hasEndpoint(normalize(p)) }
+
+// SetThisDevice keeps a provider on this computer, out of sync, or lets it
+// sync again (Provider.ThisDevice).
+func SetThisDevice(id string, only bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.ThisDevice = only
+	return Save(*p)
+}
+
+// SyncedOnly is the providers and their order without those kept on this
+// computer (ThisDevice): what sync sends out.
+func SyncedOnly(ps []Provider, order []string) ([]Provider, []string) {
+	here := map[string]bool{}
+	out := slices.DeleteFunc(slices.Clone(ps), func(p Provider) bool {
+		if p.ThisDevice {
+			here[p.ID] = true
+		}
+		return p.ThisDevice
+	})
+	return out, slices.DeleteFunc(slices.Clone(order), func(id string) bool { return here[id] })
+}

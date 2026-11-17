@@ -21,6 +21,7 @@ func TestWeighedRankIsDraggedOrder(t *testing.T) {
 		if err := provider.SetAccountOrder(p.ID, []string{"k-third", "k-first", "k-second"}); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(provider.ForgetReorders)
 		got, err := provider.Find(p.ID)
 		if err != nil {
 			t.Fatal(err)

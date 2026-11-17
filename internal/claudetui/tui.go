@@ -19,7 +19,6 @@ package claudetui
 import (
 	"bufio"
 	"bytes"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -39,6 +38,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/bridgesid"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/wslrun"
 )
@@ -64,6 +64,8 @@ var (
 type shim struct {
 	outMu sync.Mutex
 	out   io.Writer
+	// held takes what is written meanwhile, nil when none (whole.go)
+	held io.Writer
 
 	// pty is Claude Code's terminal: what it draws is read from it, and
 	// what is typed written to it
@@ -91,6 +93,11 @@ type shim struct {
 	rowsMu sync.Mutex
 	rows   int
 	rowsCh chan struct{}
+	// said is the words of the messages that reached the transcript since
+	// one was sent, to check it whole (whole.go); nil when none is
+	said []heardRow
+	// taken is the image files' paths Claude Code took as images meanwhile
+	taken []string
 	// a turn is going: from a message's row to the turn's end
 	busy bool
 
@@ -151,16 +158,23 @@ func Run(args []string) error {
 	}
 	args = interactiveArgs(pargs[len(wslArgs(wsl)):])
 	s := &shim{out: os.Stdout, changed: make(chan struct{}, 1), rowsCh: make(chan struct{}, 1), exited: make(chan struct{}), readDone: make(chan struct{}), wsl: wsl, listed: mcpListed(args)}
-	resume := ""
+	resume, named := "", ""
 	for i, a := range args {
 		if a == "--resume" && i+1 < len(args) {
 			resume = args[i+1]
 		}
+		if a == "--session-id" && i+1 < len(args) {
+			named = args[i+1]
+		}
 	}
 	if resume != "" {
 		s.sid = resume
+	} else if named != "" {
+		// the bridge's own id, which the local-session readers know
+		// (bridgesid)
+		s.sid = named
 	} else {
-		s.sid = newUUID()
+		s.sid = bridgesid.New()
 		args = append(args, "--session-id", s.sid)
 	}
 	s.projects = filepath.Join(configDir(), "projects")
@@ -342,7 +356,9 @@ func (s *shim) read() {
 				// a panel can be drawn only for a moment (Claude Code
 				// 2.1.316 draws /usage's windows, then the panel again
 				// without them), so each look of it is kept
-				if t := s.grid.text(); usageUsed.MatchString(t) {
+				// A look saying "Refreshing…" is of the figures Claude
+				// Code saved, not kept (#6376).
+				if t := s.grid.text(); usageUsed.MatchString(t) && !usageRefreshing.MatchString(t) {
 					s.panel = t
 				}
 			}
@@ -374,6 +390,14 @@ func (s *shim) plain() string {
 	b := string(s.screen)
 	s.screenMu.Unlock()
 	return ansi.ReplaceAllString(b, " ")
+}
+
+// dropPanel forgets the looks of /usage's panel kept so far: they are of
+// the figures Claude Code saved, drawn before it said "Refreshing…".
+func (s *shim) dropPanel() {
+	s.screenMu.Lock()
+	s.panel = ""
+	s.screenMu.Unlock()
 }
 
 func (s *shim) clearScreen() {
@@ -712,6 +736,10 @@ func (s *shim) emit(v any) {
 	b, _ := json.Marshal(v)
 	s.outMu.Lock()
 	defer s.outMu.Unlock()
+	if s.held != nil {
+		_, _ = s.held.Write(append(b, '\n'))
+		return
+	}
 	_, _ = s.out.Write(append(b, '\n'))
 }
 
@@ -753,11 +781,20 @@ func (s *shim) input(r io.Reader) error {
 			pieces, err := s.userPieces(m.Message.Content)
 			if err != nil {
 				s.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": s.sid,
-					"result": "this message can't be pasted into Claude Code's interactive mode: " + err.Error()})
+					"result": Unpastable + err.Error()})
 				continue
 			}
 			err = s.send(pieces)
 			s.dropImages()
+			var unpasted *imageUnpasted
+			var cut *messageCut
+			if errors.As(err, &unpasted) || errors.As(err, &cut) {
+				// the prompt holds the path as words: the turn is told
+				// it failed, for the bridge to ask it as claude -p, and
+				// this Claude Code ends with it
+				s.tell(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": s.sid,
+					"result": Unpastable + err.Error()})
+			}
 			if err != nil {
 				return err
 			}
@@ -813,7 +850,7 @@ func (s *shim) command(name string) error {
 		s.screenMu.Unlock()
 	}()
 	by := time.After(commandWait)
-	last, quiet, drawn, retried := "", time.Now(), false, false
+	last, quiet, drawn, retried, refreshing := "", time.Now(), false, false, false
 	var now, panel string
 	for waiting := true; waiting; {
 		p := s.plain()
@@ -823,7 +860,12 @@ func (s *shim) command(name string) error {
 		}
 		still := time.Since(quiet)
 		loading, failed := usageLoading.MatchString(now), usageFailed.MatchString(now)
-		figures := panel != "" || usageUsed.MatchString(p)
+		// once "Refreshing…" was drawn, what was drawn before it is the
+		// figures Claude Code saved: only the screen as it is now, or a
+		// look of it kept since, has today's. A redraw stalled after its
+		// clear had the saved ones told as today's (#6376).
+		figures := panel != "" || usageUsed.MatchString(p) && !refreshing ||
+			refreshing && usageUsed.MatchString(now) && !usageRefreshing.MatchString(now)
 		switch {
 		case usageStale.MatchString(now) && still >= commandSettle:
 			// the figures drawn are the last ones Claude Code saved,
@@ -835,6 +877,10 @@ func (s *shim) command(name string) error {
 			// Taken once they stood still a second, every read told the
 			// one before it, its time now (jsc9495)
 			s.doing.Store("was still refreshing " + name + "'s figures")
+			if !refreshing {
+				refreshing = true
+				s.dropPanel()
+			}
 		case loading:
 			// the panel is drawn before its figures, which Claude Code
 			// asks Anthropic for: a slow answer kept "Loading usage
@@ -860,7 +906,7 @@ func (s *shim) command(name string) error {
 		// Anything else is waited for only once the panel's tabs are
 		// drawn, and not loading.
 		case figures && still >= commandSettle,
-			(failed || usageDrawn(p) || usageDrawn(now)) && still >= 3*commandSettle:
+			(failed || usageDrawn(p) && !refreshing || usageDrawn(now)) && still >= 3*commandSettle:
 			drawn = true
 		}
 		if drawn {
@@ -878,7 +924,10 @@ func (s *shim) command(name string) error {
 	_, _ = io.WriteString(s.pty, "\x1b")
 	p := s.plain()
 	text := usageText(panel)
-	if panel == "" {
+	switch {
+	case panel == "" && refreshing:
+		text = usageText(now)
+	case panel == "":
 		text = usageText(p)
 	}
 	stale := usageStale.FindString(now)
@@ -1221,11 +1270,18 @@ func pasteClean(text string) string {
 func (s *shim) send(pieces []piece) error {
 	s.rowsMu.Lock()
 	before, busy := s.rows, s.busy
+	s.said = []heardRow{} // kept from now on (heard), till send returns
 	s.rowsMu.Unlock()
+	defer s.heardAll()
+	// a row counted (sawRow) while send failed before its check is let out
+	defer s.letHeld()
+	var pasted strings.Builder // the words pasted, to check them whole
+	images := 0
 	marker := 0
 	for i, p := range pieces {
 		var err error
 		if p.image != "" {
+			images++
 			if marker, err = s.pasteImage(s.path(p.image), marker); err != nil {
 				return err
 			}
@@ -1239,6 +1295,8 @@ func (s *shim) send(pieces []piece) error {
 		if i == 0 && len(pieces) == 1 && strings.TrimSpace(p.text) == "" {
 			p.text = "."
 		}
+		pasted.WriteString(p.text)
+		pasted.WriteByte('\n')
 		s.clearScreen()
 		if _, err := io.WriteString(s.pty, "\x1b[200~"+p.text+"\x1b[201~"); err != nil {
 			return err
@@ -1258,7 +1316,7 @@ func (s *shim) send(pieces []piece) error {
 			sent := s.rows > before
 			s.rowsMu.Unlock()
 			if sent {
-				return nil
+				return s.checkWhole(pasted.String(), images)
 			}
 			select {
 			case <-s.rowsCh:
@@ -1340,7 +1398,7 @@ func (s *shim) path(path string) string {
 // returns the number shown.
 func (s *shim) pasteImage(path string, after int) (int, error) {
 	s.clearScreen()
-	if _, err := io.WriteString(s.pty, "\x1b[200~"+path+"\x1b[201~"); err != nil {
+	if _, err := io.WriteString(s.pty, imagePaste(path, imagePad)); err != nil {
 		return 0, err
 	}
 	by := time.After(pasteWait)
@@ -1352,11 +1410,53 @@ func (s *shim) pasteImage(path string, after int) (int, error) {
 		case <-s.changed:
 		case <-time.After(100 * time.Millisecond):
 		case <-by:
-			return 0, fmt.Errorf("Claude Code did not take an image pasted as its path: %s", s.lastScreen())
+			return 0, &imageUnpasted{s.lastScreen()}
 		case <-s.exited:
 			return 0, fmt.Errorf("Claude Code ended (%v): %s", s.exit, s.lastScreen())
 		}
 	}
+}
+
+// imagePad is how long an image's pasted path is made with spaces after
+// it, sent with no bracketed-paste marks: 0 brackets it. Claude Code takes
+// one read of over 800 characters as a paste with or without the marks
+// (2.1.281 and 2.1.316), and a path with spaces after it as the image
+// alone. On Windows Claude Code reads its console as VT input
+// (ENABLE_VIRTUAL_TERMINAL_INPUT, mode 0x208), and Windows 10's conhost
+// (10.0.19041) drops the marks on the way in, leaving the path as words
+// (ok123now on X, Windows 10 LTSC 21H2; #5061, #5205), so there it is sent
+// padded. The same conhost loses 1024-byte blocks of a longer write
+// (#5205), so the padded path stays under that.
+var imagePad = imagePadOS
+
+// imagePaste is what is written to paste an image's path: bracketed, or
+// with spaces after it up to pad characters, one at least.
+func imagePaste(path string, pad int) string {
+	if pad == 0 {
+		return "\x1b[200~" + path + "\x1b[201~"
+	}
+	return path + strings.Repeat(" ", max(1, pad-utf8.RuneCountInString(path)))
+}
+
+// Unpastable begins the error a turn ends in when its message can't be
+// pasted into the interactive mode: a block it doesn't take, or an image
+// whose path Claude Code didn't take as an image (imageUnpasted). The
+// bridge asks such a turn again as claude -p, which is sent the image
+// itself (ok123now on X: a 64x64 PNG on Windows 10 LTSC 21H2 was answered
+// 502, and the client asked again and again).
+const Unpastable = "this message can't be pasted into Claude Code's interactive mode: "
+
+// imageUnpasted is an image's path pasted that the prompt never showed
+// taken as an image within pasteWait: left as words, as a console whose
+// pasting Claude Code can't tell from typing leaves it.
+type imageUnpasted struct{ screen string }
+
+// ImageNotTaken begins imageUnpasted's words: what the bridge keeps, for
+// the machine's next turns with images to run as claude -p.
+const ImageNotTaken = "Claude Code did not take an image pasted as its path"
+
+func (e *imageUnpasted) Error() string {
+	return ImageNotTaken + ": " + e.screen
 }
 
 // imageTaken is the number of the image the prompt shows taken, numbered
@@ -1455,11 +1555,20 @@ func (s *shim) transcript() string {
 // result (renderParts).
 const userMark = "[user message]\n"
 
+// sawRow counts a message's row. While one sent is checked (said isn't
+// nil), what comes after the row is held from here, on the transcript's
+// own reader: the reply is read right after its message's row, and held
+// only once send saw the count, a reply got out before its message was
+// checked whole (#6887).
 func (s *shim) sawRow() {
 	s.rowsMu.Lock()
 	s.rows++
 	s.busy = true
+	checking := s.said != nil
 	s.rowsMu.Unlock()
+	if checking {
+		s.hold()
+	}
 	select {
 	case s.rowsCh <- struct{}{}:
 	default:
@@ -1529,14 +1638,6 @@ func (s *shim) turnOver() {
 	s.rowsMu.Lock()
 	s.busy = false
 	s.rowsMu.Unlock()
-}
-
-func newUUID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // interactiveArgs are `claude -p` arguments made the interactive mode's:

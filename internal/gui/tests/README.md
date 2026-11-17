@@ -1064,7 +1064,7 @@ never NaN, which it said while the answer left `done` out. The click doesn't
 move the page. English and Chinese.
 
 `update-auto.test.cjs` checks Settings → Automatic updates (#472): on, every
-6 h, with nothing set; Check every saves 30 min, 1 h, 6 h or 24 h; Off is
+6 h, with nothing set; Update check interval saves 30 min, 1 h, 6 h or 24 h; Off is
 saved and kept through a reload, the interval staying in place, dimmed, for
 when it is on again; the version row, not asked yet, says automatic updates
 are off and its Check asks the backend. No click moves the page. English and
@@ -1383,6 +1383,16 @@ Daily bars select that day's totals and ranking while keeping the whole chart;
 refresh and metric changes keep the selection, a period change clears it, and
 clicking the selected day clears it too, including days with no calls.
 
+`panel-heatmap.test.cjs` checks that the tray panel's Usage tab ends in the
+recent weeks' heatmap (eiyuuzaki2333 on X): as many weeks as fit the card (at
+least 20 at 440, 8 to 53), the last cell today and the first a Monday, square
+cells inside the card with no sideways scroll, a legend of five shades whose
+quiet one shows on the light panel's white card, levels that follow the tab's
+Tokens/Cost/Requests switch with no new read, a tooltip with the day and its
+value inside the window, and a provider picked in the ranking narrowing it
+(`usage/heatmap?provider=`). Weeks with no call show no card. 440 light and
+320 dark, in every language, Chromium and WebKit.
+
 `usage-refresh.test.cjs` sets the Usage page's refresh period, with a clock in
 place of time: every 5 s to begin with and no read before that, the picker's
 five (off, 5 s, 10 s, 30 s, a minute), off reading no more, a minute reading at
@@ -1667,6 +1677,12 @@ sessions/codex-provider with each id and Codex's provider, and Undo posts
 each back to the provider it had. No click moves the page, no left-border
 accent, every string in Chinese, Japanese and German. Chromium and WebKit,
 English and Chinese, API faked.
+
+`sessions-codex-provider-stuck.test.cjs` checks the refusal of a Codex
+session that can't move at all (a paginated rollout with no row in Codex's
+database, @xMopf7RF on X): the status says why, that it stays on its
+provider, and that Delete clears it into magpie's trash. All five
+languages, 900px and 420px, Chromium and WebKit, API faked.
 
 `sessions-toolbar.test.cjs` uses ten agents to check that fitting tabs stay
 visible at 1800px, while 900, 660 and 320px windows use a compact agent menu.
@@ -2718,6 +2734,22 @@ node --test internal/gui/tests/tencent-access-key.test.cjs
 go test -tags nogui ./internal/gui -run TestProviderListTellsTencentAccessKey
 ```
 
+## Alibaba Cloud Token Plan AccessKey grants
+
+`alibaba-ram-grants.test.cjs` covers MetalHqa's report on X: what an
+Alibaba Cloud Token Plan's AccessKey needs to read the plan's usage is said
+under the editor's AccessKey ID (`ALI_RAM`), in the reader's language, and
+the Secret's hint no longer says any Model Studio RAM user will do. A card
+refused with `aliRAMHint`, read from `alibaba_usage.go` itself, says the
+same grants in the reader's language with the raw refusal in its tooltip.
+Volcengine's editor has no such note. 420px with no sideways scroll; all
+five languages, Chromium and WebKit.
+
+```sh
+node --test internal/gui/tests/alibaba-ram-grants.test.cjs
+go test ./internal/provider -run TestAliGatewayRAMNotAuthorised
+```
+
 `plugin-kernel.test.cjs` holds the window's plugin kernel (`kernel.js`) to
 its error boundary, with the Gateway page, the first page a plugin draws
 (`assets/plugins/gateway/`). With the page's drawing made to throw, the page
@@ -2813,6 +2845,17 @@ reason, the "Not encrypted" row on the local network, no native select or
 left border, nothing wider or cut off at 360px, and no such section (nor a
 read of it) in a browser on the page. Every language, Chromium and WebKit,
 with the API faked.
+
+## Instance name
+
+`instance-name.test.cjs` checks a browser tab's title names the magpie it
+shows (starballl on X): "<name> · magpie" from the first paint with
+MAGPIE_NAME's name, the Name field under Settings › Network and sharing ›
+Advanced (closed until a name is set, the variable's name its placeholder),
+a saved name trimmed and in the title at once, a cleared one back to the
+variable's, Advanced open after a reload with a name, nothing wider than
+360px, and the app's own window still "magpie". Every language, Chromium
+and WebKit, with the API faked.
 
 ## Inner scroll boxes keep the wheel
 

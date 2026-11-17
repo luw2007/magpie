@@ -382,19 +382,30 @@ func moveCodexPaths(id, to string, paths []string, now time.Time) (CodexMove, er
 		return CodexMove{}, err
 	}
 	mv.Backup = dir
-	for _, p := range paths {
-		changed, err := rewriteCodexProvider(p, to)
-		if err != nil {
-			// the files changed so far go back as they were
-			for _, it := range items {
-				if contains(mv.Files, it.From) {
-					keptCopy(filepath.Join(dir, "files", it.Name), it.From)
-				}
+	// the files changed so far go back as they were
+	putBack := func() {
+		for _, it := range items {
+			if contains(mv.Files, it.From) {
+				keptCopy(filepath.Join(dir, "files", it.Name), it.From)
 			}
+		}
+		for _, p := range paths {
+			delete(cache, p)
+		}
+		saveCache()
+	}
+	byRow := ""
+	for _, p := range paths {
+		changed, kept, err := rewriteCodexProvider(p, to)
+		if err != nil {
+			putBack()
 			return CodexMove{}, err
 		}
 		if changed {
 			mv.Files = append(mv.Files, p)
+		}
+		if kept && byRow == "" {
+			byRow = p
 		}
 	}
 	for _, p := range paths {
@@ -410,7 +421,28 @@ func moveCodexPaths(id, to string, paths []string, now time.Time) (CodexMove, er
 			}
 		}
 	}
+	// a paginated rollout whose session_meta the id doesn't fit moves by
+	// its row alone, which is where Codex reads its provider from; with no
+	// row to move, it can't be moved at all
+	if byRow != "" && len(mv.DB) == 0 {
+		putBack()
+		os.RemoveAll(dir)
+		return CodexMove{}, &StuckError{File: filepath.Base(byRow), From: mv.From, To: to}
+	}
 	return mv, nil
+}
+
+// StuckError is a Codex session that can't be moved to another provider:
+// its rollout keeps its history by byte (paginated), the new id is longer
+// than the one its session_meta names, so it can't be written in place,
+// and Codex's state database has no row for it to move it by instead.
+// Its files are left as they were.
+type StuckError struct {
+	File, From, To string
+}
+
+func (e *StuckError) Error() string {
+	return fmt.Sprintf("%s can't move to %s: Codex keeps its history by byte, so %q can't be written in place of %q, and Codex's database has no row for it to move it by instead. It stays on %s, as it was: Codex lists it when it uses %s again, and Delete moves it to magpie's trash, where it can be restored", e.File, e.To, e.To, e.From, e.From, e.From)
 }
 
 // errThreadOpen is a thread a Codex has open: it holds the thread's writer
@@ -532,6 +564,53 @@ func codexThreadsOn(home, p string) []string {
 		db.Close()
 	}
 	return out
+}
+
+// CodexThreadsBy are the threads a Codex folder's state databases keep
+// on the provider p, each id with the client that started it (the
+// threads table's originator: "T3 Code" for T3 Code's, "codex_cli_rs"
+// for the CLI's) and its model. ok is false when a database couldn't be
+// read, or keeps no originator (an older Codex): who started a
+// thread is unknown then.
+func CodexThreadsBy(home, p string) (threads map[string]CodexThreadBy, ok bool) {
+	threads = map[string]CodexThreadBy{}
+	ok = true
+	for _, path := range codexStateDBs(home) {
+		u := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_pragma=busy_timeout(2000)"}
+		if len(u.Path) >= 2 && u.Path[1] == ':' {
+			u.Path = "/" + u.Path
+		}
+		db, err := sql.Open("sqlite", u.String())
+		if err != nil {
+			ok = false
+			continue
+		}
+		rows, err := db.Query(`SELECT id, COALESCE(originator, ''), COALESCE(model, '') FROM threads WHERE model_provider = ?`, p)
+		if err != nil {
+			ok = false
+			db.Close()
+			continue
+		}
+		for rows.Next() {
+			var id string
+			var t CodexThreadBy
+			if rows.Scan(&id, &t.Originator, &t.Model) == nil && safeID.MatchString(id) {
+				threads[id] = t
+			}
+		}
+		if rows.Err() != nil {
+			ok = false
+		}
+		rows.Close()
+		db.Close()
+	}
+	return threads, ok
+}
+
+// CodexThreadBy is who started a Codex thread, and on what model.
+type CodexThreadBy struct {
+	Originator string
+	Model      string
 }
 
 // CodexThreadsBusyOn says whether a thread a Codex folder's state
@@ -858,20 +937,24 @@ func setMetaProvider(line []byte, to string) ([]byte, bool) {
 
 // rewriteCodexProvider sets the provider of every session_meta in a rollout,
 // compressed or not, and says whether anything changed. The file is written
-// beside it and renamed over it, with the time it had.
-func rewriteCodexProvider(path, to string) (bool, error) {
+// beside it and renamed over it, with the time it had. A session_meta of a
+// paginated rollout that to is longer than the id it names is left as it
+// is, and said (kept): Codex keeps places in such a rollout by byte, and
+// reads its thread's provider from its row in the state database, never
+// from the file (RetagPagedCodexThreads), so the row is its move.
+func rewriteCodexProvider(path, to string) (changed, kept bool, err error) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	in, err := openLines(path)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer in.Close()
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".magpie-"+filepath.Base(path)+"-*")
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	done := false
 	defer func() {
@@ -884,13 +967,12 @@ func rewriteCodexProvider(path, to string) (bool, error) {
 	var z *zstd.Encoder
 	if packed(path) {
 		if z, err = zstd.NewWriter(tmp); err != nil {
-			return false, err
+			return false, false, err
 		}
 		w = z
 	}
 	bw := bufio.NewWriterSize(w, 64<<10)
 	br := bufio.NewReaderSize(in, 64<<10)
-	changed := false
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
@@ -899,50 +981,50 @@ func rewriteCodexProvider(path, to string) (bool, error) {
 				// a session_meta names its own history_mode: Codex keeps
 				// places in a paginated rollout by byte (fitLine)
 				if out, ok = fitLine(line, out, paginated(line)); !ok {
-					return false, fmt.Errorf("%s keeps its history by byte, and %q is longer than the provider it names: Codex couldn't open it moved", filepath.Base(path), to)
+					kept = true
 				}
 			}
 			changed = changed || ok
 			if _, werr := bw.Write(out); werr != nil {
-				return false, werr
+				return false, false, werr
 			}
 		}
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 	if !changed {
-		return false, nil
+		return false, kept, nil
 	}
 	if err := bw.Flush(); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if z != nil {
 		if err := z.Close(); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 	if err := tmp.Chmod(fi.Mode().Perm()); err != nil {
-		return false, err
+		return false, false, err
 	}
 	// the user's session on the disk before it is renamed over the old
 	// one: a machine that goes down between can leave it all zero (#1505)
 	if err := steady.Sync(tmp); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := tmp.Close(); err != nil {
-		return false, err
+		return false, false, err
 	}
 	in.Close()
 	os.Chtimes(tmp.Name(), fi.ModTime(), fi.ModTime())
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return false, err
+		return false, false, err
 	}
 	done = true
-	return true, nil
+	return true, kept, nil
 }
 
 // moveCodexThread sets a thread's model_provider in a Codex state
@@ -1295,6 +1377,13 @@ func retagRows(db *sql.DB, ids []string, from, to string) ([]string, error) {
 // at: the end waits for no turn to be open. It says the ids it moved and
 // the first error it met, having gone on past it.
 func RetagLoadedCodexThreads(home, from, to string) ([]string, error) {
+	return RetagLoadedCodexThreadsBut(home, from, to, nil)
+}
+
+// RetagLoadedCodexThreadsBut is RetagLoadedCodexThreads leaving the
+// threads keep says where they are: another client's on from, which it
+// resumes there (T3 Code's on magpie).
+func RetagLoadedCodexThreadsBut(home, from, to string, keep func(id string) bool) ([]string, error) {
 	if !codexProviderRe.MatchString(from) || !codexProviderRe.MatchString(to) || from == to {
 		return nil, fmt.Errorf("can't move Codex's threads from %q to %q", from, to)
 	}
@@ -1340,7 +1429,7 @@ func RetagLoadedCodexThreads(home, from, to string) ([]string, error) {
 		}
 		for rs.Next() {
 			var r row
-			if rs.Scan(&r.id, &r.path, &r.mode) == nil && safeID.MatchString(r.id) && locked[strings.ToLower(r.id)] {
+			if rs.Scan(&r.id, &r.path, &r.mode) == nil && safeID.MatchString(r.id) && locked[strings.ToLower(r.id)] && (keep == nil || !keep(r.id)) {
 				rows = append(rows, r)
 			}
 		}

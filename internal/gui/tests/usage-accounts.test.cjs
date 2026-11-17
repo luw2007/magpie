@@ -82,12 +82,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // Overview: one row per provider and account, the unrecorded one named so
       await page.locator("#usageAccounts .row").first().waitFor();
       assert.equal(await page.locator("#usageAccountsHead").isHidden(), false);
+      const words = { en: { head: "Accounts", none: "account not recorded" }, zh: { head: "账号", none: "未记录账号" } };
+      const w = words[lang];
+      assert.equal((await page.locator("#usageAccountsHead .label").textContent()).trim(), w.head);
       const names = await page.locator("#usageAccounts .name").allTextContents();
       assert.equal(names.length, 4, "one row per provider and account");
-      assert.deepEqual([names[0], names[1], names[3]], ["a@example.com", "b@example.com", "a@example.com"]);
+      assert.deepEqual(names, ["a@example.com", "b@example.com", w.none, "a@example.com"]);
       assert(names[2]?.trim() && !names[2].includes("@"), "the unrecorded account has a nonempty fallback label");
       assert.deepEqual(await page.locator("#usageAccounts .sub").evaluateAll((s) => s.map((x) => x.textContent.split(" · ")[0])), ["Codex", "Codex", "Codex", "Claude"]);
-      assert.deepEqual(await page.locator("#usageAccounts .cost").allTextContents(), ["≈$3.75", "≈$2.50", "≈$2.50", "≈$1.25"]);
+      assert.deepEqual(await page.locator("#usageAccounts .cost").allTextContents(), ["$3.75", "$2.50", "$2.50", "$1.25"]);
       // no coloured stripe down a row's side
       assert(await page.locator("#usageAccounts .row").evaluateAll((rs) => rs.every((r) => parseFloat(getComputedStyle(r).borderLeftWidth) === 0)));
 

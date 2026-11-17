@@ -98,7 +98,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             await page.route("**/*", serve(lang, [acct], asks, held));
             await page.goto("http://magpie.test/?view=routing");
             await openPane(page, "requests");
-            const tip = (want) => page.waitForFunction((want) => [...document.querySelectorAll(".rt-act")].some((e) => e.textContent.includes("work@example.com") && (e.querySelector(".st")?.title || "").includes(want)), want);
+            const tip = (want) => page.waitForFunction((want) => [...document.querySelectorAll(".rt-act")].some((e) => e.textContent.includes("work@example.com") && (e.querySelector(".wq")?.title || "").includes(want)), want);
             await tip(w.before);
             const b = page.locator("#rtReadAllowances");
             await b.waitFor({ state: "visible" });

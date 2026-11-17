@@ -79,7 +79,7 @@ function quotaAll(subs, cls = "", max = Infinity) {
   const box = el("div", "quota-all" + (cls ? " " + cls : ""));
   const lead = el("span", "quota-all-head", t("All {n} accounts", { n: subs.length }));
   lead.title = t("These accounts' windows together: amounts of one unit are added up; a window said only as a share is the mean of the accounts on one plan, which have the same allowance. Each account is below.");
-  const p = subs[0].provider, open = !quotaAllFolded(p);
+  const p = usageGroupKey(subs[0]), open = !quotaAllFolded(p);
   const fold = el("button", "quota-acct-fold quota-all-fold");
   fold.type = "button";
   fold.append(svg(CHEV, 11, 1.6));

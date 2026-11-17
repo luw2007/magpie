@@ -74,7 +74,7 @@ func (f *compactFails) held(key, model string) (string, bool) {
 		return "", false
 	}
 	left := (compactHeldFor - time.Since(c.last)).Round(time.Second)
-	return fmt.Sprintf("compaction: %s failed to summarise this conversation %d times in a row (last: %s); magpie doesn't ask it again for %s, so a compaction that can't succeed isn't paid for over and over. Pick another model for this conversation, or a group whose compaction rule sends it to one that answers",
+	return fmt.Sprintf("Couldn't compact the conversation: %s failed %d times in a row (last: %s). magpie waits %s before asking it again. To compact now, switch this conversation to another model.",
 		model, c.n, c.why, left), true
 }
 
@@ -134,6 +134,13 @@ type compactionAskKey struct{}
 func asksCompaction(ctx context.Context) bool {
 	v, _ := ctx.Value(compactionAskKey{}).(bool)
 	return v
+}
+
+// inCompaction is whether ctx is a summary ask for a compaction, its
+// roles swapped or as sent (askAsSent).
+func inCompaction(ctx context.Context) bool {
+	_, ok := ctx.Value(compactionAskKey{}).(bool)
+	return ok
 }
 
 func askCompaction(r *http.Request) *http.Request {

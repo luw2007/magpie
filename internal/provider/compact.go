@@ -129,12 +129,16 @@ func catalogID(id string) string {
 }
 
 func compactSet(s settings.Settings, id string, find func(string) (Group, []Member, bool)) int {
-	if len(s.ModelCompacts) == 0 {
-		return 0
-	}
 	id = catalogID(id)
 	if strings.HasPrefix(id, GroupPrefix) {
-		_, ms, _ := find(id)
+		g, ms, _ := find(id)
+		// the group's own, before what its members say
+		if g.Compact > 0 {
+			return g.Compact
+		}
+		if len(s.ModelCompacts) == 0 {
+			return 0
+		}
 		least := 0
 		for _, m := range ms {
 			if n := compactOf(s, m.Provider.ID, entryModel(m)); n > 0 && (least == 0 || n < least) {
@@ -142,6 +146,9 @@ func compactSet(s settings.Settings, id string, find func(string) (Group, []Memb
 			}
 		}
 		return least
+	}
+	if len(s.ModelCompacts) == 0 {
+		return 0
 	}
 	pid, model, ok := strings.Cut(id, "/")
 	if !ok {
@@ -278,6 +285,21 @@ func SetCompactAt(n int) error {
 		return nil
 	}
 	s.CompactAt, s.FullContext = n, false
+	if err := settings.Save(s); err != nil {
+		return err
+	}
+	catalog.Touched()
+	return nil
+}
+
+// SetContextCapAll chooses whether the longest context (SetContextCap) also
+// holds a window the user set for a model or its provider.
+func SetContextCapAll(all bool) error {
+	s := settings.Load()
+	if s.ContextCapAll == all {
+		return nil
+	}
+	s.ContextCapAll = all
 	if err := settings.Save(s); err != nil {
 		return err
 	}
