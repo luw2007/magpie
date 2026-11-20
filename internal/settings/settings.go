@@ -238,9 +238,14 @@ type Settings struct {
 	RedactModelName  string             `json:"redactModelName,omitempty"`
 	RedactModelOff   bool               `json:"redactModelOff,omitempty"`
 	RedactModelAuto  bool               `json:"redactModelAuto,omitempty"`
-	RedactPersonal   bool               `json:"redactPersonal,omitempty"`
-	RedactKinds      map[string]bool    `json:"redactKinds,omitempty"`
-	RedactWords      []string           `json:"redactWords,omitempty"`
+	// RedactModelDir is the folder the local models are downloaded into
+	// (pii.Root), an absolute path on this computer, so a sync never
+	// carries it; "" is magpie's cache, as before (MetalHqa on X: the
+	// models filled his C: drive).
+	RedactModelDir string          `json:"redactModelDir,omitempty"`
+	RedactPersonal bool            `json:"redactPersonal,omitempty"`
+	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
+	RedactWords    []string        `json:"redactWords,omitempty"`
 	// RedactWordsAnyCase matches RedactWords in any case (ZoeCats on
 	// Discord); off, the default, a word is matched as written.
 	RedactWordsAnyCase bool `json:"redactWordsAnyCase,omitempty"`
@@ -637,6 +642,11 @@ type Settings struct {
 	// than 5): from 1 to ImageTimeoutMost, 0 for ImageTimeoutDefault.
 	// ImageWait reads it.
 	ImageTimeout int `json:"imageTimeout,omitempty"`
+	// ImageResolution is the resolution the image MCP asks an image to be
+	// drawn at when the agent names no size of its own (skingstyle48487 on
+	// X): one of ImageResolutions, "" for the model's own. The gateway
+	// asks each vendor for it in its own field (gateway's draw_tier.go).
+	ImageResolution string `json:"imageResolution,omitempty"`
 	// ClassifyTimeout is how long, in seconds, a routing group's classifier
 	// is given to say which intent a turn is (#2934: a Kiro subscription's
 	// haiku needed more than 8, the default then): from 1 to ClassifyTimeoutMost, 0 for
@@ -712,6 +722,10 @@ type Settings struct {
 	// cards are there, the cards alone (KevinXC on Discord); a click on one
 	// still opens the panel, and with no cards the bird is shown.
 	TrayNoBird bool `json:"trayNoBird,omitempty"`
+	// TrayAnthropicMark draws Claude's cards in the Mac menu bar with
+	// Anthropic's "A\" mark in place of Claude's logo (qingnianxiaozhe on
+	// X); off by default, Claude's logo as the Usage page has it.
+	TrayAnthropicMark bool `json:"trayAnthropicMark,omitempty"`
 	// TrayNoNumber keeps magpie's icon in Windows' tray while cards are
 	// picked; off by default, the icon is the first card's figure
 	// (Benjaminliang_1 on X), as Windows' tray shows no text beside it.
@@ -1613,6 +1627,8 @@ var (
 	// UpdateChannels are UpdateChannel's values: every version, Daily,
 	// Stable.
 	UpdateChannels = []string{"", UpdateDaily, UpdateStable}
+	// ImageResolutions are ImageResolution's values; "" is the model's own
+	ImageResolutions = []string{"", "1K", "2K", "4K"}
 	// UpdateEveries are UpdateEvery's values, in minutes.
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
@@ -1769,16 +1785,37 @@ type AgentCompact struct {
 // window into, by the key each reads: Codex's model catalog
 // (auto_compact_token_limit), Claude Code's settings.json
 // (CLAUDE_CODE_AUTO_COMPACT_WINDOW, autoCompactWindow) and Grok Build's
-// model tables (context_window). Only these take an AgentCompact.
+// model tables (auto_compact_threshold_percent of the model's window).
+// Only these take an AgentCompact.
 var CompactAgents = []string{"codex", "claude", "grok"}
 
 // ForAgent is s as the agent of that kind reads Long conversations: its
 // own AgentCompact in CompactAt and FullContext, when it has one.
+//
+// Grok Build with none of its own, under magpie's default for every agent
+// (no size typed, so WorkingWindow), runs to the whole window, where Grok
+// Build compacts at a percent of its own (GrokOwnCompact). WorkingWindow
+// is Codex's, what OpenAI tells it for its own models; written into Grok
+// Build as a percent it compacted a 1M model at 27% and a 512K one at 53%
+// (@taktoshilite on X). A size the user typed, for every agent or for
+// Grok Build, still holds.
 func (s Settings) ForAgent(kind string) Settings {
 	if c, ok := s.AgentCompacts[kind]; ok {
 		s.CompactAt, s.FullContext = c.At, c.Full
+	} else if kind == "grok" && s.CompactAt == 0 {
+		s.FullContext = true
 	}
 	return s
+}
+
+// GrokOwnCompact says Grok Build runs to the whole window only because it
+// has no Long conversations of its own and every agent's is magpie's
+// default (ForAgent): it compacts where Grok Build itself does, 85% of the
+// window unless the user's [session] says otherwise (grok-build's
+// DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT; xAI's own models come with 80).
+func (s Settings) GrokOwnCompact() bool {
+	_, own := s.AgentCompacts["grok"]
+	return !own && s.CompactAt == 0 && !s.FullContext
 }
 
 // Compact is where a conversation on a longer window is compacted when
@@ -1821,7 +1858,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.WindowAt, s.OnTop = cur.WindowAt, cur.OnTop
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
-	s.TrayWindows, s.TrayNoNumber, s.TrayCurrency = cur.TrayWindows, cur.TrayNoNumber, cur.TrayCurrency
+	s.TrayWindows, s.TrayNoNumber, s.TrayCurrency, s.TrayAnthropicMark = cur.TrayWindows, cur.TrayNoNumber, cur.TrayCurrency, cur.TrayAnthropicMark
 	s.GatewayMode = cur.GatewayMode
 	s.NoWSLAgents = cur.NoWSLAgents
 	s.QuotaReads = cur.QuotaReads
@@ -1836,6 +1873,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.PanelShortcut = cur.PanelShortcut
 	s.RedactModel, s.RedactModelName, s.RedactModelScore = cur.RedactModel, cur.RedactModelName, cur.RedactModelScore
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
+	s.RedactModelDir = cur.RedactModelDir // a folder of this computer's
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 	s.AgentsHere = cur.AgentsHere
@@ -2227,6 +2265,10 @@ func CheckProxy(p string) error {
 	if !strings.Contains(raw, "://") {
 		raw = "http://" + raw
 	}
+	if IsSSHAddress(raw) {
+		// a login goes with it, which an address alone can't hold
+		return fmt.Errorf("an SSH server is added as a saved proxy: Settings › Network › Add proxy › SSH")
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || !slices.Contains([]string{"http", "https", "socks5", "socks5h"}, u.Scheme) {
 		return fmt.Errorf("proxy must look like http://127.0.0.1:7890 or socks5://127.0.0.1:1080")
@@ -2285,6 +2327,11 @@ type SessionReads struct {
 	Asked  bool            `json:"asked"`
 	All    bool            `json:"all,omitempty"`
 	Agents map[string]bool `json:"agents,omitempty"`
+	// Kept: the agents turned off one by one (Keep off, Settings ›
+	// Privacy), not only left off among the first choice's list. An agent
+	// that is off, found here and not kept is asked about once more
+	// (baysonfox on X: Antigravity 2.0 left off beside agy CLI).
+	Kept map[string]bool `json:"kept,omitempty"`
 }
 
 // Reads says whether agent's session files may be read.
@@ -2551,6 +2598,15 @@ func UseDefaultRedactModel(name string) (bool, error) {
 	return true, save(s, false)
 }
 
+// SetRedactModelDir keeps dir as the folder the local models are kept in;
+// "" is magpie's cache.
+func SetRedactModelDir(dir string) error {
+	defer lockFile()()
+	s := load()
+	s.RedactModelDir = dir
+	return save(s, false)
+}
+
 // SetRedactModelName keeps the local model the user picked while it is
 // off, for turning it on.
 func SetRedactModelName(name string) error {
@@ -2665,6 +2721,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	}
 	if s.ImageTimeout < 0 || s.ImageTimeout > ImageTimeoutMost {
 		return fmt.Errorf("image generation is given from 1 to %d minutes, or 0 for %d, not %d", ImageTimeoutMost, ImageTimeoutDefault, s.ImageTimeout)
+	}
+	if !slices.Contains(ImageResolutions, s.ImageResolution) {
+		return fmt.Errorf("an image is drawn at 1K, 2K, 4K or the model's own resolution (empty), not %q", s.ImageResolution)
 	}
 	if s.ClassifyTimeout < 0 || s.ClassifyTimeout > ClassifyTimeoutMost {
 		return fmt.Errorf("a routing group's classifier is given from 1 to %d seconds, or 0 for %d, not %d", ClassifyTimeoutMost, ClassifyTimeoutDefault, s.ClassifyTimeout)

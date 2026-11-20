@@ -4,19 +4,21 @@ package provider
 // that bill at different rates against the official price, 0.5× on one
 // and 1.2× on another, under one endpoint. Each key the user gave a rate
 // of its own bills at it wherever a call it sent is counted (the Usage
-// page, a key's spend cap and its typed balance); every other key bills at
-// the provider's PriceRate. A price the user set for a model stands as
+// page, a key's spend cap and its typed balance); other keys bill at a
+// read relay group rate times TopUpRate, else PriceRate. A price the user
+// set for a model stands as
 // set, as it does under the provider's rate.
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
-// KeyPriceRate is the price rate the key keyID bills at: its own when the
-// user gave it one, else the provider's (0: the price as listed). own
-// says which.
+// KeyPriceRate is the price rate the key ref bills at: its own when the
+// user gave it one, else its relay's read group rate times TopUpRate,
+// else the provider's (0: the price as listed). own says the user set it.
 func (p Provider) KeyPriceRate(ref string) (rate float64, own bool) {
 	ref = strings.ToLower(ref)
 	if r, ok := p.KeyPriceRates[ref]; ok && r > 0 {
@@ -27,7 +29,7 @@ func (p Provider) KeyPriceRate(ref string) (rate float64, own bool) {
 		if r, ok := p.KeyPriceRates[strings.ToLower(id)]; ok && r > 0 {
 			return r, true
 		}
-		return p.PriceRate, false
+		ref = strings.ToLower(id)
 	}
 	// Usage may also identify a key by its current fingerprint.
 	for _, k := range p.Keys {
@@ -38,16 +40,37 @@ func (p Provider) KeyPriceRate(ref string) (rate float64, own bool) {
 			break
 		}
 	}
+	if r, ok := p.readKeyPriceRate(ref); ok {
+		return r, false
+	}
 	return p.PriceRate, false
 }
 
+// readKeyPriceRate is the key's group rate read from its relay times the
+// provider's top-up rate, when it has one and a rate was read.
+func (p Provider) readKeyPriceRate(keyID string) (float64, bool) {
+	if p.TopUpRate <= 0 || p.Account != nil || keyID == "" {
+		return 0, false
+	}
+	g, ok := p.KeyGroupRate(keyID)
+	if !ok {
+		return 0, false
+	}
+	return math.Round(g*p.TopUpRate*1e6) / 1e6, true
+}
+
 // atKeyRate is p as the key keyID bills: its price rate the key's own when
-// it has one, so pricing p prices that key's calls.
+// it has one, so pricing p prices that key's calls. A read rate of 0 (a
+// free group) prices at nothing, not as listed.
 func (p Provider) atKeyRate(keyID string) Provider {
 	if keyID == "" {
 		return p
 	}
 	p.PriceRate, _ = p.KeyPriceRate(keyID)
+	p.zeroRate = false
+	if p.PriceRate == 0 {
+		_, p.zeroRate = p.readKeyPriceRate(keyID)
+	}
 	return p
 }
 

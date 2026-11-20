@@ -474,6 +474,15 @@ back every line after it, and the log moves in bursts.
   can't explain a silence.
 - Seen 1× (2026-11-15).
 
+**A new GUI test file runs the guard tests that read every GUI file.**
+- 265217bf4, a10ac7bb0 and e5c0c23de (11-18) each added a test file
+  with `page.setDefaultTimeout(5000)` and no 60s navigation timeout, and
+  ran only their own file. nav-timeout.test.cjs (#4787's guard) failed
+  CI's cli job from cf20df721 for ~2h until 2acc2660e.
+- Run `node --test internal/gui/tests/nav-timeout.test.cjs` and the
+  other whole-folder guards with any new file there.
+- Seen 1× (2026-11-18).
+
 **A suite's log is kept whole until its reds are named.**
 - 5b12407e8 (10-17) piped a full run through tail, lost which
   internal/gateway test failed at 2559s, and shipped with an unnamed red.
@@ -484,7 +493,13 @@ back every line after it, and the log moves in bursts.
   which isn't among the five it names (a8098a886). Write the record once
   the run has ended. A change that adds a box that scrolls on its own
   runs every GUI file that wheels the page (`reach`, `wheelTo`).
-- Seen 2× (2026-10-17, 2026-10-28).
+- 11-18: 97e0ecdaa (saved-proxy Test) recorded the whole GUI suite as
+  "still running at push: 3736 tests in, 127 red, none in a proxy or
+  provider file", named issues for some files and left "the rest" to
+  another session's rerun. A red counted before the run ends can't be
+  told from one the change made later in the same run.
+- Seen 3× (2026-10-17, 2026-10-28, 2026-11-18); moved to the code
+  standards.
 
 **A red only CI's OS shows is probed on CI's runners, with the
 suspect switched on and off, not rerun.** Start from what changed in
@@ -601,6 +616,31 @@ measures every label beside its control, in every editor it opens.
   editor is added to it.
 - Seen 1× (2026-11-12).
 
+**A guard test reads what it guards from the code, not from a list
+kept by hand.**
+- old-webkit's check that every script is loaded by index.html exempted
+  lazy files through a hand list. headerpresets.js (0d0462d4a),
+  navpages.js and pasteread.js were each added without joining it, so
+  the test was red on main for a week (#6030) and every GUI run's record
+  cited it. 4b8c5948e reads the exemptions from the scripts'
+  import("./x.js") calls, and an unimported file still turns it red.
+- Done right on 11-17: tui_zh_named_test.go and library_named_test.go
+  in internal/agent read the other package's files, so the change that
+  adds a label or an agent goes red in its own run.
+- Seen 1× (2026-11-17).
+
+**A guard that needs no browser runs on CI, or it guards nothing.**
+- nav-timeout.test.cjs reads the test sources only, yet CI ran no GUI
+  file, so it was red on main from 11-06 (#5425, 4 files) to 11-18 (24
+  files): every new test copied a 5s default, and each push's record
+  cited the red. skygunner's patch for the first nine sat on the issue
+  for ten days. 549813abb fixed all 24 and runs nav-timeout, i18n-keys
+  and i18n-en-no-cjk in test.yml's Linux job.
+- A guard test written for a class of mistake goes where every push
+  runs it. A patch posted on an issue is taken, with credit, before
+  another "seen again".
+- Seen 1× (2026-11-18).
+
 **Playwright's WebKit is not WebKitGTK.** A GUI change with motion or a new
 browser API is tried in the real Linux app too.
 - 18e82adc6 (10-11) traded the layouts in a view transition. The GUI suite
@@ -663,6 +703,19 @@ too.**
 - Seen 1× (2026-10-08).
 
 ## Concurrency and tests
+
+**A check and what it counts are one step, and a reading counts what it
+had when it was taken, not when it is looked at.**
+- #6958: TestCapHoldsUnderParallelSessions went red on ubuntu CI at 93%
+  of a 90% cap. A turn found not near its cap was counted on the account
+  only once it took its lane, so turns checking in that gap passed
+  together. The account's usage came from replies that began while a
+  round was out, so the reading lacked that round. turnSpends still took
+  every turn come back as read, and halved what a turn spends.
+- Widen the gap in a test hook to find such a red, not by rerunning. A
+  hook placed inside the lock it is testing hides the gap: the first
+  cut's test was green with the fix taken out.
+- Seen 1× (2026-11-17).
 
 **A fake or child process a test starts ends when the test does**, and
 **a timing test leaves room on both sides**, are in the code standards
@@ -897,6 +950,11 @@ cause:
     for three days, and it went red on ubuntu CI again at 0a7633136. It
     was ported unchanged as 11c427eaa. Now in the code standards (a
     red's issue is read to its last comment, 77898391d).
+  - 11-17: a filed red cited instead of taken. #6877 (i18n-keys, a
+    one-line fix the issue itself named) was red on main for a day, and
+    efcf8d9c0 and 50c5a52db each named it as "red on origin/main, filed"
+    and shipped. Nobody commented or took it; db02200ce fixed it at the
+    check. A red a commit cites twice is one to take, not to cite again.
   - 11-15: a claim with no work behind it holds a red as long as no
     comment at all. #2903 ("the plugin answered no response", ubuntu
     race) was claimed on 10-19 ("I'm on it: finding the cause by
@@ -1041,6 +1099,21 @@ before the merge, are in the code standards.)
   two commits that landed under it filled the room.
 - Seen 3× (2026-10-17, 2026-11-10, 2026-11-12); moved to the code
   standards.
+
+**A byte budget is never paid for with behaviour the change isn't
+about.**
+- 286e3b6d5 (11-10, the panel's Usage tab account menu) fit under the
+  core budget with "no comments cut and no raise". Its diff also took
+  `aria-expanded="false"` off seven menu buttons on other pages (account
+  switch, sign-in proxy, window cap, both Thinking chips, reply model,
+  the local model's two pickers), so a screen reader no longer heard
+  them as shut, and openProtoMenu, which changes the attribute only
+  where it is set, stopped saying they opened. The body doesn't name
+  them. side-effort was red in all 10 cases from then on (#6353, found
+  a week later).
+- Diff a budget-tight change for removed lines in functions it is not
+  about, and name every one in the body.
+- Seen 1× (2026-11-18).
 
 **A release published after a newer one takes Latest, and with it the
 update feed and the tap, unless the publish step checks.**
@@ -1190,6 +1263,14 @@ standards since 10-18, widened to a worktree and its logs. See
 
 ## Moved to the code standards
 
+- **A record is written once its run has ended** (10-17, 10-28,
+  11-18). On 11-18 97e0ecdaa was pushed with the GUI suite at 3736
+  tests and 127 red, "the rest" of them left to another session.
+  f4b202030 (11-18) said "running on mica at push time; result goes on
+  #6034", and v0.1.4408 was tagged on it. The result came 40 minutes
+  later with internal/dirent (#7031) and an internal/gui test (#7032)
+  red, both "pass alone": the tag shipped past two reds no one had
+  looked at.
 - **One full suite runs on a machine at a time** (10-16, 10-17, 11-16).
   On 11-16 64c426158 ran the GUI suite on mica beside another session's
   full suite, was pushed with it still running, and named its 90 reds by
