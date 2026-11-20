@@ -7,7 +7,8 @@
 // back into sight instead, as near to where they were as the shorter content
 // allows. The page opens on Live, so the reader opens the Routing groups
 // pane, where the rows and the editor are, before any of it. In every
-// language, Chromium and WebKit, wide and narrow.
+// language, Chromium and WebKit, wide and narrow. The standalone Groups page
+// can keep Save sticky without first making the reader scroll.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -59,7 +60,7 @@ function serve(lang) {
 // What the reader sees: whether the row saved is in the view's own box, how many
 // rows are at all, and how much of the view's foot is the room kept for a click.
 const seen = (page) => page.evaluate(() => {
-  const v = document.querySelector("#view-routing");
+  const v = document.querySelector("#view-groups");
   const vr = v.getBoundingClientRect();
   const rows = [...v.querySelectorAll(".rt-group")];
   const inBox = (r) => { const b = r.getBoundingClientRect(); return b.bottom > vr.top && b.top < vr.bottom; };
@@ -79,9 +80,9 @@ const seen = (page) => page.evaluate(() => {
 // wraps, so its own box is read, not a fixed height), and the button's
 // centre really the Save's — a Save left under the head takes the click
 const atSave = (page, text) => page.evaluate((txt) => {
-  const v = document.querySelector("#view-routing");
+  const v = document.querySelector("#view-groups");
   const vr = v.getBoundingClientRect();
-  const hb = document.querySelector("#view-routing > .row-head").getBoundingClientRect();
+  const hb = document.querySelector("#view-groups .rt-gsec > .row-head").getBoundingClientRect();
   const re = new RegExp(`^${txt}$`);
   const b = [...v.querySelectorAll(".rt-gedit button")].find((n) => re.test(n.textContent.trim()));
   const br = b && b.getBoundingClientRect();
@@ -113,14 +114,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang));
       await page.goto("http://magpie.test/?view=routing");
-      // the groups, their rows and the editor are the Routing groups pane's
+      // the groups, their rows and the editor are on the standalone Groups page
       await openPane(page, "groups");
       await page.locator(".rt-group[data-id=big]").waitFor();
 
       // narrow, the row is below the window's foot; magpie moves the page
       // only for the reader, so it is wheeled to as a reader would
       const row = page.locator(".rt-group[data-id=big]");
-      const vb = await page.locator("#view-routing").boundingBox();
+      const vb = await page.locator("#view-groups").boundingBox();
       await page.mouse.move(vb.x + vb.width / 2, vb.y + vb.height / 2);
       for (let i = 0; i < 100; i++) {
         const b = await row.boundingBox();
@@ -133,14 +134,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const saveText = await page.evaluate(() => t("Save"));
       const save = page.locator(".rt-gedit button", { hasText: new RegExp(`^${saveText}$`) });
       await save.waitFor();
-      const view = page.locator("#view-routing");
+      const view = page.locator("#view-groups");
       const box = await view.boundingBox();
-      // the reader scrolls down to the Save, as they must: the editor is
-      // taller than the window. The page's own head is sticky and wraps
-      // (taller at 420), so a Save the wheel left under it takes the
-      // click: on down while the Save is below the foot, back up when it
-      // has ridden too far, until the whole button is inside the view
-      // under the head and its centre is the Save's
+      // Save stays sticky even when the editor is taller than the window.
+      // If it starts below the foot, wheel it into the visible portion below
+      // the wrapping page head before clicking.
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       for (let i = 0; i < 200; i++) {
         const at = await atSave(page, saveText);
@@ -155,7 +153,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
       await page.waitForTimeout(300);
       const before = await seen(page);
-      assert(before.scrollTop > 0, "the reader must be down the page, not at its top");
       assert.equal(before.rows, groups.length - 1, "the editor stands in the saved group's place");
 
       await save.click();

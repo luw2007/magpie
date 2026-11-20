@@ -304,13 +304,8 @@
 :is(#view-routing, #view-groups) .row-head { margin: 14px 0 6px; padding: 0 2px; gap: 0; }
 :is(#view-routing, #view-groups) .row-head .note { font-size: 11px; color: var(--faint); margin-left: 8px; }
 #view-routing .row-head .rt-livedot + .note { margin-left: 8px; }
-.rt-mask, .rt-newgroup, .rt-gogroups { display: inline-flex; align-items: center; gap: 5px; }
-.rt-mask svg, .rt-newgroup svg, .rt-gogroups svg { width: 13px; height: 13px; flex: none; }
-/* The group actions select the Groups pane; the other panes keep a quiet head. */
-.rt-gogroups { margin-right: 6px; flex: none; }
-.rt-gogroups[data-fit="icon"] > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.rt-gogroups[data-fit="none"] { display: none; }
-.rt-newgroup { margin-right: 6px; }
+.rt-mask { display: inline-flex; align-items: center; gap: 5px; }
+.rt-mask svg { width: 13px; height: 13px; flex: none; }
 #view-routing > .row-head { position: sticky; top: 0; z-index: 3; background: var(--bg); flex: none; flex-wrap: wrap; row-gap: 6px; height: auto; min-height: 26px; padding-bottom: 6px; }
 #view-routing .rt-pages { margin-left: 12px; flex-wrap: wrap; }
 #view-routing .rt-pages .opt { white-space: nowrap; }

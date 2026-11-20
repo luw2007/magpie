@@ -22,8 +22,7 @@ magpie.plugin("routing", (ctx) => {
     html: `
     <div class="row-head"><span class="label" data-t>Routing</span><div class="segs rt-pages" id="rtPages"></div><span class="rt-livedot" aria-hidden="true"></span><span class="note" id="rtLiveNote" data-t>live, as the gateway decides</span><span class="grow"></span>
       <button class="sess-pick" id="rtSource" type="button" hidden></button>
-      <button class="text rt-gogroups" id="rtGoGroups" type="button" data-tt="Go to routing groups"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v9.5M4 8.5l4 4 4-4"/></svg><span data-t>Routing groups</span></button>
-      <button class="text rt-newgroup" id="rtNewGroup" type="button" data-feature="groups" data-tt="Make a routing group of any models you like — agents pick it as one model"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg><span data-t>New group</span></button>
+      <button class="text rt-togroups" type="button" id="rtToGroups" data-feature="groups"><span data-t>Routing groups</span> ›</button>
       <button class="text rt-toset" type="button" id="rtToSet"><span data-t>Settings</span> ›</button>
       <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
     <p class="rt-srcnote" id="rtSrcNote" role="status" hidden></p>
@@ -62,11 +61,14 @@ function routingPage(part) {
   // busy model's place, are set in Settings › Models › Routing
   const toSet = $("#rtToSet");
   if (toSet) toSet.onclick = (e) => openSettingsAt(e, "models", "#routeList .row");
+  const toGroups = $("#rtToGroups");
+  if (toGroups) toGroups.onclick = async () => { if (await window.show("groups")) openedFrom(toGroups); };
   const NS = "http://www.w3.org/2000/svg";
   const still = calm;
   const viewShown = () => !$("#view-routing").hidden && !document.hidden;
   const shown = () => viewShown() && !box.hidden;
-  // The shared groups follow the page that is showing them.
+  // Groups and provider pools live on their own page; when that built-in is
+  // off, the Requests page carries the fallback message and pool settings.
   const gView = () => gsec.closest("main") || $("#view-groups");
   const gShown = () => !gView().hidden && !gsec.hidden && !document.hidden;
   // steady redraws a part of the page where the reader is: WebKit has no
@@ -508,7 +510,7 @@ function routingPage(part) {
   packSeen.observe(actHead);
   addEventListener("resize", () => { if (shown()) packActs(); });
 
-  const ROUTING_PAGES = [["live", "Live"], ["requests", "Requests"], ["groups", "Routing groups"], ["pools", "Several accounts or keys"]];
+  const ROUTING_PAGES = [["live", "Live"], ["requests", "Requests"]];
   let routingPage = "live";
   try {
     const saved = localStorage.getItem("magpie.routingPage");
@@ -526,9 +528,7 @@ function routingPage(part) {
     try { localStorage.setItem("magpie.routingPage", page); } catch {}
     box.hidden = page !== "live";
     hist.hidden = page !== "requests";
-    window.routingGroupsHome();
     more.hidden = page === "live";
-    $("#rtNewGroup").hidden = page !== "groups";
     $("#rtLiveNote").hidden = page !== "live";
     $("#view-routing > .row-head .rt-livedot").hidden = page !== "live";
     for (const [i, button] of [...$("#rtPages").querySelectorAll(".opt")].entries()) {
@@ -3173,14 +3173,15 @@ function routingPage(part) {
     const row = kind === "group" ? gList.querySelector(`.rt-group[data-id="${id}"]`) : pList.querySelector(`.rt-pool[data-provider="${id}"]`);
     if (!row || featureHides(row)) return;
     const asked = window.scrollOnPurpose?.(e);
-    const home = kind === "group" ? (gsec.hidden || gView().hidden ? $("#view-groups") : gView()) : $("#view-routing");
+    const separate = !featuresOff.has("groups");
+    const home = separate ? $("#view-groups") : $("#view-routing");
     const opens = home.hidden;
-    if (kind === "group" && opens) {
-      if (!(await window.show("groups"))) return;
-      if (e.target.closest?.("#view-routing")) openedFrom(e.target.closest(".rt-go"));
-    } else if (kind !== "group") {
-      if (opens && !(await window.show("routing"))) return;
-      setRoutingPage("pools");
+    if (opens) {
+      if (!(await window.show(separate ? "groups" : "routing"))) return;
+      if (separate && e.target.closest?.("#view-routing")) openedFrom(e.target.closest(".rt-go"));
+      if (!separate) setRoutingPage("requests");
+    } else if (!separate) {
+      setRoutingPage("requests");
     }
     if (asked) {
       readerScrolls(1000);
@@ -6069,21 +6070,18 @@ function routingPage(part) {
   // Countdowns tick only in sight, and only for the active pane's work.
   let second = 0;
   function countdown() {
-    if (!viewShown() || routingPage === "pools") {
+    if (!viewShown()) {
       clearInterval(second);
       second = 0;
       return;
     }
     second ||= setInterval(() => {
-      if (!viewShown() || routingPage === "pools") return countdown();
+      if (!viewShown()) return countdown();
       drawSource();
       if (shown() && !pinned && loaded && cur) sync();
       if (shown()) render();
-      if (routingPage === "live" || routingPage === "requests") {
-        renderActs(listed());
-        livePaint();
-      }
-      if (routingPage === "groups") groupsReadAgain();
+      renderActs(listed());
+      livePaint();
     }, 1000);
   }
   countdown();
@@ -6346,7 +6344,7 @@ function routingPage(part) {
     if (key === srcKey) return;
     srcKey = key;
     sessPick(btn, "This computer", source, opts, "Computer", setSource);
-    btn.hidden = !opts.length || routingPage === "groups" || routingPage === "pools";
+    btn.hidden = !opts.length;
   }
 
   // labels in the page's language, and again when it changes
@@ -6417,7 +6415,8 @@ function routingPage(part) {
   // (each a .hint-row: its line that explains it rests out of sight, shown
   // in the hover card, settingshints.js)
   const gDefs = [el("div", "rt-gdef rt-gdef-sink hint-row"), el("div", "rt-gdef rt-gdef-first hint-row"), el("div", "rt-gdef rt-gdef-patience hint-row")];
-  // the groups go with the routing groups built-in plugin; the pools stay
+  // the groups and the providers' own account pools go with the routing
+  // groups built-in plugin.
   for (const n of [gHead, gFound, gNames, ...gDefs, gList]) n.dataset.feature = "groups";
   const pools = el("div", "rt-psec");
   pools.append(pHead, pList);
@@ -6435,6 +6434,7 @@ function routingPage(part) {
       const next = await api("plugins/builtin", { id: "groups", on: true });
       if (state.settings) state.settings.builtins = next;
       applyFeatures(next);
+      window.routingGroupsHome?.();
       status(t("Routing groups are on"), "ok", 1500);
       loadGroups();
       // the note was on Routing (groupsHome): the groups are on their page
@@ -6456,20 +6456,23 @@ function routingPage(part) {
   const gSet = el("div", "list rt-gset");
   gSet.dataset.feature = "groups";
   gSet.append(gFound, gNames, ...gDefs);
-  gsec.append(gHead, gList, gOff, sHead, gSet);
-  // One renderer serves the Routing panes and the standalone groups page.
-  // Switching off groups returns the note and provider pools to Routing.
+  gsec.append(gHead, gList, gOff, sHead, gSet, pools);
+  // The groups and account pools have their own page beside Routing. When
+  // that built-in is off there is no Groups page, so Requests keeps the
+  // explanatory fallback and the provider pools reachable.
   const gHome = () => $("#rtGroups");
+  const sizedGroupHomes = new WeakSet();
+  const sizeGroupHome = (home) => {
+    if (!home || sizedGroupHomes.has(home)) return;
+    sizedGroupHomes.add(home);
+    byWidth(home, { max520: (w) => w <= 520 });
+  };
   window.routingGroupsHome = (main) => {
-    const standalone = !featuresOff.has("groups") && !$("#view-groups").hidden;
-    const to = standalone ? main?.querySelector("#rtGroups") || gHome() : more;
-    if (to) for (const n of [gsec, pools]) if (n.parentElement !== to) to.append(n);
-    gsec.hidden = !standalone && routingPage !== "groups";
-    pools.hidden = !standalone && routingPage !== "pools";
-    gBack.hidden = !standalone;
+    const to = featuresOff.has("groups") ? more : main?.querySelector("#rtGroups") || gHome();
+    if (to && gsec.parentElement !== to) to.append(gsec);
+    if (!featuresOff.has("groups")) sizeGroupHome(to);
   };
   window.routingGroupsHome();
-  if (gHome()) byWidth(gHome(), { max520: (w) => w <= 520 });
   // ROUTE_OPTS is provider-level; the additional strategies are groups only.
   const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["drain", "Until used up"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Use before expiry"], ["free", "Free first"], ["fast", "Speed first"]];
   const GROUP_ROUTE_OPTS = [...ROUTE_OPTS, ["cheap", "Cheapest first"], ["expiring", "Free quota by expiry"], ["weight", "By weight"], ["benchmark", "Benchmark"], ["manual", "Manual"]];
@@ -7204,7 +7207,7 @@ function routingPage(part) {
   async function shareGroup(g) {
     try {
       const st = await api("groups/share", { id: g.id });
-      await copy(st.shared, g.name, null, t("{name} copied: paste it into Import on another magpie's Routing page", { name: g.name }));
+      await copy(st.shared, g.name, null, t("{name} copied: paste it into Import on another magpie's Routing groups page", { name: g.name }));
     } catch (e) { status(e.message, "err"); }
   }
   async function openImport() {
@@ -9511,12 +9514,9 @@ function routingPage(part) {
   // the providers that route over several accounts or keys of their own
   function renderPools() {
     const ps = groups?.pools || [];
-    pHead.hidden = pList.hidden = false;
+    pHead.hidden = pList.hidden = !ps.length;
     pHead.replaceChildren(el("span", "label", t("Several accounts or keys")), el("span", "grow"), el("span", "note", t("each provider routes over its own")));
-    if (!ps.length) {
-      pList.replaceChildren(el("div", "none", t("No provider has several enabled accounts or keys. Add them on Providers to configure pool routing here.")));
-      return;
-    }
+    if (!ps.length) return;
     pList.replaceChildren(...ps.map((p) => {
       const row = el("div", "rt-pool");
       row.dataset.provider = p.provider;
@@ -9548,9 +9548,9 @@ function routingPage(part) {
       return row;
     }));
   }
-  // loaded when the view is shown, and again when the window comes back
-  // back on the page, the same groups aren't drawn again either (#4652)
-  // Routing names groups in its trace too; either page can show the editor.
+  // Loaded when the view is shown, and again when the window comes back
+  // on the page, the same groups aren't drawn again either (#4652).
+  // Routing names groups in its trace too; the editor itself stays on Groups.
   for (const v of [$("#view-routing"), $("#view-groups")]) new MutationObserver(() => {
     window.routingGroupsHome();
     if (!v.hidden) loadGroups(true);
@@ -9558,8 +9558,8 @@ function routingPage(part) {
   }).observe(v, { attributes: true, attributeFilter: ["hidden"] });
   window.addEventListener("focus", () => { if (viewShown() || gShown()) loadGroups(true); });
   document.addEventListener("visibilitychange", keepGroupCaches);
-  // Routing's countdown handles its Groups pane; the standalone page
-  // updates allowance lines independently without polling the trace.
+  // The standalone Groups page updates allowance lines independently
+  // without polling the Routing trace.
   let gTick = 0;
   const gTicks = () => {
     clearInterval(gTick);
@@ -9572,22 +9572,23 @@ function routingPage(part) {
   // agents can reach no other way. The picker and the provider's editor
   // ask it (and the tray panel, by ?newgroup= on the window it opens).
   window.newGroupWith = async (id, name, ev) => {
+    // A kept deep link must not create a draft while Groups is off: its
+    // fallback only explains the feature, and every editor control is hidden.
+    if (featuresOff.has("groups")) return;
     // app.js's show, the page's: this one's own show is the stage's caption
     if (document.body.classList.contains("window") && gView().hidden && !(await window.show("groups"))) return;
     if (!groups) await loadGroups();
     if (!groups) return;
     if (groupDirty() && !(await confirmDiscard())) return;
-    setRoutingPage("groups");
     gEdit = { id: "", draft: { name: name || modelOf(id)?.name || id.split("/").pop(), members: [id], fast: [], ultra: [], routing: "", affinity: "", rules: [] } };
     renderGroups();
     const ed = gList.querySelector(".rt-gedit");
     if (ed && window.scrollOnPurpose?.(ev)) ed.scrollIntoView({ block: "center", behavior: "smooth" });
     ed?.querySelector("input")?.focus({ preventScroll: true });
   };
-  // Both New group entries open the same editor on the Groups pane.
+  // The Groups page's New group entry opens the editor in place.
   async function newGroup(ev) {
     if (groupDirty() && !(await confirmDiscard())) return;
-    setRoutingPage("groups");
     gSel = null;
     gEdit = { id: "", draft: { name: "", members: [], match: [], matched: [], fast: [], ultra: [], off: [], routing: "", affinity: "", rules: [] } };
     renderGroups();
@@ -9595,36 +9596,6 @@ function routingPage(part) {
     const ed = gList.querySelector(".rt-gedit");
     if (ed && window.scrollOnPurpose?.(ev)) ed.scrollIntoView({ block: "center", behavior: "smooth" });
     ed?.querySelector("input")?.focus({ preventScroll: true });
-  }
-  const headNew = $("#rtNewGroup");
-  if (headNew) headNew.onclick = async (ev) => {
-    if (!groups) await loadGroups();
-    if (groups) newGroup(ev);
-  };
-  // The upstream shortcut now opens the fork's Groups pane; its group list
-  // is hidden on the other panes, so scrolling to that node would do nothing.
-  const headGo = $("#rtGoGroups");
-  if (headGo) headGo.onclick = () => setRoutingPage("groups");
-  // fitGo: it takes only room the head has spare, so nothing else in the
-  // head moves or wraps for it: named where its name fits, its arrow alone
-  // where only that does, and left out of a head with no room (a phone's)
-  const goHead = headGo?.parentElement, goGrow = goHead?.querySelector(".grow");
-  function fitGo() {
-    if (!goGrow || !goHead.offsetParent) return;
-    headGo.dataset.fit = "none";
-    const room = goGrow.getBoundingClientRect().width, gap = parseFloat(getComputedStyle(goHead).columnGap) || 0;
-    for (const fit of ["full", "icon"]) {
-      headGo.dataset.fit = fit;
-      if (room >= headGo.getBoundingClientRect().width + 6 + gap) return;
-    }
-    headGo.dataset.fit = "none";
-  }
-  let goFitting = 0;
-  const fitGoSoon = () => { if (!goFitting) goFitting = requestAnimationFrame(() => { goFitting = 0; fitGo(); }); };
-  if (goHead) {
-    const ro = new ResizeObserver(fitGoSoon);
-    for (const n of [goHead, ...goHead.querySelectorAll(".label, .note")]) ro.observe(n);
-    new MutationObserver(fitGoSoon).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
   }
   const askedGroup = document.body.classList.contains("window") && params.get("newgroup");
   if (askedGroup) loadGroups().then(() => window.newGroupWith(askedGroup, ""));

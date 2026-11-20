@@ -50,14 +50,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, arrived));
       await page.goto("http://magpie.test/?view=routing");
-      await page.locator("#rtPages .opt").nth(3).waitFor();
+      await page.locator("#rtPages .opt").nth(1).waitFor();
       const shot = async (pane) => {
         if (!process.env.ARTIFACT_DIR) return;
         await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
         await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `routing-${engine}-${lang}-${width}-${pane}.png`) });
       };
       if (lang === "de") assert.deepEqual(await page.locator("#rtPages .opt").allTextContents(),
-        ["Live", "Anfragen", "Weiterleitungsgruppen", "Mehrere Konten oder Schlüssel"]);
+        ["Live", "Anfragen"]);
       assert.deepEqual(await shownPane(page), { on: 0, live: true, requests: false, groups: false, pools: false });
       await shot("live");
       await openPane(page, "requests");
@@ -68,25 +68,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").first().click();
       assert.deepEqual(await shownPane(page), { on: 0, live: true, requests: false, groups: false, pools: false });
-      await openPane(page, "groups");
-      await page.locator("#rtNewGroup").click();
-      const draft = page.locator(".rt-groups .rt-gedit input").first();
-      await draft.fill("Unsaved fixture");
-      for (const other of ["pools", "requests", "live"]) {
-        await openPane(page, other);
-        await openPane(page, "groups");
-        assert.equal(await draft.inputValue(), "Unsaved fixture");
-      }
-      await shot("groups-draft");
-      await page.reload();
-      await page.locator("#rtPages .opt").nth(3).waitFor();
-      assert.deepEqual(await shownPane(page), { on: 2, live: false, requests: false, groups: true, pools: false });
-      await openPane(page, "pools");
-      await shot("pools");
-      await page.evaluate(() => window.newGroupWith("a/m", "Model A"));
-      await page.locator(".rt-groups .rt-gedit").waitFor();
-      assert.deepEqual(await shownPane(page), { on: 2, live: false, requests: false, groups: true, pools: false });
-      assert.equal(await draft.inputValue(), "Model A");
+      await page.evaluate(async () => { await window.show("groups"); window.newGroupWith("a/m", "Model A"); });
+      await page.locator("#view-groups .rt-groups .rt-gedit").waitFor();
+      assert.equal(await page.locator("#view-groups .rt-groups .rt-gedit input").first().inputValue(), "Model A");
       await openPane(page, "requests");
       await page.locator(".rt-days .rt-day").nth(1).click();
       const view = page.locator("#view-routing");

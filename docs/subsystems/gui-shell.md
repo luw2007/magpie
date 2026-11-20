@@ -33,8 +33,8 @@ three.
 2. `startBackend` brings up the gateway, or finds another magpie serving it.
 3. The panel and the window load `index.html` from `Handler`. `boot.js` passes the saved language, theme, colorblind mode, text size and desktop font choices before the first paint. It also puts in the look of the reader's own (`appearance.go`, CHENGJIAHEGOXIS on X): Settings › General's Accent color (`accent`, `#rrggbb`; `accentVars` darkens it on the light theme and lightens it on the dark one until it reads as text at 4.5:1; it also sets `--mark`, the ink of what is chosen: the open page's sidebar icon, a switch's or tab's chosen option, Library's switches and radios. `--mark` is `var(--fg)`, graphite, until the user picks an accent, so a picked colour shows on the page it is picked on. A picked colour also tints the theme's grounds, the window's and the tray panel's (`--bg`, `--card`, the pills, lines and the dark menus' `--pop-bg`; `tintVars`): each takes 5% (light) or 8% (dark) of the colour's hue, its own lightness kept, so a grey pick changes nothing and text keeps its contrast. A dark pick, one whose OKLab lightness is under 0.4 (Graphite and every preset are lighter), takes the dark grounds as far toward black as it is dark (`ground`, `darkness`), losing app.css's cool grey cast and taking more of the pick's hue as they go: black draws a #000000 page with its cards, pills, lines and menus the same neutral steps above it, and a deep navy a near-black navy page (`TestDarkPickDarkensPage`). Black's ink starts most of the way to white (`lifted`, by `depth`), so it is not Graphite's grey; on the light theme black is black ink, and white the light theme's dark ink (`TestBlackIsBlack`); with no accent, or under Omarchy, they are app.css's own. `TestTintBasesAreAppCSS` holds the Go bases to app.css, and `TestLookFixture` the GUI tests' `fixtures/look-accents.json` to `lookCSS`) and Background image (a PNG, JPEG, GIF or WebP of 16 MB at most, saved as `wallpaper` in magpie's folder by `POST /api/appearance/wallpaper` as base64 JSON, `{remove: true}` to take it away; `settings.Wallpaper` is its stamp), drawn behind the window's pages under a veil of the theme's background, never in the tray panel or under Omarchy. `bootPrefs.look` says which look was drawn; `applyPrefs` asks `/api/appearance/css` again only when the settings' look differs, and the rows are drawn by the lazy `appearance.js` (`appearance-look.test.cjs`, `appearance_test.go`).
 4. The page reads `GET /api/state` and writes through `POST` routes. Each write answers with the new state, built under `held`.
-   Routing schedules a redraw after window load so its context cards can use `context.js` even when an early trace response paints before that script initializes. Its sticky page header grows with wrapped pane buttons; responsive stage/account containers do not transition their measured dimensions. Routing links reveal the shared groups section, opening the standalone Groups page when needed, or select Routing's Pools pane before scrolling to their destination (`goRouting`). Key-binding pool chips use a checked-state class rather than Safari 15.4-only `:has()` styling.
-   Routing reads the live trace while Live or Requests is visible, or the tray's Routing tab is open. Requests redraws independently of the Live stage, whose animation remains paused while hidden; Groups and Pools alone do not keep trace polling active. A computer switch clears the previous request list immediately, and delayed history answers are ignored after a source switch.
+   Routing schedules a redraw after window load so its context cards can use `context.js` even when an early trace response paints before that script initializes. Its sticky page header grows with wrapped pane buttons; responsive stage/account containers do not transition their measured dimensions. Routing links reveal the shared groups section, opening the standalone Groups page when needed before scrolling to their destination (`goRouting`). Key-binding pool chips use a checked-state class rather than Safari 15.4-only `:has()` styling.
+   Routing reads the live trace while Live or Requests is visible, or the tray's Routing tab is open. Requests redraws independently of the Live stage, whose animation remains paused while hidden; the standalone Groups page does not keep trace polling active. A computer switch clears the previous request list immediately, and delayed history answers are ignored after a source switch.
    Redrawing an open provider editor restores focus after its pending layout frame, without taking focus away from a reader who already moved it; key-filter and single/bulk key-entry focus use the same timing and prevent automatic scrolling so WebKit preserves the editor's scroll position. The replacement of the last pressed control remains the modal's anchor (`modalHold.copy`), and restoring its focus is not a new press (`modalRefocus`). Key renaming settles once across Escape/blur rather than rendering twice.
    Framed modal bodies disable native scroll anchoring: `openModal` owns their saved scroll position, and a browser must not compensate a second time when the replacement grid finishes layout (for example, switching a single key entry to bulk paste). `key-import.test.cjs` keeps an exact before/after scroll assertion for the real Paste several click in both engines.
 5. Closing the window hides it. On the Mac a full-screen window first leaves full screen (`closeStep`). The system's close on the panel (a title bar's X, Alt+F4, a window manager's close key) hides it as Escape does, so the tray icon opens it again; a panel lightweight mode let go, no longer `h.panel`, closes (`makePanel`, `TestPanelCloseHidesIt`). A hidden macOS window keeps its WKWebView's page marked visible, so `hideWebview` tells the page it is out of sight before `orderOut`; that makes `document.hidden` and `visibilityState` true, stops the page's polling and frame loops, and pauses CSS animations. `showWebview` tells it it is visible again (#4293). Lightweight mode lets go only of a window closed this way: one covered by another app's window, minimised, or open as magpie was hidden is still open (`windowUp`, not Wails' `IsVisible`, which is the occlusion state), and so is it for the Dock while the window is open and for a restart (#1381, `TestCoveredWindowStaysUp`). On the Mac the tray icon and a usage cell close an open panel by the same test (`windowOpen` in `togglePanelNow` and `trayCellClick`, not Wails' `ToggleWindow`), so under a window over the whole screen, such as a remote-desktop server's privacy curtain, the icon still closes the panel instead of showing it again (#1661, `TestTrayCellClickReleasedPanel`). On Windows a hidden window's WebView2 is put on its low memory target (`lowWhileHidden`, [`memtarget_windows.go`](../../internal/gui/memtarget_windows.go): `ICoreWebView2_19::put_MemoryUsageTargetLevel`, on each hide, on a page that comes while hidden, and back to normal on each show), so the panel and the window kept loaded in the tray stop holding what they last drew; the page stays loaded and running, unlike lightweight mode. In the tray the WebView2 processes' private working set went from ~170 MB to 20 to 40 MB, while their commit charge stayed where it was (molamaker11 on X). WKWebView and WebKitGTK have nothing magpie can set for it.
@@ -843,31 +843,30 @@ page while the editor fades away. Opening an editor during that animation
 protects the background again. `ux-safety.test.cjs` checks these transitions.
 Routing groups have a page of their own, `#view-groups`, beside Routing
 under Models (11-06; below every request on the Routing page they were a
-long scroll down). The fork's Routing groups and Several accounts or keys
-panes remain available inside Routing too. The routing plugin adds both
-pages, with one groups section (`.rt-gsec`), one providers section and one
-draft: `window.routingGroupsHome` moves both sections into the standalone
-page's `#rtGroups` while it is open, including after Try again, and returns
-them to their Routing panes on leaving or turning groups off. The page's
-open hook moves them before the shell restores the scroll position. One
-`dirty` hook (`magpie.call("routing", "dirty")`) serves both; `rtView` in
-app.js asks it on leaving either. The groups toolbar is the filter, how many
-groups there are and how many are on, then Templates, Import, Select and
-New group (`text primary`); the list follows, then Settings (found groups,
-the names agents' lists show), then the providers routing over several
-keys on the standalone page. A request's group link (`goRouting`) opens
-the standalone page when groups are not already visible; group-to-group
-links stay on the page hosting the shared section. A pool link opens
-Routing's Pools pane. Each brings its row into sight only when the reader's
-click asked for it.
+long scroll down). The routing plugin adds both pages, with one groups
+section (`.rt-gsec`) containing the provider pools and one draft:
+`window.routingGroupsHome` moves that section into the standalone page's
+`#rtGroups` while it is on, including after Try again. When the built-in is
+off, the Groups page is hidden and the section stays under Routing's
+Requests as the explanatory note and provider pools. The page's open hook
+moves it before the shell restores the scroll position. One `dirty` hook
+(`magpie.call("routing", "dirty")`) serves both; `rtView` in app.js asks it
+on leaving either. The groups toolbar is the filter, how many groups there
+are and how many are on, then Templates, Import, Select and New group
+(`text primary`); the list follows, then Settings (found groups, the names
+agents' lists show), then the providers routing over several keys. A
+request's group or pool link (`goRouting`) opens the standalone Groups page
+when groups are not already visible; with the built-in off, Requests keeps
+the explanatory section. Each brings its row into sight only when the
+reader's click asked for it.
 The window opened with `view=groups&newgroup=<model>` (`mainView` keeps
 `view=routing&newgroup=` too) opens a new group of that model
 (`routing-groups-page.test.cjs`). Its tab sits in the sidebar only: the
 header's row has no room for it (at 860px it pushed the logo out,
 `brand.test.cjs`), so there app.css hides it, `markNav` lights Routing's
-tab for both pages. Routing's `#rtGoGroups` shortcut opens its local Groups
-pane, which uses the same groups section as the standalone page.
-The groups page leads back up as a Mac app's back button does
+tab for both pages. Beside the sidebar, Routing's `#rtToGroups` link opens
+the standalone page and records Routing as its way back; there is no local
+Groups or provider-pool pane. The groups page leads back up as a Mac app's back button does
 (unscientific9 on Discord): its toolbar starts with `‹ Routing`
 (`.rt-gback`, `groupsBack`), which shows Routing and gives the request's
 group it came from the keyboard again. It shows where a request's group
@@ -903,17 +902,16 @@ tells of is lit (`aria-pressed`); a click picks that session's newest
 request. The card's footer names the session by its title too (tjhhhh on
 Discord, `routing-ctx-sessions.test.cjs`).
 
-Routing separates Live (the stage and request story), Requests (history,
-filters, replay and accounts), Routing groups (group configuration), and
-Several accounts or keys (provider pool policies). The selected subpage is
-kept in browser local storage. Switching panes retains filters and group
-drafts; selecting a request or replay opens Live, while creating a group
-opens the standalone groups page. Hidden stages stop their animation loop;
-trace polling continues for Live or Requests, not for Groups or Pools alone.
-The Computer picker (`#rtSource`) remains on Live and Requests for a remote
-magpie's trace, not on either configuration pane. Remote requests are
-read-only: local sign-in, allowance refresh, unrest and request-body actions
-are not offered for them.
+Routing separates Live (the stage and request story) and Requests
+(history, filters, replay and accounts); Routing groups and provider pool
+policies are on the standalone Groups page. The selected Routing subpage is
+kept in browser local storage. Switching panes retains filters; selecting a
+request or replay opens Live, while creating a group opens the standalone
+Groups page. Hidden stages stop their animation loop; trace polling
+continues for Live or Requests, not for Groups alone. The Computer picker
+(`#rtSource`) remains on Live and Requests for a remote magpie's trace, not
+on the configuration page. Remote requests are read-only: local sign-in,
+allowance refresh, unrest and request-body actions are not offered for them.
 
 Usage curves (`quotaHistOf` in `app.js`) match a pool card to its history by
 `poolRef`, `sourceRef` and `accountId`, and other cards by `provider` and `user`;

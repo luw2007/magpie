@@ -1,12 +1,8 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// Routing: the groups stay under the pointer as requests come in (cwfox67 on
-// X: picking a manual group's model meant fighting the page, which shook as
-// it updated). With the groups low in the view, as they are at the page's
-// foot, the requests list above them kept its place and grew, so a group's
-// card slid down from under the pointer with each request. With the pointer
-// on a manual group's card and requests streaming in, the card stays where
-// it is on the screen. In Chromium and WebKit, at a phone's width and a
-// desk's.
+// Routing groups have their own page, rather than sitting beneath requests.
+// Opening it must stop the Routing trace reader; otherwise its updates could
+// needlessly redraw the hidden page while a reader edits a group. In Chromium
+// and WebKit, at a phone's width and a desk's.
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const fs = require("node:fs/promises");
@@ -55,7 +51,7 @@ function serve(feed) {
   };
 }
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  test(`${engine}: a group under the pointer stays put as requests come in`, async (t) => {
+  test(`${engine}: the standalone Groups page stops the Routing trace reader`, async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
     for (const [w, h] of [[420, 760], [1100, 760]]) {
@@ -71,35 +67,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.goto("http://magpie.test/?view=routing");
         await openPane(page, "groups");
         await page.locator(".rt-group").first().waitFor();
-        await page.waitForTimeout(1500);
-        // The reader opens Groups and puts the pointer on the manual card.
-        // over the view, not the sidebar beside it
-        const v = await page.locator("#view-routing").boundingBox();
-        await page.mouse.move(v.x + 8, h / 2);
-        for (let i = 0; i < 80; i++) {
-          const top = await page.evaluate(() => document.querySelector(".rt-group").getBoundingClientRect().top);
-          if (top < 300) break;
-          await page.mouse.wheel(0, Math.min(200, top - 250));
-          await page.waitForTimeout(60);
-        }
-        await page.waitForTimeout(300);
-        const b = await page.locator(".rt-group").first().boundingBox();
-        await page.mouse.move(b.x + 40, b.y + 10);
-        await page.waitForTimeout(100);
-        const at = () => page.locator(".rt-group").first().evaluate((g) => g.getBoundingClientRect().top);
-        const was = await at(), seen = [];
-        for (let id = 104; id < 112; id++) for (const s of ["start", "read", "done"]) {
-          for (let i = 0; i < 60 && !feed.next; i++) await page.waitForTimeout(50);
-          const next = feed.next;
-          assert(next, "the page asks for the next trace");
-          feed.next = null;
-          next(req(id, s));
-          await page.waitForTimeout(250);
-          seen.push(await at());
-        }
-        for (const top of seen) assert(Math.abs(top - was) <= 1.5, `the card stayed under the pointer: ${was} → ${seen.map(Math.round).join(" ")}`);
+        // A read started before navigation may still be waiting. Answer it,
+        // then require that the Groups page does not start another one.
+        const pending = feed.next;
+        feed.next = null;
+        pending?.(req(104, "done"));
+        await page.waitForTimeout(600);
+        assert(!feed.next, "the standalone Groups page does not ask for the next Routing trace");
         assert.deepEqual(errors, []);
-        feed.next?.(req(999, "done"));
         await context.close();
       });
     }

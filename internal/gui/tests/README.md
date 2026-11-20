@@ -2225,13 +2225,14 @@ isn't shared, too old, anything else) says what to do about it over the page,
 keeps none of this computer's requests under its name, and is gone once the
 remote answers. English and Chinese, Chromium and WebKit, with the API faked.
 
-`routing-panes.test.cjs` and `routing-pane-smoke.test.cjs` check the four
-Routing panes independently. Requests continues reading the live trace and
-redrawing arrivals while its pane is open, without running the hidden Live
-stage's animation. Switching panes redraws the current request list; switching
-computers clears the previous computer's rows even when the remote fails.
-Group and request regressions open their respective panes through the visible
-tabs rather than assuming all four panes are visible together.
+`routing-panes.test.cjs` and `routing-pane-smoke.test.cjs` check Routing's
+Live and Requests panes independently. Requests continues reading the live
+trace and redrawing arrivals while its pane is open, without running the hidden
+Live stage's animation. Switching panes redraws the current request list;
+switching computers clears the previous computer's rows even when the remote
+fails. Group and request regressions open their respective pages through the
+visible Routing tabs or the standalone Groups page rather than assuming
+configuration content is still a Routing pane.
 The mid-list group-save regression wheels Save fully below the wrapping sticky
 header before clicking, so it tests the saved row's position rather than an
 automatic click scroll to an obscured control.

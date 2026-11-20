@@ -4,10 +4,10 @@
 // only one account or key on has nothing to route: its chip and the
 // Accounts and keys heading say no routing, and the mode paragraph says
 // how to get one. Where a provider routes over several, the chip and the
-// heading are a way to its routing under Several accounts or keys: a
-// click, or Enter, brings that row into view, marks it and focuses its
-// routing — the page moves only because the reader asked. In every
-// language, both engines, wide and narrow.
+// heading are a way to its routing under Several accounts or keys, on the
+// Groups page: a click, or Enter, brings that row into view, marks it and
+// focuses its routing — the page moves only because the reader asked. In
+// every language, both engines, wide and narrow.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -127,17 +127,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await head.getAttribute("data-go"), "pool:relay");
         await openPane(page, "live");
 
-        // the pool starts in its own Routing pane: the chip opens it,
-        // with the pool in sight
-        const view = page.locator("#view-routing");
+        // the pool lives on the Groups page, not in Routing: the chip opens
+        // that page, with the pool in sight
+        const view = page.locator("#view-groups");
         const pool = page.locator('.rt-pool[data-provider="relay"]');
         await pool.waitFor({ state: "attached" });
         // a pool may be taller than the window: the reader is there when its
         // header and the control focused are both in view
-        const inView = () => pool.evaluate((p) => { const v = document.querySelector("#view-routing").getBoundingClientRect();
+        const inView = () => pool.evaluate((p) => { const v = document.querySelector("#view-groups").getBoundingClientRect();
           const within = (e) => { const r = e.getBoundingClientRect(); return r.height > 0 && r.top >= v.top && r.bottom <= v.bottom; };
           return p.contains(document.activeElement) && within(p.firstElementChild) && within(document.activeElement); });
-        assert.equal(await pool.isVisible(), false, "the pool starts in its own pane");
+        assert.equal(await pool.isVisible(), false, "the pool is on the Groups page, not seen from Routing");
         const back = async () => {
           await openPane(page, "live");
           await view.evaluate((v) => { v.scrollTop = 0; });
@@ -146,8 +146,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // a click takes the reader there: in view, marked, its routing focused
         await chip.click();
+        await view.waitFor({ state: "visible" });
         await page.waitForFunction(() => document.querySelector('.rt-pool[data-provider="relay"]')?.classList.contains("rt-found"));
-        assert.equal(await pool.isVisible(), true, "the pools pane opened");
+        assert.equal(await pool.isVisible(), true, "the provider pool row is visible");
         assert.equal(await inView(), true);
         assert.equal(await page.evaluate(() => document.activeElement?.closest(".rt-pool")?.dataset.provider), "relay");
         assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("on")), true);
@@ -163,6 +164,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const drawn = await page.evaluate(() => window.__redraws);
         await page.waitForFunction((n) => window.__redraws > n, drawn, { polling: 50 });
         await page.mouse.up();
+        await view.waitFor({ state: "visible" });
         await page.waitForFunction(() => document.querySelector('.rt-pool[data-provider="relay"]')?.classList.contains("rt-found"));
         assert.equal(await inView(), true);
 
@@ -170,6 +172,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await back();
         await chip.focus();
         await page.keyboard.press("Enter");
+        await view.waitFor({ state: "visible" });
         await page.waitForFunction(() => document.querySelector('.rt-pool[data-provider="relay"]')?.classList.contains("rt-found"));
         assert.equal(await inView(), true);
         // nothing is drawn wider than the window

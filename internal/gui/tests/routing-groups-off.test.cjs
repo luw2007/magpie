@@ -7,9 +7,9 @@
 // them on, there is no note. English and Chinese, Chromium and WebKit, wide
 // and narrow, and every language has the strings.
 // yyddbds on Discord: with them off, the sidebar has no Routing groups
-// tab and a kept address opens Routing. Its Groups pane says why they
-// are off; the providers' accounts remain in its Pools pane. Turned on,
-// the tab is back and the standalone groups page opens.
+// page and a kept address opens Routing. Its Requests view says why they
+// are off; the providers' accounts remain below its requests. Turned on,
+// the standalone groups page opens.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -93,7 +93,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [], posts = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", serve(lang, false, posts));
-        await page.goto("http://magpie.test/?view=groups");
+        await page.goto("http://magpie.test/?view=groups&newgroup=a%2Fm");
         await openPane(page, "groups");
 
         const note = page.locator("#view-routing .rt-gsec .rt-goff");
@@ -105,7 +105,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert(!ts.includes("groups"), `no Routing groups tab: ${ts.join()}`);
         }
         assert.equal(await page.locator("#rtToGroups").isVisible(), false, "nor Routing's way to the page");
-        // the providers' own accounts are still to be set, in Routing's Pools pane
+        // the providers' own accounts are still to be set, below Routing's requests
         await openPane(page, "pools");
         await page.locator("#view-routing .rt-pool[data-provider=\"a\"]").waitFor({ state: "visible" });
         await openPane(page, "groups");
@@ -114,6 +114,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const btn = note.locator("button", { hasText: w.on });
         assert(await btn.isVisible());
         assert.equal(await page.locator(".rt-gnew").isVisible(), false, "New group is off with them");
+        assert.equal(await page.locator(".rt-gedit").count(), 0, "the kept new-group link makes no hidden draft while Groups is off");
         assert.equal(await page.locator(".rt-group", { hasText: "Mine" }).isVisible(), false);
         assert(await note.evaluate((n) => n.getBoundingClientRect().right <= innerWidth + 1), "the note fits the window");
         assert(await btn.evaluate((b) => b.getBoundingClientRect().right <= innerWidth + 1), "so does its button");
@@ -124,6 +125,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // on, the groups' page opens, with them and New group, its tab back
         await page.locator("#view-groups .rt-group", { hasText: "Mine" }).waitFor({ state: "visible" });
         await page.locator("#view-groups .rt-gnew").waitFor({ state: "visible" });
+        assert.equal(await page.locator("#view-groups .rt-gedit").count(), 0, "turning Groups on does not reveal a draft from the kept link");
         assert.deepEqual(await shown(page), ["view-groups"]);
         if (width >= 1024) assert((await tabs(page)).includes("groups"), "the tab is back");
         await page.locator("#view-groups .rt-pool[data-provider=\"a\"]").waitFor({ state: "visible" });

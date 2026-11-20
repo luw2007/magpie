@@ -1,11 +1,9 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// The Routing page is four panes, one at a time, chosen in #rtPages: Live,
-// Requests, Routing groups, Several accounts or keys. Exactly the chosen
-// one shows; the choice is kept (and a stored one restored) across a reload;
-// a group half-made is still there when the reader looks at another pane and
-// comes back; picking or replaying a request opens Live, where its story
-// plays; and making a group from a model (newGroupWith) opens Groups with it
-// in the editor. In English and Chinese, Chromium and WebKit.
+// The Routing page keeps two panes, one at a time, chosen in #rtPages: Live
+// and Requests. The choice is kept (and a stored one restored) across a
+// reload; picking or replaying a request opens Live, where its story plays;
+// and making a group from a model opens the separate Groups page. In English
+// and Chinese, Chromium and WebKit.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -61,7 +59,7 @@ function serve(lang, hold) {
 }
 
 const words = { en: { replay: "Replay them all" }, zh: { replay: "全部重放" } };
-const only = (name) => ({ on: ["live", "requests", "groups", "pools"].indexOf(name), live: name === "live", requests: name === "requests", groups: name === "groups", pools: name === "pools" });
+const only = (name) => ({ on: ["live", "requests"].indexOf(name), live: name === "live", requests: name === "requests", groups: false, pools: false });
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
   for (const lang of ["en", "zh"]) {
@@ -74,7 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, hold));
       await page.goto("http://magpie.test/?view=routing");
-      await page.locator("#rtPages .opt").nth(3).waitFor();
+      await page.locator("#rtPages .opt").nth(1).waitFor();
       return { page, errors };
     };
 
@@ -82,21 +80,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const { page, errors } = await open(t);
       // arrival: Live
       assert.deepEqual(await shownPane(page), only("live"));
-      for (const name of ["requests", "groups", "pools", "live", "pools", "requests"]) {
+      for (const name of ["requests", "live", "requests"]) {
         await openPane(page, name);
         assert.deepEqual(await shownPane(page), only(name));
         assert.equal(await page.evaluate(() => localStorage.getItem("magpie.routingPage")), name);
       }
       // the stored choice is where a reload lands
-      await openPane(page, "groups");
+      await openPane(page, "requests");
       await page.reload();
-      await page.locator("#rtPages .opt").nth(3).waitFor();
-      await page.waitForFunction(() => document.querySelectorAll("#rtPages .opt")[2]?.getAttribute("aria-pressed") === "true");
-      assert.deepEqual(await shownPane(page), only("groups"));
+      await page.locator("#rtPages .opt").nth(1).waitFor();
+      await page.waitForFunction(() => document.querySelectorAll("#rtPages .opt")[1]?.getAttribute("aria-pressed") === "true");
+      assert.deepEqual(await shownPane(page), only("requests"));
       // one that names no pane is none: Live
       await page.evaluate(() => localStorage.setItem("magpie.routingPage", "nowhere"));
       await page.reload();
-      await page.locator("#rtPages .opt").nth(3).waitFor();
+      await page.locator("#rtPages .opt").nth(1).waitFor();
       assert.deepEqual(await shownPane(page), only("live"));
       assert.deepEqual(errors, []);
     });
@@ -109,23 +107,6 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       release();
       await page.locator(".rt-req").first().waitFor();
       assert.deepEqual(await shownPane(page), only("requests"));
-      assert.deepEqual(errors, []);
-    });
-
-    test(`${engine} ${lang}: a group half-made is still there after looking at another pane`, async (t) => {
-      const { page, errors } = await open(t);
-      await openPane(page, "groups");
-      await page.locator(".rt-group", { hasText: "Model M" }).waitFor({ state: "attached" });
-      await page.locator("#rtNewGroup").click();
-      const name = page.locator(".rt-groups .rt-gedit input").first();
-      await name.waitFor();
-      await name.fill("Half made");
-      for (const other of ["requests", "live", "pools"]) {
-        await openPane(page, other);
-        await openPane(page, "groups");
-        assert.equal(await name.inputValue(), "Half made", `the draft survived ${other}`);
-        assert.deepEqual(await shownPane(page), only("groups"));
-      }
       assert.deepEqual(errors, []);
     });
 
@@ -149,20 +130,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(errors, []);
     });
 
-    test(`${engine} ${lang}: a group made from a model opens Groups with it`, async (t) => {
+    test(`${engine} ${lang}: a group made from a model opens the separate Groups page`, async (t) => {
       const { page, errors } = await open(t);
-      for (const from of ["live", "requests", "pools"]) {
-        await openPane(page, from);
-        await page.waitForFunction(() => window.newGroupWith);
-        await page.evaluate(() => { window.newGroupWith("a/m", "Model A"); });
-        await page.locator(".rt-groups .rt-gedit").waitFor();
-        assert.deepEqual(await shownPane(page), only("groups"), `from ${from}`);
-        assert.equal(await page.locator(".rt-groups .rt-gedit input").first().inputValue(), "Model A");
-        assert.deepEqual(await page.locator(".rt-groups .rt-gedit .fbrow .n").allTextContents(), ["mA"]);
-        // leave the draft: the next round starts clean
-        await page.reload();
-        await page.locator("#rtPages .opt").nth(3).waitFor();
-      }
+      await openPane(page, "requests");
+      await page.waitForFunction(() => window.newGroupWith);
+      await page.evaluate(async () => { await window.show("groups"); window.newGroupWith("a/m", "Model A"); });
+      await page.locator("#view-groups .rt-groups .rt-gedit").waitFor();
+      assert.deepEqual(await shownPane(page), { on: -1, live: false, requests: false, groups: true, pools: false });
+      assert.equal(await page.locator("#view-groups .rt-groups .rt-gedit input").first().inputValue(), "Model A");
+      assert.deepEqual(await page.locator("#view-groups .rt-groups .rt-gedit .fbrow .n").allTextContents(), ["mA"]);
       assert.deepEqual(errors, []);
     });
   }
