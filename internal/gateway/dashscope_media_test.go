@@ -127,7 +127,8 @@ func tokenPlan(t *testing.T, preset string, up *fakeDashScopeMedia) provider.Pro
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.ID, p.Key = "qwen", "sk-sp-key"
+	p.ID = "qwen"
+	p.Keys = []provider.KeyAccount{{ID: "sp-key", Key: "sk-sp-key"}}
 	p.Chat, p.Anthropic = up.URL+"/compatible-mode/v1", up.URL+"/apps/anthropic"
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
@@ -340,7 +341,7 @@ func TestTokenPlanMakesVideos(t *testing.T) {
 		t.Fatalf("create: %d %s", code, raw)
 	}
 	id, _ := obj["id"].(string)
-	if !strings.HasSuffix(id, "."+keyMark(provider.Provider{Key: "sk-sp-key"})) {
+	if !strings.HasSuffix(id, ".ksp-key") {
 		t.Fatalf("id %q", id)
 	}
 	for _, want := range []string{"queued", "in_progress"} {
