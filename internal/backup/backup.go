@@ -385,7 +385,7 @@ func withoutKeys(p provider.Provider) provider.Provider {
 		p.Keys[i].Key = ""
 	}
 	p.BalanceToken = ""
-	p.AccessKeyID, p.SecretAccessKey = "", ""
+	p.AccessKeyID, p.SecretAccessKey, p.SessionToken = "", "", ""
 	if len(p.Headers) > 0 {
 		h := map[string]string{}
 		for k, v := range p.Headers {

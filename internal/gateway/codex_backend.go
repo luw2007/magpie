@@ -3338,24 +3338,40 @@ func callItemIDs(body []byte) []byte {
 // "Invalid 'input[1].id': 'rs_6aca2fc7533c979d5f0e4f7a:rs_01a125caa544754e9a3c70080100b009'.
 // Expected an ID that contains letters, numbers, underscores, or dashes,
 // but this value contained additional characters."
+// or one longer than the 64 an id may have (isnine's 420, #4525,
+// ghjkllasdf-fake's 444, #4527, JaxWeng's 428, #5812), which a relay
+// that checks as OpenAI does turns the whole turn away over — "string
+// too long. Expected a string with maximum length 64, but got a string
+// with length 428 instead." — and, the tail being the character
+// refusal's alone, every turn of the session after it the same way.
 // It is the tail within 1000 characters of the head: the regexp
 // .{0,1000}? it was unrolled to 88kB of program, held from start to exit.
 func itemIDRefusal(b []byte) bool {
-	const tail = "Expected an ID that contains letters, numbers, underscores, or dashes"
 	for _, at := range itemIDRefusalHead.FindAllIndex(b, -1) {
 		rest, end := b[at[1]:], 0
 		for n := 0; n < 1000 && end < len(rest); n++ {
 			_, w := utf8.DecodeRune(rest[end:])
 			end += w
 		}
-		if bytes.Contains(rest[:min(len(rest), end+len(tail))], []byte(tail)) {
-			return true
+		for _, tail := range itemIDRefusalTails {
+			if bytes.Contains(rest[:min(len(rest), end+len(tail))], tail) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 var itemIDRefusalHead = lazyre.New(`Invalid 'input\[\d+\]\.id'`)
+
+// itemIDRefusalTails are the tails an item id refusal words itself in:
+// the id had a character OpenAI's don't have, or was longer than they
+// take. The length tail is OpenAI's own for a string over its schema's
+// bound, which the head's input[n].id holds to item ids alone.
+var itemIDRefusalTails = [][]byte{
+	[]byte("Expected an ID that contains letters, numbers, underscores, or dashes"),
+	[]byte("Expected a string with maximum length"),
+}
 
 // itemIDsRefused is how unfit remembers a provider turning away, for
 // model, an input item id with another character in it (plainItemIDs).
@@ -4123,9 +4139,15 @@ func lacksEndpoint(status int) bool {
 
 // summaryEndedShort is a summary ask answered 502 because the reply
 // stopped before its end: a translated one serve held whole and found
-// cut (errEndedShort, #3526, Edward4226's third shape).
+// cut (errEndedShort, #3526, Edward4226's third shape). The words end
+// the vendor's line of the error, before what upstreamTold names it by.
 func summaryEndedShort(rec *recorder) bool {
-	return rec.status == http.StatusBadGateway && strings.HasSuffix(provider.APIError(rec.body.Bytes(), ""), errEndedShort.Error())
+	if rec.status != http.StatusBadGateway {
+		return false
+	}
+	line, _, _ := strings.Cut(provider.APIError(rec.body.Bytes(), ""), magpieSays)
+	line = strings.TrimSuffix(line, " (HTTP 502)")
+	return strings.HasSuffix(line, errEndedShort.Error())
 }
 
 // upstreamFailed is a relay's own word that the provider behind it turned

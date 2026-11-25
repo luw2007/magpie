@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
@@ -424,9 +425,20 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 	// draws nothing magpie can ask for yet. A Responses-only relay (a Codex
 	// backend such as sub2api) has no chat base but serves the images API
 	// under the same root as its Responses endpoint, so it draws all the same.
-	if p.Account != nil || (p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "") {
+	if p.Account != nil || (p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "" && !p.IsVertex()) {
 		return nil
 	}
+	if p.VertexExpress() {
+		// an express-mode key is served Gemini alone, so its Gemini image
+		// models alone draw (#7263)
+		return slices.DeleteFunc(drawersOf(p), func(m catalog.Model) bool { return !vertexDrawsGemini(p, m.ID) })
+	}
+	return drawersOf(p)
+}
+
+// drawersOf is DrawersOf for a provider of keys (or Vertex AI): its plan's,
+// its catalogs', the live lists', and the image models the user named.
+func drawersOf(p provider.Provider) []catalog.Model {
 	out := p.PlanDrawers()
 	if filmsMiniMax(p) {
 		// a MiniMax key's image-01 models, which no list names
@@ -781,7 +793,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			if keyHeld {
 				keeps = groupKeeps(keyWho, g, ms)
 			}
-			t := s.drawingTries(g, ms, keeps, drawsModel)
+			t := s.drawingTries(keyRouted(access.Caller(r.Context()), g), ms, keeps, drawsModel)
 			if len(t) == 0 && keeps != nil {
 				fail(keyGroupRefusal(w, keyWho, d.Model, ms))
 				return
@@ -1199,6 +1211,35 @@ func isGoogle(p provider.Provider) bool {
 	return provider.HostOf(p.Base(provider.Chat)) == "generativelanguage.googleapis.com"
 }
 
+// vertexGeminiDrawer is model as Vertex AI's generateContent names it,
+// when p is Vertex AI and model is a Gemini model that draws there
+// (gemini-3.1-flash-image, gemini-nano-banana-2.1): with no google/ or
+// models/ before it, which a user who wrote the id as a relay names it
+// put there (#7263). Such a model draws on
+// …/publishers/google/models/<model>:generateContent at the project, or
+// at the global endpoint for an express-mode key, never on the
+// OpenAI-compatible chat completions Vertex AI serves its partner models
+// on, which answers with no picture magpie can read. A partner model
+// (publisher/model), Claude and an Imagen, which draws on :predict, are
+// not such models; "" and false for every provider but Vertex AI.
+func vertexGeminiDrawer(p provider.Provider, model string) (string, bool) {
+	if !p.IsVertex() {
+		return "", false
+	}
+	bare := strings.TrimPrefix(strings.TrimPrefix(model, "google/"), "models/")
+	if bare == "" || provider.VertexPartner(bare) || provider.VertexClaude(bare) || catalog.ImagesAPI(bare) || !strings.Contains(strings.ToLower(bare), "gemini") {
+		return "", false
+	}
+	return bare, true
+}
+
+// vertexDrawsGemini is whether model draws on Vertex AI's generateContent
+// at p (vertexGeminiDrawer).
+func vertexDrawsGemini(p provider.Provider, model string) bool {
+	_, ok := vertexGeminiDrawer(p, model)
+	return ok
+}
+
 func isOpenRouter(p provider.Provider) bool {
 	return provider.HostOf(p.Base(provider.Chat)) == "openrouter.ai"
 }
@@ -1214,6 +1255,8 @@ func viaFor(p provider.Provider, model string) drawVia {
 		// MiniMax's image_generation, which drawImages asks (rocbomb123 on X)
 		return viaImages
 	case isGoogle(p) && strings.Contains(strings.ToLower(model), "gemini"):
+		return viaGemini
+	case vertexDrawsGemini(p, model):
 		return viaGemini
 	case p.ModelKind(model) == provider.KindImage:
 		// one the user said is an image model is asked at the images API
@@ -1457,6 +1500,11 @@ func (s *Server) drawAsked(ctx context.Context, p provider.Provider, model strin
 	}
 	if googleAccount(p) || pluginDrawsGemini(p, model) {
 		return s.drawCodeAssist(ctx, p, model, d)
+	}
+	if vertexDrawsGemini(p, model) {
+		// on generateContent, which an express-mode key, with no chat
+		// completions at all, is served too (#7263)
+		return s.drawGemini(ctx, p, model, d)
 	}
 	if p.Base(provider.Chat) == "" && p.Base(provider.Responses) == "" {
 		return drawn{}, 400, fmt.Errorf("%s can't draw: magpie draws only through an OpenAI-compatible API, and %s has none", p.Name, p.Name)
@@ -1739,7 +1787,10 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		}
 		// only dall-e gives a URL unless asked; gpt-image turns the field away
 		if strings.Contains(m, "dall-e") || senseNovaDrawer(m) {
-			req["response_format"] = "b64_json"
+			req["response_format"] = imagesFormat(d.Want)
+		}
+		if senseNovaDrawer(m) {
+			senseNovaFields(req, d)
 		}
 		body, _ = json.Marshal(req)
 		ct, url = "application/json", base+"/images/generations"
@@ -1749,7 +1800,8 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		// asked for base64
 		req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
 		if senseNovaDrawer(m) {
-			req["response_format"] = "b64_json"
+			req["response_format"] = imagesFormat(d.Want)
+			senseNovaFields(req, d)
 		}
 		for k, v := range map[string]string{"size": size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {
 			if v != "" {
@@ -1778,7 +1830,7 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 			}
 		}
 		if strings.Contains(m, "dall-e") {
-			mw.WriteField("response_format", "b64_json")
+			mw.WriteField("response_format", imagesFormat(d.Want))
 		}
 		if p.IsRemoteMagpie() && d.Tier != "" {
 			mw.WriteField("resolution", d.Tier)
@@ -1829,6 +1881,38 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 // (lileo0668 on Discord).
 func senseNovaDrawer(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sensenova-u1")
+}
+
+// senseNovaOwn are the fields of SenseNova's images API that OpenAI's
+// hasn't, which a caller can only send beside OpenAI's: watermark (a
+// bool, false for none) and prompt_extend (a bool, true by default), as
+// SenseTime's U1.5 Lite Token Plan page documents them (justforlxz on
+// X: the watermark switch did nothing).
+var senseNovaOwn = []string{"watermark", "prompt_extend"}
+
+// senseNovaFields puts the caller's own SenseNova fields in req, as they
+// came: a form's "false" as the bool SenseNova takes. One the caller
+// didn't send is left to SenseNova's default.
+func senseNovaFields(req map[string]any, d drawing) {
+	for _, k := range senseNovaOwn {
+		if v, ok := d.Extra[k]; ok {
+			if d.Form {
+				v = formValue(k, v, nil)
+			}
+			req[k] = v
+		}
+	}
+}
+
+// imagesFormat is the response_format asked of an images API that answers
+// in a link unless asked otherwise (dall-e, SenseNova's U1): url when the
+// caller asked for url, which is then answered by that link, else
+// b64_json.
+func imagesFormat(want string) string {
+	if strings.EqualFold(want, "url") {
+		return "url"
+	}
+	return "b64_json"
 }
 
 // drawOpenRouterImages asks OpenRouter's dedicated Images API, which accepts
@@ -2207,8 +2291,15 @@ func (s *Server) drawGemini(ctx context.Context, p provider.Provider, model stri
 	body, _ := json.Marshal(map[string]any{"contents": []map[string]any{{"role": "user", "parts": parts}}, "generationConfig": cfg})
 	base := strings.TrimSuffix(strings.TrimRight(p.Base(provider.Chat), "/"), "/openai")
 	url := base + "/models/" + provider.GeminiModelPath(model) + ":generateContent"
+	sign := false // AI Studio's key, in x-goog-api-key
+	if bare, ok := vertexGeminiDrawer(p, model); ok {
+		// Vertex AI's project (or express mode's global endpoint), signed
+		// as its chat is: a Google token, or the express key in
+		// x-goog-api-key (#7263)
+		url, sign = p.Base(provider.Gemini)+provider.VertexWholePath(bare), true
+	}
 	return s.eachDrawing(d.N, func() (drawn, int, error) {
-		b, code, err := s.send(ctx, p, url, "application/json", body, false)
+		b, code, err := s.send(ctx, p, url, "application/json", body, sign)
 		if err != nil {
 			return drawn{}, code, err
 		}

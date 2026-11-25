@@ -43,6 +43,9 @@ func KeepSecrets(in, here Provider, keyless bool) Provider {
 			in.Headers[k] = v
 		}
 	}
+	if in.SessionToken == "" && in.AccessKeyID != "" && in.AccessKeyID == here.AccessKeyID && in.SecretAccessKey == here.SecretAccessKey {
+		in.SessionToken = here.SessionToken
+	}
 	inKey, hereKey := primaryKey(in), primaryKey(here)
 	if !keyless && (inKey == "" || inKey != hereKey) {
 		return in
@@ -51,7 +54,7 @@ func KeepSecrets(in, here Provider, keyless bool) Provider {
 		in.BalanceToken = here.BalanceToken
 	}
 	if in.AccessKeyID == "" && in.SecretAccessKey == "" {
-		in.AccessKeyID, in.SecretAccessKey = here.AccessKeyID, here.SecretAccessKey
+		in.AccessKeyID, in.SecretAccessKey, in.SessionToken = here.AccessKeyID, here.SecretAccessKey, here.SessionToken
 	}
 	return in
 }

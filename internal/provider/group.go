@@ -274,6 +274,14 @@ type Group struct {
 	// Rules with an intent need one; a small, fast model without reasoning
 	// does.
 	Classifier string `json:"classifier,omitempty"`
+	// ClassifierMore are the classifiers asked after Classifier, in order,
+	// each only when the one before it couldn't answer (a refusal, a
+	// vendor's 5xx or 429, a dropped connection, no answer in its part of
+	// the wait; qinzhidaoa on X: the one classifier answered 502, and every
+	// turn lost its intent). Classifier stays the first, so a magpie from
+	// before it still asks that one, and a group of one classifier writes
+	// none (Classifiers, SetClassifiers).
+	ClassifierMore []string `json:"classifierMore,omitempty"`
 	// IntentSure is how confident a decision model (Jev, from TypeSafe's
 	// decision API) must be of an intent of this group's for it to count:
 	// from 0, its likeliest intent taken however unsure it is ("none of
@@ -560,7 +568,7 @@ func cloneGroups(gs []Group) []Group {
 		g.Members, g.Match, g.Matched, g.Placed = slices.Clone(g.Members), slices.Clone(g.Match), slices.Clone(g.Matched), slices.Clone(g.Placed)
 		g.Off, g.Levels, g.Fast, g.Ultra = slices.Clone(g.Off), slices.Clone(g.Levels), slices.Clone(g.Fast), slices.Clone(g.Ultra)
 		g.Accounts, g.Seen, g.Keys = slices.Clone(g.Accounts), slices.Clone(g.Seen), slices.Clone(g.Keys)
-		g.Former = slices.Clone(g.Former)
+		g.Former, g.ClassifierMore = slices.Clone(g.Former), slices.Clone(g.ClassifierMore)
 		g.Weights = maps.Clone(g.Weights)
 		g.EffortMaps = renamedEffortMaps(g.EffortMaps, func(m string) string { return m })
 		if g.IntentSure != nil {
@@ -815,8 +823,10 @@ func SetAutoGroups(on bool) error {
 					held = append(held, fmt.Sprintf("%s is in %s", strings.TrimPrefix(m, GroupPrefix), g.Name))
 				}
 			}
-			if found(g.Classifier) {
-				held = append(held, fmt.Sprintf("%s is %s's classifier", strings.TrimPrefix(g.Classifier, GroupPrefix), g.Name))
+			for _, c := range g.Classifiers() {
+				if found(c) {
+					held = append(held, fmt.Sprintf("%s is %s's classifier", strings.TrimPrefix(c, GroupPrefix), g.Name))
+				}
 			}
 		}
 		if len(held) > 0 {
@@ -1470,6 +1480,9 @@ func membersFound(entries []Entry, find entryOf, all []Group, g Group, off func(
 			}
 			model, effort := memberEffortIn(entries, id)
 			p, m, ok := resolveIn(entries, model)
+			if ok && unpicked(find, p, m) {
+				m = listedSpelling(entries, p.ID, m)
+			}
 			if !ok || unpicked(find, p, m) && (also == nil || !also(p, m)) {
 				continue // none serves it, or the user unchecked it (#3911)
 			}
@@ -1520,6 +1533,22 @@ func unpicked(find entryOf, p Provider, m string) bool {
 	return len(p.Models) > 0 && find(p.ID, m) < 0 && !p.DecidesModel(m)
 }
 
+// listedSpelling is provider pid's model m as its list spells it, where
+// the two differ only in case (DeepSeek-V4-Pro for deepseek-v4-pro), else
+// m. A member saved in another case than the provider lists its model by
+// (a model typed in, a list fetched again in the vendor's own case) was
+// taken for one the user unticked, and a group of only such members
+// left every agent's picker with no word of why (@CHENGJIAHEGOXIS on X).
+// Asked only once the exact one is missing.
+func listedSpelling(entries []Entry, pid, m string) string {
+	for i := range entries {
+		if e := &entries[i]; e.Provider.ID == pid && e.Model != m && strings.EqualFold(e.Model, m) {
+			return e.Model
+		}
+	}
+	return m
+}
+
 // ResolveRoute is Resolve for a model a route names, a routing group's
 // member or a provider's fallback, as routing reaches it: not one the
 // user unchecked (unpicked). A request naming the model itself goes by
@@ -1536,6 +1565,9 @@ func ResolveRoute(id string) (Provider, string, bool) {
 			}
 		}
 		return -1
+	}
+	if ok && unpicked(find, p, m) {
+		m = listedSpelling(entries, p.ID, m)
 	}
 	if !ok || unpicked(find, p, m) {
 		return Provider{}, "", false
@@ -2063,7 +2095,7 @@ func SaveGroup(g Group) error {
 	if err := cleanDecisionGroup(&g, groupsIn(entries)); err != nil {
 		return err
 	}
-	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Pace && g.Routing != Weighted && g.Routing != FreeFirst && g.Routing != Fastest && g.Routing != Cheapest && g.Routing != Drain && g.Routing != FreeExpiring && g.Routing != SmallFirst && g.Routing != Manual && g.Routing != Benchmark && !PluginRouting(g.Routing) {
+	if !GroupRouting(g.Routing) {
 		g.Routing = ""
 	}
 	if !slices.Contains(Affinities, g.Affinity) {
@@ -2086,30 +2118,30 @@ func SaveGroup(g Group) error {
 	if g.Levels, err = CleanLevels(g.Levels); err != nil {
 		return err
 	}
-	g.Classifier = strings.TrimPrefix(strings.TrimSpace(g.Classifier), "magpie/")
+	g.MapClassifiers(func(c string) string { return strings.TrimPrefix(strings.TrimSpace(c), "magpie/") })
 	g.Effort = strings.ToLower(strings.TrimSpace(g.Effort))
 	intents := slices.ContainsFunc(g.Rules, func(r Rule) bool { return r.Intent != "" })
 	switch {
 	case g.Effort != "" && g.Effort != EffortAuto:
 		return fmt.Errorf("a group's effort is %q or left to the agent, not %q", EffortAuto, g.Effort)
-	case g.Classifier == GroupPrefix+g.ID:
+	case g.ClassifiesWith(GroupPrefix + g.ID):
 		return fmt.Errorf("%s can't be its own classifier: asking it would ask it again", g.Name)
 	case intents && g.Classifier == "":
 		return errors.New("a rule with an intent needs the group's classifier: the model that tells which intent a message is")
 	case g.Effort == EffortAuto && g.Classifier == "":
 		return errors.New("effort picked per turn needs the group's classifier: the model that rates how hard a turn is")
 	case !intents && g.Effort == "":
-		g.Classifier = "" // nothing to ask it
+		g.SetClassifiers(nil) // nothing to ask them
 	}
-	if gid, ok := strings.CutPrefix(g.Classifier, GroupPrefix); ok {
-		if c, ok := groupOf(groupsIn(providerEntries()), gid); !ok {
-			return fmt.Errorf("magpie has no group %q to classify with", gid)
-		} else if c.Disabled {
-			return fmt.Errorf("%s is switched off: switch it on to classify with it", c.Name)
-		}
-	} else if g.Classifier != "" {
-		if _, _, ok := Resolve(g.Classifier); !ok {
-			return fmt.Errorf("magpie knows no model %q to classify with", g.Classifier)
+	for _, cl := range g.Classifiers() {
+		if gid, ok := strings.CutPrefix(cl, GroupPrefix); ok {
+			if c, ok := groupOf(groupsIn(providerEntries()), gid); !ok {
+				return fmt.Errorf("magpie has no group %q to classify with", gid)
+			} else if c.Disabled {
+				return fmt.Errorf("%s is switched off: switch it on to classify with it", c.Name)
+			}
+		} else if _, _, ok := Resolve(cl); !ok {
+			return fmt.Errorf("magpie knows no model %q to classify with", cl)
 		}
 	}
 	if g.IntentSure != nil && !(*g.IntentSure >= 0 && *g.IntentSure <= 1) { // NaN too
@@ -2324,7 +2356,7 @@ func DeleteGroup(id string) error {
 		return fmt.Errorf("%s is in %s: take it out first", id, strings.Join(names, ", "))
 	}
 	for _, g := range groupsIn(providerEntries()) {
-		if !g.Hidden && g.Classifier == GroupPrefix+id {
+		if !g.Hidden && g.ClassifiesWith(GroupPrefix+id) {
 			return fmt.Errorf("%s is %s's classifier: choose another first", id, g.Name)
 		}
 	}
@@ -2375,7 +2407,7 @@ func DeleteGroups(ids []string) error {
 			if slices.Contains(g.Members, GroupPrefix+id) {
 				return fmt.Errorf("%s is in %s: take it out first", id, g.Name)
 			}
-			if g.Classifier == GroupPrefix+id {
+			if g.ClassifiesWith(GroupPrefix + id) {
 				return fmt.Errorf("%s is %s's classifier: choose another first", id, g.Name)
 			}
 		}
@@ -2424,7 +2456,7 @@ func SwitchGroup(id string, on bool) error {
 	}
 	if !on {
 		for _, o := range f.Groups {
-			if !o.Hidden && !o.Disabled && o.ID != id && o.Classifier == GroupPrefix+id {
+			if !o.Hidden && !o.Disabled && o.ID != id && o.ClassifiesWith(GroupPrefix+id) {
 				return fmt.Errorf("%s classifies %s's requests: pick another classifier there first", f.Groups[i].Name, o.Name)
 			}
 		}
@@ -2526,6 +2558,9 @@ func RenameGroup(from, to string) error {
 		return fmt.Errorf("there is a group %q already", to)
 	}
 	found := slices.ContainsFunc(foundGroups(providerEntries()), func(o Group) bool { return o.ID == from })
+	// what agents' lists know it by before: a found group's auto/<model>
+	// too, which the renamed group no longer answers to
+	refs := groupRefs(g)
 	g.ID, g.Auto, g.Hidden = to, false, false
 	g.Former = append(slices.DeleteFunc(slices.Clone(g.Former), func(id string) bool { return id == from || id == to }), from)
 	f.Groups = slices.DeleteFunc(f.Groups, func(o Group) bool { return o.ID == from })
@@ -2579,34 +2614,64 @@ func RenameGroup(from, to string) error {
 			}
 			return m
 		})
-		if f.Groups[i].Classifier == old {
-			f.Groups[i].Classifier = now
-		}
+		f.Groups[i].MapClassifiers(func(c string) string {
+			if c == old {
+				return now
+			}
+			return c
+		})
 	}
 	if err := store(f); err != nil {
 		return err
 	}
-	return renameGroupPicks(old, now)
+	return renameGroupPicks(from, refs, now)
+}
+
+// groupRefs are the refs an agent's list names g by: group/<id>, and a
+// found group's auto/<model> (Group.Ref) besides.
+func groupRefs(g Group) []string {
+	out := []string{GroupPrefix + g.ID}
+	if r := g.Ref(); r != out[0] {
+		out = append(out, r)
+	}
+	return out
+}
+
+// GroupRefs are the refs an agent's list names the group id by now:
+// group/<id>, and a found group's auto/<model> besides. None for no such
+// group.
+func GroupRefs(id string) []string {
+	g, ok := groupOf(groupsIn(providerEntries()), strings.ToLower(strings.TrimSpace(id)))
+	if !ok {
+		return nil
+	}
+	return groupRefs(g)
 }
 
 // renameGroupPicks moves what each agent's list says of a group to its new
 // id, as renameModelPrefs does a provider's models: picked for an agent
-// shown only its picks, taken out, put in an order, sent fast. Left under
-// the old id, a group picked for Pi was off in Pi's list after its rename
-// (#2289, eachann1024), the id it was picked by no longer in the catalog.
-func renameGroupPicks(old, now string) error {
+// shown only its picks, taken out, put in an order, sent fast, and the
+// names an agent's list is narrowed to (Visible), as Rename does a
+// provider's. Left under the old id, a group picked for Pi was off in
+// Pi's list after its rename (#2289, eachann1024), the id it was picked
+// by no longer in the catalog. old are every ref the lists knew the group
+// by (groupRefs): a found group is picked by its auto/<model>, and one
+// made the user's under another id was gone from Codex's list
+// (@CHENGJIAHEGOXIS on X), picked by a ref nothing answered to.
+func renameGroupPicks(from string, old []string, now string) error {
 	s := settings.Load()
 	moved := false
+	was := func(id string) bool { return slices.Contains(old, id) }
 	// the hidden and the picked are kept sorted (sortedIDs); an order is
 	// the user's own
 	for i, m := range []map[string][]string{s.HiddenModels, s.PickedModels, s.OrderedModels, s.FastPicks} {
 		for agent, ids := range m {
-			if !slices.Contains(ids, old) {
+			if !slices.ContainsFunc(ids, was) {
 				continue
 			}
 			var out []string
 			for _, id := range ids {
-				if id == old {
+				if was(id) {
 					id = now
 				}
 				if !slices.Contains(out, id) {
@@ -2617,6 +2682,27 @@ func renameGroupPicks(old, now string) error {
 				out = sortedIDs(out)
 			}
 			m[agent], moved = out, true
+		}
+	}
+	// a visibility names a group by its id, group/<id> or auto/<model>
+	// (Entry.Names), in any case
+	to := strings.TrimPrefix(now, GroupPrefix)
+	for agent, names := range s.Visible {
+		var out []string
+		changed := false
+		for _, n := range names {
+			switch {
+			case strings.EqualFold(n, from):
+				n, changed = to, true
+			case slices.ContainsFunc(old, func(r string) bool { return strings.EqualFold(n, r) }):
+				n, changed = now, true
+			}
+			if !slices.ContainsFunc(out, func(o string) bool { return strings.EqualFold(o, n) }) {
+				out = append(out, n)
+			}
+		}
+		if changed {
+			s.Visible[agent], moved = out, true
 		}
 	}
 	if !moved {

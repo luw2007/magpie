@@ -345,7 +345,9 @@ func quotaHistReading(q SubscriptionQuota, now time.Time) (key string, at time.T
 // noteQuotaHistory keeps what each window among qs says, at when it was
 // read (ReadAt), or now: a reading handed back again from a cache (a
 // Claude account's, kept until Claude Code tells it again) keeps its time
-// and so isn't taken for a new one.
+// and so isn't taken for a new one. A stale replica's window
+// (quota_stale.go) isn't kept, and its card in qs is set to the later
+// window, so call it before the cards are cached.
 func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 	quotaHistMu.Lock()
 	defer quotaHistMu.Unlock()
@@ -373,12 +375,13 @@ func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 	}
 	var h quotaHist
 	changed := false
-	for _, q := range qs {
+	for i, q := range qs {
 		key, at, ok := quotaHistReading(q, now)
 		if !ok {
 			continue
 		}
-		for _, w := range q.Windows {
+		var current []QuotaWindow // q's windows, a stale replica's as the later window (quota_stale.go)
+		for j, w := range q.Windows {
 			p, ok := pointOf(w, at, now)
 			if !ok {
 				continue
@@ -391,6 +394,20 @@ func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 			}
 			name := w.LineName() // Antigravity's pools each have a 5-hour window
 			before := h[key][name]
+			if kept := withoutStale(q.Provider, before); staleWindowVendors[q.Provider] && len(kept) > 0 {
+				if cw, stale := currentWindow(w, p, kept[len(kept)-1]); stale {
+					if current == nil {
+						current = slices.Clone(q.Windows)
+					}
+					current[j] = cw
+					for m, f := range q.Windows {
+						if sameBucket(f, w) {
+							current[m].Used, current[m].ResetsAt, current[m].ResetSecs, current[m].StartsAt = cw.Used, cw.ResetsAt, 0, nil
+						}
+					}
+					continue // not kept: a window already replaced
+				}
+			}
 			k := len(before)
 			var last QuotaPoint
 			if k > 0 {
@@ -401,6 +418,9 @@ func noteQuotaHistory(qs []SubscriptionQuota, now time.Time) {
 				changed = true
 			}
 			h[key][name] = after
+		}
+		if current != nil {
+			qs[i].Windows = current
 		}
 	}
 	if !changed {
@@ -494,7 +514,8 @@ func QuotaHistories(since time.Time, provider, user string) []QuotaHistory {
 			a.Provider, a.User = p, u
 		}
 		for _, name := range slices.Sorted(maps.Keys(h[key])) {
-			pts := h[key][name]
+			// a stale replica's readings, kept before they were known as one
+			pts := withoutStale(a.Provider, h[key][name])
 			i, _ := slices.BinarySearchFunc(pts, since, func(p QuotaPoint, t time.Time) int { return p.At.Compare(t) })
 			if i > 0 {
 				i-- // the one before, so a line reaches the range's edge

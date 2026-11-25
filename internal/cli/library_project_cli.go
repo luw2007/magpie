@@ -21,6 +21,7 @@ const libraryProjectUsage = `magpie library project [--json]      the projects (
   magpie library project skill rm <dir> <skill…>   take skills out of it
   magpie library project skill agents <dir> <skill> <a,b…|none>   the agents it has the skill for
   magpie library project copy <dir> on|off copies of its skills in place of links to the library's
+  magpie library project main-only <dir> on|off keep its set to this checkout: the repository's other worktrees get none of it
   magpie library project server [list] <dir> [--json]   its MCP servers and the agents each is for
   magpie library project server add <dir> <server…> [agents=a,b…]   give it library servers: by default for the agents
                                      its servers are for already, or, with none yet, every agent here that reads a
@@ -36,6 +37,13 @@ const libraryProjectUsage = `magpie library project [--json]      the projects (
                                      .claude/settings.local.json and .codex/hooks.json beside what's there
   magpie library project hook rm <dir> <hook…>   take them out, only the entries magpie wrote
   magpie library project hook agents <dir> <hook> <a,b…|none>   the agents it has the hook for
+  magpie library project plugin [list] <dir> [--json]   the library's plugins and Claude Code's own, and which are on
+  magpie library project plugin on <dir> <plugin…> [agents=a,b…]   turn plugins on in it: a library plugin's parts go
+                                     where its agents read the project's own (by default the agents its plugins are
+                                     for already, or every agent here that reads one); a plugin Claude Code installed
+                                     (name@marketplace, or its name alone when only one has it) is turned on in
+                                     .claude/settings.local.json, for this project alone
+  magpie library project plugin off <dir> <plugin…>   turn them off: only what magpie wrote for them comes out
   magpie library project pi [list] <dir> [--json]   its packages for Pi (.pi/settings.json) and the project's own
   magpie library project pi add|on <dir> <source…>   give it packages for Pi: npm:<name>[@version] or a git source; Pi
                                      installs them when it next starts there
@@ -147,6 +155,27 @@ func libraryProjectCmd(args []string) error {
 			fmt.Println(green.Render("✓"), dir, "gets links to the library's skills")
 		}
 		return nil
+	case "main-only", "mainonly":
+		if len(rest) != 2 || strings.HasPrefix(rest[0], "-") || rest[1] != "on" && rest[1] != "off" {
+			return usage()
+		}
+		dir, err := projectDir(rest[0])
+		if err != nil {
+			return err
+		}
+		res, err := library.ProjectMainOnly(dir, rest[1] == "on")
+		if err != nil {
+			return err
+		}
+		if err := projectOutcome(dir, nil, res); err != nil {
+			return err
+		}
+		if rest[1] == "on" {
+			fmt.Println(green.Render("✓"), dir, "keeps its set to this checkout: the repository's other worktrees get none of it")
+		} else {
+			fmt.Println(green.Render("✓"), dir, "is followed by the repository's other worktrees again")
+		}
+		return nil
 	case "skill":
 		if len(rest) == 0 {
 			return usage()
@@ -158,6 +187,8 @@ func libraryProjectCmd(args []string) error {
 		return projectKindCmd(projectSubagents, rest, usage)
 	case "hook":
 		return projectKindCmd(projectHooks, rest, usage)
+	case "plugin", "plugins":
+		return projectPluginCmd(rest, usage)
 	case "pi":
 		return projectPiCmd(rest, usage)
 	case "instructions", "instr":

@@ -20,9 +20,10 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library instructions        print the shared instructions
   magpie library instructions set <file|->   replace them with a file's text (- for stdin)
   magpie library instructions agents <a,b…|none>   the agents that get them
-  magpie library mcp add <name> <url | command args…> [agents=a,b…] [header=K=V…] [env=K=V…] [timeout=SECS] [--local]
+  magpie library mcp add <name> <url | command args…> [agents=a,b…] [header=K=V…] [env=K=V…] [timeout=SECS] [idle=SECS|never] [--local]
                                      header= is for a URL, env= for a command; the program's own words go after --
-  magpie library mcp set <name> header=K=V | header-=K | env=K=V | env-=K | timeout=SECS   change one setting of a server
+  magpie library mcp set <name> header=K=V | header-=K | env=K=V | env-=K | timeout=SECS | idle=SECS|never   change one setting of a server
+                                     idle= is how long a server magpie runs (the router's, Codex's) is kept unused, never to keep it
   magpie library mcp show <name>     print the server as the library keeps it, as JSON
   magpie library mcp agents <name> <a,b…|none>
   magpie library mcp local <name> on|off   keep it to this computer: a sync or a backup never carries it, and one
@@ -42,9 +43,10 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library skill hand-over <name…>|--all   move skills kept in ~/.agents/skills into the library's folder: the agents that read them
                                      there keep them, ticked, and you can turn each off
   magpie library skill hand-back <name>  …and back into ~/.agents/skills, where those agents read it whatever is ticked
-  magpie library skill rm <name>     (skills are installed from the app's Library page)
-  magpie library skill rm --all [--yes]   every skill out of the library and the agents (asks first; --yes doesn't)
-  magpie library skill rm --gone [--yes]  every skill an update found removed from its source (asks first; --yes doesn't)
+  magpie library skill rm <name> [--no-backup]   (skills are installed from the app's Library page)
+                                     its folder goes to magpie's backups; --no-backup deletes it (a folder of yours it links to stays)
+  magpie library skill rm --all [--yes] [--no-backup]   every skill out of the library and the agents (asks first; --yes doesn't)
+  magpie library skill rm --gone [--yes] [--no-backup]  every skill an update found removed from its source (asks first; --yes doesn't)
   magpie library skill update [name] fetch a skill from GitHub again; with no name, every one from there
                                      (one changed here is left as it is; update it by name with --replace-edits)
   magpie library skill how link|copy [agent]   give skills as links to the library's or as copies: every agent's way, or one agent's
@@ -53,6 +55,8 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library skill auto-update on|off      fetch each skill from GitHub or git again by itself when it changes there (one changed here stays)
   magpie library skill use-library <name> <agent>   an agent's own skill by that name is in the way: set it aside, link the library's
   magpie library skill keep-own <name> <agent>      …or keep the agent's, and take the agent off the library's
+  magpie library plugin [list]       the library's plugins (Library › Claude plugins): magpie library plugin help
+  magpie library plugin import <folder | owner/repo | git address> [plugin…] [agents=a,b…|none]   put a source's plugins in the library, as Library › Claude plugins does
   magpie library project …           a project folder's own skills (Library › Projects): magpie library project help
   magpie library native              what plugins Codex and Claude Code and packages Pi installed themselves declare (read only; the agent loads them)
   magpie library rtk                 which agents run their shell commands through RTK (rtk-ai.app), to save tokens
@@ -140,14 +144,14 @@ func libraryCmd(args []string) error {
 				unused = s.Name
 			}
 		case len(rest) >= 3 && rest[0] == "set" && !strings.HasPrefix(rest[1], "-"):
-			// header, env and timeout of a server in the library, one at a time (#6111)
+			// header, env, timeout and idle of a server in the library, one at a time (#6111)
 			var cmd []string
 			var o library.ServerOpts
 			if cmd, o, err = library.SplitServerWords(rest[2:]); err != nil {
 				return err
 			}
 			if len(cmd) > 0 || o.HasAgent || o.Local != nil {
-				return fmt.Errorf("set takes header=K=V, env=K=V, header-=K, env-=K and timeout=SECS, not %q", strings.Join(cmd, " "))
+				return fmt.Errorf("set takes header=K=V, env=K=V, header-=K, env-=K, timeout=SECS and idle=SECS|never, not %q", strings.Join(cmd, " "))
 			}
 			res, err = library.SetServer(rest[1], o)
 		case len(rest) == 2 && rest[0] == "show" && !strings.HasPrefix(rest[1], "-"):
@@ -238,8 +242,8 @@ func libraryCmd(args []string) error {
 			if res, err = library.HandBackSkill(rest[1]); err == nil {
 				fmt.Println(green.Render("✓"), rest[1], "is back in", filepath.Join("~", ".agents", "skills", rest[1]))
 			}
-		case len(rest) == 2 && rest[0] == "rm":
-			res, err = library.RemoveSkill(rest[1])
+		case (len(rest) == 2 || len(rest) == 3 && rest[2] == "--no-backup") && rest[0] == "rm" && !strings.HasPrefix(rest[1], "-"):
+			res, err = library.RemoveSkillsHow([]string{rest[1]}, len(rest) == 2)
 		case len(rest) == 3 && rest[0] == "use-library":
 			res, err = library.UseLibrarySkill(rest[1], rest[2])
 		case len(rest) == 3 && rest[0] == "keep-own":
@@ -286,6 +290,8 @@ func libraryCmd(args []string) error {
 		return rtkCmd(rest)
 	case "project", "projects":
 		return libraryProjectCmd(rest)
+	case "plugin", "plugins":
+		return libraryPluginCmd(rest)
 	case "help", "-h", "--help":
 		fmt.Print("  " + libraryUsage)
 		return nil
@@ -311,10 +317,12 @@ func libraryCmd(args []string) error {
 // terminal; with no terminal to ask on, only --yes takes them. A library
 // with no skills is said, and answers a nil result.
 func removeEverySkill(args []string) (*library.Result, error) {
-	yes := false
+	yes, keep := false, true
 	for _, a := range args {
 		switch a {
 		case "--all":
+		case "--no-backup":
+			keep = false
 		case "--yes", "-y":
 			yes = true
 		default:
@@ -337,14 +345,18 @@ func removeEverySkill(args []string) (*library.Result, error) {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
 			return nil, fmt.Errorf("this removes all %s; run it with --yes to do so without being asked", plural(len(names), "skill"))
 		}
-		fmt.Printf("Remove all %s (%s) from the library and every agent? Folders magpie keeps go to its backups; folders of your own are only unlinked. [y/N] ",
-			plural(len(names), "skill"), strings.Join(names, ", "))
+		where := "Folders magpie keeps go to its backups"
+		if !keep {
+			where = "Folders magpie keeps are deleted, with no backup"
+		}
+		fmt.Printf("Remove all %s (%s) from the library and every agent? %s; folders of your own are only unlinked. [y/N] ",
+			plural(len(names), "skill"), strings.Join(names, ", "), where)
 		line, _ := stdin().ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 			return nil, fmt.Errorf("nothing removed")
 		}
 	}
-	res, err := library.RemoveSkills(names)
+	res, err := library.RemoveSkillsHow(names, keep)
 	if err != nil {
 		return nil, err
 	}
@@ -362,10 +374,12 @@ func removeEverySkill(args []string) (*library.Result, error) {
 // update or a check found its source without, asked about first, naming
 // the ones changed here.
 func removeGoneSkills(args []string) (*library.Result, error) {
-	yes := false
+	yes, keep := false, true
 	for _, a := range args {
 		switch a {
 		case "--gone":
+		case "--no-backup":
+			keep = false
 		case "--yes", "-y":
 			yes = true
 		default:
@@ -396,14 +410,18 @@ func removeGoneSkills(args []string) (*library.Result, error) {
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
 			return nil, fmt.Errorf("this removes %s removed from their source; run it with --yes to do so without being asked", plural(len(names), "skill"))
 		}
-		fmt.Printf("Remove %s removed from their source (%s) from the library and every agent? The library's folders go to magpie's backups. [y/N] ",
-			plural(len(names), "skill"), strings.Join(shown, ", "))
+		where := "The library's folders go to magpie's backups."
+		if !keep {
+			where = "The library's folders are deleted, with no backup."
+		}
+		fmt.Printf("Remove %s removed from their source (%s) from the library and every agent? %s [y/N] ",
+			plural(len(names), "skill"), strings.Join(shown, ", "), where)
 		line, _ := stdin().ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 			return nil, fmt.Errorf("nothing removed")
 		}
 	}
-	res, err := library.RemoveGoneSkills(names)
+	res, err := library.RemoveGoneSkillsHow(names, keep)
 	if err != nil {
 		return nil, err
 	}

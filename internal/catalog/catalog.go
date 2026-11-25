@@ -689,6 +689,9 @@ func loadGen() (map[string]mdProvider, int) {
 				}
 				var m map[string]mdProvider
 				if json.Unmarshal(b, &m) == nil && len(m) > 0 {
+					// and the embedding models v1 leaves out, which
+					// models.dev's v2 lists and prices (embeddings.go)
+					addEmbeddings(m, readEmbeddings())
 					shareCatalog(m)
 					mdev = m
 					votes, reasons := map[string]int{}, map[string]int{}
@@ -966,7 +969,9 @@ func syncLock(ctx context.Context, onlyIfMissing bool) error {
 	// the lab catalog beside it is best effort: without it the provider
 	// catalog answers alone, and one kept before is kept
 	labsChanged, _ := syncLabs(ctx)
-	if changed || labsChanged {
+	// and v2's embedding models likewise (embeddings.go)
+	embeddingsChanged, _ := syncEmbeddings(ctx)
+	if changed || labsChanged || embeddingsChanged {
 		Reset()
 		Touched() // names, reasoning levels and context windows may be others
 	}
@@ -974,10 +979,11 @@ func syncLock(ctx context.Context, onlyIfMissing bool) error {
 }
 
 // Stale reports whether no catalog exists or the cache is older than a day
-// (fresh.go), or magpie's has no lab catalog beside it yet (labs.go).
+// (fresh.go), or magpie's has no lab catalog or v2 embedding models
+// beside it yet (labs.go, embeddings.go).
 func Stale() bool {
 	src := Source()
-	if src == "" || labsMissing() {
+	if src == "" || labsMissing() || embeddingsMissing() {
 		return true
 	}
 	st, err := os.Stat(src)
@@ -1087,6 +1093,34 @@ func TierTimes(model, tier string, at time.Time) (float64, int) {
 		}
 	}
 	return x, n
+}
+
+// planTierTimes are the multiples of a model's Standard rate that a ChatGPT
+// plan's included usage (Codex's windows) is drawn down at in a service
+// tier, from the "Included usage" column of OpenAI's Codex pricing page
+// (learn.chatgpt.com/docs/pricing, Speed multipliers). They are not the
+// API's or credits' rates: Fast on GPT-6.1 and GPT-6 is 2x in credits but
+// 2.5x of the plan, and Ultrafast on GPT-6.2 is 3x in credits through
+// 2027-02-28 but 6x of the plan throughout (mu33410 on X: a week of
+// GPT-6.2 Ultrafast read as half the allowance of a week without it).
+var planTierTimes = map[[2]string]float64{
+	{"gpt-6.2-astra", "priority"}: 2, {"gpt-6.2-sol", "priority"}: 2,
+	{"gpt-6.1-sol", "priority"}: 2.5, {"gpt-6.1-terra", "priority"}: 2.5,
+	{"gpt-6-astra", "priority"}: 2.5, {"gpt-6-sol", "priority"}: 2.5, {"gpt-6-luna", "priority"}: 2.5,
+	{"gpt-6.2-astra", "ultrafast"}: 6, {"gpt-6.2-sol", "ultrafast"}: 6,
+	{"gpt-6-astra", "ultrafast"}: 8, {"gpt-6.1-sol", "ultrafast"}: 8,
+}
+
+// PlanTierTimes is the multiple of model's Standard rate a ChatGPT plan's
+// included usage is drawn down at in tier ("priority" for Fast,
+// "ultrafast"), and whether OpenAI says one (planTierTimes).
+func PlanTierTimes(model, tier string) (float64, bool) {
+	tier = strings.ToLower(strings.TrimSpace(tier))
+	if tier == "fast" {
+		tier = "priority" // Codex's own word for it
+	}
+	x, ok := planTierTimes[[2]string{bareID(model), tier}]
+	return x, ok
 }
 
 // PricedBy is the list price the first of providers (models.dev ids)
@@ -2613,7 +2647,20 @@ func WrongEndpoint(status int, body []byte) bool {
 			return true
 		}
 	}
-	return false
+	return APIRefused(status, body)
+}
+
+// APIRefused is a refusal of the API itself, whatever the model: sub2api
+// answers a key whose group isn't let dispatch Anthropic's Messages with
+// 403 {"type":"error","error":{"type":"permission_error","message":"This
+// group does not allow /v1/messages dispatch"}} (Sidrune AI, 11-20: every
+// Claude Code request of a China-region key). The key serves its models on
+// its other APIs; on this one it serves none of them.
+func APIRefused(status int, body []byte) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(Words(body))), "does not allow /v1/messages dispatch")
 }
 
 // NoChannel recognizes a relay (New API and its forks) answering 503 that no

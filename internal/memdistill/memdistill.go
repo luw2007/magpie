@@ -34,6 +34,7 @@ import (
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/memory"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // Complete sends one request to model, asked to reason at effort ("" the
@@ -100,6 +101,9 @@ type State struct {
 	// Left is how many were due and not read when the last run ended:
 	// stopped, failed or past PerRun
 	Left int `json:"left,omitempty"`
+	// Reads is the reading the Done marks were made by (reads): marks
+	// an older one made of an agent it read wrong are dropped
+	Reads int `json:"reads,omitempty"`
 	// Dream is the nightly tidy switched on (dream.go), DreamSince when
 	Dream      bool      `json:"dream,omitempty"`
 	DreamSince time.Time `json:"dreamSince,omitzero"`
@@ -117,8 +121,8 @@ var Path = func() string { return appdir.Join(appdir.Config(), "distill.json") }
 
 var (
 	now  = time.Now
-	list = func() []sessions.Session { return sessions.List(Listed) }
-	read = sessions.TranscriptOf
+	list = listed
+	read = transcriptOf
 	// running is held through a run in this process, and the file lock
 	// across magpies
 	running sync.Mutex
@@ -317,6 +321,7 @@ func runUpTo(ctx context.Context, auto string, complete Complete, limit int) (Re
 	if model == "" {
 		model = auto
 	}
+	reread(&st)
 	var res ran
 	var runErr error
 	if model == "" {
@@ -332,6 +337,7 @@ func runUpTo(ctx context.Context, auto string, complete Complete, limit int) (Re
 		if runErr != nil {
 			s.Error = runErr.Error()
 		}
+		reread(s)
 		if s.Done == nil {
 			s.Done = map[string]time.Time{}
 		}
@@ -357,6 +363,33 @@ type ran struct {
 	left int
 }
 
+// listed are the latest Listed conversations as the Sessions page lists
+// them: the agents' own files and the sessions only magpie's gateway
+// recorded (WorkBuddy's, an agent's on another computer), each once
+// (sessions.GatewayKeys). Reading only the files left every agent seen
+// only through the gateway out of memory (bxgz233 on X: 1000+ WorkBuddy
+// sessions, none read).
+func listed() []sessions.Session {
+	native := sessions.List(Listed)
+	keys := map[string]bool{}
+	for _, s := range native {
+		for _, k := range sessions.GatewayKeys(s) {
+			keys[k] = true
+		}
+	}
+	all := sessions.MergeExternal(native, usage.ListedGateway(keys, Listed))
+	return all[:min(len(all), Listed)]
+}
+
+// transcriptOf reads s where it is kept: a gateway-only session from what
+// the gateway recorded of it, any other from its agent's file.
+func transcriptOf(s sessions.Session) (sessions.Transcript, error) {
+	if s.Gateway {
+		return sessions.GatewayTranscript(s.Agent, s.ID)
+	}
+	return sessions.TranscriptOf(s)
+}
+
 // forget says a read session's mark, its last turn at, can go: the
 // session is older than since, so it is never read again, or older than
 // keepMarks and than every session listed (oldest), so it was deleted or
@@ -377,7 +410,7 @@ func due(st State, t time.Time) ([]sessions.Session, time.Time) {
 			oldest = s.Last
 		}
 		switch {
-		case s.Agent == Agent, s.Gateway, s.ReadOnly, !s.Transcript,
+		case s.Agent == Agent, !s.Transcript,
 			s.ParentSession != "",
 			t.Sub(s.Last) < Quiet, s.Last.Before(st.Since):
 			continue
@@ -392,6 +425,30 @@ func due(st State, t time.Time) ([]sessions.Session, time.Time) {
 }
 
 func key(s sessions.Session) string { return s.Agent + "/" + s.ID }
+
+// reads is how sessions are read; each step names the agents read wrong
+// before it, whose sessions are read again. 1: WorkBuddy's turns, each
+// its context and the user's words in one block, were read as context
+// whole, so every session had no turns and was marked done unread
+// (bxgz233 on X).
+const reads = 1
+
+var rereadAgents = []string{"workbuddy", "workbuddy-ai", "codebuddy"}
+
+// reread drops the Done marks a reading older than reads made of the
+// agents it read wrong.
+func reread(s *State) {
+	if s.Reads >= reads {
+		return
+	}
+	for k := range s.Done {
+		agent, _, _ := strings.Cut(k, "/")
+		if slices.Contains(rereadAgents, agent) {
+			delete(s.Done, k)
+		}
+	}
+	s.Reads = reads
+}
 
 func run(ctx context.Context, st State, model, effort string, complete Complete, limit int) (ran, error) {
 	r := ran{done: map[string]time.Time{}}

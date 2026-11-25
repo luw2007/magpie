@@ -26,15 +26,16 @@ package library
 //   - one the agent finds in ~/.agents/skills anyway.
 //
 // A skill the router lists is still the user's to type in Codex ($name),
-// Pi (/skill:name) and Droid (/name) too: the agent's folder is given a
-// stub of it by that name (slashFor), whose SKILL.md has its name and
-// description and sends the agent to its own SKILL.md, and is marked for
-// the user to type alone, so the agent offers it in its picker and keeps
-// it out of the model's prompt. That is only for the agents whose own
-// loaders were read to do so (slashAgent), and only where no agent that
-// reads the folder too would put a stub's description in its prompt.
-// Claude Code's folder is read by Crush, DevEco Code and Kimi Code, so
-// its stubs are commands (routerCommands) instead.
+// Pi (/skill:name), Droid (/name) and DeepSeek Harness (/name) too: the
+// agent's folder is given a stub of it by that name (slashFor), whose
+// SKILL.md has its name and description and sends the agent to its own
+// SKILL.md, and is marked for the user to type alone, so the agent
+// offers it in its picker and keeps it out of the model's prompt. That
+// is only for the agents whose own loaders were read to do so
+// (slashAgent), and only where no agent that reads the folder too would
+// put a stub's description in its prompt. Claude Code's folder is read
+// by Crush, DevEco Code and Kimi Code, so its stubs are commands
+// (routerCommands) instead.
 //
 // And an agent whose folder can't take the router keeps every link
 // (routerWhy): one given copies (in WSL, or by the user's choice), Claude
@@ -366,7 +367,10 @@ func writeRouter(dir, skills string, routed map[string]bool) (bool, map[string]s
 			changed = true
 		}
 	}
-	type entry struct{ name, desc, at string }
+	type entry struct {
+		name, desc, at string
+		code           bool
+	}
 	var list []entry
 	ats := map[string]string{}
 	for _, n := range names {
@@ -381,7 +385,7 @@ func writeRouter(dir, skills string, routed map[string]bool) (bool, map[string]s
 		}
 		at := filepath.Join(routedAt(dir, skills, n), "SKILL.md")
 		m, _ := readMeta(skillDir(n))
-		list = append(list, entry{n, m.Description, at})
+		list = append(list, entry{n, m.Description, at, hasCode(skillDir(n))})
 		ats[n] = at
 	}
 	var b strings.Builder
@@ -392,12 +396,18 @@ func writeRouter(dir, skills string, routed map[string]bool) (bool, map[string]s
 	b.WriteString("Each skill below is a folder of instructions, and often scripts or templates, for one kind of task. ")
 	b.WriteString("When a task matches a skill's description, read that skill's SKILL.md at the exact path given before you start (it is there, so don't search for it), and follow it. ")
 	b.WriteString("A file or script a skill names is in that skill's own folder, beside its SKILL.md.\n\n")
+	if slices.ContainsFunc(list, func(e entry) bool { return e.code }) {
+		fmt.Fprintf(&b, "A skill marked with code has a %s: magpie's MCP router runs it in its run_code tool as `skills.<name>(args)` (- as _), calling the router's tools, in one step. Its SKILL.md says which args it takes.\n\n", SkillCode)
+	}
 	for _, e := range list {
 		fmt.Fprintf(&b, "## %s\n\n", e.name)
 		if e.desc != "" {
 			b.WriteString(e.desc + "\n\n")
 		}
 		fmt.Fprintf(&b, "SKILL.md: `%s`\n\n", e.at)
+		if e.code {
+			fmt.Fprintf(&b, "With code: `skills.%s(args)` in run_code\n\n", strings.ReplaceAll(e.name, "-", "_"))
+		}
 	}
 	md := filepath.Join(dir, "SKILL.md")
 	if old, err := os.ReadFile(md); err == nil && string(old) == b.String() {
@@ -547,7 +557,14 @@ func routerDesc(names []string, desc func(int) string) string {
 //   - Pi (1.4.0, dist/core/skills.js formatSkillsForPrompt): such a skill
 //     is only /skill:name;
 //   - Droid (0.231): the model's list filters disableModelInvocation, the
-//     slash list only userInvocable.
+//     slash list only userInvocable;
+//   - DeepSeek Harness (dsh; @deepseek-ai/dsh-skill-filesystem's
+//     parseInvocationPolicy, the same in every version on npm from
+//     0.0.1-rc.3 to 0.2.2-rc.5): dsh-tool-skill's catalog for the model
+//     is filtered by isModelInvocable, while the / picker (dsh-client-ui-
+//     skill, from the session controller's skills list, filtered by
+//     isUserInvocable only) offers it marked user-only, and a /name the
+//     user sends puts its body in the turn (invokedSkillNames).
 //
 // Claude Code (2.1.327) does too, but it has command stubs: Crush, DevEco
 // Code and Kimi Code read its skills folder and neither flag. Not the
@@ -560,7 +577,7 @@ func slashAgent(t *Target) bool {
 	id, _, _ := strings.Cut(t.Agent.ID, "@")
 	id, _, _ = strings.Cut(id, "#")
 	switch id {
-	case "codex", "pi", "droid":
+	case "codex", "pi", "droid", "dsh":
 		return true
 	}
 	return false
