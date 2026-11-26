@@ -2514,6 +2514,7 @@ function ledDetail(r) {
   }
   if (r.priced) add("Cost", fmtCost({ cost: r.cost, unpriced: 0 }, r.provider));
   if (r.credits != null) add("Credits", ledCredits({ credits: r.credits, credited: 1 }).textContent);
+  if (ledEndToEnd(r)) add("End-to-end output", (r.source === "log" ? "≈" : "") + t("{n} tok/s", { n: ledNum(Math.round(ledEndToEnd(r))) }));
   if (ledRowSpeed(r)) add("Speed", t("{n} tok/s", { n: ledNum(Math.round(ledRowSpeed(r))) }));
   else if (ledFloorSpeed(r)) add("Speed", "≥" + t("{n} tok/s", { n: ledNum(Math.round(ledFloorSpeed(r))) }));
   // none, and why in words, for a reader who can't hover the dash (ohblue
@@ -3664,7 +3665,7 @@ const ledHitText = (h) => h === null ? "" : hitPct(h);
 const ledHitTip = (r) => cacheHitTip({ input: r.in, cache_read: r.cache_read, cache_write: r.cache_write });
 const LED_COLS = [
   ["Time"], ["Agent"], ["Requested"], ["Provider · account"], ["Sent", "", true], ["Served"], ["Effort", "", true],
-  ["In", "n", 0, "Input not read from or written to the cache. Where the cache columns are left out, the whole prompt"], ["Out", "n"], ["Cache write", "n", true], ["Cache read", "n", true], ["Cache hit rate", "n", 2, "The share of the prompt read from the cache"], ["Cost", "n"], ["TTFT", "n", 2, "Time to first token"], ["Duration", "n"], ["Speed", "n", 0, "Output tokens a second after the first, over the streamed replies"], ["Status"],
+  ["In", "n", 0, "Input not read from or written to the cache. Where the cache columns are left out, the whole prompt"], ["Out", "n"], ["Cache write", "n", true], ["Cache read", "n", true], ["Cache hit rate", "n", 2, "The share of the prompt read from the cache"], ["Cost", "n"], ["TTFT", "n", 2, "Time to first token"], ["Duration", "n"], ["Speed", "n", 0, "Output tokens a second after the first, over the streamed replies"], ["End-to-end output", "n", 2, "Output tokens divided by the full request duration, including the wait for the first token"], ["Status"],
 ];
 
 // a window under a second after a wait over four times longer: the reply came
@@ -3712,6 +3713,7 @@ const ledDecode = (r) => {
 const LED_CODEX_WINDOW_MS = 1000, LED_CODEX_BODY = 100;
 const ledCodexTurn = (r) => r.source === "log" && r.agent === "codex" && r.ttft_ms > 0;
 // how fast a reply wrote, in tokens a second: 0 when it can't tell
+const ledEndToEnd = (r) => !ledFailed_(r) && !r.canceled && r.out > 0 && r.ms > 0 ? r.out * 1000 / r.ms : 0;
 const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 1000) : 0; };
 // the least a reply read from a session file wrote at, in tokens a second:
 // the file has no first token, only when the line that asked for it and its
@@ -4307,6 +4309,8 @@ function renderLedger() {
         : floor && f.turn ? t("At least: {n} output tokens in {ms}, the whole turn. What came after the first token ({after}) is too little to time a speed by: under a second or under 100 tokens, so the wait for it is counted too", { n: ledNum(r.out), ms: ledTook(r.ms), after: ledTook(r.ms - r.ttft_ms) }) + ttft
         : floor ? t("At least: {n} output tokens in {ms}, from the line that asked for it to its last. The session file has no first token, so the wait for it is counted too", { n: ledNum(r.out), ms: ledTook(r.ms) })
         : ledNoSpeed_(r));
+    const e2e = ledEndToEnd(r);
+    td(e2e ? (timed ? "≈" : "") + t("{n} tok/s", { n: ledNum(Math.round(e2e)) }) : "—", "n" + (e2e ? "" : " faint"), t("Output tokens divided by the full request duration, including the wait for the first token"));
     const st = el("span", "st");
     // a status when the gateway logged the call; a session file has none,
     // and says only whether it went well

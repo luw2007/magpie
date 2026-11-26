@@ -174,6 +174,12 @@ endpoint, by the upstream that answered (`summaryUpstream` in
 OTel attributes carry the evidence without response text. The existing burst and held-content limits in
 `DecodeOf` still apply, and hidden reasoning does not enter average speed.
 
+A separate end-to-end output rate on Routing and Requests divides reported
+output tokens by the full request duration, including first-token waits;
+Routing's group rate uses the sums for completed successful requests.
+Session-file durations on Requests are approximate. The existing streamed
+speed remains unchanged.
+
 A group's speed (`Totals.Speed`) and floor (`Totals.Floor`) are the median
 of its replies' own, each as its row tells it, not their summed tokens over
 their summed time: a few replies held for minutes before their first token,
@@ -189,9 +195,8 @@ the same median (`ledHistMedian`), and Other's row adds the histograms up
 (`ledRatesPlus`). The sums (`DecodeOut` over `DecodeMs`) stay for a
 magpie before rates. `TestGroupSpeedIsTheMedianOfItsReplies` has the
 reporter's shape. The Routing page's session "Avg. speed" stays summed
-tokens over summed time, as its tooltip says, beside the same over each
-request's whole time, for comparing with tools that time a request whole;
-its window already leaves out the wait for the first token.
+tokens over summed time from first output, as its tooltip says; its separate
+end-to-end output metric includes the wait for the first token.
 
 A streamed request's duration (`Millis`, which ends every speed window)
 ends when its last try's reply ended, not when `serve` returns: what the

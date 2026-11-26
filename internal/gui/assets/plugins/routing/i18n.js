@@ -2,6 +2,8 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "End-to-end output": "端到端输出速度",
+    "Output tokens divided by the full request duration, including the wait for the first token": "输出 token 数除以完整请求耗时，包括等待首个 token 的时间",
     "Classifier prompt": "意图判断提示词",
     "Empty: magpie's own. The message goes to the intent that fits it best.": "留空即用 magpie 自带的：消息归入最贴合的意图。",
     "Told to the classifier in place of magpie's instructions as each turn begins. The intents are still listed by number, and it still answers with the number alone.": "每轮开始时，代替 magpie 的说明发给意图判断模型。意图仍按编号列出，它仍只回答编号。",

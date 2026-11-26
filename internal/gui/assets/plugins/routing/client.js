@@ -732,9 +732,10 @@ function routingPage(part) {
         tipLines(hitTip(read, prompt), t("Cache hit rate") + ": " + t("The share of the prompt read from the cache"))],
       speed: ["speed", "Speed", speed ? speed.text : "—", speed?.title ||
         t("All output tokens the vendor counted, reasoning and tool calls included, a second from the first output to the end, over the streamed replies") + ". " + t("A reply that reasoned with no sign in its stream of when counts only its answer, from its first text")],
+      endToEnd: ["speed", "End-to-end output", r.done && !noAnswer(how) && r.status < 400 && r.out > 0 && r.ms > 0 ? t("{n} tok/s", { n: Math.round(r.out * 1000 / r.ms) }) : "—", t("Output tokens divided by the full request duration, including the wait for the first token")],
       cost: ["cost", "Cost", routeCost(r), [r.priced ? costNote() : routeCredits([r]) ? "" : t("No known price or token counts for this request"), routeCredits([r]) ? creditsNote() : ""].filter(Boolean).join("\n")],
     };
-    return visibleMetrics.map((key) => values[key]).filter((metric) => metric[2] !== "—");
+    return visibleMetrics.flatMap((key) => key === "speed" ? [values.speed, values.endToEnd] : [values[key]]).filter((metric) => metric && metric[2] !== "—");
   }
   function metricElement([cls, label, value, help], compact = false) {
     const metric = el("span", "rt-metric " + (cls === "cost" ? "cost-metric" : cls));
@@ -4498,14 +4499,12 @@ function routingPage(part) {
           const { prompt, read } = promptOf(r);
           if (prompt) { s.prompt += prompt; s.read += read; s.cached++; }
           const d = !noAnswer(outcome(r)[1]) && decodeOf(r, r.ms, r.ttft, r.firstText);
-          // the same replies over their whole time too, the wait for the
-          // first token and the reasoning in: what a tool that times the
-          // whole request reads (@verymoes on X: CC Switch's ≈77 and
-          // opencode's 76.7 beside this 142)
-          if (d) { s.decodeMs += d.w; s.decodeOut += d.n; s.timed++; s.wholeMs += r.ms; s.wholeOut += r.out; }
+          // End-to-end throughput includes buffered replies and first-token waits.
+          if (d) { s.decodeMs += d.w; s.decodeOut += d.n; s.timed++; }
+          if (!noAnswer(outcome(r)[1]) && r.status < 400 && r.out > 0 && r.ms > 0) { s.wholeMs += r.ms; s.wholeOut += r.out; s.wholeN++; }
         }
         return s;
-      }, { cost: 0, tokens: 0, priced: 0, unpriced: 0, running: 0, completed: 0, prompt: 0, read: 0, cached: 0, decodeMs: 0, decodeOut: 0, timed: 0, wholeMs: 0, wholeOut: 0 });
+      }, { cost: 0, tokens: 0, priced: 0, unpriced: 0, running: 0, completed: 0, prompt: 0, read: 0, cached: 0, decodeMs: 0, decodeOut: 0, timed: 0, wholeMs: 0, wholeOut: 0, wholeN: 0 });
       setText(x.arrow, open ? "▾" : "▸");
       // Background workers have their own IDs. Label groups made entirely
       // for one purpose without renaming a chat that also made helper calls.
@@ -4552,7 +4551,9 @@ function routingPage(part) {
         tipLines(hitTip(total.read, total.prompt), t("Total cache reads divided by total prompt tokens; larger prompts carry more weight"), coverage(total.cached))]));
       if (g.key && visibleMetrics.includes("speed") && total.decodeMs) meta.push(metricElement(["speed", "Avg. speed", t("{n} tok/s", { n: Math.round(total.decodeOut * 1000 / total.decodeMs) }),
         tipLines(t("Total output tokens divided by the time from each reply's first token to its end; the wait for the first token, and replies without usable timing, are left out") + ". " + t("Reasoning and tool calls count too, from the first output; a reply that reasoned with no sign in its stream of when counts only its answer, from its first text"),
-          total.wholeMs ? t("Over each request's whole time, the wait for the first token and the reasoning counted: {n} tok/s", { n: Math.round(total.wholeOut * 1000 / total.wholeMs) }) : "", coverage(total.timed))]));
+          coverage(total.timed))]));
+      if (g.key && visibleMetrics.includes("speed") && total.wholeMs) meta.push(metricElement(["speed", "End-to-end output", t("{n} tok/s", { n: Math.round(total.wholeOut * 1000 / total.wholeMs) }),
+        tipLines(t("Output tokens divided by the full request duration, including the wait for the first token"), coverage(total.wholeN))]));
       const metaSig = JSON.stringify([bits, tokenHelp, meta.map((e) => [e.textContent, e.title])]);
       if (x.meta.dataset.sig !== metaSig) { x.meta.replaceChildren(...meta); x.meta.dataset.sig = metaSig; }
       const credits = routeCredits(g.rows);

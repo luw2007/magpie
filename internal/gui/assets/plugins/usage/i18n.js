@@ -2,6 +2,8 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "End-to-end output": "端到端输出速度",
+    "Output tokens divided by the full request duration, including the wait for the first token": "输出 token 数除以完整请求耗时，包括等待首个 token 的时间",
     "Other model": "其他模型",
     "Check…": "检查…",
     "Tries that failed, those handed on to another provider too": "失败的尝试，包括转交给其他供应商的",
