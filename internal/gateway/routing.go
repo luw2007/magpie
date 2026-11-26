@@ -758,10 +758,11 @@ func restrictedSaid(status int, body []byte) bool {
 // built-in's or the plugin's. Another vendor's code 11140 is its own, and
 // isn't read so.
 func restrictedRefused(p provider.Provider, status int, body []byte) bool {
-	if restrictedSaid(status, body) {
+	w := wordsOf(body)
+	if restrictedSaid(status, w) {
 		return true
 	}
-	return isWorkBuddy(p) && provider.WBRestricted(status, wordsOf(body)) || googleSuspended(p, status, body) || claudeAccountOff(p, status, body)
+	return isWorkBuddy(p) && provider.WBRestricted(status, w) || googleSuspended(p, status, body) || claudeAccountOff(p, status, body)
 }
 
 // claudeOffWords are Anthropic's, and Claude Code's, words for an account
@@ -1612,6 +1613,13 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// and the failure counts nowhere; the next try goes out on a new
 		// connection (regionFresh)
 		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
+	if legalRefused(status, body) {
+		// a 451: the vendor won't serve this request's content, which the
+		// same account serves the moment a word of it changes (Winnie7572
+		// on X). Not the account's doing: none is set aside, wherever the
+		// 451 is read (a System One group, a stream's late error frame)
+		return Rest{Why: failRefused, Status: status, By: "off", Until: now}
 	}
 	if status == http.StatusForbidden && provider.HarnessOnly(wordsOf(body)) {
 		// OpenRouter serving a free model only to the agent apps it lists

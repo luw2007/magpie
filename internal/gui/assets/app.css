@@ -1687,7 +1687,8 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-chart g.ln .band { stroke: none; fill-opacity: .14; }
 .led-chart .led-day { cursor: pointer; outline: none; }
 .led-chart .led-day:focus-visible { stroke: var(--accent); stroke-width: 1; }
-.led-chart .tip { position: absolute; top: 2px; z-index: 2; min-width: 172px; max-width: 260px; padding: 8px 10px 7px; background: var(--pop-bg); border-radius: 9px; box-shadow: var(--shadow); font-size: 11.5px; pointer-events: none; }
+/* as wide as what it says: not squeezed into the room left where the last column put it (lwjef on X) */
+.led-chart .tip { position: absolute; top: 2px; z-index: 2; width: max-content; min-width: 172px; max-width: 260px; padding: 8px 10px 7px; background: var(--pop-bg); border-radius: 9px; box-shadow: var(--shadow); font-size: 11.5px; pointer-events: none; }
 .led-chart .tip[hidden] { display: none; }
 .led-chart .tip b { display: block; margin-bottom: 4px; font-weight: 600; }
 .led-chart .tip div { display: flex; align-items: center; gap: 6px; line-height: 1.6; }
@@ -1698,7 +1699,7 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 /* traffic: under its total, what went up and what came back */
 .led-chart .tip .io { color: var(--muted); }
 /* speed: name, speed and first token in columns, the name whole (#2343) */
-.led-chart .tip.speed { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; column-gap: 6px; align-items: center; max-width: min(400px, 100%); }
+.led-chart .tip.speed { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; column-gap: 6px; align-items: center; max-width: 100%; }
 .led-chart .tip.speed b { grid-column: 1 / -1; }
 .led-chart .tip.speed > div { display: contents; }
 .led-chart .tip.speed div span { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
@@ -4616,7 +4617,7 @@ input.words.window-in { width: 96px; font-variant-numeric: tabular-nums; }
 .fld > .hint.lead { display: none; }
 /* the card comes from its row, a little smaller, on the strong ease-out
    (UI motion rules: a tooltip 125-200ms, never from nothing) */
-.set-hint { position: fixed; z-index: 60; max-width: min(380px, calc(100vw - 32px)); padding: 8px 11px; border-radius: 9px; background: var(--pop-bg); box-shadow: var(--shadow); -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4); font-size: 12px; line-height: 1.45; color: var(--fg-2); overflow-wrap: anywhere; pointer-events: none; opacity: 0; transform: translateY(-2px) scale(.96); transition: opacity .15s ease, transform .15s cubic-bezier(.23, 1, .32, 1); }
+.set-hint { position: fixed; z-index: 60; width: max-content; max-width: min(380px, calc(100vw - 32px)); padding: 8px 11px; border-radius: 9px; background: var(--pop-bg); box-shadow: var(--shadow); -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4); font-size: 12px; line-height: 1.45; color: var(--fg-2); overflow-wrap: anywhere; pointer-events: none; opacity: 0; transform: translateY(-2px) scale(.96); transition: opacity .15s ease, transform .15s cubic-bezier(.23, 1, .32, 1); }
 .set-hint.on { opacity: 1; transform: none; }
 .set-hint > p { margin: 0; }
 .set-hint > p + p { margin-top: 4px; }
