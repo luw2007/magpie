@@ -134,7 +134,7 @@ nav { position: sticky; top: 0; z-index: 10; backdrop-filter: saturate(1.4) blur
 nav.scrolled { border-bottom-color: var(--line); }
 nav .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 17px; letter-spacing: -.01em; text-decoration: none; }
-.brand img { width: 24px; height: 24px; }
+.brand img, .brand .mb { width: 24px; height: 24px; }
 nav .links { display: flex; gap: 24px; margin-left: auto; font-size: 14px; color: var(--ink2); }
 nav .links a { text-decoration: none; }
 nav .links a:hover { color: var(--ink); }
@@ -237,7 +237,7 @@ pre .c { color: var(--ink3); }
 .copy:hover { border-color: var(--ink3); }
 
 .final { text-align: center; padding: 120px 0 100px; }
-.final img { width: 88px; height: 88px; margin-bottom: 18px; }
+.final img, .final .mb { width: 88px; height: 88px; margin-bottom: 18px; }
 .final .cta { justify-content: center; }
 .btn .os-windows, .btn .os-linux { display: none; }
 html[data-os="windows"] .btn .os-mac, html[data-os="linux"] .btn .os-mac { display: none; }
@@ -279,8 +279,10 @@ footer a:hover { color: var(--ink); }
 .col li { display: flex; align-items: center; gap: 9px; font-size: 14.5px; }
 .col li img { width: 18px; height: 18px; }
 .col li span { color: var(--ink3); font-size: 13px; margin-left: auto; }
+/* a plan named in words is the row's name, not a tag at its end */
+.col li span.name { color: inherit; font-size: inherit; margin-left: 0; }
 .hub { background: var(--card); color: var(--ink); border: 1px solid color-mix(in srgb, var(--ink) 22%, var(--line)); border-radius: 18px; padding: 24px 22px; text-align: center; box-shadow: var(--shadow); }
-.hub img { width: 44px; height: 44px; }
+.hub img, .hub .mb { width: 44px; height: 44px; }
 .hub b { display: block; font-size: 18px; margin: 8px 0 4px; letter-spacing: -.01em; }
 .hub code { font-size: 12.5px; color: var(--ink3); }
 .hub ul { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 6px; font-size: 13px; color: var(--ink2); }
@@ -306,7 +308,7 @@ footer a:hover { color: var(--ink); }
 .rt-wires .pkt { fill: var(--ink); filter: drop-shadow(0 0 3px var(--ink3)); }
 .rt-wires .pkt.back { fill: var(--card); stroke: var(--ink); stroke-width: 2; }
 .rt-node { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 16px 10px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; text-align: center; }
-.rt-node img { width: 30px; height: 30px; margin-bottom: 4px; }
+.rt-node img, .rt-node .mb { width: 30px; height: 30px; margin-bottom: 4px; }
 .rt-node b { font-size: 14px; font-weight: 600; }
 .rt-node small { font-size: 12px; color: var(--ink3); }
 .rt-hub { border-color: var(--ink); box-shadow: 0 0 0 4px var(--bg2); }
@@ -475,13 +477,6 @@ footer a:hover { color: var(--ink); }
   <aside class="sponsor" aria-label="Sponsor">
     <p data-i18n="sponsor.by">Sponsored by</p>
     <div class="cards">
-    <a class="card" href="/go/ccodes/home" target="_blank" rel="noopener sponsored">
-      <img class="for-light" src="/img/sponsor-ccodes.png" width="680" height="170" alt="Ccode-AI">
-      <img class="for-dark" src="/img/sponsor-ccodes-dark.png" width="680" height="170" alt="Ccode-AI">
-      <hr>
-      <span data-i18n="sponsor.ccodes">One platform to reach and manage AI model APIs for text, image and video generation, with one interface, usage billing and channel management.</span>
-      <i aria-hidden="true">→</i>
-    </a>
     <a class="card" href="/go/yylx/home" target="_blank" rel="noopener sponsored">
       <img class="bird" src="/img/sponsor-yylx.png" width="640" height="184" alt="鱼鱼连线 YYLX.IO AI Router">
       <hr>
@@ -507,6 +502,13 @@ footer a:hover { color: var(--ink); }
       <img class="for-dark" src="/img/sponsor-aigocode-dark.png" width="640" height="170" alt="AIGoCode">
       <hr>
       <span data-i18n="sponsor.aigocode">A subscription-based AI coding platform, not just pay-per-token. One account, one monthly plan for Claude Code, Codex and Gemini, with direct connection on the mainland and fast responses. Subscribe via this link to get an extra 10% credits!</span>
+      <i aria-hidden="true">→</i>
+    </a>
+    <a class="card" href="/go/ccodes/home" target="_blank" rel="noopener sponsored">
+      <img class="for-light" src="/img/sponsor-ccodes.png" width="680" height="170" alt="Ccode-AI">
+      <img class="for-dark" src="/img/sponsor-ccodes-dark.png" width="680" height="170" alt="Ccode-AI">
+      <hr>
+      <span data-i18n="sponsor.ccodes">One platform to reach and manage AI model APIs for text, image and video generation, with one interface, usage billing and channel management.</span>
       <i aria-hidden="true">→</i>
     </a>
     </div>
@@ -618,8 +620,8 @@ footer a:hover { color: var(--ink); }
           <li><img src="/icons/deepseek-color.svg" alt="">DeepSeek</li>
           <li><img class="bird" src="/icons/kimi.svg" alt="">Kimi</li>
           <li><img src="/icons/zhipu-color.svg" alt="">GLM</li>
-          <li><img src="/icons/claude-color.svg" alt=""><span data-i18n="how.claude">Your Claude plan</span></li>
-          <li><img class="bird" src="/icons/openai.svg" alt=""><span data-i18n="how.chatgpt">Your ChatGPT plan</span></li>
+          <li><img src="/icons/claude-color.svg" alt=""><span class="name" data-i18n="how.claude">Your Claude plan</span></li>
+          <li><img class="bird" src="/icons/openai.svg" alt=""><span class="name" data-i18n="how.chatgpt">Your ChatGPT plan</span></li>
         </ul>
       </div>
     </div>
@@ -1266,5 +1268,6 @@ magpie tui                             <span class="c" data-i18n="cli.c.tui"># t
   requestAnimationFrame(frame);
 })();
 </script>
+<script src="/bird.js" defer></script>
 </body>
 </html>
