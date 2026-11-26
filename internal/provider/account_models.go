@@ -24,6 +24,11 @@ import (
 // A model the user lists by an id of theirs (SetModelID) is in the list
 // by that id, or by the vendor's own one a list kept from before has.
 func (p Provider) AccountServes(ref, model string) bool {
+	if p.Account == nil {
+		if id, ok := p.accountRef(ref); ok {
+			ref = id
+		}
+	}
 	ms, ok := p.AccountModels[accountKey(ref)]
 	if !ok || len(ms) == 0 || slices.Contains(ms, model) || codexOwnHidden(p, model) {
 		return true
@@ -184,6 +189,11 @@ func (p Provider) accountRef(ref string) (string, bool) {
 	if p.Account == nil {
 		for _, k := range p.KeyList() {
 			if k.Name != "" && strings.EqualFold(k.Name, ref) {
+				return k.ID, true
+			}
+		}
+		for _, k := range p.Keys {
+			if strings.EqualFold(keyID(k.Key), ref) {
 				return k.ID, true
 			}
 		}

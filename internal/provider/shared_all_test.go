@@ -22,13 +22,13 @@ func TestFindCopiesTheOneItGives(t *testing.T) {
 	if err != nil || p.ID != "p7" {
 		t.Fatalf("Find: %v %v", p, err)
 	}
-	p.Keys[0].Key, p.Models[0], p.Headers["X-A"] = "changed", "changed", "changed"
+	p.Keys[1].Key, p.Models[0], p.Headers["X-A"] = "changed", "changed", "changed"
 	again, _ := Find("p7")
-	if again.Keys[0].Key != "k1" || again.Models[0] != "m1" || again.Headers["X-A"] != "1" {
+	if again.Keys[1].Key != "k1" || again.Models[0] != "m1" || again.Headers["X-A"] != "1" {
 		t.Fatalf("a change to what Find gave reached the next: %v %v %v", again.Keys, again.Models, again.Headers)
 	}
 	for _, q := range All() {
-		if q.ID == "p7" && q.Keys[0].Key != "k1" {
+		if q.ID == "p7" && q.Keys[1].Key != "k1" {
 			t.Fatalf("a change to what Find gave reached All: %v", q.Keys)
 		}
 	}

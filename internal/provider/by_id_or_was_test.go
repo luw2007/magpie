@@ -29,7 +29,7 @@ func TestByIDOrWasCopiesOnlyItsOwn(t *testing.T) {
 	// a Sessions poll holds the providers: built once, read by each price
 	defer Hold()()
 	p, ok := byIDOrWas("p7")
-	if !ok || p.ID != "p7" || len(p.Keys) != 5 {
+	if !ok || p.ID != "p7" || len(p.Keys) != 6 {
 		t.Fatalf("p7: %t %+v", ok, p.Keys)
 	}
 	p.Keys[0].Key = "changed"

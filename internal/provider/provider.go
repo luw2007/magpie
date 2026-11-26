@@ -1025,6 +1025,10 @@ func (p Provider) clone() Provider {
 	p.Was = slices.Clone(p.Was)
 	p.Gave = slices.Clone(p.Gave)
 	p.Keys = slices.Clone(p.Keys)
+	for i := range p.Keys {
+		p.Keys[i].PoolRefs = slices.Clone(p.Keys[i].PoolRefs)
+		p.Keys[i].Models = slices.Clone(p.Keys[i].Models)
+	}
 	p.Fallback = slices.Clone(p.Fallback)
 	p.Models = slices.Clone(p.Models)
 	p.PickedFrom = slices.Clone(p.PickedFrom)
@@ -1995,6 +1999,7 @@ func normalize(p Provider) Provider {
 	if p.Account == nil {
 		p.KeyOwnBalances = stableKeySettings(p.Keys, p.KeyOwnBalances)
 		p.KeyPriceRates = stableKeySettings(p.Keys, p.KeyPriceRates)
+		p.KeyRateFactors = stableKeySettings(p.Keys, p.KeyRateFactors)
 	}
 	if TopUpRateOK(p.TopUpRate) != "" {
 		p.TopUpRate = 0

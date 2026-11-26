@@ -176,7 +176,7 @@ func (p Provider) KeyGroupRate(ref string) (float64, bool) {
 		ref = strings.ToLower(id)
 	}
 	for _, k := range p.Keys {
-		if strings.ToLower(k.ID) == ref && k.Key != "" {
+		if strings.ToLower(k.ID) == ref || keyID(k.Key) == ref {
 			ref = keyID(k.Key)
 			break
 		}

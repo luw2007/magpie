@@ -692,6 +692,9 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 // it, whose plan and list have it), one made for that API, else one made
 // for any. A provider without keys is left as it is.
 func (p Provider) keySeeing(proto Protocol, model string) (Provider, bool) {
+	if p.keyView {
+		return p, true
+	}
 	if len(p.KeysOn()) == 0 {
 		return p, true
 	}

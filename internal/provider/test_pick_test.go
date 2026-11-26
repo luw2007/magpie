@@ -22,15 +22,15 @@ func TestModelTestPinnedToAKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	picks := p.TestPicks()
-	if len(picks) != 2 || picks[0].Name != "first" || picks[1].Name != "second" || picks[1].ID != keyID("sk-b") {
+	if len(picks) != 2 || picks[0].Name != "first" || picks[1].Name != "second" || picks[1].ID != p.Keys[1].ID {
 		t.Fatalf("the picks: %+v", picks)
 	}
 	// the key asked: sk-b answers m, sk-a is turned away, and each result says who was asked
-	rs := p.TestModels(TestOn(context.Background(), keyID("sk-b")), []string{"m"})
+	rs := p.TestModels(TestOn(context.Background(), p.Keys[1].ID), []string{"m"})
 	if len(rs) != 1 || !rs[0].OK || rs[0].Account != "second" {
 		t.Fatalf("pinned to the second key: %+v (asked %v)", rs, asked())
 	}
-	rs = p.TestModels(TestOn(context.Background(), keyID("sk-a")), []string{"m"})
+	rs = p.TestModels(TestOn(context.Background(), p.Keys[0].ID), []string{"m"})
 	if len(rs) != 1 || rs[0].OK || rs[0].Account != "first" {
 		t.Fatalf("pinned to the first key: %+v (asked %v)", rs, asked())
 	}

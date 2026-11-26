@@ -96,7 +96,7 @@ func AccountCapOf(id, user string) int {
 // nil when it has no cap, its windows aren't known (not read yet, or the
 // read failed: unknown is not spent) or each is below its share.
 func (p Provider) KeyCapHeld(k KeyAccount, model string, now time.Time, read func(Provider) (Allowance, bool)) *CapHold {
-	caps := p.CapsOf(keyID(k.Key))
+	caps := p.CapsOf(k.ID)
 	if !caps.Holds() {
 		return nil
 	}
@@ -228,6 +228,11 @@ func (p Provider) CapsOf(user string) WindowCaps {
 // AccountCapsOf is CapsOf of the provider id.
 func AccountCapsOf(id, user string) WindowCaps {
 	if s, ok := storedPicks(id); ok {
+		if s.Account == nil {
+			if ref, found := s.accountRef(user); found {
+				user = ref
+			}
+		}
 		k := accountKey(user)
 		return WindowCaps{All: s.AccountCaps[k], Windows: s.AccountWindowCaps[k], Amounts: s.AccountWindowAmounts[k]}
 	}

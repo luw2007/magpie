@@ -165,7 +165,7 @@ func (p *Provider) mergeKey() {
 	if p.Account != nil {
 		return
 	}
-	if p.KeyID == "" && strings.TrimSpace(p.Key) != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return strings.TrimSpace(k.Key) == strings.TrimSpace(p.Key) }) {
+	if strings.TrimSpace(p.Key) != "" && !slices.ContainsFunc(p.Keys, func(k KeyAccount) bool { return strings.TrimSpace(k.Key) == strings.TrimSpace(p.Key) }) {
 		p.Keys = append([]KeyAccount{{Key: strings.TrimSpace(p.Key), Name: p.KeyName, Protocol: p.KeyProtocol, Weight: p.KeyWeight, Plan: p.KeyPlan}}, p.Keys...)
 	}
 }
@@ -511,7 +511,7 @@ func (k KeyAccount) WeightOf() int { return max(k.Weight, 1) }
 
 func findKey(p *Provider, ref string) (int, bool) {
 	for i, k := range p.Keys {
-		if k.ID == ref {
+		if k.ID == ref || keyID(k.Key) == ref {
 			return i, true
 		}
 	}
@@ -774,14 +774,17 @@ func ReplaceKey(id, keyRef, key string) (was, now string, err error) {
 	if !ok {
 		return "", "", fmt.Errorf("%s has no such key", p.Name)
 	}
-	now = keyRef
+	was, now = p.Keys[i].ID, p.Keys[i].ID
 	if p.Keys[i].Key == key {
-		return keyRef, now, nil
+		return was, now, nil
 	}
 	if p.HasKey(key) {
 		return "", "", fmt.Errorf("%s already has this key", p.Name)
 	}
 	p.rememberKeyFingerprint(p.Keys[i].Key, p.Keys[i].ID)
 	p.Keys[i].Key = key
-	return keyRef, now, Save(*p)
+	if p.KeyID == p.Keys[i].ID {
+		p.Key = key
+	}
+	return was, now, Save(*p)
 }

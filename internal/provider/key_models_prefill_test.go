@@ -81,10 +81,14 @@ func TestNewKeyTakesItsOwnModels(t *testing.T) {
 		t.Fatalf("%d keys given a list, want 1", n)
 	}
 	p, _ = Find("relay")
-	if got := p.AccountModels[keyID("sk-claude")]; !slices.Equal(got, []string{"claude-opus-4-7"}) {
+	claude, _ := p.accountRef(keyID("sk-claude"))
+	if got := p.AccountModels[claude]; !slices.Equal(got, []string{"claude-opus-4-7"}) {
 		t.Fatalf("the new key's models %v, want its own list", got)
 	}
-	if p.AccountModels[keyID("sk-all")] != nil || !slices.Equal(p.AccountModels[keyID("sk-old")], []string{"deepseek-v4"}) || !slices.Equal(p.AccountModels[keyID("sk-mine")], []string{"gpt-5.5"}) {
+	all, _ := p.accountRef(keyID("sk-all"))
+	old, _ := p.accountRef(keyID("sk-old"))
+	mine, _ := p.accountRef(keyID("sk-mine"))
+	if p.AccountModels[all] != nil || !slices.Equal(p.AccountModels[old], []string{"deepseek-v4"}) || !slices.Equal(p.AccountModels[mine], []string{"gpt-5.5"}) {
 		t.Fatalf("the keys it had changed: %v", p.AccountModels)
 	}
 	// the gateway's rule: the new key is never sent a model its list lacks
@@ -99,7 +103,8 @@ func TestNewKeyTakesItsOwnModels(t *testing.T) {
 	}
 	PrefillNewKeys(context.Background(), had, "relay")
 	p, _ = Find("relay")
-	if got := p.AccountModels[keyID("sk-gpt")]; !slices.Equal(got, []string{"gpt-5.5", "deepseek-v4"}) {
+	gpt, _ := p.accountRef(keyID("sk-gpt"))
+	if got := p.AccountModels[gpt]; !slices.Equal(got, []string{"gpt-5.5", "deepseek-v4"}) {
 		t.Fatalf("the pasted key's models %v", got)
 	}
 	// asked again, nothing is new: the lists given stay, the user's too
@@ -153,11 +158,13 @@ func TestNewKeyListUnknownKeepsAll(t *testing.T) {
 	}
 	p, _ = Find("relay")
 	for _, k := range []string{"sk-all", "sk-refused", "sk-same", "sk-empty", "sk-slow"} {
-		if ms, ok := p.AccountModels[keyID(k)]; ok {
+		ref, _ := p.accountRef(keyID(k))
+		if ms, ok := p.AccountModels[ref]; ok {
 			t.Errorf("%s given %v, want every model", k, ms)
 		}
 	}
-	if got := p.AccountModels[keyID("sk-set")]; !slices.Equal(got, []string{"gpt-5.5"}) {
+	set, _ := p.accountRef(keyID("sk-set"))
+	if got := p.AccountModels[set]; !slices.Equal(got, []string{"gpt-5.5"}) {
 		t.Errorf("the user's pick became %v", got)
 	}
 }
@@ -187,10 +194,12 @@ func TestImportedKeysTakeTheirOwnModels(t *testing.T) {
 		t.Fatalf("%d providers", len(ps))
 	}
 	p := ps[0]
-	if got := p.AccountModels[keyID("sk-b")]; !slices.Equal(got, []string{"claude-opus-4-7"}) {
+	b, _ := p.accountRef(keyID("sk-b"))
+	if got := p.AccountModels[b]; !slices.Equal(got, []string{"claude-opus-4-7"}) {
 		t.Fatalf("the imported key's models %v (%+v)", got, p.AccountModels)
 	}
-	if _, ok := p.AccountModels[keyID("sk-a")]; ok {
+	a, _ := p.accountRef(keyID("sk-a"))
+	if _, ok := p.AccountModels[a]; ok {
 		t.Fatalf("the key listing every model was given a list: %v", p.AccountModels)
 	}
 }

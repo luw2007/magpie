@@ -66,6 +66,11 @@ func (p Provider) readKeyPriceRate(keyID string) (float64, bool) {
 // prompt costs a third of one that caches 60%, at the same group rate): the
 // one the user gave it, else 1. It never changes a rate the user typed.
 func (p Provider) KeyRateFactor(keyID string) float64 {
+	if p.Account == nil {
+		if ref, ok := p.accountRef(keyID); ok {
+			keyID = ref
+		}
+	}
 	if f, ok := p.KeyRateFactors[strings.ToLower(keyID)]; ok && KeyRateFactorOK(f) == "" {
 		return f
 	}

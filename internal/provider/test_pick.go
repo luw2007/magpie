@@ -71,7 +71,7 @@ func (p Provider) accountNamed(ref string) (Provider, bool) {
 // let it serve: the user asked for this one.
 func (p Provider) keyNamed(ref string) (Provider, bool) {
 	for _, k := range p.KeysOn() {
-		if keyID(k.Key) == ref {
+		if k.ID == ref || keyID(k.Key) == ref {
 			q := p.WithKey(k)
 			q.AccountModels = nil
 			return q, true
