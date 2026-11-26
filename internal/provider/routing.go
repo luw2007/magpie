@@ -53,6 +53,8 @@ const (
 	// before it that renews meanwhile doesn't take its requests back
 	// (dzxx0496 on Discord; routes.Drain).
 	Drain = "drain"
+	// PaceDrain picks as Pace does and stays on its choice as Drain does.
+	PaceDrain = "pace-drain"
 	// FreeExpiring spends free quota before paid, the free quota that is
 	// lost soonest first: a free account (FreePlan, or a model that costs
 	// nothing there, FreeModel) at its next reset or its credits' expiry,
@@ -95,7 +97,7 @@ func PluginRouting(routing string) bool { return pluginRouting.MatchString(routi
 // by besides Smart (""): a built-in one, Manual, or a plugin's.
 func GroupRouting(routing string) bool {
 	switch routing {
-	case Ordered, Rotate, LeastUsed, Pace, Weighted, FreeFirst, Fastest, Cheapest, Drain, FreeExpiring, SmallFirst, Manual, Benchmark:
+	case Ordered, Rotate, LeastUsed, Pace, Weighted, FreeFirst, Fastest, Cheapest, Drain, PaceDrain, FreeExpiring, SmallFirst, Manual, Benchmark:
 		return true
 	}
 	return PluginRouting(routing)

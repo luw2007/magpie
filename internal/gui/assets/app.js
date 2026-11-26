@@ -372,7 +372,7 @@ function toneCheck(img) {
     swap();
   }, { once: true });
 }
-const pngIcons = new Set(["aigocode", "crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "gpustack", "mothx", "zoo-code", "kimi-code-desktop", "openbot", "avibe", "kun", "nowledge-mem"]);
+const pngIcons = new Set(["aigocode", "crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "gpustack", "mothx", "zoo-code", "kimi-code-desktop", "catpaw", "openbot", "avibe", "kun", "nowledge-mem"]);
 
 // lazy: a picture in a long list (Plugins' rows) is asked for near the
 // screen: each SVG an <img> draws is a ~0.6 MB webview document, kept (#909)
@@ -1177,7 +1177,8 @@ const PICKS_IN = { codex: "/model", claude: "/model", opencode: "/models", pi: "
 
 function connectSaid(a) {
   if (!a.wired) return t("Not connected · {agent} uses its own settings", { agent: a.name });
-  if (menuFromList(a)) return t("Connected · {n} models in {agent}'s model menu", { n: a.models.shown, agent: a.name });
+  // no more than its menu takes (Antigravity's 32, 0xBCD18E on X)
+  if (menuFromList(a)) return t("Connected · {n} models in {agent}'s model menu", { n: Math.min(a.models.shown, a.models.menu || 1 / 0), agent: a.name });
   const at = PICKS_IN[kindOf(a)];
   return at ? t("Connected · pick magpie's models with {cmd} in {agent}", { cmd: at, agent: a.name }) : t("Connected · magpie's models are in {agent}'s model list", { agent: a.name });
 }
@@ -1653,7 +1654,7 @@ function switchEntry(a) {
     setTimeout(() => b.classList.remove("done"), 5000 - ago);
   }
   b.append(pn ? el("span", "chev", svg(CHEV, 11, 1.7)) : svg(CHEV, 10, 1.6));
-  const opts = ls.filter((l) => !l.token && !l.accessOnly).map((l) => ({ v: "u:" + l.user, name: l.user, literalName: true, note: l.lapsed ? "Sign-in required" : accountPlan({ agent: a.id, plan: l.plan }) }));
+  const opts = ls.filter((l) => !l.token && !l.accessOnly).map((l) => ({ v: "u:" + l.user, name: l.user, literalName: true, note: l.lapsed ? "Sign-in required" : accountPlan({ ...l, agent: a.id }) }));
   const on = cx ? t("magpie only switches {agent}'s sign-in; its requests go straight to OpenAI", ag) : t("magpie serves no requests on these accounts");
   // the Only switch setting, where the accounts page offers it
   if (!cx || ls.filter((l) => !l.lapsed && (l.active || l.on)).length > 1) opts.push({ v: "only", name: t("Only switch {agent}'s sign-in", ag), literalName: true, ticked: !!p.switchOnly, note: on });
@@ -2291,11 +2292,13 @@ function connectPanel(a, { fields, fieldBtn }) {
     holdAgentModels(a, pick);
     chips.append(pick);
     const v = kv(t("Model list"), chips);
-    // the Codex app's menu reaches only so many of them (#1262)
-    if (a.id === "codex" && a.models.shown > CODEX_APP_MENU) {
+    // the app's menu reaches only so many of them (modelCountJSON.Menu):
+    // the Codex app's (#1262), Antigravity's (0xBCD18E on X)
+    const max = a.models.menu;
+    if (a.models.shown > max) {
       const w = line();
       w.classList.add("ag-warn", "ag-menu-cap");
-      w.append(el("span", "ag-dot"), el("span", "", t("The Codex app's model menu shows only the first {max}: the last {n} models can't be picked there (the Codex CLI's /model lists them all). In Pick, turn off the ones you don't use, or drag the ones you use to the front under Order.", { max: CODEX_APP_MENU, n: a.models.shown - CODEX_APP_MENU })));
+      w.append(el("span", "ag-dot"), el("span", "", t(a.id === "codex" ? "The Codex app's model menu shows only the first {max}: the last {n} models can't be picked there (the Codex CLI's /model lists them all). In Pick, turn off the ones you don't use, or drag the ones you use to the front under Order." : "{agent}'s model menu takes only the first {max} models: the last {n} can't be picked there. In Pick, turn off the ones you don't use, or drag the ones you use to the front under Order.", { agent: a.name, max, n: a.models.shown - max })));
       v.append(w);
     }
     if (a.id === "claude-desktop") v.append(desktopLongestLine());
@@ -3304,12 +3307,6 @@ function dragCards(e, handle, card, list, cards, commit, idle = () => {}, layout
 }
 
 // ---------- an agent's model list ----------
-
-// CODEX_APP_MENU is how many models the Codex app's model menu reaches: it
-// asks Codex's app-server for model/list with limit 100 and never for the
-// next page (ChatGPT.app 26.930), so a model past them can't be picked
-// there; the Codex CLI's /model asks for every one (#1262).
-const CODEX_APP_MENU = 100;
 
 // modelsEntry: the line under an agent's name counting the models its
 // lists show ("All 41 models", or "Showing 5 / 32 models"); it opens the
@@ -6606,14 +6603,15 @@ function renderFileError() {
 // is deprecated, said wherever it is marked so.
 const DEPRECATED_WHY = "Some subscriptions are reached in ways their vendors' terms may not allow. So that magpie itself isn't banned over them, subscription providers are being decoupled from magpie and run by community plugins instead.";
 // deprecatedSub: a built-in subscription with a plugin, not moved onto it
-const deprecatedSub = (agent) => (providers?.movable || []).includes(agent) && !movedSub(agent);
-// unusedSub: a deprecated built-in with no account in magpie, which the
+const deprecatedSub = (agent) => providers?.movable?.includes(agent) && !movedSub(agent);
+// unusedSub: a deprecated built-in, or one whose plugin magpie gives
+// nobody new (noNew: Antigravity), with no account in magpie, which the
 // add sheet leaves to the Plugins page
-const unusedSub = (agent) => deprecatedSub(agent) && !(providers?.providers || []).some((p) => p.account?.agent === agent);
+const unusedSub = (agent) => (deprecatedSub(agent) || providers?.noNew?.includes(agent)) && !providers?.providers?.some((p) => p.account?.agent === agent);
 // replacedSub: a deprecated built-in whose plugin is installed and serves
 // it, under the plugin's own id (the built-in's with "-plugin") until moved;
 // its accounts, if any, still work, and its plugin's Move brings them over
-const replacedSub = (agent) => deprecatedSub(agent) && (providers?.plugins || []).some((x) => x.pid === agent);
+const replacedSub = (agent) => deprecatedSub(agent) && providers?.plugins?.some((x) => x.pid === agent);
 function deprecatedBadge() {
   const b = el("span", "badge deprecated", t("Deprecated"));
   b.title = t(DEPRECATED_WHY);
@@ -6831,8 +6829,14 @@ function askSignOutLogin(a, l) {
 // accountPlan is the account's chip: its vendor and plan, the plan alone
 // when it already names the vendor (a plugin's own "Zed Pro").
 function accountPlan(a) {
-  // a plugin beside a built-in (cursor-plugin) by the built-in's
-  const agent = a.builtin || a.agent;
+  // a plugin beside a built-in (cursor-plugin) by the built-in's. A Claude
+  // or Codex account's plan is the one its last reading says, as the
+  // tray's card names it: Codex's usage tells the plan now, its sign-in
+  // the one it was signed in on, and a Claude reading is the plan after
+  // its run (CoderMaurice on X: an upgraded account read its old plan in
+  // the editor only). Another's reading names its plan in words of its
+  // own; with none read, the sign-in's.
+  const agent = a.builtin || a.agent, q = /^(claude|codex)$/.test(agent) && !a.lapsed && loginUsage[agent]?.data?.[a.user], plan = (q && !q.error && q.plan) || a.plan;
   const cap = (s) => s[0].toUpperCase() + s.slice(1);
   // "Xiaomi MiMo" and "MiMo 高阶" overlap in "MiMo": said once
   const named = (name, plan) => {
@@ -6843,9 +6847,9 @@ function accountPlan(a) {
     }
     return name + " " + plan;
   };
-  if (agent === "codex" || agent === "chatgpt-api") return named("ChatGPT", a.plan && cap(planName(a.plan)));
+  if (agent === "codex" || agent === "chatgpt-api") return named("ChatGPT", plan && cap(planName(plan)));
   if (agent === "copilot") return named("GitHub", a.plan && cap(a.plan));
-  if (agent === "claude") return named("Claude", a.plan && cap(a.plan));
+  if (agent === "claude") return named("Claude", plan && cap(plan));
   if (agent === "cursor") return named("Cursor", a.plan && cap(a.plan));
   if (agent === "grok") return a.plan || "Grok";
   if (agent === "gemini" || agent === "antigravity") return a.plan || "Google";
@@ -11624,21 +11628,6 @@ function renderModels(p) {
     const on = set ? [set] : (m.auto || []);
     return on.length > 0 && !on.some((a) => p.speaks.includes(a));
   };
-  const pickAPI = (c, id) => {
-    const m = p.models.find((x) => x.id === id) || { id };
-    const auto = (m.auto || []).map(apiLabel).join(" · ");
-    const opts = [{ v: "", name: "Auto", note: auto ? t("As its vendor's list says: {apis}", { apis: auto }) : "Each API the provider has, as it answers" },
-      ...apis.map(([k, l, hint]) => ({ v: k, name: l, note: hint }))];
-    openProtoMenu(c, opts, apiNow(id), (v) => {
-      if (v === apiNow(id)) return;
-      const prefs = draft.modelPrefs = draft.modelPrefs || {};
-      prefs[id] = prefs[id] || {};
-      if (v === (m.api || "")) delete prefs[id].api; else prefs[id].api = v;
-      if (!Object.keys(prefs[id]).length) delete prefs[id];
-      draw();
-      status(v ? t("{model} is asked on {api} once saved", { model: id, api: apiLabel(v) }) : t("{model} is asked as its vendor's list says once saved", { model: id }), "ok");
-    }, "API this model is asked on", "model-api-menu");
-  };
   // staged as Model settings' tick stages it (archsiono on X)
   const setImages = (id, m, v) => {
     const P = draft.modelPrefs = draft.modelPrefs || {}, x = P[id] = P[id] || {};
@@ -11671,14 +11660,14 @@ function renderModels(p) {
           const why = p.testsAs[as] ? t(p.testsAs[as]) : "";
           acts.push({ name, icon: PLAY_ICON, off: !!why, why, tip: t("Asked as {agent} asks, for a relay that serves only {agent}", { agent }), run: () => testOne(id, as) });
         }
-        if (p.testPicks) acts.push({ name: "Test on account…", icon: PLAY_ICON, tip: t("Pick the account or key the test is sent to"), run: () => openProtoMenu(c, p.testPicks.map((k) => ({ v: k.id, name: k.name, literalName: true })), null, (v) => testOne(id, "", v), "Account to test", "model-account-menu") });
+        if (p.testPicks) acts.push({ name: "Test on account…", icon: PLAY_ICON, tip: t("Pick the account or key the test is sent to"), run: () => openProtoMenu(c, p.testPicks.map((k) => ({ v: k.id, literalName: true, ...k })), null, (v) => testOne(id, "", v), "Account to test", "model-account-menu") });
       }
       // its id as agents and the gateway name it, to paste where a model is
       // typed (ARNO, Discord: 右击菜单除了测试模型外，还能添加拷贝模型id的功能)
       acts.push({ name: "Copy model ID", icon: COPY_ICON, tip: id, run: () => copy(id, id, null, t("Model ID {model} copied", { model: id })) });
       if (apis.length && (!decidesModel(p, id) || apiNow(id) === "decide")) {
         const now = apiNow(id);
-        acts.push({ name: now ? t("Asked on {api}…", { api: apiLabel(now) }) : t("Asked on: Auto…"), icon: "M2.5 5h11M2.5 11h11M10.5 2.5 13.5 5l-3 2.5M5.5 8.5 2.5 11l3 2.5", tip: t("Pick the API this model is asked on"), run: () => pickAPI(c, id) });
+        acts.push({ name: now ? t("Asked on {api}…", { api: apiLabel(now) }) : t("Asked on: Auto…"), icon: "M2.5 5h11M2.5 11h11M10.5 2.5 13.5 5l-3 2.5M5.5 8.5 2.5 11l3 2.5", tip: t("Pick the API this model is asked on"), run: () => import("./modelorder.js").then(() => modelAPIPick(c, p, id, apis, apiNow, draw), statusErr) });
       }
       if (!decidesModel(p, id)) {
         const m = p.models.find((x) => x.id === id) || {}, x = draft.modelPrefs?.[id];
@@ -11744,8 +11733,11 @@ function renderModels(p) {
     draft.dashed = [...served];
     // models that would read alike say what tells them apart (modelTells)
     const tells = modelTells(p.models);
+    // by maker, the newest first (modelorder.js; WJaunita45604 on X)
+    const mo = window.modelOrder ? modelOrder(p.models, chips) : void import("./modelorder.js").then(() => chips.isConnected && draw(), () => {});
+    const put = mo ? mo.put : (c) => chips.append(c);
     // a filter is a search: what it doesn't match is left out
-    for (const m of p.models) {
+    for (const m of mo ? mo.list : p.models) {
       const on = draft.chosen.includes(m.id);
       if (f && !m.id.toLowerCase().includes(f) && !(m.name || "").toLowerCase().includes(f) && !(m.default || "").toLowerCase().includes(f)) continue;
       // past the first 80 only the picked are drawn, till the rest are asked for (#685)
@@ -11800,7 +11792,7 @@ function renderModels(p) {
         unpickedShown = p.id;
         draw();
       };
-      chips.append(c);
+      put(c, m);
       shown++;
     }
     for (const id of draft.chosen) {
@@ -11811,7 +11803,7 @@ function renderModels(p) {
       tested(c, id);
       menu(c, id);
       c.onclick = () => { draft.chosen = draft.chosen.filter((x) => x !== id); draft.none = true; draw(); };
-      chips.append(c);
+      put(c, { id });
     }
     if (hidden || unpicked) chips.append(showRest(hidden || unpicked, () => { if (unpicked) unpickedShown = p.id; else showAll = true; draw(); }));
     if (!p.models.length && !draft.chosen[0]) chips.append(el("span", "hint", t(emptyModelsHint(p))));
@@ -12550,6 +12542,9 @@ const ROUTINGS = [
   ["drain", "Until used up", "Requests stay on one until it is used up, then go to the next in the list and stay there: one before it that renews meanwhile doesn't take them back. One rate limited or failing is passed over while it rests, and requests come back to it after."],
   // the unit that goes round is the user's message (affine's "new-turn"),
   // not a session (Wing8Aqua on X)
+  // picked as Use before expiry picks, kept as Until used up keeps
+  // (guhailin3 on X; routes.PaceDrain)
+  ["pace-drain", "Before expiry, one by one", "Requests go to the subscription with the most left per hour until it is lost, as Use before expiry picks, and stay on it until it is used up or fails; then the next is picked the same way."],
   ["rotate", "In turn", "Each message you send goes to the next one, round the list; the agent's tool calls for it stay on the same one. A move costs some prompt cache; with Stays on Session, a whole conversation stays on one instead."],
   ["usage", "Least used first", "Each request goes to the one used least: a subscription by the share of its allowance used, a key by the tokens it served in the last hours."],
   ["pace", "Use before expiry", "Each request goes to the subscription with the most left per hour until it is lost, at its reset or as credits expire; one at 90% of its five hours waits until the others can't answer, a week at 90% is still spent before its reset. A key goes by the tokens it served in the last hours."],
@@ -12563,12 +12558,15 @@ const drawRotFig = (b, on, a) => (b.hidden = !on) ? b.replaceChildren() : (drawR
 // the routings besides Smart are the built-in plugin rotation's
 // (plugins/rotation): off, their options leave the page (data-feature),
 // and Smart is left — one in use keeps it on
-const ROTATION = new Set(["order", "drain", "rotate", "usage", "pace", "weight", "free", "fast", "cheap", "expiring", "fit"]);
+const ROTATION = new Set(["order", "drain", "pace-drain", "rotate", "usage", "pace", "weight", "free", "fast", "cheap", "expiring", "fit"]);
 // jsRoutings: the routings JS gateway plugins serve now ("<plugin>/<name>",
-// settings' jsRoutings, plugins/middleware's), and saved, a routing none
-// serves now, shown as it is: its pool is tried in its listed order
+// plugins/middleware's: the state's jsRoutings, which the Routing and
+// Plugins pages' own reads bring up to date too), and saved, a routing
+// none serves now, shown as it is: its pool is tried in its listed order.
+// Settings' copy alone left a pool's picker without them once the page
+// was read again after a change (guhailin3 on X).
 function jsRoutings(saved) {
-  const out = (state.settings?.jsRoutings || []).map((r) => [r.id, r.id,
+  const out = (state.jsRoutings || []).map((r) => [r.id, r.id,
     t("Routed by {name}, a routing of the gateway plugin {plugin}: it orders the accounts or keys for each request. If it fails or takes too long, they are tried in their listed order.", { name: r.name, plugin: r.plugin }), true]);
   if (saved && !ROUTINGS.some(([id]) => id === saved) && !out.some(([id]) => id === saved))
     out.push([saved, saved, t("No plugin serves this routing now, so requests go to the accounts or keys in their listed order. Turn on the gateway plugin that serves it on the Plugins page.")]);
@@ -12643,7 +12641,7 @@ function renderRouting(p) {
       ? t("Routing picks the account for each request through magpie, in the accounts' order; {agent} on its own stays signed in to {user}, whatever it has left.", { agent: a.agentName, user: keptLogin(p) })
       : p.keepLogin && !p.switchOnly
       ? t("Routing picks the account for each request through magpie; {agent} on its own stays signed in to the first account, whatever it has left.", { agent: a.agentName })
-      : routing === "drain"
+      : routing === "drain" || routing === "pace-drain"
         // Until used up keeps the requests on the next, and the sign-in
         // with them (provider.returnsToFirst; WalterAIBuilder on X)
         ? t("Routing picks the account for each request through magpie; {agent} on its own uses the one it is signed in to, which magpie moves to the next ticked account with room once it is used up, and keeps it there till that one is used up too.", { agent: a.agentName })
@@ -12838,7 +12836,7 @@ const subOf = (agent) => {
 // page can be open before the providers are read (providers is null then)
 const subNames = (ids) => ids.map((id) => SUBS.find((x) => x.agent === id)?.name
   || providers?.plugins?.find((x) => x.id === id)?.name || id).join(", ");
-const movedSub = (agent) => (providers?.onPlugins || []).includes(agent);
+const movedSub = (agent) => providers?.onPlugins?.includes(agent);
 
 // pluginMethod: a moved built-in's one-click way, its first or its site's;
 // none for a plugin's own provider, which asks.
@@ -12911,7 +12909,7 @@ let justAdded = ""; // the account that just came in, to greet it
 const accountToolsOpen = new Set(); // rows whose ⋯ is open
 
 // hasLogins: the subscription has an account signed in already
-const hasLogins = (agent) => (providers?.providers || []).some((p) => p.account?.agent === agent && p.account.logins?.length);
+const hasLogins = (agent) => providers?.providers?.some((p) => p.account?.agent === agent && p.account.logins?.length);
 
 async function startSignIn(agent, risky, site, o = {}) {
   if (signingOpen()) api("signin/" + signing.id + "/cancel", {}).catch(() => {});
@@ -13752,7 +13750,7 @@ function firstLogin(a, p) {
 }
 
 function byQuotaOf(p, r = p?.routing || "") {
-  return p?.account && ["", "usage", "pace"].includes(r) ? ROUTINGS.find(([id]) => id === r)?.[1] : "";
+  return p?.account && ["", "usage", "pace", "pace-drain"].includes(r) ? ROUTINGS.find(([id]) => id === r)?.[1] : "";
 }
 function firstNoteOf(p, user) {
   return t("{user} is first in the order; {routing} still goes by each account's quota, so the order only settles ties. In order uses the first first.", { user, routing: t(byQuotaOf(p)) });
@@ -13832,7 +13830,7 @@ function renderAccounts(a, p) {
     // one line, First or Make first at its right end (the owner, 10-29)
     const line = el("div", "acc-line");
     row.append(line);
-    line.append(dot, accountNameButton(p, l.user), planChip(accountPlan({ agent: a.agent, builtin: a.builtin, plan: l.plan })));
+    line.append(dot, accountNameButton(p, l.user), planChip(accountPlan({ ...l, agent: a.agent, builtin: a.builtin })));
     if (p && on && several) line.append(keyWeight(p, { name: l.user }, wOf(l), weights, "provider/accountweight", { id: p.id, account: l.user }));
     // its own models (#474), when there is another account to send the rest to
     const [amPill, amBox] = ls.length > 1 || accountModelsOf(p, l.user).length ? accountModels(p, l.user, false, l.user) : [];
@@ -14526,15 +14524,17 @@ function accountQuota(data, user, capFor = () => 0, settable = null, prov) {
     balance.append(el("span", "aq-n", t("Balance")), el("b", "", q.balance));
     line.append(balance);
   }
-  // the two rolling windows fit a line; the per-model ones go in its
-  // tooltip; per-model windows of a family are the family's one
+  // the three windows the tray's card draws (panelQuotaCard), a Claude
+  // Max account's weekly Fable one too (CoderMaurice on X: it was in this
+  // line's tooltip only); the rest go in its tooltip; per-model windows
+  // of a family are the family's one
   const counted = q.windows.filter((w) => !w.unlimited);
   const ws = familyWindows(counted);
   if (!ws.length) { line.append(el("span", "aq-none", t("Unlimited"))); return line; }
   if (ws.some((w) => w.members)) return poolLine(line, ws, q, capFor, settable);
-  line.title = ws.slice(2).map((w) => w.tiers ? tiersText(w) : t(w.name) + " " + quotaText(w)).join(ws !== counted ? "\n" : " · ");
+  line.title = ws.slice(3).map((w) => w.tiers ? tiersText(w) : t(w.name) + " " + quotaText(w)).join(ws !== counted ? "\n" : " · ");
   if (q.asOf) line.title = tipLines(line.title, asOfText(q));
-  for (const w of ws.slice(0, 2)) {
+  for (const w of ws.slice(0, 3)) {
     const used = to100(w.used);
     const m = el("span", "aq-w" + (used >= 90 ? " full" : ""));
     const track = el("span", "aq-track");

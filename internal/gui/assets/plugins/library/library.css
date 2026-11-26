@@ -282,6 +282,9 @@ button.row.lib-hubfolded:hover { background: var(--pill); }
 .lib-signin-err { margin-top: 6px; font-size: 12px; color: var(--red); line-height: 1.45; overflow-wrap: anywhere; }
 .lib-signin-link { display: flex; align-items: center; gap: 4px; margin-top: 5px; min-width: 0; }
 .lib-signin-link code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--code-style, normal) var(--code-weight, 400) 11px/1.3 var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); color: var(--fg-2); padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); user-select: all; -webkit-user-select: all; cursor: text; }
+.lib-signin > .note { margin-top: 6px; font-size: 12px; color: var(--fg-2); line-height: 1.45; }
+.lib-signin-callback { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.lib-signin-callback input { flex: 1 1 14em; min-width: 0; font-family: var(--code-font, var(--code)); font-size: 12px; }
 
 /* the switch */
 .lib-switch { flex: none; position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--line); transition: background .2s var(--ease); }
@@ -774,6 +777,16 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 #view-library .row-head.lib-skillshead .lib-skillq { flex: 1 1 90px; max-width: 190px; }
 #view-library .row-head .lib-skillq { width: 190px; height: 24px; margin: 0; flex: 0 1 auto; min-width: 90px; }
 .lib-skillq::-webkit-search-cancel-button { -webkit-appearance: none; }
+/* one agent's skills: as tall as the filter beside it, but for a
+   phone's taller picker (body.web .sess-pick), which wins */
+.row-head .lib-skillagent { height: 24px; flex: 0 1 auto; min-width: 0; max-width: 180px; gap: 6px; }
+.lib-skillagent .ic { width: 13px; height: 13px; }
+/* its menu: each agent's icon, its count at the end (as Sessions' agent menu) */
+.pop.proto-menu.lib-agentmenu { width: min(260px, calc(100vw - 16px)); max-height: min(360px, 70vh); overflow-y: auto; }
+.lib-agentmenu .pm-item { align-items: center; }
+.lib-agentmenu .pm-words { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1; min-width: 0; }
+.lib-agentmenu .pm-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-agentmenu .pm-note { flex: none; font-variant-numeric: tabular-nums; }
 /* a project's skills out of view are neither laid out nor painted until they near it */
 .lib-projskill { content-visibility: auto; contain-intrinsic-size: auto 76px; }
 .lib-grouphead .lib-rowacts { min-width: 26px; }
@@ -985,6 +998,20 @@ body.window .lib-list .lib-row { --lib-indent: 38px; }
 .lib-memstats .ms-col i { display: block; width: 100%; max-width: 24px; border-radius: 4px 4px 0 0; background: var(--accent); }
 .lib-memstats .ms-cols.dense .ms-col { padding: 0 1px; }
 .lib-memstats .ms-cols.dense .ms-col i { border-radius: 2px 2px 0 0; }
+.lib-memstats .ms-side { display: flex; align-items: center; gap: 6px; flex: none; }
+.lib-memstats .ms-style .opt { display: inline-flex; align-items: center; padding: 0 6px; }
+.lib-memstats .ms-style svg { display: block; }
+/* the line: the columns stay as the pointer's targets, drawn bare; the
+   day under the pointer is a hairline and a dot on the line */
+.lib-memstats .ms-plot.line .ms-col { position: relative; background: none; }
+.lib-memstats .ms-plot.line .ms-col.hot::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--line); }
+.lib-memstats .ms-marks { position: absolute; inset: 0 0 1px; pointer-events: none; }
+.lib-memstats .ms-marks svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.lib-memstats .ms-marks .ms-stroke { fill: none; stroke: var(--accent); stroke-width: 2px; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.lib-memstats .ms-marks .ms-area { fill: var(--accent); opacity: .1; }
+:root[data-theme="dark"] .lib-memstats .ms-marks .ms-area { opacity: .06; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .lib-memstats .ms-marks .ms-area { opacity: .06; } }
+.lib-memstats .ms-pt, .lib-memstats .ms-dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--card); }
 .lib-memstats .ms-axis { display: flex; margin-top: 6px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .lib-memstats .ms-axis span { flex: 1 1 0; min-width: 0; text-align: center; white-space: nowrap; overflow: visible; }
 .lib-memstats .ms-axis.dense span:first-child { text-align: left; }

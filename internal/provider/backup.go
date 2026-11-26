@@ -99,10 +99,23 @@ func RestoreConfiguration(ps []Provider, gs []Group, sources []UsageSource, pool
 // a work account at the office, and sync set each computer to the other's
 // every day. A provider kept on this computer (ThisDevice) is neither
 // replaced nor removed by sync.
-func Mirror(ps []Provider, gs []Group) error {
+func Mirror(ps []Provider, gs []Group) error { return mirror(ps, gs, false) }
+
+// MirrorKeepingSettings is Mirror with providers already here retaining
+// their settings while accepting the other computer's provider list and keys.
+func MirrorKeepingSettings(ps []Provider, gs []Group) error { return mirror(ps, gs, true) }
+
+func mirror(ps []Provider, gs []Group, settingsHere bool) error {
 	f, err := usageConfig()
 	if err != nil {
 		return err
+	}
+	if settingsHere {
+		for i := range ps {
+			if j := slices.IndexFunc(f.Providers, func(h Provider) bool { return h.ID == ps[i].ID }); j >= 0 {
+				ps[i] = WithSettingsOf(ps[i], f.Providers[j])
+			}
+		}
 	}
 	return MirrorConfiguration(ps, gs, f.Sources, f.QuotaPools, false)
 }

@@ -535,6 +535,9 @@ type Provider struct {
 	// TakesResolve is; a plugin's requests are made by its host, which has
 	// no way to be told. See netproxy.WithResolve and CheckResolve.
 	Resolve map[string][]string `json:"resolve,omitempty"`
+	// Addresses are a Remote magpie's other addresses. Requests fail over
+	// between them when an address cannot be connected to.
+	Addresses []string `json:"addresses,omitempty"`
 
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows

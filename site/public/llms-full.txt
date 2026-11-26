@@ -1,6 +1,6 @@
 # magpie
 
-> magpie is a free, open-source (MIT) desktop app for macOS, Windows and Linux that lets every AI coding agent use every model. Add a provider once (DeepSeek, Kimi, GLM, Qwen, MiniMax, OpenRouter, Ollama, or the Claude and ChatGPT subscriptions you already pay for), then pick it in Codex, Claude Code, Gemini CLI or any other agent. It runs a local gateway that speaks the OpenAI, Anthropic and Gemini APIs and translates between them, with streaming, tool calls and reasoning intact.
+> magpie is a free, open-source (MIT) desktop app for macOS, Windows and Linux that lets every AI agent use every model. Add a provider once (DeepSeek, Kimi, GLM, Qwen, MiniMax, OpenRouter, Ollama, or the Claude and ChatGPT subscriptions you already pay for), then pick it in Codex, Claude Code, Gemini CLI or any other agent. It runs a local gateway that speaks the OpenAI, Anthropic and Gemini APIs and translates between them, with streaming, tool calls and reasoning intact.
 
 magpie lives in the menu bar (tray on Windows and Linux), with a full window, a TUI and a CLI. The Mac download is about 50 MB, built on the system WebView (no Electron). It is signed and notarised on macOS and updates itself.
 
@@ -124,6 +124,7 @@ A group is several models, from one provider or many, that an agent picks as one
 | Smart `smart` | The default. Over the members’ accounts and keys together (a group in the group as one, see below): of the subscriptions with quota to spare, the one whose allowance renews soonest. The week decides; an account with five hours and no week (Claude Enterprise) goes by its five hours, so ahead of every week renewing later. Credits with no reset (WorkBuddy’s packages, each ending on its own day) count as renewing when the soonest of those left run out, so the WorkBuddy account whose credits end first goes first; accounts renewing together (free ones at the month’s end) go by whose credits left end first after that. One resting after a failure goes last. |
 | In order `order` | The first model until it can’t answer, then the next. |
 | Until used up `drain` | One account or key until it is used up, then the next, which keeps the requests: one before it that renews meanwhile doesn’t take them back. One rate limited or failing is passed over only while it rests. |
+| Before expiry, one by one `pace-drain` | The account with the most of its allowance left per hour until it is lost, as Use before expiry picks it, takes every request until it is used up or fails; then the next is picked the same way. One picked keeps the requests while its pace falls below another’s, and one that renews meanwhile doesn’t take them back. |
 | In turn `rotate` | Each message you send goes to the next member’s account or key; the agent’s tool calls for it stay on the same one. With Stays on Session, a whole conversation stays on one instead. |
 | Least used `usage` | The account or key with the most of its allowance left. |
 | Use before expiry `pace` | The account with the most of its week left per hour until it renews — the one with the most to lose at its reset — so less of each member’s week is lost at its reset; an account with five hours and no week (Claude Enterprise) by what its five hours have left per hour until they renew, so almost always first. Credits in an account that expire before it resets count too: those that expire first, per hour until they do, when that is the more (WorkBuddy’s check-in credits). One at 90% or more waits until the others can’t answer. A key by the tokens sent it lately. |
@@ -717,7 +718,7 @@ Using Claude Code or Codex too? See [Models in Claude Code](https://usemagpie.ai
 
 Source: https://usemagpie.ai/docs/subscriptions
 
-# Use your Claude Pro/Max, ChatGPT Plus/Pro or GitHub Copilot subscription in any coding agent
+# Use your Claude Pro/Max, ChatGPT Plus/Pro or GitHub Copilot subscription in any agent
 
 Sign in to a subscription once, in magpie. Its models then show in every agent magpie sets up: GPT models from your ChatGPT plan in Claude Code, Claude models from your Claude plan in Codex or OpenCode, Copilot’s models in any of them. No API key.
 
@@ -1177,7 +1178,7 @@ Source: https://usemagpie.ai/docs/alternatives
 
 # magpie, CC Switch and Claude Code Router compared
 
-magpie, [CC Switch](https://github.com/farion1231/cc-switch) and [Claude Code Router](https://github.com/musistudio/claude-code-router) (CCR) all help you run AI coding agents on the providers and models you choose. They overlap, and each is good at something. This page puts them side by side, using each project’s own README for the other two and magpie’s source for magpie.
+magpie, [CC Switch](https://github.com/farion1231/cc-switch) and [Claude Code Router](https://github.com/musistudio/claude-code-router) (CCR) all help you run AI agents on the providers and models you choose. They overlap, and each is good at something. This page puts them side by side, using each project’s own README for the other two and magpie’s source for magpie.
 
 ### CC Switch
 
@@ -3538,10 +3539,10 @@ A real request through a group with two intent rules (“a quick question or exp
 
 ## What the classifier sees
 
-This is the whole request, and nothing else is sent. The system message is fixed. The user message lists your intents in rule order, as they were collected in step 2:
+This is the whole request, and nothing else is sent. The system message is magpie’s, unless the group has its own instructions (below). The user message lists your intents in rule order, as they were collected in step 2:
 
 ```
-You route a user's message to a coding assistant by what it asks for. Given numbered kinds of request and the user's message, answer with the number of the kind the message is, or 0 if it is none of them. Answer with the number only.
+You sort a user's message, sent to an AI assistant, into one of several kinds. Given numbered kinds and the user's message, answer with the number of the kind that fits the message best. The kinds may be topics, or levels such as how hard or how big a request is; when they are levels, every message has one, a greeting or a question about the assistant included. Answer 0 only when the message is plainly none of the kinds. Answer with the number only.
 ```
 
 ```
@@ -3554,7 +3555,7 @@ The user's message:
 Write unit tests for the parseTokens function and fix any that fail.
 </message>
 
-The number of its kind (0 for none):
+The number of the kind that fits it best (0 only if none does):
 ```
 
 - **Only your latest message..** magpie sends the text parts of the last user message and nothing else: no earlier turns, no system prompt, no tool definitions, no files.
@@ -3562,6 +3563,18 @@ The number of its kind (0 for none):
 - **Agent reminders are removed..** `<system-reminder>…</system-reminder>` blocks, which Claude Code adds to your message, are stripped. Other text an agent puts in the same message is kept.
 - **Long messages are shortened..** Over 4,000 characters, magpie keeps the first 3,000 and the last 1,000, joined by `…`. The start and the end usually say what is being asked.
 - **The request settings..** An OpenAI-style chat completion, not streamed, with `temperature 0`, `max_tokens 2048` and User-Agent `magpie-router/1`. When magpie knows the classifier’s reasoning levels, it asks for the least: `none` if the model has it, else its lowest level (for example `low`). When the levels aren’t known, nothing is sent and the vendor’s default applies. magpie translates it for the classifier’s provider, like any other request, so an Anthropic, Gemini or other model works too.
+
+### Your own instructions
+
+When magpie’s system message leads the classifier the wrong way for your intents, give the group its own. In the group’s editor, open Advanced and write them in Classifier prompt (shown once a rule has an intent), or run `magpie group set <group> classify-prompt="…"`. They take the place of magpie’s instructions, and magpie adds only how to answer:
+
+```
+<your instructions>
+
+The user's message comes with numbered kinds. Answer with the number of the kind the message is by the instructions above, or 0 when it is none of them. Answer with the number only.
+```
+
+The intents are still listed by number, and the user message ends with `The number of its kind (0 for none):`. A decision model (Jev) is asked by your instructions too. Up to 4,000 characters; empty brings magpie’s back. A change asks the classifier again rather than reusing an answer given under the old instructions, and the instructions go with the group when you share it.
 
 ## When it can’t say
 
@@ -5457,7 +5470,7 @@ Platform custom (OpenAI-compatible), at http://127.0.0.1:3425/v1, or the gateway
 
 magpie lists AionUi once it has run on this computer. Open AionUi once, then look again.
 
-More desktop apps on the same models: [Every model in Cherry Studio, through magpie](https://usemagpie.ai/docs/cherry-studio) and [AstrBot on any model](https://usemagpie.ai/docs/astrbot). Using coding agents too? See [Subscriptions in any agent](https://usemagpie.ai/docs/subscriptions). Something fails? See [Fixing common errors](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
+More desktop apps on the same models: [Every model in Cherry Studio, through magpie](https://usemagpie.ai/docs/cherry-studio) and [AstrBot on any model](https://usemagpie.ai/docs/astrbot). Using other agents too? See [Subscriptions in any agent](https://usemagpie.ai/docs/subscriptions). Something fails? See [Fixing common errors](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
 
 ---
 
@@ -8666,7 +8679,7 @@ Once Cherry Studio has a provider at the gateway’s address, the row shows magp
 
 ## Usage and keys
 
-On a gateway that isn’t shared, the key in the link is Cherry Studio’s own, so its requests are counted as Cherry Studio’s in magpie’s Usage, apart from your coding agents. When the gateway is shared on your network with gateway keys, the link carries a key that works there.
+On a gateway that isn’t shared, the key in the link is Cherry Studio’s own, so its requests are counted as Cherry Studio’s in magpie’s Usage, apart from your other agents. When the gateway is shared on your network with gateway keys, the link carries a key that works there.
 
 ## FAQ
 
@@ -8690,7 +8703,7 @@ Cherry Studio shows models you added to the provider. Fetch the magpie provider�
 
 magpie lists it once Cherry Studio has run on this computer. Open Cherry Studio once, then look again.
 
-Another desktop app on the same models: [AionUi on any model](https://usemagpie.ai/docs/aionui). Using a coding agent too? See [Subscriptions in any agent](https://usemagpie.ai/docs/subscriptions) and [Get started](https://usemagpie.ai/docs/start). Something fails? See [Fixing common errors](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
+Another desktop app on the same models: [AionUi on any model](https://usemagpie.ai/docs/aionui). Using other agents too? See [Subscriptions in any agent](https://usemagpie.ai/docs/subscriptions) and [Get started](https://usemagpie.ai/docs/start). Something fails? See [Fixing common errors](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
 
 ---
 
@@ -9110,7 +9123,7 @@ Yes. Make a routing group with DeepSeek and a fallback in order, routing In orde
 
 Stays is Auto by default: a conversation stays with its account while the cache is worth keeping, and always within a turn, so rotating doesn't lose the cache on every request.
 
-Related: [Use your Claude Pro/Max, ChatGPT Plus/Pro or GitHub Copilot subscription in any coding agent](https://usemagpie.ai/docs/subscriptions). Something fails? See [Fixing common errors: 401, 429, 502, 504 and more](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
+Related: [Use your Claude Pro/Max, ChatGPT Plus/Pro or GitHub Copilot subscription in any agent](https://usemagpie.ai/docs/subscriptions). Something fails? See [Fixing common errors: 401, 429, 502, 504 and more](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
 
 ---
 
@@ -9205,7 +9218,7 @@ magpie quota alert 80 has the magpie app notify when any window reaches 80% used
 
 Yes. magpie quota --json and GET http://127.0.0.1:3425/v1/magpie/quotas give the same; magpie's skill magpie-quota teaches an agent to read it and wait for allowance.
 
-Related: [Round robin and failover across accounts, keys and providers](https://usemagpie.ai/docs/routing-groups) and [Use your Claude Pro/Max, ChatGPT Plus/Pro or GitHub Copilot subscription in any coding agent](https://usemagpie.ai/docs/subscriptions). Something fails? See [Fixing common errors: 401, 429, 502, 504 and more](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
+Related: [Round robin and failover across accounts, keys and providers](https://usemagpie.ai/docs/routing-groups) and [Use your Claude Pro/Max, ChatGPT Plus/Pro or GitHub Copilot subscription in any agent](https://usemagpie.ai/docs/subscriptions). Something fails? See [Fixing common errors: 401, 429, 502, 504 and more](https://usemagpie.ai/docs/troubleshooting), or ask on [Discord](https://discord.gg/vGSnD3ZKQF).
 
 ---
 
@@ -10223,6 +10236,8 @@ Switching between the three keeps the others' settings and credentials for switc
 ## A computer keeping its own
 
 A change to an agent's model on one computer reaches the others. When sync changes one on a computer and you set it back there, that computer keeps its own: the others' picks no longer change it, and its picks stay there, while everything else keeps syncing. Kept on this computer lists those fields, and Follow the others takes the synced value again.
+
+Each computer can also keep its own provider settings, so only the providers' list and their keys sync: tick Sync only the providers' list and API keys under Advanced in the sync's form (or `magpie s3 set provider-settings-here=yes`). Providers added, removed or renamed, their keys and the URLs the keys go to still sync; each provider's settings, such as the models ticked, routing, limits, headers, the proxy and whether it is on, stay as this computer has them. A provider new here comes with the settings it was made with. Set it on each computer that keeps its own.
 
 ## Pick what syncs, preview, undo
 
@@ -11665,6 +11680,15 @@ const res = await fetch(base + "/v1/chat/completions", {
     "x-magpie-account": encodeURIComponent(data[0].pin) },
   body: JSON.stringify({ model: "openai/gpt-5.5", messages: [{ role: "user", content: "ping" }] }),
 })
+```
+
+Add `?models=1` and each one also has `models`: the id of every model it can be asked for, its provider’s whole list. Agents are offered only the first 24 of a provider’s list when no models are picked; this list stops at none of them, and leaves out only what the account can’t be asked for (a model the user kept off that account, or one on none of the provider’s APIs). Ask each as `<provider>/<id>`, offered to agents or not: `openai/o4-mini`.
+
+Add `?models=full` instead and each of `models` is the model as `/v1/models` lists it, field for field: `id` (`<provider>/<id>`), `display_name`, `reasoning`, `reasoning_levels`, `context_window`, `max_output_tokens`, `modalities`, `pricing`, `magpie_label` and the rest, for the models `/v1/models` leaves out too. `?models=1` still gives ids.
+
+```
+const { data } = await (await fetch(base + "/v1/magpie/accounts?models=full")).json()
+// data[0].models: [{ id: "openai/o4-mini", display_name: "o4-mini", reasoning_levels: ["low", "medium", "high"], context_window: 200000, pricing: { prompt: "0.0000011", … }, … }, …]
 ```
 
 ## Sign-in state
