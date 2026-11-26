@@ -643,7 +643,7 @@ body.side-nav .crumb { display: flex; align-items: baseline; gap: 7px; min-width
 .crumb > span { color: var(--muted); }
 .crumb > i { font-style: normal; color: var(--faint); }
 .crumb > b { font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
-body.side-nav :is(#usageTab, #view-library .lib-tabs, #view-plugins .lib-tabs, #setTabs) { display: none !important; }
+body.side-nav :is(#usageTab, #routingTabs, #view-library .lib-tabs, #view-plugins .lib-tabs, #setTabs) { display: none !important; }
 /* the sidebar's button (app.js toggleSideNav), in the title bar where a Mac
    app has it: the drawing's left pane filled while the sidebar shows */
 .side-toggle { flex: none; }

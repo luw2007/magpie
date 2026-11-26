@@ -20,7 +20,7 @@ magpie.plugin("routing", (ctx) => {
     key: "routing",
     title: "Routing",
     html: `
-    <div class="row-head"><span class="label" data-t>Routing</span><span class="rt-livedot" aria-hidden="true"></span><span class="note" data-t>live, as the gateway decides</span><span class="grow"></span>
+    <div class="row-head"><span class="label" data-t>Routing</span><span class="rt-livedot" aria-hidden="true"></span><span class="note" data-t>live, as the gateway decides</span><div id="rtTabs"></div><span class="grow"></span>
       <button class="text rt-togroups" type="button" id="rtToGroups" data-feature="groups"><span data-t>Routing groups</span> ›</button>
       <button class="text rt-toset" type="button" id="rtToSet"><span data-t>Settings</span> ›</button>
       <button class="text rt-mask" id="rtMask" aria-pressed="false" data-tt="Mask the accounts on every page — email addresses and account names — for a screenshot to share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg><span data-t>Hide accounts</span></button></div>
@@ -63,6 +63,8 @@ function routingPage(part) {
   const NS = "http://www.w3.org/2000/svg";
   const still = calm;
   const shown = () => !$("#view-routing").hidden && !document.hidden;
+  let tab = "live";
+  try { if (localStorage.getItem("magpie.routingTab") === "requests") tab = "requests"; } catch {}
   // the Routing groups page, which this script draws too (gsec)
   const gView = () => $("#view-groups");
   const gShown = () => !gView().hidden && !document.hidden;
@@ -168,6 +170,22 @@ function routingPage(part) {
   // under the stage: every request the gateway keeps, and each account or
   // key as those requests found it
   const more = $("#rtMore");
+  let offlinePage = false;
+  const tabs = segs([["live", t("Live")], ["requests", t("Requests")]], tab, (next) => {
+    tab = next;
+    try { localStorage.setItem("magpie.routingTab", tab); } catch {}
+    box.hidden = offlinePage || tab !== "live";
+    more.hidden = offlinePage || tab !== "requests";
+    if (tab === "requests") requestAnimationFrame(() => { fitReqs(); sideFit(); metaFit(); });
+    else requestAnimationFrame(layout);
+    navSubs();
+  });
+  tabs.id = "routingTabs";
+  tabs.classList.add("lib-tabs");
+  $("#rtTabs").append(tabs);
+  NAV_SUBS.routing = () => tabs;
+  box.hidden = tab !== "live";
+  more.hidden = tab !== "requests";
   const reqHead = el("div", "row-head rt-req-head"), reqNote = el("span", "note");
   const reqs = el("div", "list rt-reqs");
   // the days the history keeps on disk, to look back at one: see listed
@@ -6130,10 +6148,12 @@ function routingPage(part) {
   countdown();
 
   function offline(msg) {
+    offlinePage = !!msg;
     off.textContent = msg;
     off.hidden = !msg;
     for (const e of [top, stage, foot, log]) e.hidden = !!msg;
-    more.hidden = !!msg;
+    box.hidden = offlinePage || tab !== "live";
+    more.hidden = offlinePage || tab !== "requests";
   }
 
   function empty() {
@@ -6311,6 +6331,9 @@ function routingPage(part) {
 
   // labels in the page's language, and again when it changes
   function words() {
+    setText(tabs.querySelector('[data-seg="live"]'), t("Live"));
+    setText(tabs.querySelector('[data-seg="requests"]'), t("Requests"));
+    navSubs();
     for (const s of stats.children) s.lastChild.textContent = t(s.dataset.label);
     hubText();
     // the caption said before, said again in these words: it was set as text
