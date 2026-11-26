@@ -134,7 +134,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           if (!lone) {
             const doneRow = least.find((r) => r.key.startsWith("request") && r.shown.includes("duration"));
             assert(doneRow, "a finished request's row");
-            assert.deepEqual(doneRow.shown, ["duration", "ttft", "tokens", "cache-hit", "speed", "cost-metric"]);
+            assert.deepEqual(doneRow.shown, ["duration", "ttft", "tokens", "cache-hit", "speed", "end-to-end", "cost-metric"]);
           }
           assert(least.some((r) => r.shown.filter((m) => m === "recv").length === 3), `the request in flight's numbers: ${JSON.stringify(least.map((r) => r.shown))}`);
         }

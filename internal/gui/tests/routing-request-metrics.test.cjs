@@ -104,6 +104,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await rows.nth(12).locator(".meta").isVisible(), false, "a row with no available metrics has no empty band");
         assert.equal(await rows.locator(".rt-metric").filter({ hasText: "—" }).count(), 0, "unavailable metrics leave no dash placeholders");
         assert.equal(await rows.nth(0).locator(".ttft .k").textContent(), lang === "zh" ? "首字耗时" : "First token");
+        assert.equal(await rows.nth(0).locator(".end-to-end .k").textContent(), lang === "zh" ? "端到端" : "E2E", "end-to-end carries its own compact label");
+        assert.match(await rows.nth(0).locator(".end-to-end .v").textContent(), lang === "zh" ? /^36 token\/秒$/ : /^36 tok\/s$/);
+        assert.equal(await rows.nth(5).locator(".end-to-end").count(), 1, "an unstreamed reply still has an end-to-end rate");
+        for (const i of [9, 10, 11]) assert.equal(await rows.nth(i).locator(".end-to-end").count(), 0, `row ${i} has no end-to-end rate`);
         const labels = lang === "zh" ? ["Token 明细", "输入（未缓存）", "输出", "缓存读取", "缓存写入"]
           : ["Token breakdown", "Input (uncached)", "Output", "Cache read", "Cache write"];
         assert.equal(await rows.nth(0).locator(".tokens").getAttribute("title"),
@@ -133,7 +137,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // on X): 4,000 tokens over 82 s
       const speedTip = await group.locator(".speed").getAttribute("title");
       assert.match(speedTip, lang === "zh" ? /不计等待首个 token 的时间/ : /the wait for the first token, and replies without usable timing, are left out/, "the tooltip says the wait for the first token is left out");
-      assert.match(speedTip, lang === "zh" ? /全程时间.*：49 token\/秒/ : /whole time.*: 49 tok\/s/, "the tooltip gives the speed over the whole time too");
+      assert.match(await group.locator(".end-to-end .v").textContent(), /^176 /, "end-to-end output includes the wait for the first token over every timed reply");
+      assert.match(await group.locator(".end-to-end").getAttribute("title"), lang === "zh" ? /完整请求耗时/ : /full request duration/, "the end-to-end tooltip names its timing window");
       assert.match(await group.locator(".cache-hit").getAttribute("title"), /9.*11|11.*9/, "unknown and unfinished requests are excluded and coverage is disclosed");
       assert.match(await group.locator(".rt-token-total").getAttribute("title"), /11.*12|12.*11/, "session token breakdown discloses missing records");
       await group.click();
@@ -153,7 +158,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const boxes = await rows.nth(0).evaluate((row) => {
           const box = (e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
           return { row: box(row), meta: box(row.querySelector(".meta")), to: box(row.querySelector(".to")),
-            metrics: [...row.querySelectorAll(".cache-hit, .speed, .cost")].map((e) => ({ ...box(e), clipped: e.scrollWidth > e.clientWidth + 1 })) };
+            metrics: [...row.querySelectorAll(".cache-hit, .speed, .end-to-end, .cost")].map((e) => ({ ...box(e), clipped: e.scrollWidth > e.clientWidth + 1 })) };
         });
         for (const b of boxes.metrics) {
           assert(!b.clipped, `metric clipped at ${width}px`);
@@ -226,14 +231,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(await group.locator(".rt-token-total").getAttribute("title"), lang === "zh" ? /输出: 4,800/ : /Output: 4,800/, "session tooltip updates even when list token totals do not change");
       await page.locator("#rtMetrics").click();
       const menu = page.locator(".rt-metric-menu");
-      assert.equal(await menu.locator('[role="menuitemcheckbox"]').count(), 6);
+      assert.equal(await menu.locator('[role="menuitemcheckbox"]').count(), 7);
       // Keep only cache and speed. Each click updates the list immediately,
       // with the menu open and focus on the checkbox for continued selection.
       const labels = lang === "zh" ? ["耗时", "首字耗时", "Token", "费用"] : ["Duration", "First token", "Tokens", "Cost"];
       for (const [i, label] of labels.entries()) {
         const option = menu.getByRole("menuitemcheckbox", { name: label, exact: true });
         await option.click();
-        assert.equal(await rows.nth(0).locator(".rt-metric").count(), 5 - i, "hiding a metric is immediate");
+        assert.equal(await rows.nth(0).locator(".rt-metric").count(), 6 - i, "hiding a metric is immediate");
         assert.equal(await option.getAttribute("aria-checked"), "false");
         assert.equal(await menu.isVisible(), true, "menu remains open while the list updates");
         assert.equal(await option.evaluate((e) => document.activeElement === e), true, "checkbox retains focus");
@@ -249,17 +254,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.doesNotMatch(await group.locator(".session-count").textContent(), /token/);
       await page.keyboard.press("Escape");
       assert.equal(await page.locator("#rtMetrics").getAttribute("aria-expanded"), "false");
-      assert.equal(await rows.nth(0).locator(".rt-metric").count(), 2);
+      assert.equal(await rows.nth(0).locator(".rt-metric").count(), 3);
       assert.equal(await group.locator(".cost").isVisible(), false);
       assert.doesNotMatch(await group.locator(".session-count").textContent(), /token/);
       await page.reload();
       await openPane(page, "requests");
       await rows.nth(fixtures.length - 1).waitFor();
-      assert.equal(await rows.nth(0).locator(".rt-metric").count(), 2, "metric choices survive a reload");
+      assert.equal(await rows.nth(0).locator(".rt-metric").count(), 3, "metric choices survive a reload");
       await page.locator("#rtMetrics").click();
-      assert.equal(await menu.locator('[aria-checked="true"]').count(), 2);
+      assert.equal(await menu.locator('[aria-checked="true"]').count(), 3);
       await menu.getByRole("menuitemcheckbox", { name: lang === "zh" ? "缓存命中率" : "Cache hit rate", exact: true }).click();
       await menu.getByRole("menuitemcheckbox", { name: lang === "zh" ? "输出速度" : "Output speed", exact: true }).click();
+      await menu.getByRole("menuitemcheckbox", { name: lang === "zh" ? "端到端输出速度" : "End-to-end output", exact: true }).click();
       assert.equal(await rows.nth(0).locator(".meta").isVisible(), false, "hiding the last metric is immediate");
       assert.equal(await menu.isVisible(), true);
       await page.keyboard.press("Escape");

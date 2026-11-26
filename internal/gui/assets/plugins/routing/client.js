@@ -311,11 +311,16 @@ function routingPage(part) {
   purposeClear.append(svg(CROSS, 11, 1.6));
   purposeTools.append(purposePick, purposeClear);
   const metricOptions = [["duration", "Duration"], ["ttft", "First token"], ["tokens", "Tokens"],
-    ["cache", "Cache hit rate"], ["speed", "Output speed"], ["cost", "Cost"]];
+    ["cache", "Cache hit rate"], ["speed", "Output speed"], ["endToEnd", "End-to-end output"], ["cost", "Cost"]];
   let visibleMetrics = metricOptions.map(([key]) => key);
   try {
     const saved = JSON.parse(localStorage.getItem("magpie.routingMetrics"));
-    if (Array.isArray(saved)) visibleMetrics = metricOptions.map(([key]) => key).filter((key) => saved.includes(key));
+    if (Array.isArray(saved)) {
+      // End-to-end output became its own choice after riding Output speed;
+      // show it once for choices saved before it existed, then honor hides.
+      const migrated = localStorage.getItem("magpie.routingMetricsV2") === "1";
+      visibleMetrics = metricOptions.map(([key]) => key).filter((key) => saved.includes(key) || (!migrated && key === "endToEnd"));
+    }
   } catch {}
   const metricPick = el("button", "text rt-metric-pick"), metricLabel = el("span");
   metricPick.type = "button";
@@ -328,7 +333,10 @@ function routingPage(part) {
     if (metricPick.classList.contains("open")) return closeProtoMenu();
     openProtoMenu(metricPick, metricOptions.map(([v, name]) => ({ v, name, note: "" })), visibleMetrics, (keys) => {
       visibleMetrics = keys;
-      try { localStorage.setItem("magpie.routingMetrics", JSON.stringify(keys)); } catch {}
+      try {
+        localStorage.setItem("magpie.routingMetrics", JSON.stringify(keys));
+        localStorage.setItem("magpie.routingMetricsV2", "1");
+      } catch {}
       steady(renderHist);
     }, "Metrics to show", "rt-metric-menu", "right", true);
   };
@@ -735,11 +743,11 @@ function routingPage(part) {
       endToEnd: ["end-to-end", "End-to-end output", r.done && !noAnswer(how) && r.status < 400 && r.out > 0 && r.ms > 0 ? t("{n} tok/s", { n: Math.round(r.out * 1000 / r.ms) }) : "—", t("Output tokens divided by the full request duration, including the wait for the first token")],
       cost: ["cost", "Cost", routeCost(r), [r.priced ? costNote() : routeCredits([r]) ? "" : t("No known price or token counts for this request"), routeCredits([r]) ? creditsNote() : ""].filter(Boolean).join("\n")],
     };
-    return visibleMetrics.flatMap((key) => key === "speed" ? [values.speed, values.endToEnd] : [values[key]]).filter((metric) => metric && metric[2] !== "—");
+    return visibleMetrics.map((key) => values[key]).filter((metric) => metric && metric[2] !== "—");
   }
   function metricElement([cls, label, value, help], compact = false) {
     const metric = el("span", "rt-metric " + (cls === "cost" ? "cost-metric" : cls));
-    if (!compact || cls === "ttft" || cls === "cache-hit" || cls === "end-to-end") metric.append(el("span", "k", compact ? t("E2E") : t(label)));
+    if (!compact || cls === "ttft" || cls === "cache-hit" || cls === "end-to-end") metric.append(el("span", "k", compact && cls === "end-to-end" ? t("E2E") : t(label)));
     metric.append(el("span", "v" + (cls === "cost" ? " cost" : ""), value));
     if (compact && cls === "tokens") metric.append(el("span", "k", t("{n} tokens", { n: "" }).trim()));
     metric.title = help || t(label);
@@ -4595,7 +4603,7 @@ function routingPage(part) {
       if (g.key && visibleMetrics.includes("speed") && total.decodeMs) meta.push(metricElement(["speed", "Avg. speed", t("{n} tok/s", { n: Math.round(total.decodeOut * 1000 / total.decodeMs) }),
         tipLines(t("Total output tokens divided by the time from each reply's first token to its end; the wait for the first token, and replies without usable timing, are left out") + ". " + t("Reasoning and tool calls count too, from the first output; a reply that reasoned with no sign in its stream of when counts only its answer, from its first text"),
           coverage(total.timed))]));
-      if (g.key && visibleMetrics.includes("speed") && total.wholeMs) meta.push(metricElement(["end-to-end", "End-to-end output", t("{n} tok/s", { n: Math.round(total.wholeOut * 1000 / total.wholeMs) }),
+      if (g.key && visibleMetrics.includes("endToEnd") && total.wholeMs) meta.push(metricElement(["end-to-end", "End-to-end output", t("{n} tok/s", { n: Math.round(total.wholeOut * 1000 / total.wholeMs) }),
         tipLines(t("Output tokens divided by the full request duration, including the wait for the first token"), coverage(total.wholeN))]));
       const metaSig = JSON.stringify([bits, tokenHelp, meta.map((e) => [e.textContent, e.title])]);
       if (x.meta.dataset.sig !== metaSig) { x.meta.replaceChildren(...meta); x.meta.dataset.sig = metaSig; }
