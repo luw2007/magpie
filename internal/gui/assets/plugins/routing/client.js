@@ -10223,15 +10223,15 @@ function routingPage(part) {
   // so a new name or address can move the cards while the stage keeps its size
   const stageSeen = new ResizeObserver(() => { if (!stageAsked) stageAsked = requestAnimationFrame(() => { stageAsked = 0; layout(); }); });
   for (const e of [stage, srcs, hub]) stageSeen.observe(e);
-  // the list is as tall as leaves the stage in sight above it: the reader
-  // scrolls the list, not the page, and a request picked plays in view.
-  // Its top stays where it is as it is sized, so a row just clicked does too
+  // The list leaves the Live stage in sight above it. On Requests it takes
+  // the page's remaining height, so the request information is maximized.
   function fitReqs() {
     const v = $("#view-routing");
     if (v.hidden || !reqs.offsetParent) return;
-    const above = reqs.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    const top = tab === "requests" ? v : box;
+    const above = reqs.getBoundingClientRect().top - top.getBoundingClientRect().top;
     const room = v.clientHeight - above - 28;
-    const h = Math.round(Math.max(216, Math.min(420, room))) + "px";
+    const h = Math.round(Math.max(216, tab === "requests" ? room : Math.min(420, room))) + "px";
     if (reqs.style.maxHeight !== h) reqs.style.maxHeight = h;
   }
   // the accounts beside the requests end where they do, so a new height
